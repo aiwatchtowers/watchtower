@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
 	"watchtower/internal/linear"
+	"watchtower/internal/oauthclient"
 	"watchtower/internal/slack"
 )
 
@@ -229,12 +230,21 @@ func deleteTokens(ctx context.Context, dir, source string, id int64) error {
 		))
 	case "jira":
 		store := jira.NewTokenStore(dir, id)
-		return wrapTokenErr(source, deleteLocked(ctx, store.Lock, store.Delete))
+		return wrapTokenErr(source, deleteLocked(ctx, store.Lock, withClientFile(store.Delete, dir, "jira", id)))
 	case "linear":
 		store := linear.NewTokenStore(dir, id)
-		return wrapTokenErr(source, deleteLocked(ctx, store.Lock, store.Delete))
+		return wrapTokenErr(source, deleteLocked(ctx, store.Lock, withClientFile(store.Delete, dir, "linear", id)))
 	default:
 		return fmt.Errorf("purge: unknown source %q", source)
+	}
+}
+
+// withClientFile is deleteToken plus the account's company client record
+// (<vendor>_client_<id>.json, #1887), deleted in the same critical section:
+// both are the account's sign-in files.
+func withClientFile(deleteToken func() error, dir, vendor string, id int64) func() error {
+	return func() error {
+		return errors.Join(deleteToken(), oauthclient.NewStore(dir, vendor, id).Delete())
 	}
 }
 

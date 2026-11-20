@@ -99,6 +99,12 @@ final class AppState {
     var selectedConnection: ConnectionService?
     @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState() // a connect survives leaving the tab
     @ObservationIgnored private(set) lazy var slackAppSetup = SlackAppSetupModel { Self.slackLineStream() } // #1709 S3; no process under XCTest
+    /// The company setup wizard (#1887 C1): here, so a check or a Slack run outlives the page; its own wizard-mode Slack engine. Settable for tests.
+    @ObservationIgnored lazy var companySetup = CompanySetupWizardModel(
+        makeStreamer: { Self.slackLineStream() }, slack: SlackAppSetupModel(makeStreamer: { Self.slackLineStream() }, mode: .wizard))
+    @ObservationIgnored lazy var companiesZone = CompaniesZoneModel { Self.slackLineStream() } // #1887 C3: outlives the tab
+    @ObservationIgnored lazy var ownGoogleProject = makeOwnGoogleProject { Self.slackLineStream() } // #1887 C4: outlives the page
+    @ObservationIgnored lazy var atlassianToken = AtlassianTokenFormModel { Self.slackLineStream() } // #1887 C5: a check outlives its sheet
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
     @ObservationIgnored weak var observedProviderConnection: ProviderConnection?
@@ -310,22 +316,18 @@ final class AppState {
     /// flow (`GoogleConnectFlow.shared`) and is not covered here.
     private(set) var calendarAccountsViewModel: CalendarAccountsViewModel?
 
-    /// Google Accounts ViewModel (multi-account Calendar/Gmail) — persists
-    /// across tab switches so an in-flight OAuth connect survives navigating
-    /// away from the Settings window.
-    private(set) var googleAccountsViewModel: GoogleAccountsViewModel?
+    /// Google Accounts ViewModel (multi-account Calendar/Gmail): held here so an in-flight OAuth connect survives leaving Settings.
+    var googleAccountsViewModel: GoogleAccountsViewModel? // a test may set it
 
     /// Slack Accounts ViewModel (multi-workspace) — persists across tab
     /// switches so an in-flight OAuth connect survives navigating away from the
     /// Settings window.
     private(set) var slackAccountsViewModel: SlackAccountsViewModel?
 
-    /// Jira Accounts ViewModel (multi-site) — persists across tab switches so
-    /// an in-flight OAuth connect survives navigating away from the Settings
-    /// window.
-    private(set) var jiraAccountsViewModel: JiraAccountsViewModel?
+    /// Jira Accounts ViewModel (multi-site): held here so an in-flight OAuth connect survives leaving Settings.
+    var jiraAccountsViewModel: JiraAccountsViewModel? // a test may set it
     /// Linear Accounts ViewModel — held here so an in-flight consent survives leaving Settings.
-    private(set) var linearAccountsViewModel: LinearAccountsViewModel?
+    var linearAccountsViewModel: LinearAccountsViewModel? // a test may set it
 
     /// Confluence spaces pickers (Connections → Jira), one per Jira account id —
     /// held here so a select/unselect or re-consent still running when the
@@ -381,6 +383,7 @@ final class AppState {
     var slackLiveStatusCenter: SlackLiveStatusCenter? // the Slack Live probe's verdicts (Connections → Slack)
     var slackConnectListener: SlackConnectListenerHost? // `slack connect serve` on 18551 (#1709); none under XCTest
     var slackConnectFlow: SlackConnectFlowModel? // the connect flow on that listener (link, code, MDM, Reconnect)
+    var companyConnect: CompanyConnectFlowModel? // a company's link, code, Connect all / the rest, Re-login (#1887)
     /// The live workbench sessions' agent states (board #312), polled while a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
     /// The Go hub over its control socket (heartbeat, view inputs, status; go hub plan 3 Task 14); none under XCTest.
@@ -487,7 +490,7 @@ final class AppState {
     /// panel, inspector) — tests pass an isolated suite.
     @ObservationIgnored let workbenchDefaults: UserDefaults
 
-    /// Applies the CLI migrations (`db migrate`); blocks for up to 30 s.
+    /// `db migrate`, then a corp build's `company bridge` (`CompanyBridgeLaunch.migrateThenBridge`).
     @ObservationIgnored let migrateDatabase: @Sendable () -> Void
     /// Opens the workspace database; `migrateDatabase` runs first.
     @ObservationIgnored let openDatabase: @Sendable () throws -> DatabaseManager
@@ -547,7 +550,7 @@ final class AppState {
     init(
         onboardingDefaults: UserDefaults = .standard,
         workbenchDefaults: UserDefaults = .standard,
-        migrateDatabase: @escaping @Sendable () -> Void = { DatabaseManager.runCLIMigrations() },
+        migrateDatabase: @escaping @Sendable () -> Void = { CompanyBridgeLaunch.migrateThenBridge() },
         openDatabase: @escaping @Sendable () throws -> DatabaseManager = { try DatabaseManager(path: DatabaseManager.resolveDBPath()) },
         databaseCompaction: DatabaseCompactionStep? = nil,
         peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun,
@@ -1713,7 +1716,7 @@ final class AppState {
     }
 
     func initJiraAccounts(dbPool: DatabasePool) {
-        let vm = JiraAccountsViewModel(dbPool: dbPool)
+        let vm = JiraAccountsViewModel(dbPool: dbPool, readsAccountFlags: !Self.runsUnderXCTest)
         vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         jiraAccountsViewModel = vm
@@ -2000,7 +2003,7 @@ final class AppState {
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {
-        let vm = GoogleAccountsViewModel(dbPool: dbPool)
+        let vm = GoogleAccountsViewModel(dbPool: dbPool, readsAccountFlags: !Self.runsUnderXCTest)
         vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         googleAccountsViewModel = vm

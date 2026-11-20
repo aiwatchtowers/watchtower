@@ -20,6 +20,11 @@ package struct SlackAccount: FetchableRecord, Identifiable, Equatable {
     /// backfill or for a not-yet-connected row; plan B Task 2).
     package let clientID: String
 
+    /// The company bundle whose OAuth client this account signed in with
+    /// (`company_slug`, migration 00210); "" = our shared client. Go writes
+    /// it; the app only reads it.
+    package let companySlug: String
+
     package init(row: Row) {
         id = row["id"]
         teamID = row["team_id"] ?? ""
@@ -29,6 +34,7 @@ package struct SlackAccount: FetchableRecord, Identifiable, Equatable {
         status = row["status"] ?? "ok"
         error = row["error"] ?? ""
         enabled = row["enabled"] ?? true
+        companySlug = row["company_slug"] ?? ""
         clientID = row["client_id"] ?? ""
     }
 

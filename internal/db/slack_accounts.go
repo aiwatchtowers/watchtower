@@ -23,6 +23,9 @@ type SlackAccount struct {
 	Enabled        bool
 	SearchLastDate string
 	CreatedAt      string
+	// CompanySlug ties the account to a company bundle's Slack app; '' = our
+	// shared app (migration 00210).
+	CompanySlug string
 	// ClientID is the Slack app the token was issued through; "" = connected
 	// before migration 00196 and not yet backfilled (BackfillSlackClientIDs).
 	ClientID string
@@ -58,7 +61,7 @@ func FormatConnectedWorkspaces(accounts []SlackAccount) string {
 // SELECT list and scanSlackAccount's Scan targets in lockstep.
 const slackAccountColumns = `id, team_id, team_name, team_domain, label, current_user_id,
         status, error, enabled, search_last_date, created_at, client_id, app_id,
-        refresh_token_expires_at`
+        refresh_token_expires_at, company_slug`
 
 // scanSlackAccount scans one slackAccountColumns row from either *sql.Row or
 // *sql.Rows (the jira.scanJiraIssue precedent).
@@ -66,16 +69,16 @@ func scanSlackAccount(scanner interface{ Scan(dest ...any) error }) (SlackAccoun
 	var a SlackAccount
 	err := scanner.Scan(&a.ID, &a.TeamID, &a.TeamName, &a.TeamDomain, &a.Label, &a.CurrentUserID,
 		&a.Status, &a.Error, &a.Enabled, &a.SearchLastDate, &a.CreatedAt, &a.ClientID, &a.AppID,
-		&a.RefreshTokenExpiresAt)
+		&a.RefreshTokenExpiresAt, &a.CompanySlug)
 	return a, err
 }
 
 // CreateSlackAccount inserts a new connected Slack account and returns its ID.
 func (db *DB) CreateSlackAccount(a SlackAccount) (int64, error) {
 	res, err := db.Exec(`INSERT INTO slack_accounts
-        (team_id, team_name, team_domain, label, current_user_id)
-        VALUES (?,?,?,?,?)`,
-		a.TeamID, a.TeamName, a.TeamDomain, a.Label, a.CurrentUserID)
+        (team_id, team_name, team_domain, label, current_user_id, company_slug)
+        VALUES (?,?,?,?,?,?)`,
+		a.TeamID, a.TeamName, a.TeamDomain, a.Label, a.CurrentUserID, a.CompanySlug)
 	if err != nil {
 		return 0, fmt.Errorf("creating slack account: %w", err)
 	}
@@ -199,9 +202,12 @@ func (db *DB) SetSlackRefreshExpiry(id int64, at time.Time) error {
 
 // BackfillSlackClientIDs gives every account without a client id (connected
 // before migration 00196) clientID and returns how many rows it filled. A set
-// id is never overwritten, so it is idempotent and needs no lock (A17).
+// id is never overwritten, so it is idempotent and needs no lock (A17). A row
+// tied to a company (#1887) is never filled: it signed in through the
+// company's Slack app, not the shared one clientID names; its token file
+// carries its client and the next token read repairs the column.
 func (db *DB) BackfillSlackClientIDs(clientID string) (int64, error) {
-	res, err := db.Exec(`UPDATE slack_accounts SET client_id = ? WHERE client_id = ''`, clientID)
+	res, err := db.Exec(`UPDATE slack_accounts SET client_id = ? WHERE client_id = '' AND company_slug = ''`, clientID)
 	if err != nil {
 		return 0, fmt.Errorf("backfilling slack client ids: %w", err)
 	}

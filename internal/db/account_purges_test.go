@@ -25,7 +25,7 @@ func TestListPurgeAccounts_EveryStatusAndLabel(t *testing.T) {
 	want := map[string]PurgeAccount{
 		"slack":  {Source: "slack", ID: 1, Label: "Acme", Status: "removed", Enabled: true},
 		"google": {Source: "google", ID: 1, Label: "a@example.com", Status: "ok", Enabled: true},
-		"jira":   {Source: "jira", ID: 1, Label: "Work", Status: "ok", Enabled: false},
+		"jira":   {Source: "jira", ID: 1, Label: "Work", Status: "ok", Enabled: false, AuthKind: "oauth"},
 		"linear": {Source: "linear", ID: 1, Label: "acme", Status: "purged", Enabled: true},
 	}
 	if len(got) != len(want) {

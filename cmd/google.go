@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,10 +11,13 @@ import (
 	"strings"
 
 	"watchtower/internal/calendar"
+	"watchtower/internal/company"
+	"watchtower/internal/companybundle"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/gmail"
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/policy"
 
 	"github.com/spf13/cobra"
 )
@@ -41,8 +45,11 @@ var googleAddCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Connect a new Google account (Calendar and/or Gmail)",
 	Long: "Creates a new google_accounts row and runs the OAuth consent flow for it.\n" +
-		"Pass --client-id together with --client-secret-stdin to bring the account's own\n" +
-		"Google Cloud OAuth client instead of Watchtower's build-time default.",
+		"Pass --client-id together with --client-secret-stdin to sign in through your own\n" +
+		"Google Cloud project instead of Watchtower's build-time default: the client is\n" +
+		"stored as your personal company (see 'watchtower company list') and an account\n" +
+		"of the same Gmail address moves onto it. Refused when your organization's\n" +
+		"policy sets AllowOwnGoogleProject to false.",
 	RunE: runGoogleAdd,
 }
 
@@ -71,11 +78,14 @@ func init() {
 	googleAddCmd.Flags().String("label", "", "display name for this account")
 	googleAddCmd.Flags().String("client-id", "", "bring your own Google OAuth client id (non-secret half)")
 	googleAddCmd.Flags().Bool("client-secret-stdin", false, "read the OAuth client secret from stdin (required with --client-id)")
+	googleAddCmd.Flags().String("company", "", "sign in through this stored company's Google app (its slug, see 'watchtower company list'); the account is tied to the company")
 	googleAddCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
 	googleAddCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
+	googleAddCmd.Flags().Bool("json", false, "with --client-id: end with one JSON result line (ok|rejected|network|cancelled, the account and its address)")
 
 	googleCmd.AddCommand(googleLoginCmd)
 	googleCmd.AddCommand(googleAddCmd)
+	googleAccountsCmd.Flags().Bool("json", false, "print JSON (with each account's company and shared-client flags)")
 	googleCmd.AddCommand(googleAccountsCmd)
 	googleCmd.AddCommand(googleRemoveCmd)
 	rootCmd.AddCommand(googleCmd)
@@ -159,6 +169,41 @@ func runGoogleAdd(cmd *cobra.Command, _ []string) error {
 	if clientID != "" && !clientSecretStdin {
 		return fmt.Errorf("--client-id requires --client-secret-stdin")
 	}
+	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON && clientID == "" {
+		return usageError("--json is for --client-id (your own Google project)")
+	}
+	// The company's client comes first: an unknown company fails here,
+	// before any row, seed or browser.
+	slug, _ := cmd.Flags().GetString("company")
+	var companyClient *companybundle.Google
+	if slug != "" {
+		if clientID != "" {
+			return fmt.Errorf("--company and --client-id cannot be combined")
+		}
+		if err := refusePersonalCompany(cfg.WorkspaceDir(), slug); err != nil {
+			return err
+		}
+		if companyClient, err = companyGoogle(cfg.WorkspaceDir(), slug); err != nil {
+			return err
+		}
+	}
+	// An own Google project (#1887 §4): refused by the policy before the
+	// secret is read, a malformed client before the browser opens.
+	var ownClient *companybundle.Google
+	if clientID != "" {
+		if !policy.Current().OwnGoogleProjectAllowed() {
+			return errOwnGoogleProjectForbidden
+		}
+		secret, err := readLineFromStdin(cmd)
+		if err != nil {
+			return fmt.Errorf("reading client secret: %w", err)
+		}
+		g, err := company.CheckPersonalGoogle(companybundle.Google{ClientID: clientID, ClientSecret: secret})
+		if err != nil {
+			return err
+		}
+		ownClient = &g
+	}
 
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
@@ -177,24 +222,74 @@ func runGoogleAdd(cmd *cobra.Command, _ []string) error {
 		logger.Printf("failed to seed legacy account: %v", err)
 	}
 
-	id, err := database.CreateGoogleAccount(db.GoogleAccount{Label: label, ClientID: clientID})
+	if companyClient != nil {
+		return addGoogleAccountForCompany(cmd, cfg, database, companyClient, slug, label, wantCalendar, wantGmail)
+	}
+	if ownClient != nil {
+		return addOwnGoogleProject(cmd, cfg, database, ownClient, label, wantCalendar, wantGmail)
+	}
+
+	id, err := database.CreateGoogleAccount(db.GoogleAccount{Label: label})
 	if err != nil {
 		return fmt.Errorf("creating account: %w", err)
 	}
-
-	if clientID != "" {
-		secret, err := readLineFromStdin(cmd)
-		if err != nil {
-			rollbackGoogleAccount(database, cfg.WorkspaceDir(), id, cmd.ErrOrStderr())
-			return fmt.Errorf("reading client secret: %w", err)
-		}
-		if err := calendar.NewCredentialStore(cfg.WorkspaceDir(), id).Save(&calendar.Credentials{ClientID: clientID, ClientSecret: secret}); err != nil {
-			rollbackGoogleAccount(database, cfg.WorkspaceDir(), id, cmd.ErrOrStderr())
-			return fmt.Errorf("saving credentials: %w", err)
-		}
-	}
-
 	return connectGoogleAccount(cmd, cfg, database, id, wantCalendar, wantGmail, true)
+}
+
+// addOwnGoogleProject is `google add --client-id`: the company path
+// (googleCompanyConsent → recordGoogleCompanyGrant) with the own project g
+// stored as a personal bundle named after the signed-in address
+// (company.SavePersonal) once the consent succeeded and the row's checks
+// passed (googleCompanyGrantRow): a cancelled consent or a refused re-tie
+// stores nothing. A failure after it (the token write) leaves the bundle,
+// which the next add of the same client reuses.
+//
+// With --json (the Desktop's own-project page, #1887 C4) a failed sign-in or
+// a refused re-tie is a result line in `company check`'s shape (rejected
+// with the vendor's code, network, cancelled) and exit 0, as a success is
+// (ok, the account and its address); any other failure stays an error.
+func addOwnGoogleProject(cmd *cobra.Command, cfg *config.Config, database *db.DB, g *companybundle.Google, label string, wantCalendar, wantGmail bool) error {
+	asJSON, _ := cmd.Flags().GetBool("json")
+	grant, err := googleCompanyConsent(cmd, g, wantCalendar, wantGmail)
+	if err != nil {
+		if asJSON {
+			return writeCompanyResult(cmd, classifySignInError(cmd.Context(), err), nil)
+		}
+		return err
+	}
+	if _, err := googleCompanyGrantRow(database, grant); err != nil {
+		if res, rerr := refusedGrant(err); asJSON && rerr == nil {
+			return writeCompanyResult(cmd, res, nil)
+		}
+		return err
+	}
+	// Asked again: IT may have forbidden own projects during the consent.
+	if !policy.Current().OwnGoogleProjectAllowed() {
+		return errOwnGoogleProjectForbidden
+	}
+	slug, err := company.SavePersonal(company.NewStore(cfg.WorkspaceDir()), companyForcedBundle(), grant.result.email, *g)
+	if err != nil {
+		return fmt.Errorf("saving your own Google project: %w", err)
+	}
+	id, err := recordGoogleCompanyGrant(cmd, cfg, database, grant, slug, label)
+	if err != nil || !asJSON {
+		return err
+	}
+	return writeCompanyResult(cmd, companyCheckResult{Result: checkOK, Slug: slug, AccountID: id, Email: grant.result.email,
+		NotGranted: grant.result.notGranted()}, nil)
+}
+
+// notGranted names the requested services the consent left unapproved
+// ("calendar", "gmail"); nil when every one was granted.
+func (r googleConnectResult) notGranted() []string {
+	var missing []string
+	if r.wantCalendar && !r.calEnabled {
+		missing = append(missing, "calendar")
+	}
+	if r.wantGmail && !r.gmEnabled {
+		missing = append(missing, "gmail")
+	}
+	return missing
 }
 
 func runGoogleAccounts(cmd *cobra.Command, _ []string) error {
@@ -221,6 +316,9 @@ func runGoogleAccounts(cmd *cobra.Command, _ []string) error {
 	}
 
 	out := cmd.OutOrStdout()
+	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+		return writeGoogleAccountsJSON(out, cfg.WorkspaceDir(), accounts)
+	}
 	if len(accounts) == 0 {
 		fmt.Fprintln(out, "No Google accounts connected.")
 		fmt.Fprintln(out, "Run 'watchtower google add' to connect one.")
@@ -353,54 +451,109 @@ func resolveAccountOneForLogin(cmd *cobra.Command, cfg *config.Config, database 
 	return id, true, nil
 }
 
-// buildGoogleOAuthScopes returns the OAuth scopes to request for the
-// selected services, calendar before gmail — the order Google's consent
-// screen lists the per-service checkboxes in.
-func buildGoogleOAuthScopes(wantCalendar, wantGmail bool) []string {
-	var scopes []string
-	if wantCalendar {
-		scopes = append(scopes, calendar.ScopeCalendarReadonly)
-	}
-	if wantGmail {
-		scopes = append(scopes, gmail.ScopeGmailReadonly)
-	}
-	return scopes
-}
-
 // googleOAuthLogin is calendar.Login; a var so tests can script the grant.
 var googleOAuthLogin = calendar.Login
 
 // loginAndSaveGoogleToken runs the OAuth consent flow for accountID and
-// persists the resulting token. When isNewRow is true, either failure rolls
-// back the just-created row (and any credentials file) — mirrors
-// createEmailAccountWithCredentials (cmd/imap.go): a caller-visible account
-// id must never be created and then left un-loginable.
-func loginAndSaveGoogleToken(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, googleCfg calendar.GoogleOAuthConfig, scopes []string, noOpen, appReturn, isNewRow bool) (*calendar.OAuthToken, error) {
-	out := cmd.OutOrStdout()
-	token, err := googleOAuthLogin(cmd.Context(), googleCfg, out, calendar.LoginOptions{
+// persists the resulting token — with recordClient (a company's account),
+// together with the client it was issued to (saveGoogleGrant). When isNewRow
+// is true, either failure rolls back the just-created row (and any
+// credentials file) — mirrors createEmailAccountWithCredentials
+// (cmd/imap.go): a caller-visible account id must never be created and then
+// left un-loginable.
+func loginAndSaveGoogleToken(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, googleCfg calendar.GoogleOAuthConfig, recordClient bool, scopes []string, noOpen, appReturn, isNewRow bool) (*calendar.OAuthToken, error) {
+	token, err := runGoogleConsent(cmd, googleCfg, scopes, noOpen, appReturn)
+	if err != nil {
+		if isNewRow {
+			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
+		}
+		return nil, err
+	}
+	if err := refuseLoginDuringPurge(database, "google", accountID); err != nil {
+		return nil, err
+	}
+	if err := saveGoogleGrant(cfg.WorkspaceDir(), accountID, googleCfg, recordClient, token); err != nil {
+		if isNewRow {
+			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
+		}
+		return nil, err
+	}
+	return token, nil
+}
+
+// runGoogleConsent runs one Google consent through googleCfg.
+func runGoogleConsent(cmd *cobra.Command, googleCfg calendar.GoogleOAuthConfig, scopes []string, noOpen, appReturn bool) (*calendar.OAuthToken, error) {
+	token, err := googleOAuthLogin(cmd.Context(), googleCfg, cmd.OutOrStdout(), calendar.LoginOptions{
 		SkipBrowserOpen: noOpen,
 		Scopes:          scopes,
 		AppReturn:       appReturn,
 	})
 	oauthpage.ReturnAfterLogin(appReturn, err, cmd.ErrOrStderr())
 	if err != nil {
-		if isNewRow {
-			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
-		}
 		return nil, fmt.Errorf("google login: %w", err)
 	}
-	if err := refuseLoginDuringPurge(database, "google", accountID); err != nil {
+	return token, nil
+}
+
+// saveGoogleGrant writes accountID's new token and, with recordClient, first
+// the client it was issued to (google_credentials_<id>.json, the record the
+// resolver compares a company's app with, #1887 P4). A failed token write
+// puts the previous credentials back, so the record never names a client the
+// stored token was not issued to. No lock is needed: only a sign-in writes
+// either file (Google never rotates the refresh token), and the daemon keeps
+// the pair it was wired with.
+func saveGoogleGrant(workspaceDir string, accountID int64, googleCfg calendar.GoogleOAuthConfig, recordClient bool, token *calendar.OAuthToken) error {
+	restore := func() error { return nil }
+	if recordClient {
+		var err error
+		if restore, err = replaceGoogleCredentials(workspaceDir, accountID, googleCfg); err != nil {
+			return fmt.Errorf("saving the account's Google client: %w", err)
+		}
+	}
+	if err := calendar.NewAccountTokenStore(workspaceDir, accountID).Save(token); err != nil {
+		return errors.Join(fmt.Errorf("saving token: %w", err), restore())
+	}
+	return nil
+}
+
+// replaceGoogleCredentials writes googleCfg as accountID's credentials and
+// returns how to put the previous file (or its absence) back.
+func replaceGoogleCredentials(workspaceDir string, accountID int64, googleCfg calendar.GoogleOAuthConfig) (func() error, error) {
+	store := calendar.NewCredentialStore(workspaceDir, accountID)
+	var prev *calendar.Credentials
+	if store.Exists() {
+		prev, _ = store.Load() // a damaged file is not worth restoring
+	}
+	if err := store.Save(&calendar.Credentials{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret}); err != nil {
 		return nil, err
 	}
-
-	store := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), accountID)
-	if err := store.Save(token); err != nil {
-		if isNewRow {
-			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
+	return func() error {
+		var err error
+		if prev != nil {
+			err = store.Save(prev)
+		} else {
+			err = store.Delete()
 		}
-		return nil, fmt.Errorf("saving token: %w", err)
+		if err != nil {
+			return fmt.Errorf("restoring the account's previous Google client: %w", err)
+		}
+		return nil
+	}, nil
+}
+
+// googleGrantEmail is the Gmail profile's address for a fresh grant; a var
+// so tests answer it without Google.
+var googleGrantEmail = func(ctx context.Context, googleCfg calendar.GoogleOAuthConfig, refreshToken string) (string, error) {
+	client, err := gmail.NewClient(ctx, refreshToken,
+		gmail.GoogleOAuthConfig{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret})
+	if err != nil {
+		return "", err
 	}
-	return token, nil
+	profile, err := client.GetProfile(ctx)
+	if err != nil {
+		return "", err
+	}
+	return profile.EmailAddress, nil
 }
 
 // resolveGoogleConnectionResult derives which of the requested services
@@ -413,16 +566,11 @@ func resolveGoogleConnectionResult(ctx context.Context, googleCfg calendar.Googl
 	if !gmEnabled {
 		return calEnabled, gmEnabled, ""
 	}
-	client, cErr := gmail.NewClient(ctx, token.RefreshToken,
-		gmail.GoogleOAuthConfig{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret})
-	if cErr != nil {
+	email, err := googleGrantEmail(ctx, googleCfg, token.RefreshToken)
+	if err != nil {
 		return calEnabled, gmEnabled, ""
 	}
-	profile, pErr := client.GetProfile(ctx)
-	if pErr != nil {
-		return calEnabled, gmEnabled, ""
-	}
-	return calEnabled, gmEnabled, profile.EmailAddress
+	return calEnabled, gmEnabled, email
 }
 
 // printGoogleConnectionResult reports which of the requested services
@@ -450,22 +598,182 @@ func printGoogleConnectionResult(out io.Writer, wantCalendar, wantGmail, calEnab
 // connectGoogleAccount runs the OAuth consent flow for accountID and records
 // the result: which services actually got granted, the account's email
 // (best-effort via the Gmail profile API when Gmail access was granted), and
-// auth state.
+// auth state. An account tied to a company signs in through the company's
+// app as it stands and records it as the account's client (#1887).
 func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, wantCalendar, wantGmail, isNewRow bool) error {
 	out := cmd.OutOrStdout()
 	noOpen, _ := cmd.Flags().GetBool("no-open")
 	appReturn, _ := cmd.Flags().GetBool("app-return")
 
-	googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), accountID)
-	scopes := buildGoogleOAuthScopes(wantCalendar, wantGmail)
-	token, err := loginAndSaveGoogleToken(cmd, cfg, database, accountID, googleCfg, scopes, noOpen, appReturn, isNewRow)
+	acct, err := database.GetGoogleAccount(accountID)
+	if err != nil {
+		return fmt.Errorf("loading account %d: %w", accountID, err)
+	}
+	if err := refuseStoppedOwnProject(cfg.WorkspaceDir(), acct); err != nil {
+		return err
+	}
+	googleCfg, err := googleLoginOAuthConfig(cfg.WorkspaceDir(), acct)
+	if err != nil {
+		if isNewRow {
+			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
+		}
+		return fmt.Errorf("%w: open your company's Watchtower link, or set WATCHTOWER_GOOGLE_CLIENT_ID for development", err)
+	}
+	scopes, err := googleScopesFor(googleCfg.ClientID, wantCalendar, wantGmail)
+	if err != nil {
+		if isNewRow {
+			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
+		}
+		return fmt.Errorf("google account %d: %w", accountID, err)
+	}
+	tied := acct.CompanySlug != ""
+	token, err := loginAndSaveGoogleToken(cmd, cfg, database, accountID, googleCfg, tied, scopes, noOpen, appReturn, isNewRow)
 	if err != nil {
 		return err
+	}
+	if tied {
+		if err := database.SetGoogleAccountClient(accountID, googleCfg.ClientID, acct.CompanySlug); err != nil {
+			return fmt.Errorf("recording the account's client: %w", err)
+		}
 	}
 
 	calEnabled, gmEnabled, email := resolveGoogleConnectionResult(cmd.Context(), googleCfg, token, wantCalendar, wantGmail)
 	return recordGoogleConnection(out, cmd.ErrOrStderr(), flagConfig, cfg, database, accountID,
 		googleConnectResult{wantCalendar: wantCalendar, wantGmail: wantGmail, calEnabled: calEnabled, gmEnabled: gmEnabled, email: email})
+}
+
+// addGoogleAccountForCompany is `google add --company <slug>`: the sign-in
+// runs through the company's Google app (an unknown slug, or a company
+// without one, fails before the browser opens), and the grant lands on the
+// row of the same Google user when one exists — that row is re-tied to the
+// company and records the company's client, so a person who had the account
+// on the shared client keeps one row (#1887 Review Focus 5) — else on a new
+// row tied to the company in the same insert. The same user is the same
+// Gmail address (case-insensitive): a Calendar-only grant has no address and
+// always gets a new row; a Gmail grant whose address cannot be read creates
+// nothing.
+func addGoogleAccountForCompany(cmd *cobra.Command, cfg *config.Config, database *db.DB, g *companybundle.Google, slug, label string, wantCalendar, wantGmail bool) error {
+	grant, err := googleCompanyConsent(cmd, g, wantCalendar, wantGmail)
+	if errors.Is(err, errGmailNeedsOwnProject) {
+		return fmt.Errorf("company %s: %w", slug, err)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = recordGoogleCompanyGrant(cmd, cfg, database, grant, slug, label)
+	return err
+}
+
+// googleCompanyGrant is a finished consent through a company's Google app,
+// not yet stored anywhere.
+type googleCompanyGrant struct {
+	cfg    calendar.GoogleOAuthConfig
+	token  *calendar.OAuthToken
+	result googleConnectResult
+}
+
+// googleCompanyConsent runs the consent through g and reads the account's
+// Gmail address; it stores nothing.
+func googleCompanyConsent(cmd *cobra.Command, g *companybundle.Google, wantCalendar, wantGmail bool) (googleCompanyGrant, error) {
+	noOpen, _ := cmd.Flags().GetBool("no-open")
+	appReturn, _ := cmd.Flags().GetBool("app-return")
+	googleCfg := calendar.GoogleOAuthConfig{ClientID: g.ClientID, ClientSecret: g.ClientSecret}
+
+	scopes, err := googleScopesFor(googleCfg.ClientID, wantCalendar, wantGmail)
+	if err != nil {
+		return googleCompanyGrant{}, err
+	}
+	token, err := runGoogleConsent(cmd, googleCfg, scopes, noOpen, appReturn)
+	if err != nil {
+		return googleCompanyGrant{}, err
+	}
+	calEnabled, gmEnabled, email := resolveGoogleConnectionResult(cmd.Context(), googleCfg, token, wantCalendar, wantGmail)
+	if gmEnabled && email == "" {
+		// Without the address the person's existing row cannot be found; a
+		// second row for the same user is worse than asking again.
+		return googleCompanyGrant{}, errors.New("google sign-in: could not read the Gmail address of the account — try again")
+	}
+	return googleCompanyGrant{cfg: googleCfg, token: token, result: googleConnectResult{
+		wantCalendar: wantCalendar, wantGmail: wantGmail, calEnabled: calEnabled, gmEnabled: gmEnabled, email: email,
+	}}, nil
+}
+
+// recordGoogleCompanyGrant lands grant on the row of the same Google user
+// (re-tied to slug) or on a new row tied to slug, and returns the row.
+func recordGoogleCompanyGrant(cmd *cobra.Command, cfg *config.Config, database *db.DB, grant googleCompanyGrant, slug, label string) (int64, error) {
+	r := grant.result
+	id, err := googleCompanyGrantRow(database, grant)
+	if err != nil {
+		return 0, err
+	}
+	isNewRow := id == 0
+	if isNewRow {
+		if id, err = database.CreateGoogleAccount(db.GoogleAccount{Label: label, ClientID: grant.cfg.ClientID, CompanySlug: slug}); err != nil {
+			return 0, fmt.Errorf("creating account: %w", err)
+		}
+	}
+	if err := saveGoogleGrant(cfg.WorkspaceDir(), id, grant.cfg, true, grant.token); err != nil {
+		if isNewRow {
+			rollbackGoogleAccount(database, cfg.WorkspaceDir(), id, cmd.ErrOrStderr())
+		}
+		return 0, err
+	}
+	if !isNewRow {
+		if err := database.SetGoogleAccountClient(id, grant.cfg.ClientID, slug); err != nil {
+			return 0, fmt.Errorf("tying account %d to %s: %w", id, slug, err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Google account %d (%s) now signs in through %s's app.\n", id, r.email, slug)
+	}
+	return id, recordGoogleConnection(cmd.OutOrStdout(), cmd.ErrOrStderr(), flagConfig, cfg, database, id, r)
+}
+
+// errGrantTooNarrow is a grant that lacks a service the row it replaces
+// syncs.
+var errGrantTooNarrow = errors.New("the new sign-in lacks a service the account syncs")
+
+// googleGrantCoversRow refuses a re-tie of account id whose new grant lacks
+// a service the row already syncs (errGrantTooNarrow).
+func googleGrantCoversRow(database *db.DB, id int64, calGranted, gmGranted bool) error {
+	acct, err := database.GetGoogleAccount(id)
+	if err != nil {
+		return fmt.Errorf("loading account %d: %w", id, err)
+	}
+	if (acct.CalendarEnabled && !calGranted) || (acct.GmailEnabled && !gmGranted) {
+		return fmt.Errorf("%w: google account %d also syncs %s; run again with --calendar --gmail and approve both on the consent screen",
+			errGrantTooNarrow, id, googleAccountServiceBadges(acct))
+	}
+	return nil
+}
+
+// googleCompanyGrantRow is the row a company's Google grant lands on: the
+// first account of the same Gmail address, or 0 for a new row. A grant that
+// cannot replace that row's (it lacks a service the row syncs —
+// errGrantTooNarrow — or the row's purge is running) is refused. It writes
+// nothing.
+func googleCompanyGrantRow(database *db.DB, grant googleCompanyGrant) (int64, error) {
+	r := grant.result
+	if r.email == "" {
+		return 0, nil
+	}
+	accounts, err := database.ListGoogleAccounts()
+	if err != nil {
+		return 0, fmt.Errorf("listing accounts: %w", err)
+	}
+	for _, a := range accounts {
+		if !strings.EqualFold(a.Email, r.email) {
+			continue
+		}
+		// The new grant replaces the row's: it must cover every service the
+		// row syncs, or re-tying would silently switch one off.
+		if err := googleGrantCoversRow(database, a.ID, r.calEnabled, r.gmEnabled); err != nil {
+			return 0, err
+		}
+		if err := refuseLoginDuringPurge(database, "google", a.ID); err != nil {
+			return 0, err
+		}
+		return a.ID, nil
+	}
+	return 0, nil
 }
 
 // googleConnectResult is what one consent asked for and what it granted.
@@ -487,7 +795,11 @@ func recordGoogleConnection(out, errOut io.Writer, configPath string, cfg *confi
 	if err := database.UpdateGoogleAccountConnection(accountID, r.email, r.calEnabled, r.gmEnabled); err != nil {
 		return fmt.Errorf("recording connection: %w", err)
 	}
-	_ = database.SetGoogleAccountAuthState(accountID, "ok", "")
+	// A login always clears a Re-login mark; a check relies on it to clear
+	// its own Replace mark.
+	if err := database.SetGoogleAccountAuthState(accountID, "ok", ""); err != nil {
+		return fmt.Errorf("recording auth state: %w", err)
+	}
 
 	printGoogleConnectionResult(out, r.wantCalendar, r.wantGmail, r.calEnabled, r.gmEnabled, accountID)
 	if err := enableGoogleSyncSwitches(configPath, cfg, r.calEnabled, r.gmEnabled); err != nil {

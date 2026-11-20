@@ -205,8 +205,9 @@ final class SlackAccountsViewModel {
             error = nil // handed off: an earlier failure no longer applies
             return route
         }
-        // One flow at a time: the built-in sign-in waits for the connect flow too.
-        guard !flow.isRunning else {
+        // One flow at a time: the built-in sign-in waits for the connect flow
+        // and a company chain (#1887) too.
+        guard !flow.isRunning, !flow.companyRunning() else {
             error = "Another connection is already in progress."
             return nil
         }

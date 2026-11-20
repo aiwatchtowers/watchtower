@@ -29,16 +29,18 @@ struct ConnectionsSettings: View {
 /// accounts stay but no longer sync, and their data is kept.
 struct SourceBlockedNotice: View {
     static let title = "Blocked by your organization"
+    static let message = "Your organization's policy does not allow this source. Existing accounts stop syncing and keep "
+        + "their data; nothing new can be connected."
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
             Label(Self.title, systemImage: "lock.fill")
                 .font(.callout.weight(.medium))
-            Text("Your organization's policy does not allow this source. Existing accounts stop syncing and keep their data; "
-                + "nothing new can be connected.")
+            Text(Self.message)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            ITGuideLink()
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)

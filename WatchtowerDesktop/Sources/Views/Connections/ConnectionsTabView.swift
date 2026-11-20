@@ -21,6 +21,18 @@ struct ConnectionsTabView: View {
             appState.refreshConnectionAccounts()
             appState.sharedConfig.reloadUnlessEdited()
         }
+        // A company link, code or Connect all (#1887 §3): over whichever
+        // Connections page is open. Closing it keeps a running chain.
+        .sheet(isPresented: Binding(
+            get: { appState.companyConnect?.showsSheet ?? false },
+            set: { shown in if !shown { appState.companyConnect?.close() } }
+        )) {
+            if let flow = appState.companyConnect {
+                CompanyConnectSheet(flow: flow)
+                    .frame(width: 460)
+                    .onExitCommand { flow.close() }
+            }
+        }
     }
 }
 
@@ -51,12 +63,19 @@ struct ConnectionsDetailSplit: View {
             .scrollContentBackground(.hidden)
             .frame(width: PaneWidth.sideListIdeal)
             Divider()
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                if appState.connectionSummary(service).blocked {
-                    SourceBlockedNotice()
+            Group {
+                if service == .companySetup {
+                    // The wizard's page brings its own way back (‹ Connections).
+                    ScrollView { companySetup }
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        header
+                        if appState.connectionSummary(service).blocked {
+                            SourceBlockedNotice()
+                        }
+                        detail
+                    }
                 }
-                detail
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -102,7 +121,17 @@ struct ConnectionsDetailSplit: View {
         case .jira: JiraConnectionDetail()
         case .linear: LinearConnectionDetail()
         case .quickConnections: QuickConnectionsDetail()
+        case .companySetup: EmptyView() // drawn without the header, above
         }
+    }
+
+    private var companySetup: some View {
+        CompanySetupPage(model: appState.companySetup, actions: CompanySetupActions(
+            back: { appState.selectedConnection = nil },
+            openQuickConnections: { appState.openConnections(.quickConnections) },
+            showFile: { appState.showCompanySetupFile($0) },
+            connectThisMac: appState.connectThisMacAction
+        ))
     }
 }
 

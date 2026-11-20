@@ -39,6 +39,9 @@ type serveHarness struct {
 	mu     sync.Mutex
 	opened []string
 	raw    []string
+	// openedCh gets each opened URL too, for a test that waits for a
+	// browser step started off the loop (the company chain's).
+	openedCh chan string
 }
 
 func fixedGrant(g slackconnect.Grant) func(string) (slackconnect.Grant, error) {
@@ -53,9 +56,17 @@ func startConnectServe(t *testing.T, env connectEnv, exchange func(code string) 
 func startConnectServeOn(t *testing.T, env connectEnv, exchange func(code string) (slackconnect.Grant, error),
 	listen func(int) (net.Listener, error)) *serveHarness {
 	t.Helper()
+	return startConnectServeLogged(t, env, exchange, listen, io.Discard)
+}
+
+// startConnectServeLogged is startConnectServeOn with serve's log going to
+// logOut (it must take concurrent writes).
+func startConnectServeLogged(t *testing.T, env connectEnv, exchange func(code string) (slackconnect.Grant, error),
+	listen func(int) (net.Listener, error), logOut io.Writer, opts ...func(*slackConnectDeps)) *serveHarness {
+	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
-	h := &serveHarness{stdin: inW, lines: make(chan string, 64), done: make(chan error, 1)}
+	h := &serveHarness{stdin: inW, lines: make(chan string, 64), done: make(chan error, 1), openedCh: make(chan string, 64)}
 	deps := slackConnectDeps{
 		port:   0,
 		listen: listen,
@@ -66,11 +77,18 @@ func startConnectServeOn(t *testing.T, env connectEnv, exchange func(code string
 			h.mu.Lock()
 			h.opened = append(h.opened, u)
 			h.mu.Unlock()
+			select {
+			case h.openedCh <- u:
+			default:
+			}
 		},
 		clock: slackconnect.SystemClock{},
 	}
+	for _, o := range opts {
+		o(&deps)
+	}
 	go func() {
-		err := serveSlackConnect(context.Background(), env.cfg, env.db, inR, outW, io.Discard, deps)
+		err := serveSlackConnect(context.Background(), env.cfg, env.db, inR, outW, logOut, deps)
 		_ = outW.Close()
 		h.done <- err
 	}()

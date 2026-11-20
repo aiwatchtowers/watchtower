@@ -18,10 +18,18 @@ final class GoogleAccountsViewModel {
     private(set) var accounts: [GoogleAccount] = []
     var isConnecting = false
     var error: String?
-    /// The last account read failed; nil once one succeeds. Only the read:
-    /// an action's failure stays in `error` (the Connections tab's
-    /// "Couldn't read accounts" reads this).
+    /// The last account read failed (the error's own text); nil once one
+    /// succeeds. Only the read: an action's failure stays in `error` (the
+    /// Connections tab's "Couldn't read accounts" reads this).
     private(set) var readError: String?
+    /// A first account read finished, well or not: before it the detail
+    /// shows its loading line, never "nothing connected".
+    private(set) var hasRead = false
+    /// Accounts Go reports on the retiring shared app (#1887 §7 banners).
+    let sharedFlags = SharedAppFlagReader.google()
+    /// Every successful refresh also reads the shared-app flags; on in the
+    /// app, off by default so a test never runs a real CLI.
+    @ObservationIgnored var readsAccountFlags: Bool
 
     /// The restart the last successful account change kicked off under
     /// `.restart` (nil under `.deferred`) — held so tests can await it.
@@ -43,11 +51,13 @@ final class GoogleAccountsViewModel {
     init(
         dbPool: DatabasePool,
         daemon: any DaemonRestarting = LiveDaemonRestarter(),
-        cliPath: @escaping () -> String? = Constants.findCLIPath
+        cliPath: @escaping () -> String? = Constants.findCLIPath,
+        readsAccountFlags: Bool = false
     ) {
         self.dbPool = dbPool
         self.daemon = daemon
         self.cliPath = cliPath
+        self.readsAccountFlags = readsAccountFlags
     }
 
     // MARK: - Refresh
@@ -72,11 +82,15 @@ final class GoogleAccountsViewModel {
             let rows = try await dbPool.read { db in try GoogleAccountQueries.fetchAll(db) }
             self.accounts = rows
             readError = nil
+            hasRead = true
             await onAccountsChanged?()
         } catch {
             self.error = "Failed to load accounts: \(error.localizedDescription)"
-            readError = self.error
+            readError = error.localizedDescription
+            hasRead = true
+            return
         }
+        if readsAccountFlags { await sharedFlags.read(cliPath: cliPath()) }
     }
 
     // MARK: - Add
@@ -233,6 +247,14 @@ final class GoogleAccountsViewModel {
                 }
             }
         }
+    }
+
+    /// Another flow's `google add` connected an account (Use my own Google
+    /// project, #1887 C4): re-read the accounts and re-wire the daemon, as
+    /// this model's own connect does.
+    func accountAddedElsewhere(daemonPolicy: DaemonRestartPolicy) {
+        refresh()
+        daemonRestartTask = daemonPolicy.apply(using: daemon)
     }
 
     func cancelConnect() {

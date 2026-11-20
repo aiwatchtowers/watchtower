@@ -64,6 +64,8 @@ The stamp always runs and goes into the guide commit. For each new `##` heading 
 
 Then run `go test ./docs/guide/ ./internal/learn/ ./internal/kb/ ./internal/chat/` (guide links, catalogue, page size, the guide knowledge source, the prompt golden). If the guide's catalogue changed (a page added, renamed or re-titled), regenerate the chat prompt golden with `go test ./internal/chat -run TestBuildSystemPrompt_Golden -update` and commit it with the guide edits. Any other failure halts the release.
 
+Then check the IT page's key list: if `docs/mdm/keys.json` changed since the previous tag (`git diff --quiet "$prev" -- docs/mdm/keys.json || echo changed`), tell the user the website needs a rebuild — in the website repository, `python3 scripts/sync-mdm.py v<version>` after the tag is pushed (or `main`), then `python3 scripts/build-guide.py`, a PR, and a deploy — so https://aiwatchtowers.com/guide/mdm/ lists the same keys as the release. This never blocks the release.
+
 ## Step 4: Update Version in Code
 
 Update the `Version` variable in `cmd/version.go` to the new version.
@@ -83,6 +85,8 @@ the new dead code or — only after a deliberate review — refresh the baseline
 with `make periphery-baseline` and explain in the release notes why.
 
 ## Step 6: Build
+
+First check the build profile: a public release must not set `WATCHTOWER_JIRA_CLIENT_ID/SECRET` (our shared Atlassian app is retired, company setup D4, D15 amended, ask #1600). `scripts/build-app.sh` refuses such a release (`shared-jira-check`); remove the two values from `.env` (keep them only for `--dev` and flavored corp builds, whose bridge still needs the corp Jira client). A corp-flavored build needs `BUILD_COMPANY_NAME` in `.env.corp` for its company bridge.
 
 Run the build via Makefile (this ensures `.env` is loaded and OAuth credentials are injected via ldflags):
 ```bash

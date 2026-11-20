@@ -34,6 +34,32 @@ struct OrganizationPolicyPresentationTests {
         ])
     }
 
+    @Test("the company keys: the company's name only, never the bundle; tokens and own projects")
+    func newKeyLines() {
+        let base64 = Data(#"{"v":1,"company":"Acme","linear":{"client_id":"lin-acme-1"}}"#.utf8).base64EncodedString()
+        let wire = base64
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let lines = text([
+            "CompanyBundle": wire,
+            "AllowAtlassianAPIToken": false,
+            "AllowOwnGoogleProject": true
+        ])
+        #expect(lines == [
+            "Company: Acme",
+            "Atlassian API tokens: not allowed",
+            "Own Google projects: allowed"
+        ])
+        #expect(!lines.joined().contains(wire))
+        #expect(!lines.joined().contains("lin-acme-1"))
+    }
+
+    @Test("a refused company bundle shows no company line, only the problem")
+    func refusedBundleHasNoCompanyLine() {
+        #expect(text(["CompanyBundle": "not-a-bundle"]) == ["Profile problems: CompanyBundle (invalid entry)"])
+    }
+
     @Test("Background AI in plain words")
     func backgroundAIInPlainWords() {
         #expect(text(["AllowBackgroundAI": true]) == ["Background AI: Allowed by your organization"])

@@ -9,7 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 
@@ -19,6 +18,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
 	"watchtower/internal/logredact"
+	"watchtower/internal/oauthclient"
 	"watchtower/internal/oauthpage"
 
 	"github.com/spf13/cobra"
@@ -249,6 +249,7 @@ func init() {
 	jiraCmd.AddCommand(jiraAddCmd)
 	jiraCmd.AddCommand(jiraLoginCmd)
 	jiraCmd.AddCommand(jiraLogoutCmd)
+	jiraAccountsCmd.Flags().Bool("json", false, "print JSON (with each account's company and shared-app flags, and the shared app's cutoff day)")
 	jiraCmd.AddCommand(jiraAccountsCmd)
 	jiraCmd.AddCommand(jiraEnableCmd)
 	jiraCmd.AddCommand(jiraDisableCmd)
@@ -296,6 +297,7 @@ func init() {
 	jiraAddCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 	jiraAddCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
 	jiraAddCmd.Flags().String("label", "", "display name for this site")
+	jiraAddCmd.Flags().String("company", "", "sign in through this stored company's Atlassian app (its slug, see 'watchtower company list'); the account is tied to the company")
 	jiraAddCmd.Flags().Bool("app-site-picker", false, "with several sites, print them as one [jira-sites] JSON line and read the chosen URL from stdin (the Desktop's connect sheet)")
 	_ = jiraAddCmd.Flags().MarkHidden("app-site-picker")
 	jiraAddCmd.Flags().Bool("with-confluence", false, "also request Confluence scopes (requires the Confluence API enabled on this OAuth app)")
@@ -560,14 +562,18 @@ func chooseJiraSite(cmd *cobra.Command, token *jira.OAuthToken, siteFlag, prefer
 // its token, so a failed connect never leaves an un-loginable ghost.
 func rollbackNewJiraAccount(cfg *config.Config, database *db.DB, accountID int64) {
 	_ = jira.NewTokenStore(cfg.WorkspaceDir(), accountID).Delete()
+	_ = oauthclient.NewStore(cfg.WorkspaceDir(), jiraClientVendor, accountID).Delete()
 	_ = database.SetJiraAccountRemoved(accountID)
 }
+
+// jiraConnectOwner is recordJiraOwner; a var so connect tests make no /myself call.
+var jiraConnectOwner = recordJiraOwner
 
 // connectJiraAccount finishes an OAuth flow for accountID on the chosen
 // site: records the site on the row, saves the token to the account's
 // store, and marks the account ok. On any failure for a newly created row
 // the account is rolled back (rollbackNewJiraAccount).
-func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, token *jira.OAuthToken, site jira.CloudResource, isNewRow bool) (jira.CloudResource, error) {
+func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, jiraCfg jira.JiraOAuthConfig, recordClient bool, token *jira.OAuthToken, site jira.CloudResource, isNewRow bool) (jira.CloudResource, error) {
 	rollback := func() {
 		if isNewRow {
 			rollbackNewJiraAccount(cfg, database, accountID)
@@ -584,16 +590,22 @@ func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB,
 	}
 	store := jira.NewTokenStore(cfg.WorkspaceDir(), accountID)
 	// Under the token lock, so a daemon refresh of the previous grant that is
-	// in flight cannot write it back over this new one.
-	if err := saveJiraTokenLocked(cmd.Context(), store, token); err != nil {
+	// in flight cannot write it back over this new one. A tied account's
+	// client record (recordClient) changes in the same critical section: a
+	// refresh never pairs one grant with the other grant's client.
+	var beforeSave func() (func(), error)
+	if recordClient {
+		beforeSave = func() (func(), error) { return replaceJiraAccountClient(cfg.WorkspaceDir(), accountID, jiraCfg) }
+	}
+	if err := saveJiraTokenLocked(cmd.Context(), store, token, beforeSave); err != nil {
 		rollback()
 		return jira.CloudResource{}, err
 	}
 	// Best effort: a /myself failure (e.g. a scope or a flaky network) must
 	// never fail the connect itself — recordJiraOwner warns and the identity
 	// is retried on the next daemon start (wireJiraSyncers' lazy fill).
-	client := jira.NewClient(site.ID, resolveJiraOAuthConfig(), store)
-	recordJiraOwner(cmd.Context(), cmd.ErrOrStderr(), database, accountID, client)
+	client := jira.NewClient(site.ID, jiraCfg, store)
+	jiraConnectOwner(cmd.Context(), cmd.ErrOrStderr(), database, accountID, client)
 	if err := database.SetJiraAccountAuthState(accountID, "ok", ""); err != nil {
 		return jira.CloudResource{}, fmt.Errorf("recording auth state: %w", err)
 	}
@@ -726,12 +738,27 @@ const jiraConfluenceNotEnabled = "Jira connected; Confluence isn't enabled for t
 // for Confluence never costs a Jira connect. The retry opens the browser a
 // second time; any other failure is returned as is.
 func jiraAddLogin(ctx context.Context, cfg jira.JiraOAuthConfig, out io.Writer, opts jira.LoginOptions) (*jira.OAuthToken, error) {
-	token, err := jiraLogin(ctx, cfg, out, opts)
+	token, err := jiraLoginWithoutRefusedReport(ctx, cfg, out, opts)
 	if err == nil || !opts.WithConfluence || !errors.Is(err, jira.ErrScopeRefused) {
 		return token, err
 	}
 	fmt.Fprintln(out, jiraOnlyRetryMarker+" Atlassian refused the Confluence access; connecting Jira only…")
-	opts.WithConfluence, opts.WithConfluenceWrite = false, false
+	opts.WithConfluence, opts.WithConfluenceWrite, opts.WithPersonalDataReporting = false, false, false
+	return jiraLogin(ctx, cfg, out, opts)
+}
+
+// jiraLoginWithoutRefusedReport is jiraLogin that, when the report scope
+// (WithPersonalDataReporting, #1887 §6) is refused — a company app without
+// the report permission — signs in once more without it and with every
+// other option kept: the account connects and shows pdr_scope_missing
+// instead of failing its add or Re-login.
+func jiraLoginWithoutRefusedReport(ctx context.Context, cfg jira.JiraOAuthConfig, out io.Writer, opts jira.LoginOptions) (*jira.OAuthToken, error) {
+	token, err := jiraLogin(ctx, cfg, out, opts)
+	if err == nil || !opts.WithPersonalDataReporting || !errors.Is(err, jira.ErrScopeRefused) {
+		return token, err
+	}
+	fmt.Fprintln(out, "Atlassian refused the personal data reporting access; signing in without it…")
+	opts.WithPersonalDataReporting = false
 	return jiraLogin(ctx, cfg, out, opts)
 }
 
@@ -761,36 +788,116 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	// Seed the legacy single-account install first so the new row never
-	// collides with the implicit account #1 (the `slack add` precedent).
-	if _, err := ensureLegacyJiraAccount(cfg, database, jiraCmdLogger(cmd)); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
+	if useAPIToken(cmd) {
+		return addJiraAPITokenAccount(cmd, cfg, database)
 	}
+	// The client comes first: an unknown company (or no client at all) fails
+	// here, before any row, seed or browser.
+	slug, _ := cmd.Flags().GetString("company")
+	target := jiraAddTarget{Slug: slug}
+	if slug != "" {
+		a, err := companyAtlassian(cfg.WorkspaceDir(), slug)
+		if err != nil {
+			return err
+		}
+		target.OAuth = jira.JiraOAuthConfig{ClientID: a.ClientID, ClientSecret: a.ClientSecret}
+		target.Site, target.Confluence = a.Site, a.Confluence
+	} else if target.OAuth, _, err = resolveJiraOAuthConfigForCompany(cfg.WorkspaceDir(), ""); err != nil {
+		return fmt.Errorf("%w: open your company's Watchtower link, or set WATCHTOWER_JIRA_CLIENT_ID for development", err)
+	}
+	return addJiraAccount(cmd, cfg, database, target)
+}
 
-	jiraCfg := resolveJiraOAuthConfig()
-	siteFlag, _ := cmd.Flags().GetString("site")
+// jiraAddTarget is the Atlassian app a `jira add` signs in through.
+type jiraAddTarget struct {
+	OAuth jira.JiraOAuthConfig
+	// Slug ties the new account to a company ("" = none); with it the
+	// client is written to the account's client file.
+	Slug string
+	// Site is the company app's site: validated as Atlassian Cloud before
+	// the browser opens, and the only site the sign-in may pick.
+	Site string
+	// Confluence implies --with-confluence (the bundle's confluence: true).
+	Confluence bool
+	// ConfluenceWrite implies --with-confluence-write (a check re-logging
+	// an account that has the write scopes).
+	ConfluenceWrite bool
+}
+
+// sameJiraSite compares two site URLs ignoring case and a trailing slash.
+func sameJiraSite(a, b string) bool {
+	return strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(a), "/"), strings.TrimSuffix(strings.TrimSpace(b), "/"))
+}
+
+// replaceJiraAccountClient is saveJiraAccountClient that returns how to put
+// the previous record (or its absence) back. The restore is best effort (a
+// failed connect has already failed the command; a failed restore only
+// means the old grant's mismatch goes undetected until Atlassian refuses it).
+func replaceJiraAccountClient(workspaceDir string, accountID int64, c jira.JiraOAuthConfig) (func(), error) {
+	store := oauthclient.NewStore(workspaceDir, jiraClientVendor, accountID)
+	prev, had, err := store.Load()
+	if err != nil {
+		had = false // a damaged record is not worth restoring
+	}
+	if err := saveJiraAccountClient(workspaceDir, accountID, c); err != nil {
+		return nil, err
+	}
+	return func() {
+		if had {
+			_ = store.Save(prev)
+		} else {
+			_ = store.Delete()
+		}
+	}, nil
+}
+
+// chooseCompanyJiraSite picks the company app's site from the grant by exact
+// URL — never a substring match, which could bind another tenant the same
+// person can reach.
+func chooseCompanyJiraSite(cmd *cobra.Command, token *jira.OAuthToken, site string) (jira.CloudResource, error) {
+	resources, err := jiraFetchResources(cmd.Context(), token.AccessToken)
+	if err != nil {
+		return jira.CloudResource{}, fmt.Errorf("fetching accessible resources: %w", err)
+	}
+	for _, r := range resources {
+		if sameJiraSite(r.URL, site) {
+			return r, nil
+		}
+	}
+	return jira.CloudResource{}, fmt.Errorf("%w %s; it reaches: %s — check which Atlassian identity is signed in",
+		errCompanySiteNotReached, site, strings.Join(jiraSiteURLs(resources), ", "))
+}
+
+// errCompanySiteNotReached is a sign-in whose grant does not reach the
+// company app's site.
+var errCompanySiteNotReached = errors.New("this Atlassian sign-in does not reach the company's site")
+
+// saveJiraAccountClient records the client accountID's grant was issued to
+// (jira_client_<id>.json): what the resolver compares a company's app with.
+func saveJiraAccountClient(workspaceDir string, accountID int64, c jira.JiraOAuthConfig) error {
+	return oauthclient.NewStore(workspaceDir, jiraClientVendor, accountID).
+		Save(oauthclient.Client{ClientID: c.ClientID, ClientSecret: c.ClientSecret})
+}
+
+// jiraValidateSite is jira.ValidateCloudSite; a var so tests answer it.
+var jiraValidateSite = jira.ValidateCloudSite
+
+// addJiraAccount is `jira add` through target: sign in, choose the site,
+// create the row (tied to target.Slug in the same insert), write the
+// company's client file, save the token. The wizard's Atlassian check
+// (company check atlassian) calls it with the draft's client.
+func addJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, target jiraAddTarget) error {
 	label, _ := cmd.Flags().GetString("label")
 	out := cmd.OutOrStdout()
-
-	opts := jiraLoginOptionsFromFlags(cmd)
-	token, err := jiraAddLogin(cmd.Context(), jiraCfg, out, opts)
-	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
-	if err != nil {
-		return jiraAddLoginError(err)
-	}
-	if opts.WithConfluence && !jira.HasConfluenceScopes(token) {
-		fmt.Fprintln(out, jiraConfluenceNotEnabled)
-	}
-
-	chosen, err := chooseJiraSite(cmd, token, siteFlag, "")
+	token, chosen, err := jiraSignIn(cmd, cfg, database, target)
 	if err != nil {
 		return err
 	}
-	accountID, err := database.CreateJiraAccount(db.JiraAccount{Label: label})
+	accountID, err := database.CreateJiraAccount(db.JiraAccount{Label: label, CompanySlug: target.Slug})
 	if err != nil {
 		return fmt.Errorf("creating jira account: %w", err)
 	}
-	site, err := connectJiraAccount(cmd, cfg, database, accountID, token, chosen, true)
+	site, err := connectJiraAccount(cmd, cfg, database, accountID, target.OAuth, target.Slug != "", token, chosen, true)
 	if err != nil {
 		return err
 	}
@@ -803,6 +910,58 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "\nRun 'watchtower jira boards --account %d' to see available boards.\n", accountID)
 	fmt.Fprintf(out, "Run 'watchtower jira sync --account %d' to sync issues.\n", accountID)
 	return nil
+}
+
+// jiraSignIn is `jira add`'s sign-in through target: the company site's
+// check, the consent and the site choice. It stores no account, token or
+// client; a legacy single-account install is seeded only once a site is
+// chosen.
+func jiraSignIn(cmd *cobra.Command, cfg *config.Config, database *db.DB, target jiraAddTarget) (*jira.OAuthToken, jira.CloudResource, error) {
+	siteFlag, _ := cmd.Flags().GetString("site")
+	out := cmd.OutOrStdout()
+	opts := jiraLoginOptionsFromFlags(cmd)
+	if target.Site != "" {
+		if siteFlag != "" && !sameJiraSite(siteFlag, target.Site) {
+			return nil, jira.CloudResource{}, fmt.Errorf("the company's Atlassian app is for %s, not %s", target.Site, siteFlag)
+		}
+		if err := jiraValidateSite(cmd.Context(), nil, target.Site); err != nil {
+			return nil, jira.CloudResource{}, fmt.Errorf("company Atlassian site: %w", err)
+		}
+	}
+	if target.Confluence || target.ConfluenceWrite {
+		opts.WithConfluence = true
+	}
+	if target.ConfluenceWrite {
+		opts.WithConfluenceWrite = true
+	}
+	// A company's app has the report permission (its setup guide enables
+	// it), so the grant carries the scope Personal Data Reporting needs.
+	opts.WithPersonalDataReporting = target.Slug != ""
+
+	token, err := jiraAddLogin(cmd.Context(), target.OAuth, out, opts)
+	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
+	if err != nil {
+		return nil, jira.CloudResource{}, jiraAddLoginError(err)
+	}
+	if opts.WithConfluence && !jira.HasConfluenceScopes(token) {
+		fmt.Fprintln(out, jiraConfluenceNotEnabled)
+	}
+
+	var chosen jira.CloudResource
+	if target.Site != "" {
+		chosen, err = chooseCompanyJiraSite(cmd, token, target.Site)
+	} else {
+		chosen, err = chooseJiraSite(cmd, token, siteFlag, "")
+	}
+	if err != nil {
+		return nil, jira.CloudResource{}, err
+	}
+	// Seed the legacy single-account install before any new row so it never
+	// collides with the implicit account #1 (the `slack add` precedent).
+	if _, err := ensureLegacyJiraAccount(cfg, database, jiraCmdLogger(cmd)); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
+	}
+	return token, chosen, nil
 }
 
 // resolveJiraAccountForLogin resolves the account a bare `jira login`
@@ -844,6 +1003,13 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
+	if useAPIToken(cmd) {
+		account, err := resolveJiraAccount(database, jiraFlagAccount)
+		if err != nil {
+			return err
+		}
+		return reauthJiraAPIToken(cmd, cfg, database, account)
+	}
 	accountID, isNewRow, err := resolveJiraAccountForLogin(cfg, database, jiraFlagAccount, jiraCmdLogger(cmd))
 	if err != nil {
 		return err
@@ -852,8 +1018,19 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if account.AuthKind == jira.AuthKindAPIToken {
+		// An OAuth grant would overwrite the token file of an account that
+		// stays an API-token account.
+		return fmt.Errorf("jira account %d connects with an API token: paste a new one with 'watchtower jira login --account %d --api-token-stdin'", accountID, accountID)
+	}
 
-	jiraCfg := resolveJiraOAuthConfig()
+	jiraCfg, err := jiraLoginOAuthConfig(cfg.WorkspaceDir(), account)
+	if err != nil {
+		if isNewRow {
+			rollbackNewJiraAccount(cfg, database, accountID)
+		}
+		return err
+	}
 	siteFlag, _ := cmd.Flags().GetString("site")
 	out := cmd.OutOrStdout()
 
@@ -864,7 +1041,10 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 	if kept {
 		fmt.Fprintln(out, "This account uses Confluence; keeping its Confluence access in the new grant.")
 	}
-	token, err := jira.Login(cmd.Context(), jiraCfg, out, opts)
+	// A company account's Re-login also finishes the setup: it requests the
+	// report scope its app has (pdr_scope_missing).
+	opts.WithPersonalDataReporting = account.CompanySlug != ""
+	token, err := jiraLoginWithoutRefusedReport(cmd.Context(), jiraCfg, out, opts)
 	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
@@ -877,7 +1057,7 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 		}
 		return err
 	}
-	site, err := connectJiraAccount(cmd, cfg, database, accountID, token, chosen, isNewRow)
+	site, err := connectJiraAccount(cmd, cfg, database, accountID, jiraCfg, account.CompanySlug != "", token, chosen, isNewRow)
 	if err != nil {
 		return err
 	}
@@ -902,6 +1082,11 @@ func removeJiraAccount(cfg *config.Config, database *db.DB, accountID int64) err
 	}
 	if err := jira.NewTokenStore(cfg.WorkspaceDir(), accountID).Delete(); err != nil {
 		return fmt.Errorf("deleting token: %w", err)
+	}
+	// The company client's secret goes with the token; a re-login of a tied
+	// account writes it again.
+	if err := oauthclient.NewStore(cfg.WorkspaceDir(), jiraClientVendor, accountID).Delete(); err != nil {
+		return fmt.Errorf("deleting the account's Atlassian client: %w", err)
 	}
 	return database.SetJiraAccountRemoved(accountID)
 }
@@ -950,6 +1135,9 @@ func runJiraAccounts(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	out := cmd.OutOrStdout()
+	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+		return writeJiraAccountsJSON(out, cfg.WorkspaceDir(), accounts, jiraPurgeLeases(cfg, database, time.Now()))
+	}
 	if len(accounts) == 0 {
 		fmt.Fprintln(out, "No Jira sites connected. Run 'watchtower jira add' to connect one.")
 		return nil
@@ -1134,9 +1322,11 @@ func runJiraBoards(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Fetch boards from API and update DB.
-	jiraCfg := resolveJiraOAuthConfig()
+	client, err := newJiraClientForAccount(cfg, account)
+	if err != nil {
+		return err
+	}
 	if account.CloudID != "" {
-		client := jira.NewClient(account.CloudID, jiraCfg, store)
 		boards, err := client.FetchAllBoards(cmd.Context())
 		if err != nil {
 			return fmt.Errorf("fetching boards: %w", err)
@@ -1388,8 +1578,10 @@ func runJiraSync(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("jira account %d not connected, run 'watchtower jira login --account %d' first", account.ID, account.ID)
 	}
 
-	jiraCfg := resolveJiraOAuthConfig()
-	client := jira.NewClient(account.CloudID, jiraCfg, store)
+	client, err := newJiraClientForAccount(cfg, account)
+	if err != nil {
+		return err
+	}
 	mapper := jira.NewUserMapper(client, database)
 
 	// Get selected board IDs.
@@ -1475,7 +1667,6 @@ func runJiraSync(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// resolveJiraOAuthConfig returns Jira OAuth credentials from env or ldflags.
 // jiraSyncProgressJSON matches the InsightProgressData format used by other pipelines.
 type jiraSyncProgressJSON struct {
 	Pipeline   string  `json:"pipeline"`
@@ -1486,21 +1677,6 @@ type jiraSyncProgressJSON struct {
 	Finished   bool    `json:"finished"`
 	ItemsFound int     `json:"items_found,omitempty"`
 	Error      string  `json:"error,omitempty"`
-}
-
-func resolveJiraOAuthConfig() jira.JiraOAuthConfig {
-	clientID := os.Getenv("WATCHTOWER_JIRA_CLIENT_ID")
-	if clientID == "" {
-		clientID = jira.DefaultJiraClientID
-	}
-	clientSecret := os.Getenv("WATCHTOWER_JIRA_CLIENT_SECRET")
-	if clientSecret == "" {
-		clientSecret = jira.DefaultJiraClientSecret
-	}
-	return jira.JiraOAuthConfig{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-	}
 }
 
 // featureToggleRef returns a pointer to a feature toggle field by name.
@@ -1726,8 +1902,10 @@ func runJiraBoardsAnalyze(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("jira account %d not connected, run 'watchtower jira login --account %d' first", account.ID, account.ID)
 	}
 
-	jiraCfg := resolveJiraOAuthConfig()
-	client := jira.NewClient(account.CloudID, jiraCfg, store)
+	client, err := newJiraClientForAccount(cfg, account)
+	if err != nil {
+		return err
+	}
 
 	applyProviderOverride(cfg)
 	aiProvider := newAIClient(cfg, cfg.DBPath())
@@ -2035,8 +2213,10 @@ func runJiraFieldsDiscover(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("jira account %d not connected, run 'watchtower jira login --account %d' first", account.ID, account.ID)
 	}
 
-	jiraCfg := resolveJiraOAuthConfig()
-	client := jira.NewClient(account.CloudID, jiraCfg, store)
+	client, err := newJiraClientForAccount(cfg, account)
+	if err != nil {
+		return err
+	}
 
 	applyProviderOverride(cfg)
 	aiProvider := newAIClient(cfg, cfg.DBPath())
@@ -2101,8 +2281,10 @@ func runJiraFieldsMap(cmd *cobra.Command, args []string) error {
 	}
 
 	// Need to generate — create client + AI provider.
-	jiraCfg := resolveJiraOAuthConfig()
-	client := jira.NewClient(account.CloudID, jiraCfg, store)
+	client, err := newJiraClientForAccount(cfg, account)
+	if err != nil {
+		return err
+	}
 
 	applyProviderOverride(cfg)
 	aiProvider := newAIClient(cfg, cfg.DBPath())
@@ -2164,8 +2346,9 @@ func ownerJiraFeaturesRole(database *db.DB, fallback string) string {
 }
 
 // saveJiraTokenLocked saves a freshly consented token under the account's
-// cross-process token lock (jira.TokenStore.Lock).
-func saveJiraTokenLocked(ctx context.Context, store *jira.TokenStore, token *jira.OAuthToken) error {
+// cross-process token lock (jira.TokenStore.Lock). beforeSave, when set,
+// runs in the same critical section; its undo runs if the token save fails.
+func saveJiraTokenLocked(ctx context.Context, store *jira.TokenStore, token *jira.OAuthToken, beforeSave func() (undo func(), err error)) error {
 	lockCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	unlock, err := store.Lock(lockCtx)
@@ -2173,7 +2356,14 @@ func saveJiraTokenLocked(ctx context.Context, store *jira.TokenStore, token *jir
 		return fmt.Errorf("saving token: %w", err)
 	}
 	defer unlock()
+	undo := func() {}
+	if beforeSave != nil {
+		if undo, err = beforeSave(); err != nil {
+			return fmt.Errorf("saving the account's Atlassian client: %w", err)
+		}
+	}
 	if err := store.Save(token); err != nil {
+		undo()
 		return fmt.Errorf("saving token: %w", err)
 	}
 	return nil

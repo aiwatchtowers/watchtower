@@ -148,6 +148,36 @@ final class SlackConnectFlowModelTests: XCTestCase {
         XCTAssertEqual(rig.model.sheet?.buttons.map(\.action), [.close, .startAgain])
     }
 
+    /// A20: a company link or code in Slack's field goes to the company flow;
+    /// its refusal is this field's error, and a Slack code never goes there.
+    func testCompanyCodeGoesToTheCompanyFlow() async {
+        let rig = await makeRig()
+        var handed: [String] = []
+        var answer: String? = "That is not a Watchtower company code."
+        rig.model.companyPaste = { text in
+            handed.append(text)
+            return answer
+        }
+        let code = "eyJ2IjoxLCJjb21wYW55IjoiQWNtZSJ9"
+        rig.model.pasteText = code
+        XCTAssertTrue(rig.model.connectPasted())
+        await untilObserved { rig.model.pasteError != nil }
+        XCTAssertEqual(handed, [code])
+        XCTAssertEqual(rig.model.pasteError, "That is not a Watchtower company code.")
+        XCTAssertEqual(rig.sent, [], "no Slack flow starts")
+
+        answer = nil
+        rig.model.pasteText = "http://127.0.0.1:18551/company/connect?b=\(code)"
+        XCTAssertTrue(rig.model.connectPasted())
+        await untilObserved { rig.model.pasteText.isEmpty }
+        XCTAssertNil(rig.model.pasteError)
+        XCTAssertEqual(handed.count, 2)
+
+        rig.model.pasteText = "T0ACME:1111.2222"
+        XCTAssertTrue(rig.model.connectPasted())
+        XCTAssertEqual(handed.count, 2, "a Slack code stays Slack's")
+    }
+
     func testPasteRejectsOtherText() async {
         let rig = await makeRig()
         let refused = [

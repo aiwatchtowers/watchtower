@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/jira"
 	"watchtower/internal/policy"
 	"watchtower/internal/purge"
 )
@@ -68,11 +69,26 @@ func (d *Daemon) phaseAccountPurgeLeases(ctx context.Context) {
 }
 
 // purgeRules is the per-account purge rule of this pass (#1769, A21): the
-// switch and its origin from purge.Enabled, the source hold from the live
-// policy (POLICY-03).
+// switch and its origin from purge.Enabled, the hold from the live policy
+// (POLICY-03): a forbidden source, or an account the policy stops
+// (SetAccountSyncAllowed), is not synced, so its leases are held.
 func (d *Daemon) purgeRules() func(db.PurgeAccount) purge.Rule {
 	on, origin := purge.Enabled(d.config)
-	return purge.Rules(on, origin, policy.SourceAllowed)
+	return purge.AccountRules(on, origin, func(a db.PurgeAccount) bool {
+		return AccountSyncAllowed(a) && d.accountAllowedQuiet(a.Source, a.ID)
+	})
+}
+
+// AccountSyncAllowed reports whether the organization's policy lets the
+// account sync: its source is allowed (AllowedSources, #608) and, for an
+// Atlassian API-token account, so are API tokens (AllowAtlassianAPIToken,
+// #1887 D24). A stopped account keeps its data: its leases are held.
+func AccountSyncAllowed(a db.PurgeAccount) bool {
+	p := policy.Current()
+	if !p.SourceAllowed(a.Source) {
+		return false
+	}
+	return a.AuthKind != jira.AuthKindAPIToken || p.AtlassianAPITokenAllowed()
 }
 
 // applyPurgeSchedule runs one scheduling pass and logs what it wrote.

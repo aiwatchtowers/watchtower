@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -270,6 +271,8 @@ func runREPL(cmd *cobra.Command, args []string) error {
 		TeamID:     teamID,
 		Workspace:  workspace,
 		AIProvider: replAIProvider(cfg),
+		// The REPL discards sync logs; the daemon logs a damaged company file.
+		DenyHosts: linkDenySource(cfg, log.New(io.Discard, "", 0)),
 	}
 
 	return repl.Run(deps)

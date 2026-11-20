@@ -20,7 +20,7 @@ import (
 	"watchtower/internal/sessionreport"
 )
 
-var updateSessionReportGolden = flag.Bool("update", false, "rewrite the cmd/testdata session_report_*.json, review-map.golden.json and escalate/ goldens and the Desktop cleanup stream and ai_models_capabilities fixtures")
+var updateSessionReportGolden = flag.Bool("update", false, "rewrite the cmd/testdata session_report_*.json, review-map.golden.json and escalate/ goldens the Desktop cleanup stream and ai_models_capabilities fixtures, and docs/mdm/keys.json and site.json")
 
 // board314 is the sessionreport #314 fixture: workbench 1, session 1.
 var board314 = filepath.Join("..", "internal", "sessionreport", "testdata", "board_314.sql")

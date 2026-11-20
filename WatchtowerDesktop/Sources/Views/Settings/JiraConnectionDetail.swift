@@ -1,12 +1,21 @@
+import DesignKit
 import SwiftUI
 import WatchtowerCore
 
 /// Jira detail pane in the Connections tab — the multi-account Atlassian
-/// connections (`jira_accounts` table, migration 00049), each independently
-/// granting access via its own OAuth consent — and, once a site is
+/// connections (`jira_accounts` table, migration 00049) grouped by company
+/// (company screens spec §4.2) under the retired-shared-app banner (§7),
+/// the §6.4 empty state with no site and no company — and, once a site is
 /// connected, its boards, Confluence spaces, features, user mapping and
 /// sync (the Boards tab until #899). A board's profile and the features
 /// detail open in place, with a way back.
+///
+/// A new site signs in through a company's Atlassian app or with an API
+/// token (§6, `AtlassianTokenSheet`): the shared app is retired (D15
+/// amended, ask #1600), so there is no plain "Add Jira Site" here;
+/// onboarding keeps its add sheet. While the organization forbids API
+/// tokens (§6.5) the token offers are gone, token sites read "Stopped by
+/// your organization" under the lock card, and an open token sheet closes.
 ///
 /// Like Slack (and unlike Google), removal is non-destructive: `jira remove`
 /// drops the token and marks the row removed/disabled but leaves
@@ -16,7 +25,6 @@ struct JiraConnectionDetail: View {
     /// The organization's policy forbids this source (#608): nothing new
     /// connects; existing accounts keep their data.
     private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("jira") }
-    @State private var showAddJiraAccountSheet = false
     @State private var jiraAccountPendingRemoval: JiraAccount?
     @State private var accountBeingRenamed: AccountRenameTarget?
     @State private var drillIn: JiraDetailItem?
@@ -32,134 +40,32 @@ struct JiraConnectionDetail: View {
     }
 
     private var settingsForm: some View {
-        Form {
-            jiraSettingsSection
-            if hasSites {
-                JiraBoardsSettingsView { board in withAnimation(Motion.panel) { drillIn = .board(board) } }
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.large) {
+                jiraAccountsSections
+                if hasSites {
+                    JiraBoardsSettingsView { board in withAnimation(Motion.panel) { drillIn = .board(board) } }
+                }
+                confluenceSections
+                if hasSites {
+                    JiraFeaturesSettingsView { withAnimation(Motion.panel) { drillIn = .features } }
+                    JiraUserMappingSettingsView()
+                    JiraSyncInfoView()
+                }
             }
-            confluenceSections
-            if hasSites {
-                JiraFeaturesSettingsView { withAnimation(Motion.panel) { drillIn = .features } }
-                JiraUserMappingSettingsView()
-                JiraSyncInfoView()
-            }
+            .controlSize(.small)
+            .padding(Spacing.page)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .formStyle(.grouped)
-        .padding(.horizontal)
-        .padding(.top, 4)
-    }
-
-    private func drillInContent(_ item: JiraDetailItem) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: Spacing.regular) {
-                Button {
-                    withAnimation(Motion.panel) { drillIn = nil }
-                } label: {
-                    Label("Jira", systemImage: "chevron.left")
-                }
-                .buttonStyle(.kitQuiet)
-                Text(item.title)
-                    .font(.title3.weight(.semibold))
-                Spacer()
-            }
-            .padding(.horizontal, Spacing.page)
-            .padding(.vertical, Spacing.medium)
-            switch item {
-            case .board(let board):
-                JiraBoardProfileView(board: board)
-                    .scrollContentBackground(.hidden)
-            case .features:
-                JiraFeaturesDetailView()
-                    .scrollContentBackground(.hidden)
-            }
+        .detailBackground()
+        .sheet(isPresented: Binding(
+            get: { appState.atlassianToken.isPresented },
+            set: { if !$0 { appState.atlassianToken.close() } }
+        )) {
+            AtlassianTokenSheet(model: appState.atlassianToken).frame(width: 520)
         }
-    }
-
-    @ViewBuilder
-    private var jiraSettingsSection: some View {
-        Section("Jira Sites") {
-            if let vm = appState.jiraAccountsViewModel {
-                if vm.accounts.isEmpty {
-                    Text("No Jira sites connected.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(vm.accounts) { account in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(account.displayName)
-                                if !account.siteURL.isEmpty {
-                                    Text(account.siteURL)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                if let line = AccountPurgeLine.make(
-                                    center: appState.accountPurgeCenter, source: "jira", accountID: Int64(account.id),
-                                    isPurged: account.isPurged
-                                ) {
-                                    line
-                                }
-                            }
-                            Spacer()
-                            Circle()
-                                .fill(jiraAccountStatusColor(account))
-                                .frame(width: 8, height: 8)
-                                .help(accountStatusHelp(account))
-                            Toggle("Enabled", isOn: Binding(
-                                get: { account.enabled },
-                                set: { newValue in
-                                    Task { await vm.setEnabled(account, enabled: newValue) }
-                                }
-                            ))
-                            .toggleStyle(.switch)
-                            .controlSize(.mini)
-                            .disabled(vm.isConnecting || account.isPurged)
-                            if !account.isOK {
-                                Button("Re-login") {
-                                    Task { await vm.relogin(account) }
-                                }
-                                .managedByOrganization(sourceBlocked)
-                                .help(reloginBlocked(account.id) ?? "")
-                                .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
-                            }
-                            Button("Rename…") {
-                                accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(vm.isConnecting)
-                            Button("Remove") {
-                                jiraAccountPendingRemoval = account
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.red)
-                            .disabled(vm.isConnecting)
-                        }
-                    }
-                }
-
-                if let err = vm.error {
-                    Text(err)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-
-                Button("Add Jira Site") {
-                    showAddJiraAccountSheet = true
-                }
-                .managedByOrganization(sourceBlocked)
-                .disabled(vm.isConnecting)
-            } else {
-                Text("Loading...")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .sheet(isPresented: $showAddJiraAccountSheet) {
-            // Settings opened during onboarding: its finish starts the
-            // daemon, not this sheet.
-            AddJiraAccountView(daemonPolicy: appState.accountDaemonPolicy)
-                .environment(appState)
-                .marksAccountSheet(appState)
+        .onChange(of: appState.companyLocks.contains(.atlassianAPIToken), initial: true) { _, locked in
+            if locked { appState.atlassianToken.policyLocked() }
         }
         .accountRenameAlert($accountBeingRenamed) { target, name in
             Task { await appState.jiraAccountsViewModel?.rename(accountID: target.id, to: name) }
@@ -188,6 +94,130 @@ struct JiraConnectionDetail: View {
         }
     }
 
+    private func drillInContent(_ item: JiraDetailItem) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Spacing.regular) {
+                Button {
+                    withAnimation(Motion.panel) { drillIn = nil }
+                } label: {
+                    Label("Jira", systemImage: "chevron.left")
+                }
+                .buttonStyle(.kitQuiet)
+                Text(item.title)
+                    .font(.title3.weight(.semibold))
+                Spacer()
+            }
+            .padding(.horizontal, Spacing.page)
+            .padding(.vertical, Spacing.medium)
+            switch item {
+            case .board(let board):
+                JiraBoardProfileView(board: board)
+                    .scrollContentBackground(.hidden)
+            case .features:
+                JiraFeaturesDetailView()
+                    .scrollContentBackground(.hidden)
+            }
+        }
+    }
+
+    /// The retired-app banner, then the sites grouped by company (or the
+    /// loading, read-failed or empty state), then Add an account.
+    private var jiraAccountsSections: some View {
+        let vm = appState.jiraAccountsViewModel
+        return CompanyAccountsSections(
+            vendor: .atlassian,
+            banner: appState.companyBanner(.atlassian),
+            list: appState.companyAccountsList(.atlassian),
+            emptyActions: appState.companyDetailActions(.atlassian, empty: true),
+            addActions: appState.companyDetailActions(.atlassian, empty: false),
+            connect: appState.companyGroupConnect(blocked: sourceBlocked || vm?.isConnecting == true),
+            blocked: sourceBlocked,
+            busy: appState.companyDetailBusy(.atlassian),
+            error: vm?.error,
+            locks: appState.companyLocks,
+            perform: { appState.performCompanyDetailAction($0, vendor: .atlassian) },
+            bannerAction: { appState.performCompanyBannerAction($0) },
+            tryAgain: { vm?.refresh() },
+            row: { ref in
+                if let vm, let account = vm.accounts.first(where: { $0.id == ref.accountID }) {
+                    accountRow(vm, account: account, ref: ref)
+                }
+            }
+        )
+    }
+
+    private func accountRow(_ vm: JiraAccountsViewModel, account: JiraAccount, ref: AccountRef) -> some View {
+        let status = appState.companyRowStatus(ref)
+        return CompanyAccountRow(
+            title: account.displayName,
+            tag: CompanyConnectionsPresentation.tag(ref),
+            status: status,
+            line: CompanyConnectionsPresentation.jiraRowLine(ref, title: account.displayName, enabled: account.enabled,
+                                                             email: account.ownerEmail),
+            dot: statusColor(account),
+            extra: AnyView(rowExtra(account, hasStatus: status != nil))
+        ) {
+            Toggle("Enabled", isOn: Binding(
+                get: { account.enabled },
+                set: { newValue in Task { await vm.setEnabled(account, enabled: newValue) } }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .disabled(vm.isConnecting || account.isPurged)
+            if status?.action == .pasteCode {
+                CompanyRowStatusButton(action: .pasteCode, disabled: sourceBlocked) { action in
+                    appState.companyRowAction(action, account: ref)
+                }
+            } else if ref.isAPIToken {
+                // A token site takes a new token, never an OAuth sign-in; a stopped one takes nothing.
+                if CompanyConnectionsPresentation.offersNewToken(ref, status: status) {
+                    CompanyRowStatusButton(action: .pasteNewToken,
+                                           disabled: vm.isConnecting || appState.atlassianToken.isChecking
+                                               || reloginBlocked(account.id) != nil) { action in
+                        appState.companyRowAction(action, account: ref)
+                    }
+                    .managedByOrganization(sourceBlocked)
+                    .help(reloginBlocked(account.id) ?? "")
+                }
+            } else if !account.isOK || status?.action == .relogin {
+                // `jira login --account` signs in through the site's own client (its company's after a Replace).
+                Button(RowStatus.Action.relogin.title) { Task { await vm.relogin(account) } }
+                    .buttonStyle(.kitSecondary)
+                    .managedByOrganization(sourceBlocked)
+                    .help(reloginBlocked(account.id) ?? "")
+                    .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
+            }
+            Button("Rename…") {
+                accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
+            }
+            .buttonStyle(.kitQuiet)
+            .disabled(vm.isConnecting)
+            // A token check still running (its sheet may be closed) could write the row back after a remove.
+            Button("Remove") { jiraAccountPendingRemoval = account }
+                .buttonStyle(.kitQuiet)
+                .foregroundStyle(Tone.error)
+                .disabled(vm.isConnecting || appState.atlassianToken.isChecking)
+        }
+    }
+
+    /// The row's own lines under its status: the site's error (when no §4.3
+    /// status says it) and the purge line.
+    @ViewBuilder
+    private func rowExtra(_ account: JiraAccount, hasStatus: Bool) -> some View {
+        if !hasStatus, !account.isOK, !account.error.isEmpty {
+            Text(account.error)
+                .font(.caption)
+                .foregroundStyle(Tone.error)
+                .lineLimit(2)
+        }
+        if let line = AccountPurgeLine.make(
+            center: appState.accountPurgeCenter, source: "jira", accountID: Int64(account.id),
+            isPurged: account.isPurged
+        ) {
+            line
+        }
+    }
+
     /// One Confluence spaces picker per enabled site — Confluence rides the
     /// Jira account's grant. The site name joins the header only when there
     /// is more than one to tell apart.
@@ -208,17 +238,11 @@ struct JiraConnectionDetail: View {
             center: appState.accountPurgeCenter, source: "jira", accountID: Int64(id))
     }
 
-    private func jiraAccountStatusColor(_ account: JiraAccount) -> Color {
-        if account.isOK { return .green }
-        if account.isRevoked { return .red }
-        if account.isPurged { return .gray }
-        return .orange
-    }
-
-    private func accountStatusHelp(_ account: JiraAccount) -> String {
-        if account.isOK { return "Connected" }
-        if account.isPurged { return "Data deleted" }
-        return account.error.isEmpty ? account.status : account.error
+    private func statusColor(_ account: JiraAccount) -> Color {
+        if account.isOK { return Tone.success }
+        if account.isRevoked { return Tone.error }
+        if account.isPurged { return Tone.status("gray") }
+        return Tone.warning
     }
 }
 

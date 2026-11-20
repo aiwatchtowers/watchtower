@@ -77,14 +77,20 @@ var newConfluenceFetcher = func(client *jira.Client, siteURL string) extsync.Fet
 // ext_sources by the engine (extsync.Options.Hints) and returned by the CLI.
 // Keep "--with-confluence" in both: the Desktop's
 // ConfluenceSpacesViewModel.needsConsent keys on that token (dual path).
-func confluenceHints(accountID int64) (revoked, consent string) {
-	return fmt.Sprintf("Atlassian sign-in expired — run: watchtower jira login --account %d --with-confluence", accountID),
-		fmt.Sprintf("Confluence access not granted — run: watchtower jira login --account %d --with-confluence", accountID)
+func confluenceHints(account db.JiraAccount) (revoked, consent string) {
+	if account.AuthKind == jira.AuthKindAPIToken {
+		// An API-token account cannot sign in through OAuth: a new token
+		// (with the Confluence scopes) is the fix.
+		return fmt.Sprintf("The API token stopped working — run: watchtower jira login --account %d --api-token-stdin --with-confluence", account.ID),
+			fmt.Sprintf("Confluence is not enabled for this API token — run: watchtower jira login --account %d --api-token-stdin --with-confluence", account.ID)
+	}
+	return fmt.Sprintf("Atlassian sign-in expired — run: watchtower jira login --account %d --with-confluence", account.ID),
+		fmt.Sprintf("Confluence access not granted — run: watchtower jira login --account %d --with-confluence", account.ID)
 }
 
 // errConfluenceConsent is the needs-consent hint as an error.
-func errConfluenceConsent(accountID int64) error {
-	_, consent := confluenceHints(accountID)
+func errConfluenceConsent(account db.JiraAccount) error {
+	_, consent := confluenceHints(account)
 	return errors.New(consent)
 }
 
@@ -175,9 +181,13 @@ func openConfluenceSession() (*confluenceSession, error) {
 		if err != nil {
 			return nil, err
 		}
-		return nil, errConfluenceConsent(account.ID)
+		return nil, errConfluenceConsent(account)
 	}
-	client := jira.NewClient(account.CloudID, resolveJiraOAuthConfig(), store)
+	client, err := newJiraClientForAccount(cfg, account)
+	if err != nil {
+		database.Close()
+		return nil, err
+	}
 	return &confluenceSession{cfg: cfg, db: database, account: account, fetcher: newConfluenceFetcher(client, account.SiteURL)}, nil
 }
 
@@ -187,9 +197,9 @@ func (s *confluenceSession) liveContainers(cmd *cobra.Command) ([]extsync.Contai
 	cs, err := s.fetcher.Containers(cmd.Context())
 	switch {
 	case errors.Is(err, extsync.ErrNeedsConsent):
-		return nil, errConfluenceConsent(s.account.ID)
+		return nil, errConfluenceConsent(s.account)
 	case errors.Is(err, extsync.ErrAuthRevoked):
-		revoked, _ := confluenceHints(s.account.ID)
+		revoked, _ := confluenceHints(s.account)
 		return nil, errors.New(revoked)
 	case err != nil:
 		return nil, fmt.Errorf("listing Confluence spaces: %w", err)
@@ -314,9 +324,9 @@ func (s *confluenceSession) recentContainers(cmd *cobra.Command, cs []extsync.Co
 	keys, err := finder.RecentSpaceKeys(cmd.Context())
 	switch {
 	case errors.Is(err, extsync.ErrNeedsConsent):
-		return nil, errConfluenceConsent(s.account.ID)
+		return nil, errConfluenceConsent(s.account)
 	case errors.Is(err, extsync.ErrAuthRevoked):
-		revoked, _ := confluenceHints(s.account.ID)
+		revoked, _ := confluenceHints(s.account)
 		return nil, errors.New(revoked)
 	case err != nil:
 		return nil, err
@@ -589,13 +599,21 @@ func extSyncOptions(cfg *config.Config, logger *log.Logger, budget time.Duration
 			OCR:       extract.NewHelperOCR(extract.ResolveHelperPath(), extract.OCRTimeout, extract.WithLogger(logger)),
 		},
 		ScopesOK: func(id int64) (bool, error) { return confluenceScopesOK(wd, id) },
-		Hints:    confluenceHints,
+		Hints: func(id int64) (string, string) {
+			// The engine knows the account id only; its token file tells an
+			// API-token account (whose fix is a new token, not an OAuth login).
+			account := db.JiraAccount{ID: id}
+			if _, err := jira.NewTokenStore(wd, id).LoadAPIToken(); err == nil {
+				account.AuthKind = jira.AuthKindAPIToken
+			}
+			return confluenceHints(account)
+		},
 		// Jira keys in stored Confluence text → doc_links (spec §10). Wired
 		// here so the engine stays free of link/Atlassian packages.
 		Relink: confluenceRelink,
 		// Inline images, image attachments and links → media_items, in the
 		// item's write transaction (the media pass describes them).
-		Media: media.ConfluenceRecorder(media.DenyHosts(cfg)),
+		Media: media.ConfluenceRecorder(linkDenySource(cfg, logger)),
 	}
 }
 

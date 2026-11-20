@@ -15,7 +15,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -73,7 +76,10 @@
               "team_id": "T01ABC",
               "client_id": "123.456"
             }
-          ]
+          ],
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -96,7 +102,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -124,7 +133,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -155,7 +167,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -183,7 +198,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -216,7 +234,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -244,7 +265,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -267,7 +291,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -295,7 +322,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -323,7 +353,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -351,7 +384,10 @@
           "AllowClaudeAITools": false,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -379,7 +415,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": true,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -407,7 +446,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": false,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -435,7 +477,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -465,7 +510,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -499,7 +547,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -527,7 +578,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -550,7 +604,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [
           "RetentionDays"
@@ -579,7 +636,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [
           "RequireDatabaseEncryption",
@@ -615,7 +675,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -640,7 +703,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": true,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -685,7 +751,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -728,7 +797,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -766,12 +838,146 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
           {
             "key": "AllowedQuickConnections",
+            "problem": "invalid_entry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "company_keys_valid",
+      "raw": {
+        "CompanyBundle": "eyJ2IjoxLCJjb21wYW55IjoiQWNtZSIsImF0bGFzc2lhbiI6eyJjbGllbnRfaWQiOiJhY21lQ2xpZW50SWQwMSIsImNsaWVudF9zZWNyZXQiOiJhY21lLXNlY3JldCIsInNpdGUiOiJodHRwczovL2FjbWUuYXRsYXNzaWFuLm5ldCIsImNvbmZsdWVuY2UiOnRydWV9fQ",
+        "AllowAtlassianAPIToken": false,
+        "AllowOwnGoogleProject": true
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": "eyJ2IjoxLCJjb21wYW55IjoiQWNtZSIsImF0bGFzc2lhbiI6eyJjbGllbnRfaWQiOiJhY21lQ2xpZW50SWQwMSIsImNsaWVudF9zZWNyZXQiOiJhY21lLXNlY3JldCIsInNpdGUiOiJodHRwczovL2FjbWUuYXRsYXNzaWFuLm5ldCIsImNvbmZsdWVuY2UiOnRydWV9fQ",
+          "AllowAtlassianAPIToken": false,
+          "AllowOwnGoogleProject": true
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "company_keys_wrong_type",
+      "raw": {
+        "CompanyBundle": 1,
+        "AllowAtlassianAPIToken": 1,
+        "AllowOwnGoogleProject": "yes"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": false,
+          "AllowOwnGoogleProject": false
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "CompanyBundle",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "AllowAtlassianAPIToken",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "AllowOwnGoogleProject",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "company_bundle_personal_refused",
+      "raw": {
+        "CompanyBundle": "eyJ2IjoxLCJjb21wYW55IjoiQWNtZSIsInBlcnNvbmFsIjp0cnVlfQ"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "CompanyBundle",
+            "problem": "invalid_entry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "company_bundle_damaged",
+      "raw": {
+        "CompanyBundle": "not a bundle"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "CompanyBundle",
             "problem": "invalid_entry"
           }
         ]
@@ -813,7 +1019,10 @@
               "team_id": "E02XYZ",
               "client_id": "7.8"
             }
-          ]
+          ],
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -836,7 +1045,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": []
+          "SlackApps": [],
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -886,7 +1098,10 @@
               "team_id": "T03GHI",
               "client_id": "3.4"
             }
-          ]
+          ],
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -928,7 +1143,10 @@
               "team_id": "T01ABC",
               "client_id": "1.2"
             }
-          ]
+          ],
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -956,7 +1174,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": null,
-          "SlackApps": []
+          "SlackApps": [],
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -979,7 +1200,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": true,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -1002,7 +1226,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": false,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -1025,7 +1252,10 @@
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": false,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -1056,7 +1286,10 @@
           "AllowClaudeAITools": false,
           "PurgeRevokedData": null,
           "AllowBackgroundAI": false,
-          "SlackApps": null
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [

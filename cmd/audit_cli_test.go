@@ -211,6 +211,18 @@ var cliNoContentCommands = map[string]bool{
 	"coach run":                       true,
 	"coach status":                    true,
 	"coach sync-prs":                  true,
+	"company bridge":                  true, // the corp build's own clients and account ties, no synced content
+	"company check":                   true, // a sign-in or dry check of an app: ids and a result, no synced content
+	"company confirm":                 true,
+	"company connect":                 true, // sign-ins in turn: each service's state, no synced content
+	"company discover":                true, // app ids and where they came from, no synced content
+	"company draft discard":           true,
+	"company draft save":              true,
+	"company draft show":              true, // the wizard's own typed setup, no synced content
+	"company inspect":                 true,
+	"company list":                    true,
+	"company profile":                 true, // a .mobileconfig of the stored company setup, no synced content
+	"company publish":                 true, // the company setup and its link, no synced content
 	"config init":                     true,
 	"config set":                      true,
 	"config show":                     true,
@@ -266,6 +278,7 @@ var cliNoContentCommands = map[string]bool{
 	"hub recordings":                  true,
 	"hub status":                      true,
 	"hub unlink":                      true,
+	"policy keys":                     true, // the MDM key reference: static docs, no company content
 	"service install":                 true,
 	"service status":                  true,
 	"service uninstall":               true,

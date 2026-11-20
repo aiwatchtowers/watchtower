@@ -174,6 +174,9 @@ func runSyncCommand(ctx context.Context, deps Deps) string {
 		client.SetLogger(discard)
 		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
 		orch.SetLogger(discard)
+		if deps.DenyHosts != nil {
+			orch.SetDenyHosts(deps.DenyHosts)
+		}
 		orch.SetTokenScope(token.Scope)
 		if keyDetector != nil {
 			orch.SetJiraKeyDetector(keyDetector)

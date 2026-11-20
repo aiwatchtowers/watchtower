@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/companybundle"
 )
 
 type fixture struct {
@@ -80,6 +82,10 @@ func TestPolicy01_WrongTypesFailClosed(t *testing.T) {
 		{KeyAllowBackgroundAI, "1", func(p Policy) bool { return p.Keys.AllowBackgroundAI != nil && !*p.Keys.AllowBackgroundAI }},
 		{KeySlackApps, "T01ABC", func(p Policy) bool { return len(p.SlackApps()) == 0 && p.SlackApps() != nil }},
 		{KeyPurgeRevokedData, 0, func(p Policy) bool { on, set := p.PurgeRevokedData(); return on && set }},
+		{KeyCompanyBundle, 1, func(p Policy) bool { return p.CompanyBundle() == "" }},
+		{KeyCompanyBundle, []any{"x"}, func(p Policy) bool { return p.CompanyBundle() == "" }},
+		{KeyAllowAtlassianAPIToken, 1, func(p Policy) bool { return !p.AtlassianAPITokenAllowed() }},
+		{KeyAllowOwnGoogleProject, "true", func(p Policy) bool { return !p.OwnGoogleProjectAllowed() }},
 	}
 	for _, c := range cases {
 		t.Run(c.key, func(t *testing.T) {
@@ -104,6 +110,25 @@ func TestPolicy_AbsentKeysRestrictNothing(t *testing.T) {
 	on, set := p.PurgeRevokedData()
 	assert.False(t, on)
 	assert.False(t, set)
+	assert.Empty(t, p.CompanyBundle())
+	assert.True(t, p.AtlassianAPITokenAllowed())
+	assert.True(t, p.OwnGoogleProjectAllowed())
+}
+
+// TestPolicy01_RefusedCompanyBundleIsAbsent pins that a forced bundle
+// companybundle.Parse refuses from MDM (here one carrying `personal`) is no
+// company, reported as an invalid entry.
+func TestPolicy01_RefusedCompanyBundleIsAbsent(t *testing.T) {
+	// {"v":1,"company":"Acme","personal":true}; Encode refuses `personal`.
+	personal := "eyJ2IjoxLCJjb21wYW55IjoiQWNtZSIsInBlcnNvbmFsIjp0cnVlfQ"
+	p := Normalize(map[string]any{KeyCompanyBundle: personal})
+	assert.Empty(t, p.CompanyBundle())
+	assert.Equal(t, []Problem{{Key: KeyCompanyBundle, Problem: ProblemInvalidEntry}}, p.Errors)
+	assert.True(t, p.Managed)
+
+	valid, err := companybundle.Encode(companybundle.Bundle{V: 1, Company: "Acme"})
+	require.NoError(t, err)
+	assert.Equal(t, valid, Normalize(map[string]any{KeyCompanyBundle: valid}).CompanyBundle())
 }
 
 func TestPolicy_ErrorsWrapErrNotAllowed(t *testing.T) {

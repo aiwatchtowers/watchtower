@@ -39,6 +39,7 @@ import (
 	"watchtower/internal/linear"
 	"watchtower/internal/media"
 	"watchtower/internal/memory"
+	"watchtower/internal/oauthclient"
 
 	"watchtower/internal/automations/authoring"
 	"watchtower/internal/customtracks"
@@ -171,6 +172,9 @@ type Daemon struct {
 	gmailSyncers     []mailSyncer
 	imapSyncers      []mailSyncer
 	jiraSyncers      []jiraAccountSyncer
+	pdrAccounts      []PDRAccount        // Atlassian Personal Data Reporting (atlassian_pdr.go)
+	pdrNow           func() time.Time    // its clock, nil = time.Now; a seam for tests
+	pdrRetryAt       map[int64]time.Time // a failed account's next try, in memory
 	externalSync     ExternalSyncRunner
 	mediaPipe        *media.Pipeline
 	dayPlanPipeline  DayPlanRunner
@@ -297,6 +301,11 @@ type Daemon struct {
 	// runLoop starts no scheduled cycle while it says no. nil = always a
 	// full wake.
 	fullWake func() (caps uint32, full bool)
+	// accountAllowed is the policy's per-account verdict
+	// (SetAccountSyncAllowed); nil allows every account. accountSkipping
+	// holds the accounts the last check found stopped (logs once per change).
+	accountAllowed  func(source string, id int64) bool
+	accountSkipping map[purgeKey]bool
 
 	// watchmanUpkeep is phaseWatchmanUpkeep's state (watchman_upkeep.go).
 	watchmanUpkeep watchmanUpkeepState
@@ -606,6 +615,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.reapStalePipelineRuns()
 	d.sweepStaleTemp()
 	d.importLegacyDraftCache()
+	// Once per start, before anything syncs: a forced company bundle that
+	// changed an app marks its accounts Re-login (#1887).
+	d.applyForcedCompany()
+	d.cleanStaleBadDrafts(time.Now())
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -731,6 +744,10 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.phaseLinearSync(fetchCtx)
 	d.markFetchProgress()
 	d.observePhase(fetchCtx, automations.ConfluenceSource(d.db), func() { d.phaseExternalSync(fetchCtx) })
+	d.markFetchProgress()
+	// After the Jira and Confluence syncs, so a profile they just re-wrote
+	// for a closed account is erased in the same cycle (#1887 §6).
+	d.phaseAtlassianPDR(fetchCtx)
 	d.markFetchProgress()
 	// Lease purges are scheduled only now, after every source sync had its
 	// chance to prove access this cycle (#601).
@@ -1204,7 +1221,7 @@ func (d *Daemon) phaseCalendarSync(ctx context.Context) {
 		return
 	}
 	for _, s := range d.calendarSyncers {
-		if d.purgeHeld("google", s.AccountID()) {
+		if d.purgeHeld("google", s.AccountID()) || !d.accountPhaseAllowed("google", s.AccountID()) {
 			continue
 		}
 		n, err := s.Sync(ctx)
@@ -1244,7 +1261,7 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 		return
 	}
 	for _, s := range d.gmailSyncers {
-		if d.purgeHeld("google", s.AccountID()) {
+		if d.purgeHeld("google", s.AccountID()) || !d.accountPhaseAllowed("google", s.AccountID()) {
 			continue
 		}
 		var n int
@@ -1309,7 +1326,10 @@ func (d *Daemon) phaseImapSync(ctx context.Context) {
 //
 // The one failure a pass DOES persist is jira.ErrAuthRevoked: the grant itself
 // is gone, Sync aborts on it, and the row needs status "revoked" for the
-// Settings Re-login button to appear. Every other Sync error is logged and
+// Settings Re-login button to appear; and jira.ErrClientRejected, recorded as
+// "error" with its client code (recordJiraClientRejected). A dead API token
+// (jira.ErrAPITokenDead) is recorded by its client at the 401 as "error" /
+// api_token_dead (D22: never "revoked") and proves no access here. Every other Sync error is logged and
 // left off the row entirely — a rate limit, a dropped connection or a failing
 // local read says nothing about the grant, and stamping it would strand a red
 // badge that only a re-login could clear. A cancelled context (shutdown, or
@@ -1356,7 +1376,7 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 		// (one board, a later request); a revoked grant never does. No
 		// request (no boards selected) proves nothing. access_ok_at only,
 		// never status: a pass still never writes "ok" (#601, LINEAR-03).
-		if s.ReachedSource() && !errors.Is(err, jira.ErrAuthRevoked) {
+		if s.ReachedSource() && !errors.Is(err, jira.ErrAuthRevoked) && !errors.Is(err, jira.ErrAPITokenDead) {
 			d.markAccessOK("jira", s.AccountID())
 		}
 		if err != nil {
@@ -1376,7 +1396,12 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 						d.logger.Printf("jira: account %d: record auth state: %v", s.AccountID(), dbErr)
 					}
 				}
+			case errors.Is(err, jira.ErrClientRejected):
+				d.recordJiraClientRejected(s.AccountID())
 			}
+			// jira.ErrAPITokenDead is recorded by the client itself, at the
+			// 401 (Client.SetOnAPITokenDead): a write here, after the whole
+			// pass, could mark dead a token a re-auth replaced meanwhile.
 			continue
 		}
 		anyClean = true
@@ -1433,11 +1458,13 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 // phaseLinearSync pulls Linear issues for every connected account respecting
 // the configured interval. One account's error is logged and confined to that
 // account. A pass never writes a blanket "ok" back (a nil error does not prove
-// health; only a login clears the state); the one failure it persists is
-// linear.ErrAuthRevoked, which needs status "revoked" for the Re-login button.
-// Other errors (rate limit, network) say nothing about the grant and are only
-// logged, and a cancelled context (shutdown, or runLoop cancelling the
-// cycle's fetches) is checked first.
+// health; only a login clears the state); the failures it persists are
+// linear.ErrAuthRevoked, which needs status "revoked" for the Re-login button,
+// and oauthclient.ErrClientRejected, recorded as "error" with its client code
+// (recordClientRejected; #1887, never revoked). Other errors (rate limit,
+// network) say nothing about the grant and are only logged, and a cancelled
+// context (shutdown, or runLoop cancelling the cycle's fetches) is checked
+// first.
 func (d *Daemon) phaseLinearSync(ctx context.Context) {
 	if len(d.linearSyncers) == 0 {
 		return
@@ -1478,6 +1505,8 @@ func (d *Daemon) phaseLinearSync(ctx context.Context) {
 						d.logger.Printf("linear: account %d: record auth state: %v", s.AccountID(), dbErr)
 					}
 				}
+			case errors.Is(err, oauthclient.ErrClientRejected):
+				d.recordClientRejected("linear", s.AccountID())
 			}
 			continue
 		}
@@ -3100,6 +3129,46 @@ func (d *Daemon) markAccessOK(source string, id int64) {
 	}
 	if err := d.db.MarkAccountAccessOK(source, id); err != nil {
 		d.logger.Printf("%s: account %d: record access: %v", source, id, err)
+	}
+}
+
+// recordJiraClientRejected marks a Jira account whose OAuth client Atlassian
+// refused: status 'error' (never 'revoked', so PURGE-01 schedules no purge),
+// code invalid_client for an account tied to a company, unknown_client for
+// one on no company (#1887 P5). Only a new sign-in clears it.
+func (d *Daemon) recordJiraClientRejected(id int64) {
+	if d.db == nil {
+		return
+	}
+	acct, err := d.db.GetJiraAccount(id)
+	if err != nil {
+		d.logger.Printf("jira: account %d: read account: %v", id, err)
+		return
+	}
+	if acct.Status == "revoked" {
+		// A revoked grant stays revoked: its purge notice must not be reset.
+		// (A revocation another process records between this read and the
+		// write below is overwritten — a narrow race, accepted: the account
+		// still shows Re-login needed.)
+		return
+	}
+	if err := d.db.SetJiraAccountAuthState(id, "error", jira.ClientRejectedCode(acct.CompanySlug)); err != nil {
+		d.logger.Printf("jira: account %d: record auth state: %v", id, err)
+	}
+}
+
+// recordClientRejected marks source's account id whose OAuth client the
+// vendor refused (oauthclient.ErrClientRejected): status 'error' with
+// invalid_client (tied to a company) or unknown_client (on none), never
+// 'revoked', so PURGE-01 schedules no purge; a revoked, removed or purged row
+// is left as it is (db.MarkAccountClientRejected). Only a new sign-in clears
+// it.
+func (d *Daemon) recordClientRejected(source string, id int64) {
+	if d.db == nil {
+		return
+	}
+	if _, err := d.db.MarkAccountClientRejected(source, id); err != nil {
+		d.logger.Printf("%s: account %d: record auth state: %v", source, id, err)
 	}
 }
 

@@ -35,6 +35,8 @@ enum ConnectionStatusLogic {
 
 enum ConnectionService: String, CaseIterable, Identifiable {
     case slack, google, email, calendar, jira, linear, quickConnections
+    /// Not a service: the company setup wizard's page in the detail area (company screens spec §2.2).
+    case companySetup
     var id: String { rawValue }
 
     var label: String {
@@ -46,6 +48,7 @@ enum ConnectionService: String, CaseIterable, Identifiable {
         case .jira: "Jira"
         case .linear: "Linear"
         case .quickConnections: "Quick Connections"
+        case .companySetup: "Set up for my company"
         }
     }
 
@@ -58,6 +61,7 @@ enum ConnectionService: String, CaseIterable, Identifiable {
         case .jira: "checklist"
         case .linear: "line.3.horizontal.decrease.circle"
         case .quickConnections: "bolt.horizontal.circle"
+        case .companySetup: "building.2"
         }
     }
 }

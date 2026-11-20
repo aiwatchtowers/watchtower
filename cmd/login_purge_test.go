@@ -79,7 +79,7 @@ func TestGoogleLoginDuringPurge_Refused(t *testing.T) {
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SetContext(context.Background())
-	_, err = loginAndSaveGoogleToken(cmd, cfg, database, id, calendar.GoogleOAuthConfig{}, nil, true, false, false)
+	_, err = loginAndSaveGoogleToken(cmd, cfg, database, id, calendar.GoogleOAuthConfig{}, false, nil, true, false, false)
 	require.ErrorIs(t, err, errLoginDuringPurge)
 	assert.False(t, calendar.NewAccountTokenStore(cfg.WorkspaceDir(), id).Exists())
 }
@@ -95,7 +95,7 @@ func TestJiraLoginDuringPurge_Refused(t *testing.T) {
 
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
-	_, err = connectJiraAccount(cmd, cfg, database, id, &jira.OAuthToken{AccessToken: "new"},
+	_, err = connectJiraAccount(cmd, cfg, database, id, jira.JiraOAuthConfig{}, false, &jira.OAuthToken{AccessToken: "new"},
 		jira.CloudResource{ID: "c1", URL: "https://acme.example.com", Name: "acme"}, false)
 	require.ErrorIs(t, err, errLoginDuringPurge)
 	assert.False(t, jira.NewTokenStore(cfg.WorkspaceDir(), id).Exists())
@@ -107,13 +107,13 @@ func TestJiraLoginDuringPurge_Refused(t *testing.T) {
 func TestLinearLoginDuringPurge_Refused(t *testing.T) {
 	cfg := linearTestEnv(t, &acmeViewer)
 	database := db.OpenTestDB(t)
-	id, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "old"}, "")
+	id, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "old"}, "", linearTie{})
 	require.NoError(t, err)
 	acct, err := database.GetLinearAccount(id)
 	require.NoError(t, err)
 	startRunningPurge(t, database, "linear", id)
 
-	err = relinkLinearAccount(context.Background(), cfg, database, acct, &linear.Token{AccessToken: "fresh"})
+	err = relinkLinearAccount(context.Background(), cfg, database, acct, &linear.Token{AccessToken: "fresh"}, nil)
 	require.ErrorIs(t, err, errLoginDuringPurge)
 	tok, err := linear.NewTokenStore(cfg.WorkspaceDir(), id).Load()
 	require.NoError(t, err)
@@ -125,13 +125,13 @@ func TestLinearLoginDuringPurge_Refused(t *testing.T) {
 func TestLinearAddDuringPurge_RevivalRefused(t *testing.T) {
 	cfg := linearTestEnv(t, &acmeViewer)
 	database := db.OpenTestDB(t)
-	first, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "")
+	first, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "", linearTie{})
 	require.NoError(t, err)
 	require.NoError(t, linear.NewTokenStore(cfg.WorkspaceDir(), first).Delete())
 	require.NoError(t, database.SetLinearAccountRemoved(first))
 	startRunningPurge(t, database, "linear", first)
 
-	_, _, err = connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "new"}, "")
+	_, _, err = connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "new"}, "", linearTie{})
 	require.ErrorIs(t, err, errLoginDuringPurge)
 	assert.False(t, linear.NewTokenStore(cfg.WorkspaceDir(), first).Exists())
 	a, err := database.GetLinearAccount(first)

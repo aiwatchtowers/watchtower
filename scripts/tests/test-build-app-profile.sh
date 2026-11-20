@@ -20,6 +20,9 @@
 #     profile path applies no flavor requirement)
 #   - WATCHTOWER_LINK_FETCH_DENY_HOSTS is optional for every build (the
 #     owner's company domains are derived from the accounts, ask #598)
+#   - the shared-jira-check block: a public release that bakes
+#     WATCHTOWER_JIRA_CLIENT_ID/SECRET → exit 1 (#1887 D4); --dev, a
+#     non-release version and a flavoured build keep them
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -155,6 +158,81 @@ if env -u ENV_FILE -u BUILD_FLAVOR -u WATCHTOWER_LINK_FETCH_DENY_HOSTS bash "$RU
     echo "ok: the public build needs no link deny list"
 else
     note_fail "the public build must not need WATCHTOWER_LINK_FETCH_DENY_HOSTS"
+fi
+
+# 11. The retired shared Atlassian app (#1887 D4): a public release whose
+# profile bakes WATCHTOWER_JIRA_CLIENT_ID/SECRET is refused; --dev, a
+# non-release version and a flavoured build may keep them.
+JIRA_SNIPPET="$WORK_DIR/shared-jira.sh"
+sed -n "/# BEGIN shared-jira-check/,/# END shared-jira-check/p" "$BUILD_APP" > "$JIRA_SNIPPET"
+if [ "$(tail -n 1 "$JIRA_SNIPPET")" != "# END shared-jira-check" ]; then
+    echo "FAIL: shared-jira-check block not found in build-app.sh — markers moved?"
+    exit 1
+fi
+JIRA_RUNNER="$WORK_DIR/jira-runner.sh"
+cat > "$JIRA_RUNNER" <<EOF
+set -euo pipefail
+PROJECT_ROOT="\$1"
+. "$SNIPPET"
+. "$JIRA_SNIPPET"
+echo "RESULT_JIRA=ok"
+EOF
+ROOT11="$WORK_DIR/root11"
+mkdir -p "$ROOT11"
+printf 'WATCHTOWER_JIRA_CLIENT_ID=shared-jira-id\nWATCHTOWER_JIRA_CLIENT_SECRET=shared-jira-secret\n' > "$ROOT11/.env"
+printf 'BUILD_FLAVOR=corp\nWATCHTOWER_JIRA_CLIENT_ID=corp-jira-id\n' > "$ROOT11/.env.corp"
+# run_jira <ENV_FILE> <DEV_MODE> <VERSION>: sets JIRA_RC and JIRA_OUT.
+run_jira() {
+    JIRA_RC=0
+    JIRA_OUT=$(env -u BUILD_FLAVOR -u WATCHTOWER_JIRA_CLIENT_ID -u WATCHTOWER_JIRA_CLIENT_SECRET \
+        ENV_FILE="$1" DEV_MODE="$2" VERSION="$3" bash "$JIRA_RUNNER" "$ROOT11" 2>&1) || JIRA_RC=$?
+}
+for v in 1.2.3 v1.2.3 v1.2.3-rc1; do
+    run_jira .env false "$v"
+    if [ "$JIRA_RC" -eq 1 ] && grep -q "a public release must not bake the retired shared Atlassian app" <<< "$JIRA_OUT"; then
+        echo "ok: a public release $v with a Jira client is refused"
+    else
+        note_fail "public release $v with a Jira client: want exit 1 and the message, got rc=$JIRA_RC: $JIRA_OUT"
+    fi
+done
+# The secret alone is refused too; ENV_FILE is the default .env path here, so
+# the profile carries no flavour (a non-default one would need BUILD_FLAVOR).
+mkdir -p "$WORK_DIR/root11s"
+printf 'WATCHTOWER_JIRA_CLIENT_SECRET=shared-jira-secret\n' > "$WORK_DIR/root11s/.env"
+JIRA_RC=0
+JIRA_OUT=$(env -u BUILD_FLAVOR -u WATCHTOWER_JIRA_CLIENT_ID -u WATCHTOWER_JIRA_CLIENT_SECRET -u ENV_FILE \
+    DEV_MODE=false VERSION=1.2.3 bash "$JIRA_RUNNER" "$WORK_DIR/root11s" 2>&1) || JIRA_RC=$?
+if [ "$JIRA_RC" -eq 1 ]; then
+    echo "ok: a public release with only the Jira secret is refused"
+else
+    note_fail "public release with only the Jira secret: want exit 1, got rc=$JIRA_RC: $JIRA_OUT"
+fi
+run_jira .env true 1.2.3
+if [ "$JIRA_RC" -eq 0 ] && grep -q "RESULT_JIRA=ok" <<< "$JIRA_OUT"; then
+    echo "ok: --dev may bake the development Jira client"
+else
+    note_fail "--dev with a Jira client must build: rc=$JIRA_RC: $JIRA_OUT"
+fi
+run_jira .env false local-build
+if [ "$JIRA_RC" -eq 0 ]; then
+    echo "ok: a non-release version may bake the development Jira client"
+else
+    note_fail "non-release version with a Jira client must build: rc=$JIRA_RC: $JIRA_OUT"
+fi
+run_jira .env.corp false 1.2.3
+if [ "$JIRA_RC" -eq 0 ]; then
+    echo "ok: a flavoured release keeps its Jira client"
+else
+    note_fail "flavoured release with a Jira client must build: rc=$JIRA_RC: $JIRA_OUT"
+fi
+mkdir -p "$WORK_DIR/root11n"
+JIRA_RC=0
+JIRA_OUT=$(env -u BUILD_FLAVOR -u WATCHTOWER_JIRA_CLIENT_ID -u WATCHTOWER_JIRA_CLIENT_SECRET -u ENV_FILE \
+    DEV_MODE=false VERSION=1.2.3 bash "$JIRA_RUNNER" "$WORK_DIR/root11n" 2>&1) || JIRA_RC=$?
+if [ "$JIRA_RC" -eq 0 ]; then
+    echo "ok: a public release without a Jira client builds"
+else
+    note_fail "public release without a Jira client must build: rc=$JIRA_RC: $JIRA_OUT"
 fi
 
 echo ""

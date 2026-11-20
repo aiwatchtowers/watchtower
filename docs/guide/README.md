@@ -8,6 +8,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 - [Your first week](start/first-week.md) — a short tour of what to try, in the order it pays off, from setup to your first automation
 - [Set up Watchtower](start/setup.md) — pick your goals, connect sources and get through the two setup screens, and run setup again later
+- [Set up Watchtower for your company](start/company-setup.md) — set your company's apps up once, connect colleagues with one link or code, and what to do when a company changes an app
 
 ## How Watchtower works
 

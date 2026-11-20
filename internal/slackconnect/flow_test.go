@@ -126,6 +126,24 @@ func TestRegistry_OneFlowAtATime(t *testing.T) {
 	}
 }
 
+func TestRegistry_LiveNamesTheSlotHolder(t *testing.T) {
+	reg, _, _ := newTestRegistry(t)
+	if id, ok := reg.Live(); ok || id != "" {
+		t.Fatalf("empty registry Live = %q, %v", id, ok)
+	}
+	link, err := reg.Begin(testTarget, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id, ok := reg.Live(); !ok || id != link {
+		t.Fatalf("Live = %q, %v; want the unconfirmed link flow %q", id, ok, link)
+	}
+	reg.Cancel(link)
+	if _, ok := reg.Live(); ok {
+		t.Fatal("Live after Cancel: the slot is free")
+	}
+}
+
 func TestRegistry_ConfirmRequiredForLink(t *testing.T) {
 	reg, _, ex := newTestRegistry(t)
 	id, err := reg.Begin(testTarget, true)

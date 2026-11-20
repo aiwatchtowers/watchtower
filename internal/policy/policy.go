@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 
+	"watchtower/internal/companybundle"
 	"watchtower/internal/slackconnect"
 )
 
@@ -32,6 +33,10 @@ const (
 	KeyPurgeRevokedData        = "PurgeRevokedData"
 	KeyAllowBackgroundAI       = "AllowBackgroundAI"
 	KeySlackApps               = "SlackApps"
+	// Company setup (#1887, spec 2026-11-17-company-setup-design.md D9, D24).
+	KeyCompanyBundle          = "CompanyBundle"
+	KeyAllowAtlassianAPIToken = "AllowAtlassianAPIToken"
+	KeyAllowOwnGoogleProject  = "AllowOwnGoogleProject"
 )
 
 // The reserved keys: read and shown, not enforced in this version.
@@ -45,7 +50,7 @@ const (
 var Keys = []string{
 	KeyAllowedSources, KeyMobileSync, KeyAllowedQuickConnections, KeyAllowAutomationShell,
 	KeyAllowedAIProviders, KeyAllowClaudeAITools, KeyPurgeRevokedData, KeyAllowBackgroundAI,
-	KeySlackApps,
+	KeySlackApps, KeyCompanyBundle, KeyAllowAtlassianAPIToken, KeyAllowOwnGoogleProject,
 }
 
 // ReservedKeys are named now and enforced by their own boards later.
@@ -90,6 +95,11 @@ type Keyset struct {
 	PurgeRevokedData        *bool      `json:"PurgeRevokedData"`
 	AllowBackgroundAI       *bool      `json:"AllowBackgroundAI"`
 	SlackApps               []SlackApp `json:"SlackApps"`
+	// CompanyBundle is the forced bundle's wire form as delivered, kept only
+	// when companybundle.Parse accepts it for MDM.
+	CompanyBundle          *string `json:"CompanyBundle"`
+	AllowAtlassianAPIToken *bool   `json:"AllowAtlassianAPIToken"`
+	AllowOwnGoogleProject  *bool   `json:"AllowOwnGoogleProject"`
 }
 
 // SlackApp is one Slack app a company provisions: the workspace it belongs to
@@ -149,6 +159,15 @@ func Normalize(raw map[string]any) Policy {
 	}
 	if v, ok := raw[KeySlackApps]; ok {
 		ks.SlackApps = n.slackApps(v)
+	}
+	if v, ok := raw[KeyCompanyBundle]; ok {
+		ks.CompanyBundle = n.companyBundle(v)
+	}
+	if v, ok := raw[KeyAllowAtlassianAPIToken]; ok {
+		ks.AllowAtlassianAPIToken = n.boolean(KeyAllowAtlassianAPIToken, v, false)
+	}
+	if v, ok := raw[KeyAllowOwnGoogleProject]; ok {
+		ks.AllowOwnGoogleProject = n.boolean(KeyAllowOwnGoogleProject, v, false)
 	}
 	n.reserved(raw)
 	return n.p
@@ -260,6 +279,23 @@ func (n *normalizer) boolean(key string, v any, restrictive bool) *bool {
 		return &restrictive
 	}
 	return &b
+}
+
+// companyBundle keeps the forced bundle only when it is a string that
+// companybundle.Parse accepts from MDM; anything else is absent (no company,
+// the most restrictive value) with a problem: a wrong type, or an invalid
+// entry for a bundle Parse refuses (damaged, too long, personal, newer).
+func (n *normalizer) companyBundle(v any) *string {
+	s, ok := v.(string)
+	if !ok {
+		n.report(KeyCompanyBundle, ProblemWrongType)
+		return nil
+	}
+	if _, err := companybundle.Parse(s, companybundle.OriginMDM); err != nil {
+		n.report(KeyCompanyBundle, ProblemInvalidEntry)
+		return nil
+	}
+	return &s
 }
 
 // reserved lists the present reserved keys and reports a wrong type; their
@@ -439,6 +475,27 @@ func (p Policy) PurgeRevokedData() (on, set bool) {
 		return false, false
 	}
 	return *p.Keys.PurgeRevokedData, true
+}
+
+// CompanyBundle returns the forced company bundle's wire form; "" when the
+// key is absent or its value was refused.
+func (p Policy) CompanyBundle() string {
+	if p.Keys.CompanyBundle == nil {
+		return ""
+	}
+	return *p.Keys.CompanyBundle
+}
+
+// AtlassianAPITokenAllowed reports whether Jira may be connected (and
+// synced) with an Atlassian API token.
+func (p Policy) AtlassianAPITokenAllowed() bool {
+	return p.Keys.AllowAtlassianAPIToken == nil || *p.Keys.AllowAtlassianAPIToken
+}
+
+// OwnGoogleProjectAllowed reports whether a person may connect (and sync)
+// Google through their own Google Cloud project.
+func (p Policy) OwnGoogleProjectAllowed() bool {
+	return p.Keys.AllowOwnGoogleProject == nil || *p.Keys.AllowOwnGoogleProject
 }
 
 // SlackApps returns the Slack apps the profile provisions; nil when the key

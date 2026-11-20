@@ -54,10 +54,10 @@ func TestPrintLinearAccountsJSON(t *testing.T) {
 	assert.Equal(t, "https://linear.app/acme", rows[0]["url"])
 	// The Desktop's Settings → Linear decodes every key, `auth` included
 	// (Swift `LinearAccount`).
-	for _, k := range []string{"id", "label", "org_name", "url", "status", "enabled", "error", "auth"} {
+	for _, k := range []string{"id", "label", "org_name", "url", "status", "enabled", "error", "auth", "company_slug"} {
 		assert.Contains(t, rows[0], k)
 	}
-	assert.Len(t, rows[0], 8, "a new key needs its Swift decoder field")
+	assert.Len(t, rows[0], 9, "a new key needs its Swift decoder field")
 }
 
 // The Desktop decodes `linear teams --json` (Swift `LinearTeam`): the keys
@@ -107,7 +107,7 @@ var acmeViewer = linear.Viewer{UserID: "user-1", Email: "owner@example.com", Nam
 func TestConnectLinearAccount_New(t *testing.T) {
 	cfg := linearTestEnv(t, &acmeViewer)
 	database := db.OpenTestDB(t)
-	id, revived, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "")
+	id, revived, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "", linearTie{})
 	require.NoError(t, err)
 	assert.False(t, revived)
 	a, err := database.GetLinearAccount(id)
@@ -119,9 +119,9 @@ func TestConnectLinearAccount_New(t *testing.T) {
 func TestConnectLinearAccount_DuplicateRefused(t *testing.T) {
 	cfg := linearTestEnv(t, &acmeViewer)
 	database := db.OpenTestDB(t)
-	first, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "")
+	first, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "", linearTie{})
 	require.NoError(t, err)
-	_, _, err = connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "b"}, "")
+	_, _, err = connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "b"}, "", linearTie{})
 	require.ErrorContains(t, err, fmt.Sprintf("already connected as account %d", first))
 	accounts, err := database.ListLinearAccounts()
 	require.NoError(t, err)
@@ -133,7 +133,7 @@ func TestConnectLinearAccount_DuplicateRefused(t *testing.T) {
 func TestConnectLinearAccount_RevivesRemoved(t *testing.T) {
 	cfg := linearTestEnv(t, &acmeViewer)
 	database := db.OpenTestDB(t)
-	first, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "Work")
+	first, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "Work", linearTie{})
 	require.NoError(t, err)
 	require.NoError(t, linear.NewTokenStore(cfg.WorkspaceDir(), first).Delete())
 	require.NoError(t, database.SetLinearAccountRemoved(first))
@@ -142,7 +142,7 @@ func TestConnectLinearAccount_RevivesRemoved(t *testing.T) {
 	renamed := acmeViewer
 	renamed.OrgName, renamed.URLKey = "Acme Renamed", "acme-renamed"
 	linearFetchViewer = func(context.Context, *linear.Token) (linear.Viewer, error) { return renamed, nil }
-	id, revived, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "new"}, "")
+	id, revived, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "new"}, "", linearTie{})
 	require.NoError(t, err)
 	assert.True(t, revived)
 	assert.Equal(t, first, id)
@@ -166,7 +166,7 @@ func TestConnectLinearAccount_RevivesRemoved(t *testing.T) {
 func TestConnectLinearAccount_FailureLeavesNothingHalfConnected(t *testing.T) {
 	cfg := linearTestEnv(t, nil) // viewer fetch fails
 	database := db.OpenTestDB(t)
-	_, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "")
+	_, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "", linearTie{})
 	require.Error(t, err)
 	accounts, err := database.ListLinearAccounts()
 	require.NoError(t, err)
@@ -178,7 +178,7 @@ func TestConnectLinearAccount_FailureLeavesNothingHalfConnected(t *testing.T) {
 func TestRelinkLinearAccount(t *testing.T) {
 	cfg := linearTestEnv(t, &acmeViewer)
 	database := db.OpenTestDB(t)
-	id, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "old"}, "")
+	id, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "old"}, "", linearTie{})
 	require.NoError(t, err)
 	require.NoError(t, database.SetLinearAccountAuthState(id, "revoked", "x"))
 	acct, err := database.GetLinearAccount(id)
@@ -188,7 +188,7 @@ func TestRelinkLinearAccount(t *testing.T) {
 	other := acmeViewer
 	other.OrgID, other.OrgName = "org-2", "Other"
 	linearFetchViewer = func(context.Context, *linear.Token) (linear.Viewer, error) { return other, nil }
-	err = relinkLinearAccount(context.Background(), cfg, database, acct, &linear.Token{AccessToken: "wrong"})
+	err = relinkLinearAccount(context.Background(), cfg, database, acct, &linear.Token{AccessToken: "wrong"}, nil)
 	require.ErrorContains(t, err, "this login is for workspace Other, but account")
 	tok, err := linear.NewTokenStore(cfg.WorkspaceDir(), id).Load()
 	require.NoError(t, err)
@@ -198,7 +198,7 @@ func TestRelinkLinearAccount(t *testing.T) {
 	renamed := acmeViewer
 	renamed.OrgName, renamed.URLKey = "Acme Renamed", "acme-renamed"
 	linearFetchViewer = func(context.Context, *linear.Token) (linear.Viewer, error) { return renamed, nil }
-	require.NoError(t, relinkLinearAccount(context.Background(), cfg, database, acct, &linear.Token{AccessToken: "fresh"}))
+	require.NoError(t, relinkLinearAccount(context.Background(), cfg, database, acct, &linear.Token{AccessToken: "fresh"}, nil))
 	tok, err = linear.NewTokenStore(cfg.WorkspaceDir(), id).Load()
 	require.NoError(t, err)
 	assert.Equal(t, "fresh", tok.AccessToken)
@@ -223,10 +223,17 @@ func TestLinearLoginCommands_EmptyClientIDFailsFast(t *testing.T) {
 		t.Fatal("the browser flow must not start without a client id")
 		return nil, nil
 	}
-	for _, c := range []*cobra.Command{linearAddCmd, linearLoginCmd} {
-		err := c.RunE(c, nil)
-		require.EqualError(t, err, "linear OAuth client id is not configured (set WATCHTOWER_LINEAR_CLIENT_ID)", c.Name())
-	}
+	// add: before the database is even opened.
+	err := linearAddCmd.RunE(linearAddCmd, nil)
+	require.EqualError(t, err, "linear OAuth client id is not configured (set WATCHTOWER_LINEAR_CLIENT_ID)")
+
+	// login: once the account is known (a company's account would sign in
+	// through its company's app instead, #1887), before any browser.
+	_, database := linearCmdFixture(t)
+	_, err = database.CreateLinearAccount("Acme")
+	require.NoError(t, err)
+	err = linearLoginCmd.RunE(linearLoginCmd, nil)
+	require.EqualError(t, err, "linear OAuth client id is not configured (set WATCHTOWER_LINEAR_CLIENT_ID)")
 }
 
 // linearCmdFixture is jiraCmdFixture plus the loaded config, for the Linear

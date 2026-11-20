@@ -8,7 +8,7 @@ Deploy a Custom Settings payload for the preference domain `com.watchtower.deskt
 
 The app re-reads the policy at launch, when it comes to the front and every minute; the command line and the sync daemon read it at least every 30 seconds. Tightening a key never deletes data and never rewrites anyone's settings: they come back when you remove the key.
 
-A full example with every key and placeholder values is in the repository at `docs/examples/watchtower-policy.mobileconfig`.
+Every key with its type, default and effect, and a sample profile with placeholder values, is on the website's [MDM keys for IT](https://aiwatchtowers.com/guide/mdm/) page; the same sample is in the repository at `docs/examples/watchtower-policy.mobileconfig`.
 
 ## The keys
 
@@ -23,6 +23,11 @@ A full example with every key and placeholder values is in the repository at `do
 | `SlackApps` | array of dictionaries with `team_id` (`T…`) and `client_id` (the Client ID of your workspace's Watchtower app) | **Connections → Slack** lists each workspace under **Set up by your organization** with a one-press **Connect**. An entry with a missing or malformed id, or a second entry for the same `team_id`, is dropped. It only offers the connect; it never connects anyone. See [Slack Full](../features/slack-full.md). |
 | `PurgeRevokedData` | boolean | Forces [deleting a revoked account's data](../concepts/revoked-access.md) on or off. |
 | `AllowBackgroundAI` | boolean | `true` is your organization's consent to AI that runs in the background, so people are not asked; each person can still pause it for themselves. `false` keeps background AI off, whatever a person chose, and locks the switch in Settings. |
+| `CompanyBundle` | string: your company's connect code | Your company's apps for every connector, without the link. **Connections → Companies** shows the company with **Connect all**; nothing connects until the person presses it. It wins over a stored copy of the same company; when you change an app in it, that app's accounts ask for a new sign-in at the next start. It never deletes an account. |
+| `AllowAtlassianAPIToken` | boolean | `false` hides connecting Jira with an API token and refuses `jira add\|login --api-token-stdin`; token accounts stop syncing and keep their data. |
+| `AllowOwnGoogleProject` | boolean | `false` hides and refuses **Use my own Google project**; accounts on a person's own project, including one added earlier with a custom OAuth client, stop syncing and keep their data. Company and shared Google accounts are not affected. |
+
+The person who ran [Set up for my company](../start/company-setup.md) gets a ready profile with `CompanyBundle` from its **Publish** step (**Configuration profile for IT**), or from `watchtower company profile --slug <slug>`.
 
 A key with the wrong type counts as its most restrictive value (for example an integer `1` where a boolean belongs counts as `false`), and the problem is listed in the policy.
 
@@ -42,7 +47,7 @@ Watchtower restricts the provider; the account the provider's own tool signs in 
 
 ## Checking a Mac
 
-Run `watchtower policy show` for the effective policy in plain words, or `watchtower policy show --json` for scripts (keys `managed`, `domain`, `keys`, `reserved_not_enforced`, `errors`). In the app, the same list is under **Settings → System → Privacy → Organization policy**.
+Run `watchtower policy show` for the effective policy in plain words, or `watchtower policy show --json` for scripts (keys `managed`, `domain`, `keys`, `reserved_not_enforced`, `errors`). In the app, the same list is under **Settings → System → Privacy → Organization policy**. `watchtower policy keys` lists every key with its type, default and effect (`--json` for scripts).
 
 ## Related
 

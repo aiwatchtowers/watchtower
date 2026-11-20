@@ -746,6 +746,8 @@ func TestMapErr(t *testing.T) {
 		revoked, consent, is404 bool
 	}{
 		{"revoked", fmt.Errorf("refresh: %w", jira.ErrAuthRevoked), true, false, false},
+		{"client rejected (#1887)", fmt.Errorf("refresh: %w", jira.ErrClientRejected), true, false, false},
+		{"API token dead (#1887 D22)", fmt.Errorf("GET: %w", jira.ErrAPITokenDead), true, false, false},
 		{"403 naming a scope", scope403, false, true, false},
 		{"401 naming a scope", scope401, false, true, false},
 		{"plain 401", plain401, false, false, false},

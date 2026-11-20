@@ -7,7 +7,7 @@ import WatchtowerCore
 /// silently unchecked.
 final class ConnectionServicePolicyTests: XCTestCase {
     func testEveryConnectionServiceIsMappedOrNotASource() {
-        let notASource: Set<ConnectionService> = [.quickConnections]
+        let notASource: Set<ConnectionService> = [.quickConnections, .companySetup]
         for service in ConnectionService.allCases {
             let source = PolicySourceMap.policySource(forAccountKind: service.rawValue)
             if notASource.contains(service) {

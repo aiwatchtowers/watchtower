@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -18,27 +17,52 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/linear"
 	"watchtower/internal/logredact"
+	"watchtower/internal/oauthclient"
 	"watchtower/internal/oauthpage"
 )
 
-// resolveLinearOAuthConfig returns the Linear OAuth config: the client id from
-// WATCHTOWER_LINEAR_CLIENT_ID, else the built-in public default.
-func resolveLinearOAuthConfig() linear.OAuthConfig {
-	id := os.Getenv("WATCHTOWER_LINEAR_CLIENT_ID")
-	if id == "" {
-		id = linear.DefaultLinearClientID
-	}
-	return linear.OAuthConfig{ClientID: id}
-}
+// errLinearClientNotConfigured is a sign-in through the shared Linear app
+// when no client id is configured on any layer.
+var errLinearClientNotConfigured = errors.New("linear OAuth client id is not configured (set WATCHTOWER_LINEAR_CLIENT_ID)")
 
-// linearLoginConfig is resolveLinearOAuthConfig for the browser flows: an
-// empty client id fails before any browser opens.
-func linearLoginConfig() (linear.OAuthConfig, error) {
-	cfg := resolveLinearOAuthConfig()
-	if cfg.ClientID == "" {
-		return cfg, errors.New("linear OAuth client id is not configured (set WATCHTOWER_LINEAR_CLIENT_ID)")
+// linearSharedLoginConfig is the shared Linear app for a sign-in of no
+// company; none fails before any browser opens.
+func linearSharedLoginConfig() (linear.OAuthConfig, error) {
+	cfg, _, err := resolveLinearOAuthConfigForCompany("", "")
+	if err != nil {
+		return cfg, errLinearClientNotConfigured
 	}
 	return cfg, nil
+}
+
+// linearLoginOAuthConfig is the client a re-login of account signs in with:
+// a tied account's company app as it stands (a changed app is what the
+// re-login is for), else the account's resolver order. record is the client
+// to keep as the account's record with the new token: nil for the shared
+// app, which an account never records.
+func linearLoginOAuthConfig(workspaceDir string, account db.LinearAccount) (cfg linear.OAuthConfig, record *oauthclient.Client, err error) {
+	src := clientSourceCompany
+	if account.CompanySlug != "" {
+		cfg, _, err = resolveLinearOAuthConfigForCompany(workspaceDir, account.CompanySlug)
+	}
+	if account.CompanySlug == "" || err != nil {
+		cfg, src, err = resolveLinearAccountClient(workspaceDir, account)
+	}
+	if errors.Is(err, errNoOAuthClient) && account.CompanySlug == "" {
+		return cfg, nil, errLinearClientNotConfigured
+	}
+	if err != nil || (src != clientSourceCompany && src != clientSourceAccountFile) {
+		return cfg, nil, err
+	}
+	return cfg, &oauthclient.Client{ClientID: cfg.ClientID}, nil
+}
+
+// linearTie is how a Linear sign-in went: the company it ties the account to
+// ("" = none) and the OAuth client the grant was issued to — nil for the
+// shared app or a personal API key, whose accounts keep no client file.
+type linearTie struct {
+	slug   string
+	client *oauthclient.Client
 }
 
 var linearFlagAccount int64
@@ -148,6 +172,7 @@ func init() {
 		c.Flags().Bool("api-key", false, "use a personal API key read from stdin instead of OAuth")
 	}
 	linearAddCmd.Flags().String("label", "", "label for the new account")
+	linearAddCmd.Flags().String("company", "", "sign in through this stored company's Linear app (its slug, see 'watchtower company list'); the account is tied to the company")
 	linearAccountsCmd.Flags().Bool("json", false, "output as JSON (for Swift integration)")
 	linearTeamsCmd.Flags().Bool("json", false, "output as JSON")
 }
@@ -216,8 +241,15 @@ func enableLinearPhase() error {
 }
 
 // saveLinearTokenLocked saves a freshly consented token under the account's
-// cross-process token lock.
-func saveLinearTokenLocked(ctx context.Context, store *linear.TokenStore, token *linear.Token) error {
+// cross-process token lock, together with the client it was issued to
+// (linear_client_<id>.json; client nil deletes it). Both change in one
+// critical section, so a daemon refresh — which resolves the client under
+// the same lock — never pairs one grant with the other's client (#1887). A
+// failed token save puts the previous client file back. tieRow, when set,
+// records the row's company inside the same critical section, once the
+// token is saved, so a refresh never reads the new pair against the old tie.
+func saveLinearTokenLocked(ctx context.Context, workspaceDir string, accountID int64, token *linear.Token, client *oauthclient.Client, tieRow func() error) error {
+	store := linear.NewTokenStore(workspaceDir, accountID)
 	lockCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	unlock, err := store.Lock(lockCtx)
@@ -225,8 +257,30 @@ func saveLinearTokenLocked(ctx context.Context, store *linear.TokenStore, token 
 		return fmt.Errorf("saving token: %w", err)
 	}
 	defer unlock()
+	clients := oauthclient.NewStore(workspaceDir, linearClientVendor, accountID)
+	prev, hadPrev, prevErr := clients.Load()
+	if client != nil {
+		err = clients.Save(*client)
+	} else {
+		err = clients.Delete()
+	}
+	if err != nil {
+		return fmt.Errorf("saving the account's Linear client: %w", err)
+	}
 	if err := store.Save(token); err != nil {
-		return fmt.Errorf("saving token: %w", err)
+		var restoreErr error
+		if hadPrev && prevErr == nil {
+			restoreErr = clients.Save(prev)
+		} else if client != nil {
+			restoreErr = clients.Delete()
+		}
+		if restoreErr != nil {
+			restoreErr = fmt.Errorf("restoring the account's previous Linear client: %w", restoreErr)
+		}
+		return errors.Join(fmt.Errorf("saving token: %w", err), restoreErr)
+	}
+	if tieRow != nil {
+		return tieRow()
 	}
 	return nil
 }
@@ -237,9 +291,12 @@ func linearLoginOptionsFromFlags(cmd *cobra.Command) linear.LoginOptions {
 	return linear.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn}
 }
 
-// linearClient builds an API client for the account over its token file.
-func linearClient(cfg *config.Config, accountID int64) *linear.Client {
-	return linear.NewClient(resolveLinearOAuthConfig(), linear.NewTokenStore(cfg.WorkspaceDir(), accountID))
+// linearClient builds an API client for the account over its token file;
+// each refresh resolves the account's OAuth client (linearAccountOAuthSource).
+func linearClient(cfg *config.Config, database *db.DB, accountID int64) *linear.Client {
+	client := linear.NewClient(linear.OAuthConfig{}, linear.NewTokenStore(cfg.WorkspaceDir(), accountID))
+	client.SetOAuthSource(linearAccountOAuthSource(cfg, database, accountID))
+	return client
 }
 
 // Seams for the browser flow and the API call, swapped by tests.
@@ -248,16 +305,20 @@ var (
 	linearFetchViewer = linear.FetchViewerWithToken
 	linearRevoke      = linear.Revoke
 	linearSyncAccount = func(ctx context.Context, cfg *config.Config, database *db.DB, accountID int64) (int, error) {
-		return linear.NewSyncer(linearClient(cfg, accountID), database, accountID, cfg.Linear.BackfillDays).Sync(ctx)
+		return linear.NewSyncer(linearClient(cfg, database, accountID), database, accountID, cfg.Linear.BackfillDays).Sync(ctx)
 	}
 )
 
-// discardNewLinearAccount undoes a half-created account: its token is deleted
-// and the row is marked removed. Cleanup failures are returned, not dropped.
+// discardNewLinearAccount undoes a half-created account: its token and client
+// file are deleted and the row is marked removed. Cleanup failures are
+// returned, not dropped.
 func discardNewLinearAccount(cfg *config.Config, database *db.DB, id int64) error {
 	var errs []error
 	if err := linear.NewTokenStore(cfg.WorkspaceDir(), id).Delete(); err != nil {
 		errs = append(errs, fmt.Errorf("deleting token of discarded account %d: %w", id, err))
+	}
+	if err := oauthclient.NewStore(cfg.WorkspaceDir(), linearClientVendor, id).Delete(); err != nil {
+		errs = append(errs, fmt.Errorf("deleting the client of discarded account %d: %w", id, err))
 	}
 	if err := database.SetLinearAccountRemoved(id); err != nil {
 		errs = append(errs, fmt.Errorf("marking discarded account %d removed: %w", id, err))
@@ -265,11 +326,15 @@ func discardNewLinearAccount(cfg *config.Config, database *db.DB, id int64) erro
 	return errors.Join(errs...)
 }
 
-// connectLinearAccount turns a fresh token into a connected account. A
-// workspace already connected is refused; one that was removed is revived
-// (its unique org_id index would reject a second row).
-func connectLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, token *linear.Token, label string) (id int64, revived bool, err error) {
-	id, err = database.CreateLinearAccount(label)
+// connectLinearAccount turns a fresh token into a connected account, tied as
+// tie says (the row in the same insert, the client file with the token). A
+// workspace already connected is refused — unless the sign-in went through a
+// company's app by the account's own Linear user, which re-ties that account
+// to the company (the same person moving onto the company's app keeps one
+// row); one that was removed is
+// revived (its unique org_id index would reject a second row).
+func connectLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, token *linear.Token, label string, tie linearTie) (id int64, revived bool, err error) {
+	id, err = database.CreateLinearAccountForCompany(label, tie.slug)
 	if err != nil {
 		return 0, false, fmt.Errorf("creating linear account: %w", err)
 	}
@@ -279,7 +344,7 @@ func connectLinearAccount(ctx context.Context, cfg *config.Config, database *db.
 			err = errors.Join(err, discardNewLinearAccount(cfg, database, newID))
 		}
 	}()
-	if err = saveLinearTokenLocked(ctx, linear.NewTokenStore(cfg.WorkspaceDir(), id), token); err != nil {
+	if err = saveLinearTokenLocked(ctx, cfg.WorkspaceDir(), id, token, tie.client, nil); err != nil {
 		return 0, false, err
 	}
 	viewer, err := linearFetchViewer(ctx, token)
@@ -291,10 +356,13 @@ func connectLinearAccount(ctx context.Context, cfg *config.Config, database *db.
 		return 0, false, err
 	}
 	if a, ok := sameWorkspaceAccount(existing, id, viewer.OrgID); ok {
-		if a.Status != "removed" {
+		// A company's sign-in re-ties a connected account only for the same
+		// Linear user: another member of the workspace never takes over its
+		// token and owner; a purged one comes back only by a re-login (LINEAR-03).
+		if a.Status == "purged" || (a.Status != "removed" && (tie.slug == "" || a.OwnerUserID != viewer.UserID)) {
 			return 0, false, fmt.Errorf("this Linear workspace is already connected as account %d", a.ID)
 		}
-		if err = reviveLinearAccount(ctx, cfg, database, a, token, label, viewer); err != nil {
+		if err = reviveLinearAccount(ctx, cfg, database, a, token, label, viewer, tie); err != nil {
 			return 0, false, err
 		}
 		// The new row is discarded by the deferred cleanup only on error;
@@ -327,11 +395,16 @@ func sameWorkspaceAccount(accounts []db.LinearAccount, newID int64, orgID string
 	return db.LinearAccount{}, false
 }
 
-func reviveLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, a db.LinearAccount, token *linear.Token, label string, viewer linear.Viewer) error {
+// reviveLinearAccount moves a fresh sign-in onto the existing account a of
+// the same workspace (removed, or re-tied by a company's sign-in): token and
+// client file under the token lock, then the row's company, status, label,
+// workspace and owner.
+func reviveLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, a db.LinearAccount, token *linear.Token, label string, viewer linear.Viewer, tie linearTie) error {
 	if err := refuseLoginDuringPurge(database, "linear", a.ID); err != nil {
 		return err
 	}
-	if err := saveLinearTokenLocked(ctx, linear.NewTokenStore(cfg.WorkspaceDir(), a.ID), token); err != nil {
+	tieRow := func() error { return database.SetAccountCompany("linear", a.ID, tie.slug) }
+	if err := saveLinearTokenLocked(ctx, cfg.WorkspaceDir(), a.ID, token, tie.client, tieRow); err != nil {
 		return err
 	}
 	if err := database.SetLinearAccountAuthState(a.ID, "ok", ""); err != nil {
@@ -364,15 +437,44 @@ type linearCredentialFlow struct {
 	oauthCfg linear.OAuthConfig
 }
 
-func prepareLinearCredential(cmd *cobra.Command) (linearCredentialFlow, error) {
-	if useKey, _ := cmd.Flags().GetBool("api-key"); useKey {
-		return linearCredentialFlow{apiKey: true}, nil
+// tie is how an account signed in through f is tied: to slug ("" = none),
+// with the OAuth client recorded only for a company's app.
+func (f linearCredentialFlow) tie(slug string) linearTie {
+	if f.apiKey || slug == "" {
+		return linearTie{slug: slug}
 	}
-	oauthCfg, err := linearLoginConfig()
+	return linearTie{slug: slug, client: &oauthclient.Client{ClientID: f.oauthCfg.ClientID}}
+}
+
+// prepareLinearAdd is `linear add`'s credential step: --company signs in
+// through the stored company's Linear app (an unknown company, or one
+// without a Linear app, fails before any browser opens); otherwise the
+// shared app, or --api-key.
+func prepareLinearAdd(cmd *cobra.Command) (flow linearCredentialFlow, slug string, err error) {
+	useKey, _ := cmd.Flags().GetBool("api-key")
+	slug, _ = cmd.Flags().GetString("company")
+	if slug == "" {
+		if useKey {
+			return linearCredentialFlow{apiKey: true}, "", nil
+		}
+		oauthCfg, err := linearSharedLoginConfig()
+		return linearCredentialFlow{oauthCfg: oauthCfg}, "", err
+	}
+	if useKey {
+		return linearCredentialFlow{}, "", errors.New("--company signs in through the company's Linear app; it cannot be combined with --api-key")
+	}
+	cfg, err := config.Load(flagConfig)
 	if err != nil {
-		return linearCredentialFlow{}, err
+		return linearCredentialFlow{}, "", fmt.Errorf("loading config: %w", err)
 	}
-	return linearCredentialFlow{oauthCfg: oauthCfg}, nil
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	l, err := companyLinear(cfg.WorkspaceDir(), slug)
+	if err != nil {
+		return linearCredentialFlow{}, "", err
+	}
+	return linearCredentialFlow{oauthCfg: linear.OAuthConfig{ClientID: l.ClientID}}, slug, nil
 }
 
 // acquire returns the credential for add/login: a personal API key read from
@@ -401,7 +503,7 @@ func (f linearCredentialFlow) acquire(cmd *cobra.Command) (*linear.Token, error)
 }
 
 func runLinearAdd(cmd *cobra.Command, _ []string) error {
-	flow, err := prepareLinearCredential(cmd)
+	flow, slug, err := prepareLinearAdd(cmd)
 	if err != nil {
 		return err
 	}
@@ -418,7 +520,7 @@ func runLinearAdd(cmd *cobra.Command, _ []string) error {
 
 	label, _ := cmd.Flags().GetString("label")
 	out := cmd.OutOrStdout()
-	id, revived, err := connectLinearAccount(cmd.Context(), cfg, database, token, label)
+	id, revived, err := connectLinearAccount(cmd.Context(), cfg, database, token, label, flow.tie(slug))
 	if err != nil {
 		return err
 	}
@@ -437,10 +539,6 @@ func runLinearAdd(cmd *cobra.Command, _ []string) error {
 }
 
 func runLinearLogin(cmd *cobra.Command, _ []string) error {
-	flow, err := prepareLinearCredential(cmd)
-	if err != nil {
-		return err
-	}
 	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
@@ -451,12 +549,22 @@ func runLinearLogin(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	// The account's client: a tied account signs in through its company's
+	// app as it stands, and records it with the new token (an API key keeps
+	// no client record).
+	flow := linearCredentialFlow{}
+	var record *oauthclient.Client
+	if useKey, _ := cmd.Flags().GetBool("api-key"); useKey {
+		flow.apiKey = true
+	} else if flow.oauthCfg, record, err = linearLoginOAuthConfig(cfg.WorkspaceDir(), account); err != nil {
+		return err
+	}
 	token, err := flow.acquire(cmd)
 	if err != nil {
 		return err
 	}
 	out := cmd.OutOrStdout()
-	if err := relinkLinearAccount(cmd.Context(), cfg, database, account, token); err != nil {
+	if err := relinkLinearAccount(cmd.Context(), cfg, database, account, token, record); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "\nLinear account %d re-authorized.\n", account.ID)
@@ -464,9 +572,10 @@ func runLinearLogin(cmd *cobra.Command, _ []string) error {
 }
 
 // relinkLinearAccount checks the new token belongs to the account's workspace
-// before saving it, then refreshes the workspace name, the owner and sets the
+// before saving it (with client, the company app it was issued to; nil keeps
+// no client file), then refreshes the workspace name, the owner and sets the
 // status ok.
-func relinkLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, account db.LinearAccount, token *linear.Token) error {
+func relinkLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, account db.LinearAccount, token *linear.Token, client *oauthclient.Client) error {
 	// The viewer is fetched with the new token in memory, before it is saved,
 	// so a wrong-workspace login never overwrites the account's token.
 	viewer, err := linearFetchViewer(ctx, token)
@@ -480,7 +589,7 @@ func relinkLinearAccount(ctx context.Context, cfg *config.Config, database *db.D
 	if err := refuseLoginDuringPurge(database, "linear", account.ID); err != nil {
 		return err
 	}
-	if err := saveLinearTokenLocked(ctx, linear.NewTokenStore(cfg.WorkspaceDir(), account.ID), token); err != nil {
+	if err := saveLinearTokenLocked(ctx, cfg.WorkspaceDir(), account.ID, token, client, nil); err != nil {
 		return err
 	}
 	// A renamed workspace (name or URL key) is picked up on every re-login.
@@ -508,6 +617,9 @@ type linearAccountJSON struct {
 	Enabled bool   `json:"enabled"`
 	Error   string `json:"error"`
 	Auth    string `json:"auth"`
+	// CompanySlug is the company bundle whose OAuth client the account signed
+	// in with; "" = our shared client.
+	CompanySlug string `json:"company_slug"`
 }
 
 // linearAuthKind reads the credential kind from the account's token file:
@@ -536,7 +648,11 @@ func printLinearAccounts(w io.Writer, database *db.DB, workspaceDir string, asJS
 	if asJSON {
 		rows := make([]linearAccountJSON, 0, len(accounts))
 		for _, a := range accounts {
-			rows = append(rows, linearAccountJSON{a.ID, a.Label, a.OrgName, linearWorkspaceURL(a), a.Status, a.Enabled, a.Error, linearAuthKind(workspaceDir, a.ID)})
+			rows = append(rows, linearAccountJSON{
+				ID: a.ID, Label: a.Label, OrgName: a.OrgName, URL: linearWorkspaceURL(a),
+				Status: a.Status, Enabled: a.Enabled, Error: a.Error,
+				Auth: linearAuthKind(workspaceDir, a.ID), CompanySlug: a.CompanySlug,
+			})
 		}
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
@@ -615,6 +731,11 @@ func runLinearRemove(cmd *cobra.Command, args []string) error {
 	}
 	if err := revokeAndDeleteLinearToken(cmd.Context(), linear.NewTokenStore(cfg.WorkspaceDir(), id), cmd.ErrOrStderr()); err != nil {
 		return err
+	}
+	// The company client goes with the token; adding the workspace again
+	// records the client it then signs in with.
+	if err := oauthclient.NewStore(cfg.WorkspaceDir(), linearClientVendor, id).Delete(); err != nil {
+		return fmt.Errorf("deleting the account's Linear client: %w", err)
 	}
 	if err := database.SetLinearAccountRemoved(id); err != nil {
 		return err

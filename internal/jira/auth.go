@@ -37,12 +37,18 @@ var (
 	jiraAuthEndpoint        = "https://auth.atlassian.com/authorize"
 	jiraTokenEndpoint       = "https://auth.atlassian.com/oauth/token"
 	jiraAccessibleResources = "https://api.atlassian.com/oauth/token/accessible-resources"
+	myselfAPIRoot           = "https://api.atlassian.com"
 )
 
 // DefaultJiraClientID and DefaultJiraClientSecret are injected at build time via -ldflags:
 //
 //	-X watchtower/internal/jira.DefaultJiraClientID=...
 //	-X watchtower/internal/jira.DefaultJiraClientSecret=...
+//
+// A public release bakes neither (#1887 D4, scripts/build-app.sh refuses
+// one that would): our shared Atlassian app is retired at once (D15 amended,
+// ask #1600) — its accounts need a Re-login through a company's own app (or
+// an API token). WATCHTOWER_JIRA_CLIENT_ID/SECRET stay for development.
 var (
 	DefaultJiraClientID     string
 	DefaultJiraClientSecret string
@@ -62,6 +68,12 @@ type OAuthToken struct {
 	ExpiresIn    int    `json:"expires_in"`
 	Scope        string `json:"scope"`
 	Expiry       string `json:"expiry,omitempty"` // ISO8601 calculated from ExpiresIn
+	// RequestedScope is the scope string the sign-in that issued the grant
+	// asked for (Login sets it; a refresh carries it over); "" for a token
+	// from before it was recorded. Atlassian may grant less than asked —
+	// report:personal-data is known to come back missing — so it tells
+	// whether a new sign-in could add a scope the grant lacks.
+	RequestedScope string `json:"requested_scope,omitempty"`
 }
 
 // IsExpired returns true if the token has expired (or will expire within 60 seconds).
@@ -306,6 +318,9 @@ func refreshTokenAt(ctx context.Context, cfg JiraOAuthConfig, refreshToken, toke
 		if isInvalidGrant(respBody) {
 			return nil, fmt.Errorf("%w: %s", ErrAuthRevoked, respBody)
 		}
+		if isClientRejected(respBody) {
+			return nil, fmt.Errorf("%w (%d): %s", ErrClientRejected, resp.StatusCode, respBody)
+		}
 		return nil, fmt.Errorf("refresh token failed (%d): %s", resp.StatusCode, respBody)
 	}
 
@@ -350,6 +365,42 @@ func FetchAccessibleResources(ctx context.Context, accessToken string) ([]CloudR
 	return resources, nil
 }
 
+// FetchMyself is the signed-in person's own identity on the site cloudID,
+// read with a fresh grant's access token before any account holds it (the
+// company setup check matches the person's existing account by it, #1887).
+func FetchMyself(ctx context.Context, accessToken, cloudID string) (Myself, error) {
+	u := myselfAPIRoot + "/ex/jira/" + url.PathEscape(cloudID) + "/rest/api/3/myself"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return Myself{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	hc := &http.Client{Timeout: 30 * time.Second}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return Myself{}, fmt.Errorf("myself request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return Myself{}, fmt.Errorf("myself request: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return Myself{}, logredact.Errorf("myself failed (%d): %s", resp.StatusCode, logredact.Text(body))
+	}
+	var m Myself
+	if err := json.Unmarshal(body, &m); err != nil {
+		return Myself{}, fmt.Errorf("decoding myself: %w", err)
+	}
+	if m.AccountID == "" {
+		return Myself{}, errors.New("myself: no account id in the answer")
+	}
+	return m, nil
+}
+
 // openBrowserFunc can be replaced in tests.
 var (
 	openBrowserMu   sync.Mutex
@@ -382,6 +433,11 @@ type LoginOptions struct {
 	// Confluence pages is a stronger grant than the read-only sync, so it is
 	// never requested unless asked for.
 	WithConfluenceWrite bool
+	// WithPersonalDataReporting additionally requests PDRScope, which the
+	// Personal Data Reporting phase needs (#1887 §6). Set for a company's
+	// app, whose setup guide enables the permission; an app without it
+	// rejects the scope outright, so it is never requested otherwise.
+	WithPersonalDataReporting bool
 }
 
 // Login performs the Jira OAuth2 (3LO) flow via a local HTTP callback server.
@@ -412,6 +468,9 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	}
 	if opt.WithConfluenceWrite {
 		scope += " " + ConfluenceWriteScopes
+	}
+	if opt.WithPersonalDataReporting {
+		scope += " " + PDRScope
 	}
 	authorizeURL := buildAuthURL(cfg, redirectURI, state, scope)
 
@@ -459,7 +518,7 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	if err != nil {
 		return nil, fmt.Errorf("exchanging code for token: %w", err)
 	}
-
+	token.RequestedScope = scope
 	return token, nil
 }
 

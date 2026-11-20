@@ -3,6 +3,7 @@ package imap
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/netsec"
+	"watchtower/internal/oauthclient"
 	"watchtower/internal/sourcediff"
 )
 
@@ -345,6 +347,14 @@ func (s *Syncer) recordAuthResult(err error) {
 	if err == nil {
 		if dbErr := s.db.SetEmailAccountAuthState(s.account.ID, "ok", ""); dbErr != nil {
 			s.logger.Printf("imap account %d: clear auth state: %v", s.account.ID, dbErr)
+		}
+		return
+	}
+	if errors.Is(err, oauthclient.ErrClientRejected) {
+		// Microsoft refused the Outlook account's OAuth client: Re-login
+		// needed (invalid_client / unknown_client), never revoked (#1887 P5).
+		if _, dbErr := s.db.MarkAccountClientRejected("outlook", s.account.ID); dbErr != nil {
+			s.logger.Printf("imap account %d: record auth state: %v", s.account.ID, dbErr)
 		}
 		return
 	}

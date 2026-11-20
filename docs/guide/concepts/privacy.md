@@ -5,7 +5,7 @@ Watchtower has no account, no cloud service and no analytics of its own. Three t
 ## What stays on your Mac
 
 - **All synced data and AI results.** The database lives in `~/.local/share/watchtower/<workspace>/watchtower.db`, next to Memory's notes and the search index. Meeting recordings are in `~/Library/Application Support/Watchtower/recordings`.
-- **Sign-ins.** OAuth tokens for Slack, Google, Jira and Linear are stored as separate files in that folder, readable only by your user. Quick Connection secrets are the same.
+- **Sign-ins.** OAuth tokens for Slack, Google, Jira and Linear, and Atlassian API tokens, are stored as separate files in that folder, readable only by your user. Quick Connection secrets are the same, and so are [company setups](../start/company-setup.md) (folder `company/`), which hold your company's app ids and the Google and Atlassian app secrets but no one's sign-in.
 - **Meeting transcription.** Audio is captured and transcribed on the Mac. The speech models are downloaded once, on first use, then run locally. Recording audio is deleted after 30 days (**Settings → Meetings → Delete audio after N days**); transcript text is kept.
 - **Knowledge search.** The index is local; only its image descriptions and link summaries use AI (below).
 - **Mechanical features.** Attention detection and Subscription plan limits make no AI calls.
@@ -139,9 +139,16 @@ A message, mail, comment or Jira issue you delete at its source disappears from 
 
 Inbox items made from a deleted message or mail stay, with their text removed. If you leave a Slack channel or lose access to it, its messages stay in Watchtower: only a deletion counts. Summaries, memory notes, ideas and briefings already written from the text are kept as they are. A safety check skips a deletion when the source returns an empty or suspiciously short list, so nothing vanishes because of a bad response.
 
+## When someone closes their Atlassian account
+<!-- learn: none -->
+
+Every 7 days Watchtower asks Atlassian which of the people it stored from a connected Jira site have closed their account (a site that needs a Re-login, or that your organization stops, waits until it syncs again) (a site connected with an API token looks their profiles up instead). For each closed account it erases what it got from Atlassian about that person: their Jira and Confluence user entries with name, email and Slack match, and their name on issues and comments, which then show no name. Search documents built from those issues and pages are rebuilt.
+
+Memory is not touched: it keys people by Slack, not Atlassian. Text the AI already wrote, such as digests, briefings, chats and inbox card text, is not rewritten; it ages out under its own retention. If Atlassian cannot answer, nothing is erased and Watchtower asks again next time.
+
 ## When your company manages the Mac
 
-A company's configuration profile can restrict sources, iPhone sync, Quick Connections, AI providers and claude.ai tools. Such controls show **Managed by your organization**; nothing is deleted because of a rule. See [Managed by your organization](managed-by-your-organization.md).
+A company's configuration profile can restrict sources, iPhone sync, Quick Connections, AI providers, claude.ai tools, Atlassian API tokens and own Google projects, and can set your company's apps. Such controls show **Managed by your organization**; nothing is deleted because of a rule. See [Managed by your organization](managed-by-your-organization.md).
 
 ## On a Linux host or a Mac without the app
 <!-- learn: none -->

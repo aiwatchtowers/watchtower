@@ -15,6 +15,11 @@ package struct EmailAccount: FetchableRecord, Identifiable, Equatable {
     package let status: String
     package let error: String
 
+    /// The company bundle whose OAuth client this account signed in with
+    /// (`company_slug`, migration 00210); "" = our shared client. Go writes
+    /// it; the app only reads it.
+    package let companySlug: String
+
     package init(row: Row) {
         id = row["id"]
         provider = row["provider"] ?? ""
@@ -26,6 +31,7 @@ package struct EmailAccount: FetchableRecord, Identifiable, Equatable {
         label = row["label"] ?? ""
         status = row["status"] ?? "ok"
         error = row["error"] ?? ""
+        companySlug = row["company_slug"] ?? ""
     }
 
     // MARK: - Status predicates

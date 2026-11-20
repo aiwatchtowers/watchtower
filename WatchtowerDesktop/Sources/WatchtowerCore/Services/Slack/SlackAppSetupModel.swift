@@ -22,6 +22,20 @@ package protocol SlackSetupConnectStarting: AnyObject {
     func cancelSetupConnect()
 }
 
+/// How a create or reuse run of the Slack step ended (`onFinished`), for
+/// `CompanySetupWizardModel` (company plan Task 15, C0).
+package enum SlackSetupOutcome: Equatable, Sendable {
+    /// This run created the app.
+    case created(appID: String)
+    /// The app already existed (adopted, or a setup record from an earlier
+    /// run): nothing was created.
+    case reused(appID: String)
+    case failed(SlackSetupFailure)
+}
+
+/// Why a Slack step run stopped: the sheet's problem states.
+package typealias SlackSetupFailure = SlackAppSetupModel.Problem
+
 /// One `slack_app_setups` record as `slack app status --json` reports it.
 package struct SlackSetupRecord: Decodable, Equatable, Sendable, Identifiable {
     package var id: String { teamID }
@@ -85,12 +99,44 @@ package struct SlackSetupTarget: Equatable, Sendable {
     package var workspace: String { teamName.isEmpty ? teamID : teamName }
 }
 
+/// What adopting an app changes in it (`slack app adopt` `changes`, Go
+/// `slackapp.Changes`).
+package struct SlackAppChanges: Decodable, Equatable, Sendable {
+    package var addScopes: [String]
+    package var addRedirectURLs: [String]
+    package var enablePKCE: Bool
+
+    package init(addScopes: [String] = [], addRedirectURLs: [String] = [], enablePKCE: Bool = false) {
+        self.addScopes = addScopes
+        self.addRedirectURLs = addRedirectURLs
+        self.enablePKCE = enablePKCE
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case addScopes = "add_scopes", addRedirectURLs = "add_redirect_urls", enablePKCE = "enable_pkce"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        addScopes = try c.decodeIfPresent([String].self, forKey: .addScopes) ?? []
+        addRedirectURLs = try c.decodeIfPresent([String].self, forKey: .addRedirectURLs) ?? []
+        enablePKCE = try c.decodeIfPresent(Bool.self, forKey: .enablePKCE) ?? false
+    }
+}
+
 /// **Set up for my company** (screens spec §3, plan B Task 13): creates or
 /// adopts Watchtower's Slack app through `watchtower slack app … --json`,
 /// mirrors each step, then runs the admin's own connect. Held on `AppState`
 /// (`slackAppSetup`), so a run survives closing the sheet. The configuration
 /// token reaches the CLI on stdin only and lives here until its run ends.
 /// Every string is in `SlackAppSetupModel+Copy.swift`.
+///
+/// `Mode.wizard` is the company wizard's Slack step engine (company screens
+/// spec §2.5, C0): the same create and reuse runs without the admin's connect
+/// or the link retry (Publish writes the company link). A run reports through
+/// `onFinished`, and the app's state is read from the setup record
+/// (`record(appID:)`), never from a copy. Runs never present anything:
+/// `isPresented` belongs to plan B's Settings and onboarding sheets.
 @MainActor
 @Observable
 package final class SlackAppSetupModel {
@@ -113,6 +159,9 @@ package final class SlackAppSetupModel {
         package var appIDProblem: AppIDProblem?
         /// `confirm_app`: the App ID came from the field; the owner checks the name.
         package var confirm: (appID: String, appName: String)?
+        /// What **Update the app** changes in it (`confirm_app` reads the app first;
+        /// the company wizard's manifest diff, screens §2.5). Nil: not read.
+        package var changes: SlackAppChanges?
 
         package init(target: SlackSetupTarget, needsAppID: Bool = false) {
             self.target = target
@@ -122,6 +171,7 @@ package final class SlackAppSetupModel {
         package static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.target == rhs.target && lhs.needsAppID == rhs.needsAppID && lhs.appIDProblem == rhs.appIDProblem
                 && lhs.confirm?.appID == rhs.confirm?.appID && lhs.confirm?.appName == rhs.confirm?.appName
+                && lhs.changes == rhs.changes
         }
     }
 
@@ -158,6 +208,9 @@ package final class SlackAppSetupModel {
         /// The local save failed; the setup's record row (if any) says how to go on.
         case storage(teamID: String)
         case wrongTeam(workspace: String)
+        /// `wrong_workspace`: the App ID is known on this Mac in another
+        /// workspace (`appTeam`) than the token's (`workspace`).
+        case wrongWorkspace(appID: String, appTeam: String, workspace: String)
         case noRecord(workspace: String)
         case noApp(workspace: String)
         case idsRejected(clientID: Bool)
@@ -170,6 +223,11 @@ package final class SlackAppSetupModel {
         /// The CLI's result line could not be read: how the run ended is
         /// unknown (the raw line is logged).
         case unreadableAnswer
+    }
+
+    /// Who drives the runs: plan B's sheet, or the company wizard's Slack step.
+    package enum Mode: Equatable, Sendable {
+        case sheet, wizard
     }
 
     package enum StepMark: Equatable, Sendable {
@@ -202,25 +260,41 @@ package final class SlackAppSetupModel {
     @ObservationIgnored private var readGeneration = 0
     /// **Start again** on a lost create asks once more first: Slack may have made the app.
     package private(set) var confirmingClear = false
+    package let mode: Mode
+    /// Called once a create or adopt run ends, after the setup records are
+    /// re-read; a run that ends on a form (adopt, App ID, pending) does not call it.
+    /// `startLink`, `checkAgain` and the pending runs never call it. A run that
+    /// ends on a form leaves `phase == .editing` with the new `form`, which the
+    /// wizard observes.
+    @ObservationIgnored package var onFinished: ((SlackSetupOutcome) -> Void)?
+    /// A status read has succeeded: `records` (and `record(appID:)`) say what
+    /// this Mac has, not merely that nothing was read yet.
+    package private(set) var recordsRead = false
+    /// The running create made the app (`ok`, `link_failed`), as opposed to
+    /// finding a setup record (`exists`).
+    @ObservationIgnored private var createdApp = false
 
     package convenience init(
         streamer: (any CLILineStreaming)?,
+        mode: Mode = .sheet,
         form: Form = .create,
         phase: Phase = .editing,
         steps: [StepLine] = [],
         records: [SlackSetupRecord] = []
     ) {
-        self.init(makeStreamer: { streamer }, form: form, phase: phase, steps: steps, records: records)
+        self.init(makeStreamer: { streamer }, mode: mode, form: form, phase: phase, steps: steps, records: records)
     }
 
     package init(
         makeStreamer: @escaping @MainActor () -> (any CLILineStreaming)?,
+        mode: Mode = .sheet,
         form: Form = .create,
         phase: Phase = .editing,
         steps: [StepLine] = [],
         records: [SlackSetupRecord] = []
     ) {
         self.makeStreamer = makeStreamer
+        self.mode = mode
         self.form = form
         self.phase = phase
         self.steps = steps
@@ -265,6 +339,13 @@ package final class SlackAppSetupModel {
         isPresented = true
     }
 
+    /// The company wizard leaves a form (Back, another choice): a fresh
+    /// create form, so an App ID confirmed earlier never carries over.
+    package func resetForm() {
+        guard !isRunning else { return }
+        reset(.create)
+    }
+
     /// Hides the sheet; a running run keeps going.
     package func close() {
         isPresented = false
@@ -297,18 +378,21 @@ package final class SlackAppSetupModel {
     /// **Create the app** (A4): create → the admin's connect → the link
     /// again if it was not written → the token dropped.
     package func startCreate(token: String) {
-        startRun(token: token, steps: Self.createSteps) { [self] token in
+        let lines = mode == .wizard ? Self.wizardCreateSteps : Self.createSteps
+        startRun(token: token, steps: lines, reports: true) { [self] token in
             await runCreate(token: token)
         }
     }
 
     /// **Update the app** (ask #1425). A repeated App ID after `confirm_app`
-    /// confirms it.
-    package func startAdopt(token: String, appID: String?) {
+    /// confirms it. `clientID` (the company wizard's found app) adopts an app
+    /// no account here is on yet.
+    package func startAdopt(token: String, appID: String?, clientID: String? = nil, dryRun: Bool = false) {
         let appID = appID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let clientID = clientID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let fromField = !appID.isEmpty
-        startRun(token: token, steps: fromField ? Self.adoptFieldSteps : Self.adoptSteps) { [self] token in
-            await runAdopt(token: token, appID: appID)
+        startRun(token: token, steps: fromField ? Self.adoptFieldSteps : Self.adoptSteps, reports: true) { [self] token in
+            await runAdopt(token: token, appID: appID, clientID: clientID, dryRun: dryRun)
         }
     }
 
@@ -364,7 +448,14 @@ package final class SlackAppSetupModel {
         let args = Self.pendingArgs(team: target.teamID) + ["--attach", "--app-id", ids[0], "--client-id", ids[1]]
         Task { [self] in
             if let result = await stream(args, token: nil) {
-                if result.result == "ok" {
+                if result.result == "ok", mode == .wizard {
+                    // The wizard has no link step (Publish writes it): the app is reused.
+                    phase = .finished(.notConnected(result.target(fallback: target)))
+                    let outcome = finishedOutcome
+                    await reloadRecords()
+                    if let outcome { onFinished?(outcome) }
+                    return
+                } else if result.result == "ok" {
                     reset(.addLink(result.target(fallback: target)))
                 } else {
                     finishPendingProblem(result, workspace: target.workspace)
@@ -390,12 +481,24 @@ package final class SlackAppSetupModel {
             for try await line in streamer.lines(args: Self.statusArgs, stdin: nil) { last = line }
             guard let last, let data = last.data(using: .utf8) else { return nil }
             let read = try JSONDecoder().decode(StatusDocument.self, from: data).setups ?? []
-            if generation == readGeneration { records = read }
+            if generation == readGeneration {
+                records = read
+                recordsRead = true
+            }
             return read
         } catch {
             print("[SlackAppSetup] status read failed: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    /// The setup record of an app as the last status read has it; nil when
+    /// this Mac has none (the wizard's Slack step then starts at Look again),
+    /// or when no read has succeeded yet (`recordsRead`: then nothing is known).
+    /// A pending create's record has no App ID, so an empty one names none.
+    package func record(appID: String) -> SlackSetupRecord? {
+        guard !appID.isEmpty else { return nil }
+        return records.first { $0.appID == appID }
     }
 
     /// The Workspaces list changed (an account connected, removed, re-bound):
@@ -411,17 +514,42 @@ package final class SlackAppSetupModel {
         return Self.adminNote(workspace: problemWorkspace)
     }
 
-    private func startRun(token: String, steps lines: [StepLine], _ body: @escaping (String) async -> Void) {
+    private func startRun(
+        token: String, steps lines: [StepLine], reports: Bool = false, _ body: @escaping (String) async -> Void
+    ) {
         let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !isRunning, !token.isEmpty else { return }
         heldToken = token
         steps = lines
         phase = .running
         adminNoteCopied = false
+        createdApp = false
         Task { [self] in
             await body(token)
             heldToken = nil
+            // Taken before the read: a new run may start while it is pending.
+            let outcome = reports ? finishedOutcome : nil
             await reloadRecords()
+            if let outcome { onFinished?(outcome) }
+        }
+    }
+
+    /// What a create or adopt run reports for the phase it ended in.
+    private var finishedOutcome: SlackSetupOutcome? {
+        guard case let .finished(outcome) = phase else { return nil }
+        switch outcome {
+        case let .success(target), let .notConnected(target), let .approval(target), let .linkFailed(target):
+            // An app the wizard could not find again is no answer.
+            guard !target.appID.isEmpty else { return .failed(.stopped(Self.noAnswer)) }
+            return createdApp ? .created(appID: target.appID) : .reused(appID: target.appID)
+        case let .problem(problem):
+            return .failed(problem)
+        case let .builtinAppDeferred(workspace):
+            // The build's own app cannot be the company's yet: the wizard
+            // shows why and nothing was changed.
+            return .failed(.stopped(Self.builtinAppDeferredBody(workspace)))
+        case .linkDone:
+            return nil
         }
     }
 
@@ -452,8 +580,20 @@ package final class SlackAppSetupModel {
         var target = result.target(fallback: nil)
         switch result.result {
         case "ok", "link_failed":
+            createdApp = true
+            // The wizard: the app exists; Publish writes the company link.
+            if mode == .wizard {
+                phase = .finished(.notConnected(target))
+                return
+            }
             await finishSetup(target)
         case "exists":
+            if mode == .wizard {
+                // A create that ran before (the wizard resumed): reuse its app,
+                // which the answer names (the record's ids).
+                phase = .finished(.notConnected(target))
+                return
+            }
             // The record row's Continue setup path: never a second create.
             await reloadRecords()
             if let record = records.first(where: { $0.teamID == target.teamID }) {
@@ -497,22 +637,28 @@ package final class SlackAppSetupModel {
         if result?.result == "ok" { target.linkWritten = true }
     }
 
-    private func runAdopt(token: String, appID: String) async {
-        guard case let .adopt(adopt) = form else { return }
-        // --enable-pkce: Update the app is pressed only on a screen showing
-        // adoptPKCEWarning (the adopt body or the App ID check).
-        var args = ["slack", "app", "adopt", "--json", "--enable-pkce"]
-        // The workspace the sheet names: a token of another one changes nothing (wrong_team).
-        if !adopt.target.teamID.isEmpty { args += ["--team", adopt.target.teamID] }
-        if !appID.isEmpty {
-            args += ["--app-id", appID]
-            if adopt.confirm?.appID == appID { args += ["--confirm-app-id", appID] }
+    /// `dryRun` (the company wizard's first look at a reused app): read the
+    /// app and answer its changes as a `confirm_app` form; nothing changes.
+    private func runAdopt(token: String, appID: String, clientID: String, dryRun: Bool = false) async {
+        let adopt: Adopt
+        if case let .adopt(shown) = form {
+            adopt = shown
+        } else if mode == .wizard {
+            // The wizard reuses an app by its App ID from the create form:
+            // the workspace is then the token's.
+            adopt = Adopt(target: SlackSetupTarget(teamID: "", teamName: ""), needsAppID: true)
+        } else {
+            // The sheet offers Update the app only on the adopt form.
+            phase = .finished(.problem(.stopped(Self.noAnswer)))
+            return
         }
+        let args = Self.adoptArgs(adopt, appID: appID, clientID: clientID, dryRun: dryRun)
         guard let result = await stream(args, token: token) else { return }
         var next = adopt
         next.target = result.target(fallback: adopt.target)
         next.confirm = nil
         next.appIDProblem = nil
+        next.changes = result.changes
         switch result.result {
         case "ok":
             phase = .finished(.success(next.target))
@@ -520,7 +666,7 @@ package final class SlackAppSetupModel {
             next.needsAppID = true
             next.appIDProblem = Self.appIDProblem(for: result)
             reset(.adopt(next))
-        case "confirm_app":
+        case "confirm_app", "dry_run":
             next.needsAppID = true
             next.confirm = (result.appID ?? appID, result.appName ?? "")
             reset(.adopt(next))
@@ -538,6 +684,22 @@ package final class SlackAppSetupModel {
         default:
             finishWithProblem(result, workspace: next.target.workspace)
         }
+    }
+
+    /// `slack app adopt`'s arguments for a run of `adopt`.
+    private static func adoptArgs(_ adopt: Adopt, appID: String, clientID: String, dryRun: Bool) -> [String] {
+        // --enable-pkce: Update the app is pressed only on a screen showing
+        // adoptPKCEWarning (the adopt body or the App ID check).
+        var args = ["slack", "app", "adopt", "--json", "--enable-pkce"]
+        // The workspace the sheet names: a token of another one changes nothing (wrong_team).
+        if !adopt.target.teamID.isEmpty { args += ["--team", adopt.target.teamID] }
+        if !appID.isEmpty {
+            args += ["--app-id", appID]
+            if adopt.confirm?.appID == appID { args += ["--confirm-app-id", appID] }
+        }
+        if !clientID.isEmpty { args += ["--client-id", clientID] }
+        if dryRun { args.append("--dry-run") }
+        return args
     }
 
     /// The App ID field's problem line for a `need_app_id`/`app_not_found` answer.
@@ -611,7 +773,11 @@ package final class SlackAppSetupModel {
         case "refused": .refused(result.code ?? "")
         case "busy": .busy
         case "storage": .storage(teamID: result.teamID ?? "")
+        // wrong_workspace: company plan Task 14's adopt answer for an app
+        // of another workspace than the token's.
         case "wrong_team": .wrongTeam(workspace: workspace)
+        case "wrong_workspace":
+            .wrongWorkspace(appID: result.appID ?? "", appTeam: result.appTeamID ?? "", workspace: workspace)
         case "no_record": .noRecord(workspace: workspace)
         case "no_pending": .notPending(workspace: workspace)
         case "no_app": .noApp(workspace: workspace)
@@ -650,7 +816,11 @@ package final class SlackAppSetupModel {
         let teamName: String?
         let appID: String?
         let appName: String?
+        /// `wrong_workspace`: the workspace the app belongs to.
+        let appTeamID: String?
         let clientID: String?
+        /// adopt read the app: what its update changes.
+        let changes: SlackAppChanges?
         /// Absent on early results (a bad token): then the fallback's.
         let linkWritten: LinkWritten
         let code: String?
@@ -665,6 +835,8 @@ package final class SlackAppSetupModel {
             teamName = try c.decodeIfPresent(String.self, forKey: .teamName)
             appID = try c.decodeIfPresent(String.self, forKey: .appID)
             appName = try c.decodeIfPresent(String.self, forKey: .appName)
+            appTeamID = try c.decodeIfPresent(String.self, forKey: .appTeamID)
+            changes = try c.decodeIfPresent(SlackAppChanges.self, forKey: .changes)
             clientID = try c.decodeIfPresent(String.self, forKey: .clientID)
             linkWritten = try c.decodeIfPresent(Bool.self, forKey: .linkWritten).map(LinkWritten.value) ?? .absent
             code = try c.decodeIfPresent(String.self, forKey: .code)
@@ -673,7 +845,7 @@ package final class SlackAppSetupModel {
 
         enum CodingKeys: String, CodingKey {
             case result, teamID = "team_id", teamName = "team_name", appID = "app_id", appName = "app_name"
-            case clientID = "client_id", linkWritten = "link_written", code, error
+            case appTeamID = "app_team_id", clientID = "client_id", linkWritten = "link_written", code, error, changes
         }
 
         func target(fallback: SlackSetupTarget?) -> SlackSetupTarget {

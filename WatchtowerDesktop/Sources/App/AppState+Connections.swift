@@ -1,3 +1,4 @@
+import AppKit
 import ChatUI
 import Foundation
 import WatchtowerCore
@@ -10,6 +11,44 @@ extension AppState {
         selectedDestination = .connections
     }
 
+    /// **Set up for my company** (company screens spec §2.1): the wizard's
+    /// page in the Connections detail area; an entry (a Slack setup-record
+    /// row, A19) opens it at that entry's step.
+    func openCompanySetup(_ entry: CompanySetupWizardModel.Entry? = nil) {
+        if let entry { companySetup.request(entry) }
+        openConnections(.companySetup)
+    }
+
+    /// A Slack setup-record row (A19): **Add the link to the app** opens the
+    /// wizard at Publish; false leaves the row to plan B's sheet (the other
+    /// stages, or a sheet run still going, which the sheet shows).
+    func routeSlackSetupRecord(_ record: SlackSetupRecord) -> Bool {
+        guard !slackAppSetup.isRunning, let entry = CompanySetupWizardModel.Entry(record: record) else { return false }
+        openCompanySetup(entry)
+        return true
+    }
+
+    /// **Connect this Mac** after Publish; nil (the button hidden) while the
+    /// company connect flow — the listener — is not up.
+    var connectThisMacAction: (() -> Void)? {
+        guard companyConnect != nil else { return nil }
+        return { [weak self] in Task { await self?.connectThisMac() } }
+    }
+
+    /// Opens the same-bundle confirm (§3.1) for the published company: only
+    /// what is not connected yet. Nothing before Publish went through.
+    func connectThisMac() async {
+        guard let flow = companyConnect, case let .done(published) = companySetup.publishState else { return }
+        await flow.connectRest(slug: published.slug)
+    }
+
+    /// **Show file in Finder** for the set-aside draft, next to the company setups.
+    func showCompanySetupFile(_ name: String) {
+        guard let workspace = Constants.activeWorkspaceDir() else { return }
+        let file = URL(fileURLWithPath: workspace).appendingPathComponent("company").appendingPathComponent(name)
+        NSWorkspace.shared.activateFileViewerSelecting([file])
+    }
+
     /// How often a sidebar click may re-read the accounts for the badge.
     static let connectionAccountsRefreshInterval: TimeInterval = 60
 
@@ -18,7 +57,10 @@ extension AppState {
     /// The Connections tab calls it on appear.
     func refreshConnectionAccounts(now: Date = Date()) {
         connectionAccountsReadAt = now
-        for service in ConnectionService.allCases { refreshAccounts(of: service) }
+        for service in ConnectionService.services { refreshAccounts(of: service) }
+        // The details group their accounts by the stored companies: a detail
+        // opened straight (a Reconnect hand-off) must not see none (#1887 C3).
+        reloadCompanies()
     }
 
     /// The badge's re-read on a sidebar click: at most once a minute.
@@ -36,6 +78,7 @@ extension AppState {
         case .jira: jiraAccountsViewModel?.refresh()
         case .linear: linearAccountsViewModel?.refresh()
         case .quickConnections: externalConnectionsViewModel?.refresh()
+        case .companySetup: break
         }
     }
 
@@ -78,7 +121,7 @@ extension AppState {
 
     /// Every service, in the overview's order.
     var connectionSummaries: [ConnectionSummary] {
-        ConnectionService.allCases.map(connectionSummary)
+        ConnectionService.services.map(connectionSummary)
     }
 
     /// The Connections row's badge: services that need the owner.
@@ -92,7 +135,7 @@ extension AppState {
             accounts: connectionAccounts(service),
             readError: connectionReadError(service),
             blocked: !PolicySourceMap.allowed(service.rawValue, policy: managedPolicy.policy),
-            notice: service == .slack ? slackOverviewNotice : nil
+            notice: service == .slack ? slackOverviewNotice : companyBannerCardLine(service)
         )
     }
 
@@ -113,6 +156,7 @@ extension AppState {
         case .jira: jiraAccountsViewModel?.readError
         case .linear: linearAccountsViewModel?.readError
         case .quickConnections: externalConnectionsViewModel?.readError
+        case .companySetup: nil
         }
     }
 
@@ -126,6 +170,7 @@ extension AppState {
         case .jira: jiraAccountsViewModel?.accounts.map(ConnectionAccountState.init)
         case .linear: linearAccountsViewModel?.accounts.map(ConnectionAccountState.init)
         case .quickConnections: externalConnectionsViewModel?.connections.map(ConnectionAccountState.init)
+        case .companySetup: []
         }
     }
 }

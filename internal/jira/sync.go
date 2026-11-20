@@ -200,8 +200,8 @@ func (s *Syncer) sync(ctx context.Context) (int, error) {
 	// skipped by the loop above, so these two calls are the only place a
 	// revoked grant surfaces for such an account.)
 	if err := s.SyncSprints(ctx); err != nil {
-		if errors.Is(err, ErrAuthRevoked) {
-			s.logger.Printf("auth revoked during sprint sync, aborting sync: %v", err)
+		if accountLost(err) {
+			s.logger.Printf("account lost (grant revoked or client rejected) during sprint sync, aborting sync: %v", err)
 			return total, err
 		}
 		s.logger.Printf("sprint sync error: %v", err)
@@ -209,8 +209,8 @@ func (s *Syncer) sync(ctx context.Context) (int, error) {
 
 	// Sync releases (fix versions) for selected boards.
 	if err := s.syncReleases(ctx, boards); err != nil {
-		if errors.Is(err, ErrAuthRevoked) {
-			s.logger.Printf("auth revoked during releases sync, aborting sync: %v", err)
+		if accountLost(err) {
+			s.logger.Printf("account lost (grant revoked or client rejected) during releases sync, aborting sync: %v", err)
 			return total, err
 		}
 		s.logger.Printf("releases sync error: %v", err)
@@ -434,12 +434,12 @@ func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string
 		s.reached = true
 	}
 	if err != nil {
-		if errors.Is(err, ErrAuthRevoked) {
+		if accountLost(err) {
 			// The account's grant is gone — every remaining project would
 			// fail the same way. Abort so the caller records it on the
 			// account row rather than swallowing it per project (the
 			// gmail/calendar precedent).
-			s.logger.Printf("auth revoked, aborting sync: %v", err)
+			s.logger.Printf("account lost (grant revoked or client rejected), aborting sync: %v", err)
 			return 0, err
 		}
 		// Sync keeps going across projects and returns nil, so the daemon
@@ -455,8 +455,8 @@ func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string
 	// comment write would never ask for those issues (and their comments)
 	// again until someone edits them.
 	if err := s.syncComments(ctx, changedKeys); err != nil {
-		if errors.Is(err, ErrAuthRevoked) {
-			s.logger.Printf("auth revoked during comment sync, aborting sync: %v", err)
+		if accountLost(err) {
+			s.logger.Printf("account lost (grant revoked or client rejected) during comment sync, aborting sync: %v", err)
 			return n, err
 		}
 		// A lost comment write is a project failure, like a lost issue
@@ -651,7 +651,7 @@ func (s *Syncer) syncComments(ctx context.Context, changedKeys []string) error {
 	for _, key := range keys {
 		comments, complete, total, err := s.client.getIssueComments(ctx, key)
 		if err != nil {
-			if errors.Is(err, ErrAuthRevoked) {
+			if accountLost(err) {
 				return err
 			}
 			s.logger.Printf("comment sync: fetching comments for %s: %v", key, err)
@@ -919,13 +919,29 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int, fie
 	return dbIssue, links
 }
 
-// ensureUserMap creates a user map entry if it doesn't exist.
+// ensureUserMap creates a user map entry if it doesn't exist, and refreshes
+// the stored name and email of one whose profile Atlassian now answers
+// differently (a profile change, which Personal Data Reporting reports as
+// "updated", #1887 §6). The Slack mapping is kept; an email Atlassian no
+// longer shows is not blanked.
 func (s *Syncer) ensureUserMap(u *User) {
 	if u == nil || u.AccountID == "" {
 		return
 	}
 	existing, _ := s.db.GetJiraUserMapByAccountID(u.AccountID)
 	if existing != nil {
+		fresh := *existing
+		if u.DisplayName != "" {
+			fresh.DisplayName = u.DisplayName
+		}
+		if u.EmailAddress != "" {
+			fresh.Email = u.EmailAddress
+		}
+		if fresh != *existing {
+			if err := s.db.UpsertJiraUserMap(fresh); err != nil {
+				s.logger.Printf("refreshing user map for %s: %v", u.AccountID, err)
+			}
+		}
 		return
 	}
 	_ = s.db.UpsertJiraUserMap(db.JiraUserMap{
@@ -991,7 +1007,7 @@ func (s *Syncer) syncBoardSprints(ctx context.Context, boardID int, state string
 	}
 	s.storeSprints(boardID, sprints, syncedAt)
 	if err != nil {
-		if errors.Is(err, ErrAuthRevoked) {
+		if accountLost(err) {
 			return nil, err
 		}
 		s.logger.Printf("failed to fetch %s sprints for board %d: %v", state, boardID, err)
@@ -1100,7 +1116,7 @@ func (s *Syncer) syncReleases(ctx context.Context, boards []db.JiraBoard) error 
 	for _, projectKey := range projectKeys {
 		versions, err := s.client.GetProjectVersions(ctx, projectKey)
 		if err != nil {
-			if errors.Is(err, ErrAuthRevoked) {
+			if accountLost(err) {
 				return err
 			}
 			s.logger.Printf("failed to fetch versions for project %s: %v", projectKey, err)

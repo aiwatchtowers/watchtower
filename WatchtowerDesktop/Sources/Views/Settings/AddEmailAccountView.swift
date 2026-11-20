@@ -3,8 +3,8 @@ import WatchtowerCore
 
 /// Sheet for connecting a new email source, presented from the Settings →
 /// Email Accounts section. Three provider cards:
-///  - Gmail: redirects to the multi-account `AddGoogleAccountView` sheet
-///    (Connections → Google Accounts) — this view adds no Gmail logic of its own.
+///  - Gmail: the multi-account `AddGoogleAccountView` sheet on a flavored build;
+///    else Connections → Google (`AppState.connectGmail`, D11) — no Gmail logic here.
 ///  - Outlook: OAuth via `EmailAccountsViewModel.connectOutlook`, same loopback-
 ///    browser flow shape as Gmail but multi-account.
 ///  - IMAP: a host/port/credentials form; the password is written to the
@@ -161,12 +161,14 @@ struct AddEmailAccountView: View {
                         .font(.headline)
                     Spacer()
                 }
-                Text("Google's OAuth flow — supports multiple Google accounts.")
+                Text(CompanyConnectionsPresentation.gmailCardLine(offersGmail: appState.sharedGoogleOffersGmail,
+                                                                  locks: appState.companyLocks))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                Button("Connect Gmail") {
-                    showAddGoogleAccountSheet = true
+                Button(CompanyConnectionsPresentation.connectGmail) {
+                    connectGmail()
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -176,6 +178,19 @@ struct AddEmailAccountView: View {
         .sheet(isPresented: $showAddGoogleAccountSheet) {
             AddGoogleAccountView()
                 .environment(appState)
+        }
+    }
+
+    /// A flavored build's client asks for Gmail itself: the Add Google
+    /// Account sheet. The public build's shared app cannot (D11): this sheet
+    /// closes and the Google detail opens, on the own Google project page or
+    /// at the company's Google row (`AppState.connectGmail`).
+    private func connectGmail() {
+        if appState.sharedGoogleOffersGmail {
+            showAddGoogleAccountSheet = true
+        } else {
+            dismiss()
+            Task { await appState.connectGmail() }
         }
     }
 

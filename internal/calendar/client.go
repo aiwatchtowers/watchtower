@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"watchtower/internal/oauthclient"
 )
 
 // calendarAPIBase is overridable in tests via httptest.Server.
@@ -79,6 +81,9 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 	if resp.StatusCode != http.StatusOK {
 		if isInvalidGrant(body) {
 			return fmt.Errorf("%w: %s", ErrAuthRevoked, body)
+		}
+		if oauthclient.IsRejectedBody(body) {
+			return fmt.Errorf("%w (%d): %s", oauthclient.ErrClientRejected, resp.StatusCode, body)
 		}
 		return fmt.Errorf("token refresh failed (%d): %s", resp.StatusCode, body)
 	}

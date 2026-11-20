@@ -73,12 +73,15 @@ done_when: linear.connected
 3. Wait for the first sync, then tick the teams to sync under **Teams** in the same pane.
 4. To pause a workspace, switch **Enabled** off; its synced issues stay. **Remove** disconnects it and keeps the synced issues too.
 
-`watchtower linear add` (add `--api-key` to read a key from standard input) does the same from a terminal. Connecting switches `linear.enabled` on for you.
+The pane groups workspaces by the app they signed in through: your company's Linear app from its [company setup](../start/company-setup.md) (a **Not connected** row there offers **Connect**), **API keys** for workspaces connected with your own key, and **Watchtower's Linear app**.
+
+`watchtower linear add` (add `--api-key` to read a key from standard input, or `--company <slug>` for your company's app) does the same from a terminal. Connecting switches `linear.enabled` on for you.
 
 ## When it's empty or wrong
 
 - **A workspace shows no teams.** Its first sync has not finished; the list fills after it.
 - **A workspace row shows Re-login.** Linear revoked the sign-in or rejected the key. Press **Re-login**: a browser workspace signs in again, an API-key workspace asks for a new key.
+- **"Re-login needed — your company changed its app; open the new link".** Your company replaced or rotated its Linear app. Paste the new company code or open the new link; the data stays.
 - **Blockers misses a Linear issue.** It needs an open "blocked by" relation in Linear; a label is not read.
 - **Removing a workspace left the key working.** **Remove** cannot revoke a personal API key; delete it in Linear's settings.
 

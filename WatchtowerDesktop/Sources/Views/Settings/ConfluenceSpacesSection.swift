@@ -1,3 +1,4 @@
+import DesignKit
 import SwiftUI
 import WatchtowerCore
 
@@ -33,7 +34,7 @@ struct ConfluenceSpacesSection: View {
     }
 
     var body: some View {
-        Section(title) {
+        SettingsSection(title: title) {
             if featureOff {
                 featureOffContent
             } else if let vm = appState.confluenceSpacesViewModels[accountID] {

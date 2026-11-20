@@ -14,6 +14,8 @@ import (
 	"watchtower/internal/gmail"
 	"watchtower/internal/imap"
 	"watchtower/internal/media"
+	"watchtower/internal/oauthclient"
+	"watchtower/internal/policy"
 )
 
 // gmailMediaOpener opens Gmail image parts for the media pass through one
@@ -35,6 +37,10 @@ func gmailMediaOpener(cfg *config.Config, database *db.DB) media.GmailOpener {
 		if !cfg.Gmail.Enabled || !acct.GmailEnabled || acct.Status == "revoked" {
 			return nil, media.ErrSourceOff
 		}
+		// A policy-stopped own project waits too (POLICY-03).
+		if stopped, _ := googleOwnProjectStopped(policy.Current(), cfg.WorkspaceDir(), acct); stopped {
+			return nil, media.ErrSourceOff
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		if c := clients[accountID]; c != nil {
@@ -48,10 +54,16 @@ func gmailMediaOpener(cfg *config.Config, database *db.DB) media.GmailOpener {
 		if err != nil {
 			return nil, fmt.Errorf("gmail account %d: loading token: %w", accountID, err)
 		}
-		googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), accountID)
+		googleCfg, _, err := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct)
+		if needsCompanyRelogin(err) {
+			return nil, media.ErrSourceOff // waits for a re-login
+		}
+		if err != nil {
+			return nil, fmt.Errorf("gmail account %d: %w", accountID, err)
+		}
 		c, err := newGmailClient(ctx, token.RefreshToken,
 			gmail.GoogleOAuthConfig{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret})
-		if errors.Is(err, gmail.ErrAuthRevoked) {
+		if errors.Is(err, gmail.ErrAuthRevoked) || errors.Is(err, oauthclient.ErrClientRejected) {
 			return nil, media.ErrSourceOff
 		}
 		if err != nil {

@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/aiconsent"
 	"watchtower/internal/askanswer"
+	"watchtower/internal/atlassianpdr"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
@@ -50,8 +51,10 @@ import (
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/media"
+	"watchtower/internal/oauthclient"
 	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/platform"
+	"watchtower/internal/policy"
 	"watchtower/internal/powerstate"
 	"watchtower/internal/prompts"
 	"watchtower/internal/providerhealth"
@@ -1153,10 +1156,19 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	if _, err := ensureLegacyGoogleAccount(ctx, cfg, database, logger); err != nil {
 		logger.Printf("google: failed to seed legacy account: %v", err)
 	}
+	// The own-project accounts the policy keeps unwired stay stopped (leases
+	// held) until the next start wires them (POLICY-03).
+	var unwiredGoogle map[int64]bool
+	if googleAccounts, err := database.ListGoogleAccounts(); err == nil {
+		unwiredGoogle = googleAccountsStopped(policy.Current(), cfg.WorkspaceDir(), googleAccounts)
+	}
 	// Wire one calendar/gmail syncer per connected google_accounts row.
 	calSyncers, gmSyncers := wireGoogleSyncers(ctx, cfg, database, logger)
 	d.SetCalendarSyncers(calSyncers)
 	d.SetGmailSyncers(gmSyncers)
+	// A tightened AllowOwnGoogleProject stops a wired own-project account
+	// at its next cycle and holds its purge leases (POLICY-03).
+	d.SetAccountSyncAllowed(googleAccountSyncAllowed(cfg.WorkspaceDir(), database, unwiredGoogle))
 	// Wire one IMAP/Outlook syncer per connected email_accounts row.
 	d.SetImapSyncers(wireImapSyncers(cfg, database, logger))
 	// Wire one CalDAV/ICS syncer per connected calendar_accounts row.
@@ -1602,6 +1614,9 @@ func wireSlackSyncers(ctx context.Context, database *db.DB, cfg *config.Config, 
 	// is workspace-wide (issue_slack_links is deliberately not account-scoped)
 	// and its only mutable state is behind a mutex.
 	keyDetector := newIssueKeyDetector(cfg, database, logger)
+	// One deny source for every account too: a damaged company file is then
+	// logged once, not once per account.
+	deny := linkDenySource(cfg, logger)
 	var orchestrators []*sync.Orchestrator
 	for _, acct := range accounts {
 		token, err := loadSlackToken(ctx, cfg, database, acct.ID)
@@ -1631,6 +1646,7 @@ func wireSlackSyncers(ctx context.Context, database *db.DB, cfg *config.Config, 
 		client.SetLogger(logger)
 		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
 		orch.SetLogger(logger)
+		orch.SetDenyHosts(deny)
 		orch.SetTokenTeam(token.TeamID)
 		orch.SetTokenScope(token.Scope)
 		if keyDetector != nil {
@@ -1684,6 +1700,27 @@ func wireJiraSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, 
 		wireJiraAccountSyncers(ctx, d, cfg, database, accounts, clients, logger)
 	}
 	wireExternalSync(d, cfg, database, accounts, clients, logger)
+	d.SetAtlassianPDR(atlassianPDRAccounts(accounts, clients))
+}
+
+// atlassianPDRAccounts lists the accounts that run Personal Data Reporting
+// (#1887 §6): every account with a client, the shared app's included. An
+// API-token account cannot call the report API (it belongs to apps): it
+// looks its people up instead (atlassianpdr.LookupReporter, D23).
+func atlassianPDRAccounts(accounts []db.JiraAccount, clients map[int64]*jira.Client) []daemon.PDRAccount {
+	var out []daemon.PDRAccount
+	for _, acct := range accounts {
+		client := clients[acct.ID]
+		if client == nil {
+			continue
+		}
+		var r atlassianpdr.Reporter = atlassianpdr.ClientReporter{Client: client}
+		if acct.AuthKind == jira.AuthKindAPIToken {
+			r = atlassianpdr.LookupReporter{Users: client}
+		}
+		out = append(out, daemon.PDRAccount{ID: acct.ID, Reporter: r})
+	}
+	return out
 }
 
 // buildAtlassianClients builds one *jira.Client per enabled account with a
@@ -1698,8 +1735,13 @@ func buildAtlassianClients(cfg *config.Config, database *db.DB, logger *log.Logg
 		logger.Printf("jira: failed to list accounts: %v", err)
 		return nil, clients
 	}
-	jiraCfg := resolveJiraOAuthConfig()
 	for _, acct := range accounts {
+		if acct.AuthKind == jira.AuthKindAPIToken && apiTokenPolicyRefusal() != nil {
+			// Stopped by the organization's policy (D24, POLICY-03): not
+			// wired, its row and data left as they are.
+			logger.Printf("jira: account %d: API tokens are not allowed by your organization's policy; not syncing", acct.ID)
+			continue
+		}
 		store := jira.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
 		if acct.CloudID == "" || !store.Exists() {
 			if acct.Status == "ok" {
@@ -1709,7 +1751,54 @@ func buildAtlassianClients(cfg *config.Config, database *db.DB, logger *log.Logg
 			}
 			continue
 		}
-		client := jira.NewClient(acct.CloudID, jiraCfg, store)
+		var client *jira.Client
+		if acct.AuthKind == jira.AuthKindAPIToken {
+			if _, err := store.LoadAPIToken(); err != nil {
+				// A damaged token file can never sync: shown on the row, never
+				// left green (the OAuth branch's rule).
+				logger.Printf("jira: account %d: %v", acct.ID, err)
+				if acct.Status == "ok" {
+					if dbErr := database.SetJiraAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+						logger.Printf("jira: account %d: record auth state: %v", acct.ID, dbErr)
+					}
+				}
+				continue
+			}
+			client = jira.NewAPITokenClient(acct.CloudID, acct.SiteURL, store)
+			// Any consumer's 401 marks the account (D22: error, never revoked).
+			id := acct.ID
+			client.SetOnAPITokenDead(func() {
+				if err := database.SetJiraAccountAuthState(id, "error", jira.CodeAPITokenDead); err != nil {
+					logger.Printf("jira: account %d: record auth state: %v", id, err)
+				}
+			})
+		} else {
+			jiraCfg, _, err := resolveJiraOAuthConfigForAccount(cfg.WorkspaceDir(), acct)
+			if err != nil {
+				logger.Printf("jira: account %d: %v", acct.ID, err)
+				// No client on any layer, or the company's app is not the one
+				// the grant was issued to: the token can never be refreshed —
+				// Re-login needed (#1887 §5, P5), never revoked. Any other failure
+				// (a damaged client file) is shown on the row as it is, so an
+				// account that cannot sync never stays green.
+				if acct.Status == "ok" {
+					code := err.Error()
+					if errors.Is(err, errNoOAuthClient) || errors.Is(err, errClientChanged) {
+						code = jira.ClientRejectedCode(acct.CompanySlug)
+					}
+					if dbErr := database.SetJiraAccountAuthState(acct.ID, "error", code); dbErr != nil {
+						logger.Printf("jira: account %d: record auth state: %v", acct.ID, dbErr)
+					}
+				}
+				continue
+			}
+			client = jira.NewClient(acct.CloudID, jiraCfg, store)
+			// Resolved again at each refresh: a re-login through the company's
+			// new app while the daemon runs must not be refreshed through the
+			// client the daemon started with (#1887).
+			id := acct.ID
+			client.SetOAuthSource(jiraAccountOAuthSource(cfg.WorkspaceDir(), func() (db.JiraAccount, error) { return database.GetJiraAccount(id) }))
+		}
 		client.SetLogger(subLogger(logger, "[jira] "))
 		clients[acct.ID] = client
 	}
@@ -1856,7 +1945,21 @@ func wireGoogleSyncers(ctx context.Context, cfg *config.Config, database *db.DB,
 	}
 	var calSyncers []*calendar.Syncer
 	var gmSyncers []*gmail.Syncer
+	ownProjectPolicy := policy.Current()
 	for _, acct := range accounts {
+		if stopped, err := googleOwnProjectStopped(ownProjectPolicy, cfg.WorkspaceDir(), acct); err != nil {
+			// The policy forbids own projects and this account's company
+			// cannot be read: not wired, the real problem on the row.
+			logger.Printf("google: %v", err)
+			recordGoogleTokenError(database, logger, acct, logredact.Full(err))
+			continue
+		} else if stopped {
+			// Stopped by the organization's policy (AllowOwnGoogleProject,
+			// #1887 D24, POLICY-03): no client, no token refresh; the row,
+			// its files and data are left as they are.
+			logger.Printf("google: account %d: own Google projects are not allowed by your organization's policy; not syncing", acct.ID)
+			continue
+		}
 		store := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), acct.ID)
 		if !store.Exists() {
 			recordGoogleTokenError(database, logger, acct, "no token file — re-login required")
@@ -1868,13 +1971,23 @@ func wireGoogleSyncers(ctx context.Context, cfg *config.Config, database *db.DB,
 			recordGoogleTokenError(database, logger, acct, fmt.Sprintf("unreadable token file: %v", err))
 			continue
 		}
-		googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct.ID)
+		// The client is resolved together with the refresh token the clients
+		// keep in memory, so the pair stays one grant's for the daemon's
+		// life; a re-login reaches the daemon at its next wiring.
+		googleCfg, _, err := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct)
+		if err != nil {
+			logger.Printf("google: account %d: %v", acct.ID, err)
+			recordGoogleClientError(database, logger, acct, err)
+			continue
+		}
 		if cfg.Calendar.Enabled && acct.CalendarEnabled {
 			calClient, err := newCalendarClient(ctx, token.RefreshToken, googleCfg)
 			if err != nil {
 				recordGoogleWireError(database, logger, acct.ID, "calendar", err, errors.Is(err, calendar.ErrAuthRevoked))
 			} else {
-				calSyncers = append(calSyncers, calendar.NewSyncer(calClient, database, cfg, logger, acct.ID))
+				s := calendar.NewSyncer(calClient, database, cfg, logger, acct.ID)
+				s.SetClientCheck(googleClientCheck(cfg.WorkspaceDir(), database, acct.ID))
+				calSyncers = append(calSyncers, s)
 			}
 		}
 		if cfg.Gmail.Enabled && acct.GmailEnabled {
@@ -1883,7 +1996,9 @@ func wireGoogleSyncers(ctx context.Context, cfg *config.Config, database *db.DB,
 			if err != nil {
 				recordGoogleWireError(database, logger, acct.ID, "gmail", err, errors.Is(err, gmail.ErrAuthRevoked))
 			} else {
-				gmSyncers = append(gmSyncers, gmail.NewSyncer(gmClient, database, cfg, logger, acct.ID))
+				s := gmail.NewSyncer(gmClient, database, cfg, logger, acct.ID)
+				s.SetClientCheck(googleClientCheck(cfg.WorkspaceDir(), database, acct.ID))
+				gmSyncers = append(gmSyncers, s)
 			}
 		}
 	}
@@ -1903,11 +2018,58 @@ func recordGoogleTokenError(database *db.DB, logger *log.Logger, acct db.GoogleA
 	}
 }
 
+// googleClientCheck is a Google syncer's per-pass client check: the
+// account's row and client as they stand now. A company app that is not the
+// one the grant was issued to (a Replace, a forced MDM change), or none at
+// all, is oauthclient.ErrClientRejected — the pass stops and the row says
+// Re-login needed instead of a pass on the old pair writing "ok" over it.
+func googleClientCheck(workspaceDir string, database *db.DB, id int64) func() error {
+	return func() error {
+		acct, err := database.GetGoogleAccount(id)
+		if err != nil {
+			return fmt.Errorf("google account %d: %w", id, err)
+		}
+		_, _, err = resolveGoogleOAuthConfigForAccount(workspaceDir, acct)
+		if needsCompanyRelogin(err) {
+			return fmt.Errorf("%w: %w", oauthclient.ErrClientRejected, err)
+		}
+		return err
+	}
+}
+
+// recordGoogleClientError flags an account whose OAuth client cannot be
+// resolved: no client on any layer, or a company app that is not the one its
+// grant was issued to, is Re-login needed (invalid_client / unknown_client,
+// never revoked — #1887 P5); any other failure (a damaged credentials file)
+// is shown on the row as it is, so an account that cannot sync never stays
+// green. Only an "ok" or "error" row is changed.
+func recordGoogleClientError(database *db.DB, logger *log.Logger, acct db.GoogleAccount, err error) {
+	if needsCompanyRelogin(err) {
+		markClientRejected(database, logger, "google", acct.ID)
+		return
+	}
+	recordGoogleTokenError(database, logger, acct, logredact.Full(err))
+}
+
+// markClientRejected records that source's account id needs a sign-in
+// through the right OAuth client: 'error' with invalid_client / unknown_client,
+// never revoked (db.MarkAccountClientRejected, #1887 P5).
+func markClientRejected(database *db.DB, logger *log.Logger, source string, id int64) {
+	if _, err := database.MarkAccountClientRejected(source, id); err != nil {
+		logger.Printf("%s: account %d: record auth state: %v", source, id, err)
+	}
+}
+
 // recordGoogleWireError logs a per-account client-creation failure and
-// records its auth-state (revoked vs plain error) so the Desktop UI shows
-// the problem instead of a silently-dead account.
+// records its auth-state (revoked vs plain error, or Re-login needed for a
+// client Google refused) so the Desktop UI shows the problem instead of a
+// silently-dead account.
 func recordGoogleWireError(database *db.DB, logger *log.Logger, accountID int64, svc string, err error, revoked bool) {
 	logger.Printf("%s: account %d: failed to create client: %v", svc, accountID, err)
+	if errors.Is(err, oauthclient.ErrClientRejected) {
+		markClientRejected(database, logger, "google", accountID)
+		return
+	}
 	status := "error"
 	if revoked {
 		status = "revoked"
@@ -2014,7 +2176,6 @@ func outlookAuthenticator(cfg *config.Config, database *db.DB, acct db.EmailAcco
 		return nil
 	}
 
-	msCfg := resolveMicrosoftOAuthConfig()
 	return imap.RefreshingXOAUTH2Auth{
 		Username: acct.EmailAddress,
 		RefreshFunc: func(ctx context.Context) (string, error) {
@@ -2022,21 +2183,55 @@ func outlookAuthenticator(cfg *config.Config, database *db.DB, acct db.EmailAcco
 			if err != nil {
 				return "", fmt.Errorf("loading outlook credentials for account %d: %w", acct.ID, err)
 			}
-			accessToken, newRefreshToken, err := refreshOutlookAccessToken(ctx, msCfg, creds.RefreshToken)
+			accessToken, newRefreshToken, err := refreshOutlookAccount(ctx, cfg, database, acct.ID, creds.RefreshToken)
 			if err != nil {
-				if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", logredact.Full(err)); dbErr != nil {
-					logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
-				}
+				recordOutlookRefreshError(database, logger, acct.ID, err)
 				return "", fmt.Errorf("refreshing outlook token for account %d: %w", acct.ID, err)
 			}
-			if newRefreshToken != "" && newRefreshToken != creds.RefreshToken {
-				creds.RefreshToken = newRefreshToken
-				if err := store.Save(creds); err != nil {
-					logger.Printf("imap: account %d: failed to persist rotated refresh token: %v", acct.ID, err)
-				}
-			}
+			persistRotatedOutlookToken(store, creds, newRefreshToken, acct.ID, logger)
 			return accessToken, nil
 		},
+	}
+}
+
+// refreshOutlookAccount refreshes Outlook account id through its Microsoft
+// client resolved now, from the row as it is (#1887): a company app that
+// changed meanwhile, or no client at all, is oauthclient.ErrClientRejected
+// (Re-login needed) — never a refresh through the client the daemon started
+// with.
+func refreshOutlookAccount(ctx context.Context, cfg *config.Config, database *db.DB, id int64, refreshToken string) (accessToken, newRefreshToken string, err error) {
+	msCfg, err := resolveMicrosoftOAuthConfigForAccount(cfg, database, id)
+	if needsCompanyRelogin(err) {
+		return "", "", fmt.Errorf("%w: %w", oauthclient.ErrClientRejected, err)
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return refreshOutlookAccessToken(ctx, msCfg, refreshToken)
+}
+
+// persistRotatedOutlookToken saves the refresh token Microsoft rotated in, if
+// it did; a failed save is logged (the old one may still work once).
+func persistRotatedOutlookToken(store *imap.CredentialStore, creds *imap.Credentials, newRefreshToken string, id int64, logger *log.Logger) {
+	if newRefreshToken == "" || newRefreshToken == creds.RefreshToken {
+		return
+	}
+	creds.RefreshToken = newRefreshToken
+	if err := store.Save(creds); err != nil {
+		logger.Printf("imap: account %d: failed to persist rotated refresh token: %v", id, err)
+	}
+}
+
+// recordOutlookRefreshError records a failed Outlook refresh on the row: a
+// client Microsoft refused (or none to refresh with) is Re-login needed
+// (invalid_client / unknown_client, #1887 P5); anything else is the error.
+func recordOutlookRefreshError(database *db.DB, logger *log.Logger, id int64, err error) {
+	if errors.Is(err, oauthclient.ErrClientRejected) {
+		markClientRejected(database, logger, "outlook", id)
+		return
+	}
+	if dbErr := database.SetEmailAccountAuthState(id, "error", logredact.Full(err)); dbErr != nil {
+		logger.Printf("imap: account %d: record auth state: %v", id, dbErr)
 	}
 }
 
@@ -2181,7 +2376,6 @@ func buildLinearSyncers(cfg *config.Config, database *db.DB, logger *log.Logger)
 		logger.Printf("linear: failed to list accounts: %v", err)
 		return nil
 	}
-	oauthCfg := resolveLinearOAuthConfig()
 	var syncers []*linear.Syncer
 	for _, acct := range accounts {
 		store := linear.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
@@ -2193,13 +2387,57 @@ func buildLinearSyncers(cfg *config.Config, database *db.DB, logger *log.Logger)
 			}
 			continue
 		}
-		client := linear.NewClient(oauthCfg, store)
+		// A client that needs a company re-login, or a damaged client file,
+		// is shown on the row now (from "ok" only for the latter, the
+		// missing-token rule), never left green with no sync. A personal API
+		// key never refreshes, so it needs no client.
+		if !linearAPIKeyAccount(store) && linearClientProblem(cfg.WorkspaceDir(), database, acct, logger) {
+			continue
+		}
+		// The client is resolved again at each refresh, under the token
+		// lock, from the row as it is then (#1887): a re-login through a
+		// company's new app while the daemon runs is refreshed through it.
+		client := linear.NewClient(linear.OAuthConfig{}, store)
+		client.SetOAuthSource(linearAccountOAuthSource(cfg, database, acct.ID))
 		client.SetLogger(subLogger(logger, "[linear] "))
 		s := linear.NewSyncer(client, database, acct.ID, cfg.Linear.BackfillDays)
 		s.SetLogger(subLogger(logger, "[linear] "))
 		syncers = append(syncers, s)
 	}
 	return syncers
+}
+
+// linearAPIKeyAccount reports a token file holding a personal API key.
+func linearAPIKeyAccount(store *linear.TokenStore) bool {
+	tok, err := store.Load()
+	return err == nil && tok.IsAPIKey()
+}
+
+// linearClientProblem records on acct's row an OAuth client it cannot be
+// refreshed with — Re-login needed for a changed company app or none at all,
+// the error itself (from "ok" only) for a damaged client file — and reports
+// whether there was one.
+func linearClientProblem(workspaceDir string, database *db.DB, acct db.LinearAccount, logger *log.Logger) bool {
+	_, _, err := resolveLinearAccountClient(workspaceDir, acct)
+	if err == nil {
+		return false
+	}
+	logger.Printf("linear: account %d: %v", acct.ID, err)
+	if needsCompanyRelogin(err) {
+		markClientRejected(database, logger, "linear", acct.ID)
+	} else if acct.Status == "ok" {
+		if dbErr := database.SetLinearAccountAuthState(acct.ID, "error", logredact.Full(err)); dbErr != nil {
+			logger.Printf("linear: account %d: record auth state: %v", acct.ID, dbErr)
+		}
+	}
+	return true
+}
+
+// linkDenySource is the link deny list every media path reads afresh: the
+// build seed, the config, the stored company bundles and the forced MDM one
+// (companyForcedBundle, read at each call).
+func linkDenySource(cfg *config.Config, logger *log.Logger) func() []string {
+	return media.DenySource(cfg, cfg.WorkspaceDir(), func() string { return companyForcedBundle() }, logger)
 }
 
 // newMediaPipeline builds the media describe pass: the owner's uploads open
@@ -2213,7 +2451,7 @@ func newMediaPipeline(cfg *config.Config, database *db.DB, gen digest.Generator,
 		DB:           database,
 		Gen:          gen,
 		Prompts:      prompts.New(database, nil),
-		DenyHosts:    media.DenyHosts(cfg),
+		DenyHosts:    linkDenySource(cfg, logger),
 		Openers:      map[string]media.Opener{"chat": local, "target": local, "gmail": gmailMediaOpener(cfg, database), "imap": imapMediaOpener(cfg, database, logger)},
 		WorkspaceDir: wd,
 		Logger:       logger,

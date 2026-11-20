@@ -95,6 +95,7 @@ func runSlackBackfill(cmd *cobra.Command, _ []string) error {
 	client.SetLogger(logger)
 	orch := sync.NewOrchestrator(database, client, cfg, accountID)
 	orch.SetLogger(logger)
+	orch.SetDenyHosts(linkDenySource(cfg, logger))
 	orch.SetTokenTeam(token.TeamID)
 	orch.SetTokenScope(token.Scope)
 	det := newIssueKeyDetector(cfg, database, logger)

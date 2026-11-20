@@ -30,6 +30,10 @@ type Deps struct {
 	TeamID     string
 	Workspace  string
 	AIProvider ai.Provider // optional; if nil, falls back to ai.NewClient
+	// DenyHosts is the link deny list /sync's media discovery reads
+	// (media.DenySource with the forced company bundle); nil = the
+	// orchestrator's own (config and stored company bundles).
+	DenyHosts func() []string
 }
 
 // REPL is a simple line-oriented read-eval-print loop. No alternate screen,

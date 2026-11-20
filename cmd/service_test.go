@@ -167,6 +167,7 @@ func runService(t *testing.T, args ...string) (string, error) {
 	for _, c := range serviceCmd.Commands() {
 		c.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
 	}
+	resetSetFlags(rootCmd)
 	flagConfig, flagWorkspace = cfgPath, ws
 	for _, name := range []string{"config", "workspace"} {
 		rootCmd.PersistentFlags().Lookup(name).Changed = false

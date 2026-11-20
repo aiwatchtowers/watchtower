@@ -85,8 +85,12 @@ func (c *Client) Confluence() *ConfluenceAPI {
 }
 
 // base is the Confluence Cloud REST API root for this client's site:
-// https://api.atlassian.com/ex/confluence/{cloudID}.
+// https://api.atlassian.com/ex/confluence/{cloudID} (an API token: its kind's
+// root, apiTokenBase).
 func (a *ConfluenceAPI) base() string {
+	if a.c.isAPIToken() {
+		return a.c.apiTokenRoot("confluence")
+	}
 	return a.c.apiRoot + "/ex/confluence/" + a.c.cloudID
 }
 
@@ -100,7 +104,7 @@ func (a *ConfluenceAPI) GetJSON(ctx context.Context, path string, q url.Values, 
 		fullURL += "?" + q.Encode()
 	}
 
-	resp, err := a.c.doURL(ctx, http.MethodGet, fullURL, nil, jsonAccept)
+	resp, err := a.c.doURL(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
 		return err
 	}
@@ -128,7 +132,7 @@ func (a *ConfluenceAPI) PutJSON(ctx context.Context, path string, body any, out 
 		return fmt.Errorf("encoding PUT %s: %w", path, err)
 	}
 
-	resp, err := a.c.doURL(ctx, http.MethodPut, a.base()+path, data, jsonAccept)
+	resp, err := a.c.doURL(ctx, http.MethodPut, a.base()+path, data)
 	if err != nil {
 		return err
 	}

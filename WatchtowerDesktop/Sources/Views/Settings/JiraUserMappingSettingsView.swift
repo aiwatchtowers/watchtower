@@ -1,3 +1,4 @@
+import DesignKit
 import SwiftUI
 import GRDB
 import WatchtowerCore
@@ -14,7 +15,7 @@ struct JiraUserMappingSettingsView: View {
     @State private var isResolving = false
 
     var body: some View {
-        Section("User Mapping") {
+        SettingsSection(title: "User Mapping") {
             DisclosureGroup(isExpanded: $isExpanded) {
                 if mappings.isEmpty {
                     Text("No Jira users synced yet")

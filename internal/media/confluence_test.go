@@ -290,7 +290,7 @@ func TestConfluenceRecorder_RefusesSitesAndDeniedHosts(t *testing.T) {
 	c := newConfEnv(t)
 	_, err := c.d.Exec(`UPDATE jira_accounts SET site_url = 'https://wiki.acme.example', cloud_id = 'cloud-1'`)
 	require.NoError(t, err)
-	c.engine = extsync.New(c.d, extsync.Options{Media: ConfluenceRecorder([]string{"intra.example.org"})})
+	c.engine = extsync.New(c.d, extsync.Options{Media: ConfluenceRecorder(func() []string { return []string{"intra.example.org"} })})
 	c.engine.SetFetcher(c.src.JiraAccountID, c.f)
 	c.f.page("p1", 1, confMod, "page body",
 		extsync.MediaRef{Kind: "link", Locator: "url:https://example.com/a", URL: "https://example.com/a?utm_source=x"},
@@ -457,4 +457,23 @@ func TestConfluence_ImageAndLinkToSameURLDescribedOnce(t *testing.T) {
 	assert.Len(t, gets(), fetched, "nothing is fetched again")
 	imgCalls, _ := c.gen.calls()
 	assert.Equal(t, 1, imgCalls, "one description")
+}
+
+// TestConfluenceRecorder_ReadsDenyListOncePerRefresh: the recorder runs in
+// the item's write transaction, so it reads the deny list (company files) once
+// per confluenceDenyRefresh, not once per document.
+func TestConfluenceRecorder_ReadsDenyListOncePerRefresh(t *testing.T) {
+	c := newConfEnv(t)
+	reads := 0
+	c.engine = extsync.New(c.d, extsync.Options{Media: ConfluenceRecorder(func() []string { reads++; return []string{"intra.example.org"} })})
+	c.engine.SetFetcher(c.src.JiraAccountID, c.f)
+	for _, id := range []string{"p1", "p2"} {
+		c.f.page(id, 1, confMod, "page body", extsync.MediaRef{Kind: "link", Locator: "url:https://example.com/" + id, URL: "https://example.com/" + id})
+	}
+	c.sync()
+
+	var n int
+	require.NoError(t, c.d.QueryRow(`SELECT COUNT(*) FROM media_items WHERE kind = 'link'`).Scan(&n))
+	assert.Equal(t, 2, n, "both documents recorded their link")
+	assert.Equal(t, 1, reads)
 }

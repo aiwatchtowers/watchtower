@@ -18,10 +18,18 @@ final class JiraAccountsViewModel {
     private(set) var accounts: [JiraAccount] = []
     var isConnecting = false
     var error: String?
-    /// The last account read failed; nil once one succeeds. Only the read:
-    /// an action's failure stays in `error` (the Connections tab's
-    /// "Couldn't read accounts" reads this).
+    /// The last account read failed (the error's own text); nil once one
+    /// succeeds. Only the read: an action's failure stays in `error` (the
+    /// Connections tab's "Couldn't read accounts" reads this).
     private(set) var readError: String?
+    /// A first account read finished, well or not: before it the detail
+    /// shows its loading line, never "nothing connected".
+    private(set) var hasRead = false
+    /// Accounts Go reports on the retiring shared app (#1887 §7 banners).
+    let sharedFlags = SharedAppFlagReader.jira()
+    /// Every successful refresh also reads the shared-app flags; on in the
+    /// app, off by default so a test never runs a real CLI.
+    @ObservationIgnored var readsAccountFlags: Bool
 
     /// The restart the last successful account change kicked off under
     /// `.restart` (nil under `.deferred`) — held so tests can await it.
@@ -60,11 +68,13 @@ final class JiraAccountsViewModel {
     init(
         dbPool: DatabasePool,
         daemon: any DaemonRestarting = LiveDaemonRestarter(),
-        cliPath: @escaping () -> String? = Constants.findCLIPath
+        cliPath: @escaping () -> String? = Constants.findCLIPath,
+        readsAccountFlags: Bool = false
     ) {
         self.dbPool = dbPool
         self.daemon = daemon
         self.cliPath = cliPath
+        self.readsAccountFlags = readsAccountFlags
     }
 
     // MARK: - Refresh
@@ -89,11 +99,15 @@ final class JiraAccountsViewModel {
             let rows = try await dbPool.read { db in try JiraAccountQueries.fetchAll(db) }
             self.accounts = rows
             readError = nil
+            hasRead = true
             await onAccountsChanged?()
         } catch {
             self.error = "Failed to load accounts: \(error.localizedDescription)"
-            readError = self.error
+            readError = error.localizedDescription
+            hasRead = true
+            return
         }
+        if readsAccountFlags { await sharedFlags.read(cliPath: cliPath()) }
     }
 
     // MARK: - Add
@@ -463,6 +477,13 @@ final class JiraAccountsViewModel {
         let result = await Self.runCLI(path: cliPath, arguments: args)
         isConnecting = false
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
+    }
+
+    /// The API-token sheet (`AtlassianTokenFormModel`) connected a site or
+    /// saved a new token: reload and re-wire the daemon, as a finished
+    /// `jira add` / `jira login` does.
+    func tokenWroteAccount(daemonPolicy: DaemonRestartPolicy) {
+        applyResult((0, "", ""), failurePrefix: "", daemonPolicy: daemonPolicy)
     }
 
     private func applyResult(

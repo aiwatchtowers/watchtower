@@ -3,6 +3,23 @@ import Security
 import Testing
 @testable import WatchtowerDesktop
 
+/// Collects a launch step's log lines across threads.
+private final class LockedReports: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+    var items: [String] { lock.withLock { stored } }
+    func append(_ line: String) { lock.withLock { stored.append(line) } }
+}
+
+/// The channel of an install the company bridge has not migrated.
+private func unmigrated(
+    flavor: String, feedURL: String?, clientID: String?, clientSecret: String?
+) -> UpdateService.UpdateChannel {
+    UpdateService.resolveChannel(
+        flavor: flavor, feedURL: feedURL, clientID: clientID, clientSecret: clientSecret, companyMigrated: false
+    )
+}
+
 @Suite("UpdateService Pure Helpers")
 struct UpdateServicePureTests {
     @Test("isNewer compares semantic versions")
@@ -149,35 +166,118 @@ struct UpdateServicePureTests {
 struct UpdateChannelTests {
     @Test("public flavor routes to GitHub")
     func publicChannel() {
-        #expect(UpdateService.resolveChannel(flavor: "", feedURL: nil, clientID: nil, clientSecret: nil) == .publicGitHub)
+        #expect(unmigrated(flavor: "", feedURL: nil, clientID: nil, clientSecret: nil) == .publicGitHub)
         // Even with stray keys present, a flavorless build stays on GitHub.
-        #expect(UpdateService.resolveChannel(flavor: "", feedURL: "https://x", clientID: "a", clientSecret: "b") == .publicGitHub)
+        #expect(unmigrated(flavor: "", feedURL: "https://x", clientID: "a", clientSecret: "b") == .publicGitHub)
     }
 
     @Test("dev flavor never updates, keys or not")
     func devDisabled() {
-        #expect(UpdateService.resolveChannel(flavor: "dev", feedURL: nil, clientID: nil, clientSecret: nil) == .disabled)
-        #expect(UpdateService.resolveChannel(flavor: "dev", feedURL: "https://feed.example", clientID: "a", clientSecret: "b") == .disabled)
+        #expect(unmigrated(flavor: "dev", feedURL: nil, clientID: nil, clientSecret: nil) == .disabled)
+        #expect(unmigrated(flavor: "dev", feedURL: "https://feed.example", clientID: "a", clientSecret: "b") == .disabled)
     }
 
     @Test("flavored build without complete keys is disabled — never falls back to public")
     func flavoredMissingKeys() {
-        #expect(UpdateService.resolveChannel(flavor: "corp", feedURL: nil, clientID: nil, clientSecret: nil) == .disabled)
-        #expect(UpdateService.resolveChannel(flavor: "corp", feedURL: "https://feed.example", clientID: "a", clientSecret: nil) == .disabled)
-        #expect(UpdateService.resolveChannel(flavor: "corp", feedURL: "https://feed.example", clientID: "", clientSecret: "b") == .disabled)
-        #expect(UpdateService.resolveChannel(flavor: "corp", feedURL: nil, clientID: "a", clientSecret: "b") == .disabled)
+        #expect(unmigrated(flavor: "corp", feedURL: nil, clientID: nil, clientSecret: nil) == .disabled)
+        #expect(unmigrated(flavor: "corp", feedURL: "https://feed.example", clientID: "a", clientSecret: nil) == .disabled)
+        #expect(unmigrated(flavor: "corp", feedURL: "https://feed.example", clientID: "", clientSecret: "b") == .disabled)
+        #expect(unmigrated(flavor: "corp", feedURL: nil, clientID: "a", clientSecret: "b") == .disabled)
     }
 
     @Test("flavored build with full keys gets the gated channel")
     func flavoredGated() {
-        let ch = UpdateService.resolveChannel(flavor: "corp", feedURL: "https://feed.example/p", clientID: "id", clientSecret: "sec")
+        let ch = unmigrated(flavor: "corp", feedURL: "https://feed.example/p", clientID: "id", clientSecret: "sec")
         #expect(ch == .gated(feedURL: URL(string: "https://feed.example/p")!, clientID: "id", clientSecret: "sec"))
+    }
+
+    @Test("corp build stays gated until the company bridge has migrated it (#1887 §5)")
+    func corpStaysGatedUntilMigrated() {
+        let gated = UpdateService.resolveChannel(
+            flavor: "corp", feedURL: "https://feed.example/p", clientID: "id", clientSecret: "sec", companyMigrated: false
+        )
+        #expect(gated == .gated(feedURL: URL(string: "https://feed.example/p")!, clientID: "id", clientSecret: "sec"))
+        #expect(UpdateService.resolveChannel(
+            flavor: "corp", feedURL: nil, clientID: nil, clientSecret: nil, companyMigrated: false
+        ) == .disabled)
+    }
+
+    @Test("a migrated corp build may take the public feed; dev never updates")
+    func corpMayTakePublicFeedAfterMigrated() {
+        #expect(UpdateService.resolveChannel(
+            flavor: "corp", feedURL: "https://feed.example/p", clientID: "id", clientSecret: "sec", companyMigrated: true
+        ) == .publicGitHub)
+        #expect(UpdateService.resolveChannel(
+            flavor: "corp", feedURL: nil, clientID: nil, clientSecret: nil, companyMigrated: true
+        ) == .publicGitHub)
+        #expect(UpdateService.resolveChannel(
+            flavor: "dev", feedURL: nil, clientID: nil, clientSecret: nil, companyMigrated: true
+        ) == .disabled)
+    }
+
+    @Test("the service reads the marker only for a flavored build")
+    func serviceReadsMarker() async {
+        await MainActor.run {
+            let svc = UpdateService()
+            var reads = 0
+            svc.companyMigrated = { reads += 1; return true }
+            svc.buildFlavor = ""
+            #expect(svc.channel == .publicGitHub)
+            svc.buildFlavor = "dev"
+            #expect(svc.channel == .disabled)
+            #expect(reads == 0)
+            svc.buildFlavor = "corp"
+            #expect(svc.channel == .publicGitHub)
+            #expect(reads == 1)
+            svc.companyMigrated = { false }
+            #expect(svc.channel == .disabled, "no gated keys and not migrated")
+        }
+    }
+
+    @Test("the bridge runs only on a flavored build other than dev")
+    func bridgeAppliesToCorpOnly() {
+        #expect(!CompanyBridgeLaunch.applies(flavor: ""))
+        #expect(!CompanyBridgeLaunch.applies(flavor: "dev"))
+        #expect(CompanyBridgeLaunch.applies(flavor: "corp"))
+        var ran = false
+        CompanyBridgeLaunch.run(flavor: "", cliPath: { ran = true; return nil }()) { _ in }
+        #expect(!ran, "the public build never resolves the CLI")
+
+        let reports = LockedReports()
+        CompanyBridgeLaunch.run(flavor: "corp", cliPath: nil) { reports.append($0) }
+        #expect(reports.items == ["Company bridge skipped: the watchtower CLI was not found"])
+    }
+
+    @Test("migrated means every workspace with a database carries the marker")
+    func everyWorkspaceMigrated() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("wt-bridge-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: base), "no workspace is not migrated")
+        for name in ["alpha", "beta"] {
+            try FileManager.default.createDirectory(atPath: "\(base)/\(name)", withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: "\(base)/\(name)/watchtower.db", contents: Data())
+        }
+        FileManager.default.createFile(atPath: "\(base)/alpha/\(CompanyBridgeLaunch.markerName)", contents: Data())
+        #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: base))
+        FileManager.default.createFile(atPath: "\(base)/beta/\(CompanyBridgeLaunch.markerName)", contents: Data())
+        #expect(CompanyBridgeLaunch.workspacesMigrated(basePath: base))
+    }
+
+    @Test("the launch migrates first, then bridges (the bridge needs the company columns)")
+    func migrateThenBridgeOrder() {
+        var steps: [String] = []
+        CompanyBridgeLaunch.migrateThenBridge(migrate: { steps.append("migrate") }, bridge: { steps.append("bridge") })
+        #expect(steps == ["migrate", "bridge"])
     }
 
     @Test("non-https or malformed feed URL is disabled")
     func badFeedURL() {
-        #expect(UpdateService.resolveChannel(flavor: "corp", feedURL: "http://feed.example", clientID: "a", clientSecret: "b") == .disabled)
-        #expect(UpdateService.resolveChannel(flavor: "corp", feedURL: "not a url", clientID: "a", clientSecret: "b") == .disabled)
+        #expect(UpdateService.resolveChannel(
+            flavor: "corp", feedURL: "http://feed.example", clientID: "a", clientSecret: "b", companyMigrated: false
+        ) == .disabled)
+        #expect(UpdateService.resolveChannel(
+            flavor: "corp", feedURL: "not a url", clientID: "a", clientSecret: "b", companyMigrated: false
+        ) == .disabled)
     }
 
     @Test("expected public asset name derives from the release tag")
@@ -781,6 +881,49 @@ struct UpdateServiceRelaunchTests {
         await svc.install()
         #expect(svc.state == .error("Cannot determine current app location"))
         #expect(install.calls.isEmpty)
+    }
+
+    @Test("a migrated corp build bridges again before a public install; a failed bridge installs nothing")
+    func corpBridgesBeforePublicInstall() async {
+        let install = InstallRecorder()
+        let svc = service(RelaunchRecorder(), appURL: appURL)
+        svc.isBusy = { false }
+        svc.teamIdentifier = { nil } // the step right after the bridge fails visibly
+        svc.installSteps = install.steps
+        svc.buildFlavor = "corp"
+        svc.companyMigrated = { true }
+        let runs = LockedReports()
+        svc.bridgeBeforeInstall = { runs.append("bridge"); return false }
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        await svc.install()
+        #expect(svc.state == .error(UpdateService.bridgeFailedMessage))
+        #expect(runs.items == ["bridge"])
+        #expect(install.calls.isEmpty)
+
+        svc.bridgeBeforeInstall = { runs.append("bridge"); return true }
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        await svc.install()
+        guard case .error(let message) = svc.state else {
+            Issue.record("expected the Team ID error past the bridge, got \(svc.state)")
+            return
+        }
+        #expect(message.contains("Team ID"))
+        #expect(runs.items == ["bridge", "bridge"])
+
+        // A workspace without the marker by install time stops it too, even
+        // when the bridge itself succeeded.
+        svc.companyMigrated = { false }
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        await svc.install()
+        #expect(svc.state == .error(UpdateService.bridgeFailedMessage))
+        #expect(runs.items == ["bridge", "bridge", "bridge"])
+        #expect(install.calls.isEmpty)
+
+        // The public build never runs it.
+        svc.buildFlavor = ""
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        await svc.install()
+        #expect(runs.items == ["bridge", "bridge", "bridge"])
     }
 }
 

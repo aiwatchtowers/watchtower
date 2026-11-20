@@ -14,10 +14,12 @@ Your company's configuration profile sets the value, and the app follows it unti
 - Whether automations may run shell commands.
 - Which AI provider Watchtower uses (and so which coding agent a workbench session can start), and whether the chat may use claude.ai tools.
 - Whether a revoked account's data is deleted.
+- Your [company setup](../start/company-setup.md): its card under **Connections → Companies** shows **Managed by your organization** and **Connect all**, and nothing connects before you press it.
+- Whether you may connect Jira with an API token, and whether you may use your own Google project for Gmail.
 
 ## What happens to your data
 
-Nothing is deleted because of a rule. A source your company does not allow shows **Blocked by your organization**: it stops syncing, and what was already synced stays. An automation that needs something not allowed shows **Blocked by your organization's policy** and does not run that step. If the iPhone is turned off by the rule, the phone's copy is removed and you pair it again once sync is allowed.
+Nothing is deleted because of a rule. A source your company does not allow shows **Blocked by your organization**: it stops syncing, and what was already synced stays. An automation that needs something not allowed shows **Blocked by your organization's policy** and does not run that step. A Jira token site or an own-project Google account that a rule stops says "Stopped by your organization — data kept", with a card under it that names the rule and links **What IT can set**; the button to add one is gone. If the iPhone is turned off by the rule, the phone's copy is removed and you pair it again once sync is allowed.
 
 ## Where to see the rules
 <!-- learn
@@ -30,7 +32,7 @@ kind: feature
 since: 0.25.0
 -->
 
-Open **Settings → System → Privacy**. The **Organization policy** section lists every rule in plain words, and any problem with the profile. The command `watchtower policy show` prints the same list.
+Open **Settings → System → Privacy**. The **Organization policy** section lists every rule in plain words, and any problem with the profile; under them, **IT guide → What IT can set** opens the page listing every setting a profile can force. A blocked source's notice in Connections has the same link. The command `watchtower policy show` prints the same list.
 
 ## Related
 

@@ -2,7 +2,8 @@ import Foundation
 
 /// The plain words of Settings → System → Privacy → Organization policy
 /// (#608): one line per key the profile sets, then the reserved keys it sets
-/// and any profile problems. Pure.
+/// and any profile problems. Pure. The IT guide row under them is
+/// `ManagedPolicyHelp`'s.
 package enum OrganizationPolicyPresentation {
     package struct Line: Equatable, Sendable {
         package let label: String
@@ -32,6 +33,16 @@ package enum OrganizationPolicyPresentation {
         }
         if let b = p.purgeRevokedData {
             out.append(Line(label: "Delete a revoked account's data", value: b ? "on" : "off"))
+        }
+        // The company's name only: the bundle carries client ids and secrets.
+        if let wire = p.companyBundle, case .success(let bundle) = CompanyBundle.parse(wire, origin: .mdm) {
+            out.append(Line(label: "Company", value: bundle.company))
+        }
+        if let b = p.allowAtlassianAPIToken {
+            out.append(Line(label: "Atlassian API tokens", value: allowed(b)))
+        }
+        if let b = p.allowOwnGoogleProject {
+            out.append(Line(label: "Own Google projects", value: allowed(b)))
         }
         if let b = p.allowBackgroundAI {
             out.append(Line(label: "Background AI", value: b ? "Allowed by your organization" : "Turned off by your organization"))

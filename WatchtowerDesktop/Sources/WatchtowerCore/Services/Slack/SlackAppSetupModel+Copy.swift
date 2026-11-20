@@ -43,6 +43,8 @@ extension SlackAppSetupModel {
         StepLine(id: "write_link", label: "Writing the connect link to its About page", mark: .waiting),
         StepLine(id: "connect", label: "Connecting your Slack account", mark: .waiting)
     ]
+    /// The wizard's create (company screens spec §2.5): no link, no connect.
+    package static let wizardCreateSteps = Array(createSteps.prefix(2))
     package static let adoptSteps = [
         StepLine(id: "check_token", label: "Checking the token", mark: .waiting),
         StepLine(id: "update_app", label: "Updating the app", mark: .waiting)
@@ -268,20 +270,29 @@ extension SlackAppSetupModel {
         return false
     }
 
-    private func problemLine(_ problem: Problem) -> String {
+    /// `wrong_workspace` (company screens spec §2.5): the app is this Mac's in
+    /// another workspace than the token's.
+    package static func wrongWorkspaceLine(appID: String, appTeam: String, workspace: String, link: Bool = true) -> String {
+        let team = appTeam.isEmpty ? "" : " (\(appTeam))"
+        let next = link ? "Check the link and paste it again." : "Check the App ID and enter it again."
+        return "App \(appID) belongs to another workspace\(team), not \(workspace). \(next)"
+    }
+
+    /// The line a problem shows (the company wizard words two of them itself).
+    package func problemLine(_ problem: Problem) -> String {
         let nothing = changesNothingCreated ? "Nothing was created." : "Nothing was changed."
         switch problem {
-        case .badToken: return Self.badTokenBody
-        case .notAllowed: return Self.notAllowedBody
-        case .notCollaborator: return Self.notCollaboratorBody
+        case .badToken, .notAllowed, .notCollaborator, .busy, .saveFailed, .unreadableAnswer:
+            return Self.fixedProblemLine(problem) ?? ""
         case let .network(error): return "Could not reach Slack: \(error). \(nothing)"
         case let .refused(code):
             return changesNothingCreated ? "Slack refused the app: \(code). \(nothing)" : "Slack refused the change: \(code). \(nothing)"
-        case .busy: return Self.busyBody
         case let .storage(teamID):
             return Self.storageBody(rowAction: recordRows.first { $0.record.teamID == teamID && !teamID.isEmpty }?.label)
         case let .wrongTeam(workspace):
             return "That token is for \(workspace), not this setup's workspace. Generate one in the right workspace."
+        case let .wrongWorkspace(appID, appTeam, workspace):
+            return Self.wrongWorkspaceLine(appID: appID, appTeam: appTeam, workspace: workspace, link: mode == .wizard)
         case let .noRecord(workspace):
             return "This Mac has no unfinished setup for \(workspace), so there is nothing to add the link to."
         case let .noApp(workspace):
@@ -291,13 +302,22 @@ extension SlackAppSetupModel {
             return clientID ? Self.clientIDFormatLine : Self.appIDFormatLine
         case let .notPending(workspace):
             return Self.notPendingLine(workspace)
-        case .saveFailed:
-            return Self.saveFailedBody
         case let .stopped(detail):
             return "The setup stopped before it finished: \(detail). Connections → Slack shows where it got to; "
                 + "the app is never created twice."
-        case .unreadableAnswer:
-            return Self.unreadableAnswerBody
+        }
+    }
+
+    /// The line of a problem whose words never vary; nil for the others.
+    private static func fixedProblemLine(_ problem: Problem) -> String? {
+        switch problem {
+        case .badToken: badTokenBody
+        case .notAllowed: notAllowedBody
+        case .notCollaborator: notCollaboratorBody
+        case .busy: busyBody
+        case .saveFailed: saveFailedBody
+        case .unreadableAnswer: unreadableAnswerBody
+        default: nil
         }
     }
 

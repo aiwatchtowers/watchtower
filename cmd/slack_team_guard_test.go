@@ -197,7 +197,7 @@ func TestWriteSlackGrant_RepairOnTheWatermarkDayWarnsWithBackfill(t *testing.T) 
 	var warn bytes.Buffer
 	_, err := writeSlackGrant(context.Background(), env.cfg, env.db, env.id,
 		slackIdentity{TeamID: "T_HOME", TeamName: "Acme", UserID: "U_OWNER"},
-		slackconnect.Grant{AccessToken: "xoxp-new", ClientID: "5555.6666", TeamID: "T_HOME", UserID: "U_OWNER"}, &warn)
+		slackconnect.Grant{AccessToken: "xoxp-new", ClientID: "5555.6666", TeamID: "T_HOME", UserID: "U_OWNER"}, "", &warn)
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(warn.String(), "watchtower slack backfill --account 1"), warn.String())
 	acct, err := env.db.GetSlackAccount(env.id)

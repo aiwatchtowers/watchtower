@@ -241,7 +241,7 @@ enum DesignShotCatalog {
             DesignShot(name: "settings-privacy", size: NSSize(width: 640, height: 420)) {
                 AnyView(HomeShotFixtures.privacySettings().shotFrame().detailBackground())
             },
-            DesignShot(name: "settings-organization-policy", size: NSSize(width: 640, height: 600)) {
+            DesignShot(name: "settings-organization-policy", size: NSSize(width: 640, height: 760)) {
                 AnyView(HomeShotFixtures.organizationPolicy().shotFrame().detailBackground())
             },
             DesignShot(name: "connections-blocked", size: NSSize(width: 900, height: 520)) {
@@ -664,6 +664,7 @@ enum DesignShotCatalog {
             + ComposerShotFixtures.shots // The composer on every Mac surface, before and after ChatUI (#1822 T13).
             + ApprovalCardShotFixtures.shots // The approval card before and after its move to ChatUI (#1822 T15).
             + RoutingPillShotFixtures.shots // The routing pill and fallback card before and after ChatUI (#1822 T17).
+            + CompanySetupShotFixtures.shots // Company setup screens spec (#1887), design only.
             + MultiFolderShotFixtures.shots // The multi-folder workbench spec's mockups (#2003), design only.
             + BackgroundAIConsentShotFixtures.shots // Background AI consent spec (#1886), design only.
             + WatchmanShotFixtures.shots // Watchman spec (#1824), design only.

@@ -19,8 +19,15 @@ ifeq ($(strip $(BUILD_FLAVOR)),)
 $(error build profile '$(ENV_FILE)' must set BUILD_FLAVOR)
 endif
 endif
+# Mirror of build-app.sh's company-name block: a flavored build other than dev
+# (ambient or from a profile) names the company its baked clients are bridged to (#1887 T11a).
+ifneq ($(filter-out dev,$(strip $(BUILD_FLAVOR))),)
+ifeq ($(strip $(BUILD_COMPANY_NAME)),)
+$(error BUILD_COMPANY_NAME is required for the corp flavor)
+endif
+endif
 export ENV_FILE
-export WATCHTOWER_OAUTH_CLIENT_ID WATCHTOWER_OAUTH_CLIENT_SECRET RETIRED_SLACK_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_SECRET WATCHTOWER_JIRA_CLIENT_ID WATCHTOWER_JIRA_CLIENT_SECRET WATCHTOWER_PURGE_DEFAULT WATCHTOWER_LINK_FETCH_DENY_HOSTS BUILD_FLAVOR
+export WATCHTOWER_OAUTH_CLIENT_ID WATCHTOWER_OAUTH_CLIENT_SECRET RETIRED_SLACK_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_SECRET WATCHTOWER_JIRA_CLIENT_ID WATCHTOWER_JIRA_CLIENT_SECRET WATCHTOWER_PURGE_DEFAULT WATCHTOWER_LINK_FETCH_DENY_HOSTS BUILD_FLAVOR BUILD_COMPANY_NAME
 
 BINARY_NAME := watchtower
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -36,7 +43,10 @@ JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 PURGE_DEFAULT ?= $(WATCHTOWER_PURGE_DEFAULT)
 # Comma-separated, no spaces: hosts the media pass never fetches (corp build).
 LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
-LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/auth.RetiredSharedClientID=$(RETIRED_SLACK_CLIENT_ID) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS) -X watchtower/internal/hub/identity.KeychainBuildFlag=false"
+# The company name may hold spaces (single-quoted in ldflags); the quotes a
+# shell-sourced profile needs around it are not part of it.
+COMPANY_NAME := $(subst ',,$(subst ",,$(BUILD_COMPANY_NAME)))
+LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X 'watchtower/cmd.BuildCompanyName=$(COMPANY_NAME)' -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/auth.RetiredSharedClientID=$(RETIRED_SLACK_CLIENT_ID) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS) -X watchtower/internal/hub/identity.KeychainBuildFlag=false"
 
 .PHONY: golangci-version-check build bridge-build test test-verbose test-cover cover-packages test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test chattext-test chat-test interface-test gen-interface gen-interface-check e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
 

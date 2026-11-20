@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/oauthclient"
 )
 
 // Syncer fetches Gmail inbox messages and stores them.
@@ -31,6 +32,10 @@ type Syncer struct {
 
 	// ownEmail is the account's own address, read once (fromOwner).
 	ownEmail string
+
+	// clientCheck, when set, vets the account's OAuth client before each
+	// pass (SetClientCheck).
+	clientCheck func() error
 }
 
 // AccountID returns the google_accounts row this syncer serves.
@@ -53,6 +58,26 @@ func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.
 	return &Syncer{client: client, db: database, cfg: cfg, logger: logger, accountID: accountID}
 }
 
+// SetClientCheck installs a check run at the start of every Sync: the
+// account's OAuth client as it stands now (#1887). The client keeps the
+// refresh token and OAuth client it was built with, so without it a pass
+// would keep syncing — and writing "ok" over a Re-login mark — after the
+// company changed its app. A check error ends the pass and is recorded as
+// the pass's auth result (oauthclient.ErrClientRejected: Re-login needed).
+func (s *Syncer) SetClientCheck(check func() error) { s.clientCheck = check }
+
+// checkClient runs the installed client check, recording a failure.
+func (s *Syncer) checkClient(ctx context.Context) error {
+	if s.clientCheck == nil {
+		return nil
+	}
+	if err := s.clientCheck(); err != nil {
+		s.recordAuthResult(ctx, err)
+		return err
+	}
+	return nil
+}
+
 // noiseLabels are Gmail categories we skip before AI ever sees them.
 var noiseLabels = map[string]bool{"CATEGORY_PROMOTIONS": true, "CATEGORY_SOCIAL": true}
 
@@ -60,6 +85,9 @@ var noiseLabels = map[string]bool{"CATEGORY_PROMOTIONS": true, "CATEGORY_SOCIAL"
 // the watermark. Returns the count of stored messages.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	s.firstSyncFrom = time.Time{}
+	if err := s.checkClient(ctx); err != nil {
+		return 0, err
+	}
 	days := s.cfg.Gmail.InitialHistoryDays
 	if days <= 0 {
 		days = config.DefaultGmailInitialHistoryDays
@@ -320,6 +348,13 @@ func (s *Syncer) recordAuthResult(ctx context.Context, err error) {
 	}
 	if ctx.Err() != nil {
 		s.logger.Printf("gmail: sync cancelled, leaving auth state untouched: %v", err)
+		return
+	}
+	if errors.Is(err, oauthclient.ErrClientRejected) {
+		// Re-login needed, never revoked: no purge clock (PURGE-01, #1887).
+		if _, dbErr := s.db.MarkAccountClientRejected("google", s.accountID); dbErr != nil {
+			s.logger.Printf("gmail: record auth state: %v", dbErr)
+		}
 		return
 	}
 	status := "error"
