@@ -210,7 +210,7 @@ struct WorkchatLiveLineView: View {
         .foregroundStyle(row.warning ? WorkchatLiveLine.warningToneUse.tone.color : PhoneTone.secondary.color)
         .padding(.horizontal, Spacing.large)
         .frame(maxWidth: .infinity, minHeight: PhoneMetrics.minTouch, alignment: .leading)
-        .background(Fill.rest)
+        .background(Fill.rest, ignoresSafeAreaEdges: [])
     }
 
     private var activity: some View {
@@ -251,7 +251,7 @@ struct WorkchatStepsSlotView: View {
         }
         .defaultScrollAnchor(.bottom)
         .frame(height: WorkchatLivePresentation.stepsHeight(rowHeight: rowHeight) + 2 * Spacing.small)
-        .background(Fill.rest)
+        .background(Fill.rest, ignoresSafeAreaEdges: [])
     }
 
     private func step(_ row: WorkchatLivePresentation.StepRow) -> some View {
