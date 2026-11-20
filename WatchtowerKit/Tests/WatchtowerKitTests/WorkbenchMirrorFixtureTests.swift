@@ -685,7 +685,9 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
 
         let sub = try SessionChat.decode(payload: try fixture("session_chat_subagent"))
         XCTAssertEqual(sub.liveVersion, 1)
-        XCTAssertNil(sub.activityLive)
+        // A live agent record carries the subagent's own block (#2112 Task 3 review F4).
+        XCTAssertEqual(sub.activityLive?.conversation, "a1b2")
+        XCTAssertEqual(sub.activityLive?.current?.summary, "Read the parser")
         XCTAssertNil(sub.liveError)
     }
 
