@@ -55,7 +55,7 @@ struct SessionChatSubagentView: View {
                              done: WorkchatLivePresentation.done(from: entries), paneKey: paneKey, memory: memory,
                              feedLoaded: !loading, feedError: error,
                              onRetry: { refreshID = UUID() }, onRetryList: { refreshID = UUID() },
-                             onOpenAgent: onOpenSubagent)
+                             onOpenAgent: onOpenSubagent, isWatched: isWatched)
         }
             .task(id: SessionSubagentFollowKey(follow: followKey, retry: refreshID, parentToolUseID: parentToolUseID)) {
                 await store.followSubagent(
@@ -92,6 +92,9 @@ struct SessionChatSubagentView: View {
                 if !isActive() { live = nil }
             }
     }
+
+    /// The follow's watch sees every change: the line is then current however quiet.
+    private func isWatched() -> Bool { store.isSubagentWatched(subagent.toolUseID) }
 
     @ViewBuilder
     private var content: some View {
