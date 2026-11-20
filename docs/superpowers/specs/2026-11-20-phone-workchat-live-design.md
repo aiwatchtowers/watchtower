@@ -67,6 +67,8 @@ draining the battery.
 
 ### 1. The live block in the `session_chat` payload (Go hub, Kit)
 
+- Wire key: the payload already has a `live` bool (the session is live), so the block travels as `activity_live`;
+  "the live block" / `live` below means that key (plan, Global Constraints).
 - `SessionChatSource` reads `sessionfeed.LiveOf` for the watched conversation (or the subagent's sidechain) in the same
   pass as the feed and stores it as `live` beside `entries` — the shape `workbench session-feed --live` prints today
   (`observed_at`, `turn_at`, `turn_active`, `current`, `latest`, `agents`, `agents_state`, `agents_more`, `steps`,
