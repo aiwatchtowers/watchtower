@@ -102,7 +102,7 @@
 		3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */; };
 		39AEE33DBF4A276999156B19 /* AskFormModel+Status.swift in Sources */ = {isa = PBXBuildFile; fileRef = 297FDFC3CED17D5BE064E1CC /* AskFormModel+Status.swift */; };
 		3B22414D2DC93304FBB9F14A /* SettingsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE2448E3D10E3EFE8D35624C /* SettingsCard.swift */; };
-		3D557174679E0AFAA39B9A37 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
+		3D557174679E0AFAA39B9A37 /* WatchtowerChatText in Frameworks */ = {isa = PBXBuildFile; productRef = 5FEBBA199CF993D3A963C4ED /* WatchtowerChatText */; };
 		3D5BFF65B869CB717FE19ABC /* ScreenshotTourTests+WorkchatLive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 065FC0ECA0ED29E736D5B62D /* ScreenshotTourTests+WorkchatLive.swift */; };
 		3DCA97C1B1714F027E9818BA /* BoardFilterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */; };
 		3F4CE8C40D6A23A14D2DD4C4 /* ReplicaKindTrackingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49728A0913682F844134761D /* ReplicaKindTrackingTests.swift */; };
@@ -174,6 +174,7 @@
 		6D2113501104D37D681C2F8E /* BoardTargetDetailModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FAE97205CCE121E8E1FCA91 /* BoardTargetDetailModel.swift */; };
 		6E20FEC5D76DB30D07FE3BD4 /* WorkbenchWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EDE2898F38881978E85D337 /* WorkbenchWiringTests.swift */; };
 		6E7B3F11235C858E711FE47D /* WatchtowerSync in Frameworks */ = {isa = PBXBuildFile; productRef = 5E8A4B525DB7EC3A6C6BE10B /* WatchtowerSync */; };
+		6F29945A8CFB1F4CDE315DEE /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = EB8572B29D41BB288DE5049A /* SwiftProtobuf */; };
 		719AEE88A2069575C8634C54 /* WorkchatModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6761AE7B60B6C8501900869 /* WorkchatModel.swift */; };
 		71A2CD9D94F2A18352A57702 /* WorkbenchComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73C44BFFCC7A9B45EC6C8469 /* WorkbenchComponents.swift */; };
 		722176BF6A94A147EDBF9F7B /* RouteStashTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78DCED28B8F3FC973EC75173 /* RouteStashTests.swift */; };
@@ -196,7 +197,7 @@
 		7C2E2C569B70FD5872BD3473 /* RecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EB4E696B701E6C25E4AEFD2 /* RecorderTests.swift */; };
 		7C3009FE59AC16AF47112C01 /* WorkchatAgentsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 828223C703770CCACD8A611C /* WorkchatAgentsTests.swift */; };
 		7E1CEB00E2AEA4E1FADAFBA0 /* RecorderNotices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67BF6DB29267D73FA3E8AEA6 /* RecorderNotices.swift */; };
-		7E85DCB5A5DBE705F60F7CC0 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = EB8572B29D41BB288DE5049A /* SwiftProtobuf */; };
+		7E85DCB5A5DBE705F60F7CC0 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
 		7F00F3800B6D983D9681DCA1 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEBD9ECF17CEA4057EAF471 /* NotificationService.swift */; };
 		7F9588991B27615DF8BAC9FC /* UploadRetryGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53916518B1A7A19D92E9342F /* UploadRetryGate.swift */; };
 		800DA14D11276C412F67F8F0 /* InboxCardDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50C541622A53F69CE0F9053F /* InboxCardDetailView.swift */; };
@@ -832,8 +833,9 @@
 				C5A4DBFA5BA08D2CEE2ABA22 /* WatchtowerE2ETesting in Frameworks */,
 				4CC11EBE1DF90C0C89628B34 /* WatchtowerHostedRelay in Frameworks */,
 				4775CC25932238F3DE9B47AE /* ChatWire in Frameworks */,
-				3D557174679E0AFAA39B9A37 /* GRDB in Frameworks */,
-				7E85DCB5A5DBE705F60F7CC0 /* SwiftProtobuf in Frameworks */,
+				3D557174679E0AFAA39B9A37 /* WatchtowerChatText in Frameworks */,
+				7E85DCB5A5DBE705F60F7CC0 /* GRDB in Frameworks */,
+				6F29945A8CFB1F4CDE315DEE /* SwiftProtobuf in Frameworks */,
 				A2CC501514D2966C016D29E5 /* StoreKitTest.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1523,6 +1525,7 @@
 				6D38595E8CBDC60347EDAD0B /* WatchtowerE2ETesting */,
 				7FD33DE7CAA4EFCB621F1395 /* WatchtowerHostedRelay */,
 				CDCED5117AB558FB2DD9D223 /* ChatWire */,
+				5FEBBA199CF993D3A963C4ED /* WatchtowerChatText */,
 				5CF9E51BB968298C0AAB2FD5 /* GRDB */,
 				EB8572B29D41BB288DE5049A /* SwiftProtobuf */,
 			);
@@ -2466,6 +2469,10 @@
 		5E8A4B525DB7EC3A6C6BE10B /* WatchtowerSync */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = WatchtowerSync;
+		};
+		5FEBBA199CF993D3A963C4ED /* WatchtowerChatText */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WatchtowerChatText;
 		};
 		6D38595E8CBDC60347EDAD0B /* WatchtowerE2ETesting */ = {
 			isa = XCSwiftPackageProductDependency;
