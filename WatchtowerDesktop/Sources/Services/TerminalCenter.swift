@@ -1692,7 +1692,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     }
 
     /// Its window's key and occlusion observers; `viewDidMoveToWindow` (Metal and focus) is in PalettedTerminalView+Metal.swift.
-    var windowFocusObservers: [NSObjectProtocol] = []
+    var windowFocusObservers: NotificationObservers?
 
     // MARK: Selection under streaming output
 

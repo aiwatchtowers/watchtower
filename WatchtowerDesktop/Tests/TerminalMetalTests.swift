@@ -189,6 +189,22 @@ final class TerminalMetalTests: XCTestCase {
         XCTAssertTrue(redrawn.isEmpty, "still observing the window it left")
     }
 
+    /// The holder removes its observers when it goes: a terminal freed
+    /// while still in a window leaves none behind.
+    func testNotificationObserversAreRemovedWithTheirHolder() {
+        let name = Notification.Name("TerminalMetalTests.probe")
+        var fired = 0
+        var holder: NotificationObservers? = NotificationObservers([
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { _ in fired += 1 }
+        ])
+        NotificationCenter.default.post(name: name, object: nil)
+        XCTAssertEqual(fired, 1)
+        XCTAssertNotNil(holder)
+        holder = nil
+        NotificationCenter.default.post(name: name, object: nil)
+        XCTAssertEqual(fired, 1)
+    }
+
     /// Outside Metal the margin is the layer's colour as before; a clear
     /// layer of a terminal gives the terminal's own background.
     func testMarginColorReadsTheLayerUnlessItIsClear() throws {
