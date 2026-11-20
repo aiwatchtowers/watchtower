@@ -2,6 +2,8 @@ package sessioncleanup
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,10 +20,11 @@ import (
 // button — at the session's end and again after a later merge or push —
 // and the build output of the worktrees it must keep goes too
 // (Request.PruneBuilds). Every PROJ-18 catch still applies, re-checked
-// right before each removal.
+// right before each removal, and no process is ever signalled
+// (Request.NoTerminate).
 const (
 	// autoWindow is how long after its finish a session is still cleaned
-	// up automatically; older ones wait for the owner's Clean Up screen.
+	// up automatically.
 	autoWindow = 14 * 24 * time.Hour
 	// autoRetry is how long a session whose last cleanup left work behind
 	// waits before the next try (a branch merged or pushed since).
@@ -39,7 +42,7 @@ type AutoCandidate = db.FinishedSessionForCleanup
 
 // AutoDeps are an automatic pass's collaborators.
 type AutoDeps struct {
-	// Deps are the apply's; their Lock is not used (TryLock is).
+	// Deps are the apply's; their Lock is replaced by TryLock.
 	Deps Deps
 	// Candidates lists the sessions finished at or after since, the
 	// longest-waiting first.
@@ -48,29 +51,35 @@ type AutoDeps struct {
 	// pass: without it a finished session still on screen would not count
 	// as working in its worktree (W6).
 	Live func(ctx context.Context) (map[int64]bool, error)
-	// TryLock takes the workbench's cleanup lock when it is free now;
-	// ok=false = another cleanup holds it, and that session waits for the
-	// next pass.
-	TryLock func(workbenchID int64) (unlock func(), ok bool, err error)
-	// Logf logs one line per session applied or failed; nil = silent.
+	// TryLock takes a repository's cleanup lock (keyed as Deps.Lock) when
+	// it is free now; ok=false = another cleanup holds it, and that
+	// session waits for the next pass. Each session's apply holds it only
+	// for itself.
+	TryLock func(repo string) (unlock func(), ok bool, err error)
+	// Logf logs one line per session whose apply removed something or
+	// failed; nil = silent.
 	Logf func(format string, args ...any)
 }
 
-// AutoResult is one pass: the sessions applied and those that failed.
+// AutoResult is one pass: the sessions applied, how many of those removed
+// something (a worktree, a branch, a build folder), and those that failed.
 type AutoResult struct {
-	Applied, Failed int
+	Applied, Changed, Failed int
 }
 
-// LockPath is the cleanup lock of workbench workbenchID beside the
-// database at dbPath, the placement lock's sibling.
-func LockPath(dbPath string, workbenchID int64) string {
-	return filepath.Join(filepath.Dir(dbPath), fmt.Sprintf("workbench-%d.cleanup.lock", workbenchID))
+// LockPath is the cleanup lock of the repository whose git common dir is
+// repo, beside the database at dbPath (the placement lock's sibling).
+func LockPath(dbPath, repo string) string {
+	sum := sha256.Sum256([]byte(repo))
+	return filepath.Join(filepath.Dir(dbPath), "repo-"+hex.EncodeToString(sum[:8])+".cleanup.lock")
 }
 
 // AutoRun is one automatic pass at now: each due session (autoDue), until
-// autoBatch were applied, is applied under its workbench's lock with the host's
-// live terminals and PruneBuilds. A session whose apply fails is logged and
-// the pass goes on; when ctx is done the pass stops with ctx's error.
+// autoBatch were applied, is applied under its repository's lock with the
+// host's live terminals, PruneBuilds and NoTerminate. A session whose
+// repository is busy waits for the next pass; one whose apply fails is
+// logged and the pass goes on; when ctx is done the pass stops with ctx's
+// error.
 func AutoRun(ctx context.Context, ad AutoDeps, now time.Time) (AutoResult, error) {
 	var out AutoResult
 	cands, err := ad.Candidates(ctx, now.Add(-autoWindow))
@@ -103,7 +112,8 @@ func AutoRun(ctx context.Context, ad AutoDeps, now time.Time) (AutoResult, error
 		if out.Applied >= autoBatch {
 			break
 		}
-		switch applyErr := autoApply(ctx, ad, c, liveIDs, now); {
+		res, applyErr := autoApply(ctx, ad, c, liveIDs, now)
+		switch {
 		case errors.Is(applyErr, errCleanupBusy):
 			continue
 		case applyErr != nil:
@@ -111,32 +121,48 @@ func AutoRun(ctx context.Context, ad AutoDeps, now time.Time) (AutoResult, error
 			ad.logf("session cleanup: session %d: %v", c.SessionID, applyErr)
 		default:
 			out.Applied++
+			if removedSomething(res.Items) {
+				out.Changed++
+				ad.logf("session cleanup: session %d: %s", c.SessionID, res.Summary)
+			}
 		}
 	}
 	return out, nil
 }
 
-// errCleanupBusy: another cleanup of the workbench holds its lock.
-var errCleanupBusy = errors.New("another cleanup of the workbench runs")
+// errCleanupBusy: another cleanup of the repository holds its lock.
+var errCleanupBusy = errors.New("another cleanup of the repository runs")
 
-func autoApply(ctx context.Context, ad AutoDeps, c AutoCandidate, live []int64, now time.Time) error {
-	unlock, ok, err := ad.TryLock(c.WorkbenchID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return errCleanupBusy
-	}
-	defer unlock()
+// autoApply applies one session with the lock only tried (busy →
+// errCleanupBusy).
+func autoApply(ctx context.Context, ad AutoDeps, c AutoCandidate, live []int64, now time.Time) (Result, error) {
 	d := ad.Deps
-	d.Lock = nil // held above
-	res, err := Apply(ctx, d, Request{SessionID: c.SessionID, WorkbenchID: c.WorkbenchID, LiveSessions: live,
-		NoSize: true, PruneBuilds: true, Now: now}, nil)
-	if err != nil {
-		return err
+	d.Lock = func(_ context.Context, repo string) (func(), error) {
+		unlock, ok, err := ad.TryLock(repo)
+		if err != nil {
+			return nil, fmt.Errorf("trying the lock: %w", err)
+		}
+		if !ok {
+			return nil, errCleanupBusy
+		}
+		return unlock, nil
 	}
-	ad.logf("session cleanup: session %d: %s", c.SessionID, res.Summary)
-	return nil
+	res, err := Apply(ctx, d, Request{SessionID: c.SessionID, WorkbenchID: c.WorkbenchID, LiveSessions: live,
+		NoSize: true, PruneBuilds: true, NoTerminate: true, Now: now}, nil)
+	if err != nil {
+		return res, fmt.Errorf("applying: %w", err)
+	}
+	return res, nil
+}
+
+// removedSomething: an item was removed or a build folder deleted.
+func removedSomething(items []Item) bool {
+	for _, it := range items {
+		if it.Done || len(it.BuildsRemoved) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (ad AutoDeps) logf(format string, args ...any) {
@@ -164,7 +190,11 @@ var settledReasons = map[string]bool{
 
 // leftWork: the stored result keeps a worktree or branch for a reason that
 // may change (unpushed, in use, a failed check…) or carries an error; a
-// result that does not decode counts as work left.
+// result that does not decode counts as work left. Two keeps do not count:
+// a worktree kept only for uncommitted changes whose builds the prune
+// already checked (no commit, so no merge or push, can free it by itself),
+// and a branch kept because it is checked out (its worktree's own item
+// decides).
 func leftWork(resultJSON string) bool {
 	var r Result
 	if json.Unmarshal([]byte(resultJSON), &r) != nil {
@@ -174,9 +204,16 @@ func leftWork(resultJSON string) bool {
 		if it.Error != "" {
 			return true
 		}
-		if (it.Kind == KindWorktree || it.Kind == KindBranch) && it.Action == ActionKeep && !settledReasons[it.Reason] {
-			return true
+		if (it.Kind != KindWorktree && it.Kind != KindBranch) || it.Action != ActionKeep || settledReasons[it.Reason] {
+			continue
 		}
+		if it.Kind == KindWorktree && it.Reason == ReasonUncommittedChanges && it.BuildsChecked {
+			continue
+		}
+		if it.Kind == KindBranch && it.Reason == ReasonCheckedOut {
+			continue
+		}
+		return true
 	}
 	return false
 }

@@ -77,7 +77,7 @@ Cleanup is Watchtower's own command (auto mode blocks an agent's `git worktree r
 - A worktree is kept when it has uncommitted or untracked changes, holds ignored files that are not build caches, is locked, is in use by a process or another session, or its HEAD is in neither the default branch nor any remote ref.
 - A branch is kept when it is the default branch, is checked out anywhere, or has commits not pushed.
 
-Nothing is forced.
+Each item is either ticked for removal or greyed out with the reason it is kept. Nothing is forced.
 
 ### What a delete cleans up
 
@@ -95,7 +95,7 @@ Every session delete cleans up once its **Undo** bar goes away: the worktrees an
 <!-- learn
 id: worktrees-auto-cleanup
 title: Finished sessions clean up by themselves
-text: Once a session finishes, its merged or pushed worktrees go, and kept ones lose their Swift build folders.
+text: Once a session finishes, its merged or pushed worktrees go, and kept ones lose their build folders.
 area: development
 level: next
 kind: feature
@@ -103,7 +103,7 @@ since: next
 action: nav:projects
 -->
 
-Within an hour of a session's finish, the daemon cleans it up like a delete: merged or pushed worktrees and branches go. A worktree kept for uncommitted or unpushed work loses only its Swift build folders (`.build`). It retries hourly for 14 days, so later merges go too, and skips a worktree a process or live session works in.
+Within an hour after a session finishes, the daemon removes its merged or pushed worktrees and branches; it stops no process. A kept worktree loses only its build folders (`.build`, `DerivedData`). It retries hourly for 14 days.
 
 ## Using it
 <!-- learn
@@ -123,7 +123,7 @@ action: nav:projects
 - Nothing is ticked at first. Tick rows, **⇧-click** for a range, or choose **Select All That Can Go** (⌘A, except while the search box is focused); Esc clears the ticks. Narrow the list with search, **All / Worktrees / Branches**, an age (7, 30 or 90 days), an owner (a session, Subagent, Session deleted, Made by hand) and **Merged only**. A worktree's row includes its branch when that can go too.
 - Rows appear while Watchtower still checks a big repository. **Clean Up…** waits until every row is checked (sizes may still come in), asks once, then removes in the background: rows leave as they go, a bar reports "Freed ~X · removed …", and kept rows fold away with their reason.
 - Close the screen with **Clean Up ✕** in the title row, or by picking a session. Switching to another workbench and back keeps it. One cleanup runs per workbench at a time.
-- A banner "Old worktrees use ~N GB." appears once, after the page has been open 30 seconds, when removable worktrees exceed 1 GB. Its **Clean Up…** opens the Clean Up screen.
+- A banner "Old worktrees use ~N GB." appears once, after the page has been open 30 seconds, when removable worktrees exceed 1 GB, and never again for that workbench after you open the sweep. Its **Clean Up…** opens the Clean Up screen.
 - A session Watchtower put in a worktree that exits on its own cleans up that worktree at once.
 
 ## When it's empty or wrong

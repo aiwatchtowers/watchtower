@@ -81,20 +81,43 @@ var cleanupDeps = func(database *db.DB) sessioncleanup.Deps {
 }
 
 // cleanupLockWait bounds how long an apply waits for another cleanup of
-// the same workbench (the daemon's automatic one, #2131) to end.
-const cleanupLockWait = 15 * time.Minute
+// the same repository (the daemon's automatic one, #2131) to end: well
+// under the Desktop's 10-minute limit on its background apply.
+const cleanupLockWait = 5 * time.Minute
 
-// workbenchCleanupLock takes the workbench's cross-process cleanup lock
-// beside the active workspace's database (sessioncleanup.LockPath),
-// waiting at most cleanupLockWait.
-func workbenchCleanupLock(ctx context.Context, workbenchID int64) (func(), error) {
+// cleanupLockNotice is the stderr line of an apply that has to wait.
+const cleanupLockNotice = "watchtower: waiting for another cleanup of this repository to finish…"
+
+// workbenchCleanupLock takes the repository's cross-process cleanup lock
+// beside the active workspace's database (sessioncleanup.LockPath). When
+// another cleanup holds it, it says so on stderr once and waits at most
+// cleanupLockWait.
+func workbenchCleanupLock(ctx context.Context, repo string) (func(), error) {
 	cfg, err := loadWorkbenchCLIConfig()
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
-	wctx, cancel := context.WithTimeout(ctx, cleanupLockWait)
+	return waitCleanupLock(ctx, sessioncleanup.LockPath(cfg.DBPath(), repo), os.Stderr, cleanupLockWait)
+}
+
+// waitCleanupLock takes the lock at path at once when it is free; else it
+// writes cleanupLockNotice to notice and waits up to wait.
+func waitCleanupLock(ctx context.Context, path string, notice io.Writer, wait time.Duration) (func(), error) {
+	unlock, ok, err := fsutil.TryLockFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("taking the cleanup lock: %w", err)
+	}
+	if ok {
+		return unlock, nil
+	}
+	fmt.Fprintln(notice, cleanupLockNotice)
+	wctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	return fsutil.LockFile(wctx, sessioncleanup.LockPath(cfg.DBPath(), workbenchID)) //nolint:wrapcheck // names the lock file
+	unlock, err = fsutil.LockFile(wctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("another cleanup of this repository is still running: %w", err)
+	}
+	return unlock, nil
 }
 
 func runWorkbenchCleanup(cmd *cobra.Command, _ []string) error {

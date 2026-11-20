@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/gitbin"
 )
 
 // Result modes.
@@ -97,9 +98,9 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 	if r.Sweep && len(only) == 0 {
 		return res, ErrSweepNeedsItems
 	}
-	unlock, err := lockWorkbench(ctx, d, r)
+	unlock, err := lockRepositories(ctx, d, r)
 	if err != nil {
-		return res, err
+		return res, fmt.Errorf("session cleanup: %w", err)
 	}
 	defer unlock()
 	parts, err := evaluationBuilders(ctx, d, r)
@@ -133,28 +134,93 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 	return res, nil
 }
 
-// lockWorkbench takes Deps.Lock for the workbench the request acts on (a
-// session's own, read first when the request names none) before anything is
-// evaluated, so two applies of one workbench — the Desktop's, the agent's,
-// the daemon's automatic one — never act on the same facts at once. No Lock
-// (tests, a caller that holds it already) locks nothing.
-func lockWorkbench(ctx context.Context, d Deps, r Request) (func(), error) {
+// lockRepositories takes Deps.Lock for every repository the request acts
+// on (lockKeys), in sorted order, before anything is evaluated, so two
+// applies over one repository — the Desktop's, the agent's, the daemon's
+// automatic one, of one workbench or of two over the same repository —
+// never act on the same facts at once. No Lock (tests, a caller that holds
+// it already) locks nothing.
+func lockRepositories(ctx context.Context, d Deps, r Request) (func(), error) {
 	if d.Lock == nil {
 		return func() {}, nil
 	}
-	id := r.WorkbenchID
-	if id == 0 && !r.Sweep && d.DB != nil {
+	keys, err := lockKeys(ctx, d, r)
+	if err != nil {
+		return nil, err
+	}
+	var unlocks []func()
+	unlockAll := func() {
+		for i := len(unlocks) - 1; i >= 0; i-- {
+			unlocks[i]()
+		}
+	}
+	for _, k := range keys {
+		unlock, err := d.Lock(ctx, k)
+		if err != nil {
+			unlockAll()
+			return nil, fmt.Errorf("waiting for another cleanup of %s: %w", k, err)
+		}
+		unlocks = append(unlocks, unlock)
+	}
+	return unlockAll, nil
+}
+
+// lockKeys are the git common dirs (symlink-resolved, sorted, distinct) of
+// the folders the request evaluates: a session's own folder (else its
+// workbench's home), a sweep's live bench folders. A folder in no
+// repository, or whose common dir git cannot tell, gives no key: the
+// evaluation fails on it, or a sweep skips it, as it does today.
+func lockKeys(ctx context.Context, d Deps, r Request) ([]string, error) {
+	var folders []string
+	switch {
+	case r.Sweep:
+		bench, err := d.DB.BenchFolders(ctx, r.WorkbenchID)
+		if err != nil {
+			return nil, fmt.Errorf("reading workbench %d folders: %w", r.WorkbenchID, err)
+		}
+		folders = bench
+	default:
 		s, err := d.DB.CleanupSession(ctx, r.SessionID)
 		if err != nil {
 			return nil, err // names the session already
 		}
-		id = s.WorkbenchID
+		folders = []string{s.Folder}
+		if s.Folder == "" {
+			r.WorkbenchID = s.WorkbenchID
+			folders = nil
+		}
 	}
-	unlock, err := d.Lock(ctx, id)
-	if err != nil {
-		return nil, fmt.Errorf("waiting for another cleanup of workbench %d: %w", id, err)
+	if len(folders) == 0 && r.WorkbenchID != 0 {
+		home, err := d.DB.WorkbenchFolder(ctx, r.WorkbenchID)
+		if err != nil {
+			return nil, fmt.Errorf("reading workbench %d: %w", r.WorkbenchID, err)
+		}
+		folders = []string{home}
 	}
-	return unlock, nil
+	bin, ok := d.Git.GitBinary()
+	if !ok {
+		return nil, nil
+	}
+	g := gitCmd{run: d.Git, bin: bin}
+	seen := map[string]bool{}
+	var keys []string
+	for _, f := range folders {
+		folder := resolvePath(f)
+		if f == "" || !gitbin.InsideRepository(folder) {
+			continue
+		}
+		out, err := g.output(ctx, folder, "rev-parse", "--git-common-dir")
+		if err != nil {
+			continue
+		}
+		k := absFrom(folder, strings.TrimSpace(string(out)))
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	slices.Sort(keys)
+	return keys, nil
 }
 
 // applier carries one apply: the evaluated items it updates in place and
@@ -367,8 +433,9 @@ func (a *applier) clearOrphans(ctx context.Context, it *Item, root string) bool 
 		a.markGone(root, b.procs)
 		return true
 	}
-	if a.req.Sweep {
-		// The sweep never signals (its catch keeps such a worktree).
+	if a.req.Sweep || a.req.NoTerminate {
+		// The sweep never signals (its catch keeps such a worktree), nor
+		// does an automatic apply.
 		keepItem(it, ReasonProcessRunning, "process in use: "+procText(orphans[0]))
 		return false
 	}

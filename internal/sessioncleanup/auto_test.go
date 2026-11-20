@@ -4,17 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-// TestApply_TakesTheWorkbenchLockFirst: an apply takes Deps.Lock for the
-// session's workbench (read from the session when the request names none)
-// and holds it to its end; a lock that cannot be taken fails the apply
-// before anything is evaluated or removed.
-func TestApply_TakesTheWorkbenchLockFirst(t *testing.T) {
+// TestApply_TakesTheRepositoryLockFirst: an apply takes Deps.Lock for the
+// repository it acts on — keyed by its git common dir, so a sweep of the
+// workbench and a session of another workbench over the same repository
+// take the same lock — and holds it to its end; a lock that cannot be
+// taken fails the apply before anything is evaluated or removed.
+func TestApply_TakesTheRepositoryLockFirst(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	root := f.pushedWork("wt", "feat/x")
@@ -22,7 +25,7 @@ func TestApply_TakesTheWorkbenchLockFirst(t *testing.T) {
 
 	refused := errors.New("held elsewhere")
 	d := f.deps()
-	d.Lock = func(context.Context, int64) (func(), error) { return nil, refused }
+	d.Lock = func(context.Context, string) (func(), error) { return nil, refused }
 	if _, err := Apply(context.Background(), d, Request{SessionID: testSession}, nil); !errors.Is(err, refused) {
 		t.Fatalf("err = %v, want the lock's", err)
 	}
@@ -30,14 +33,14 @@ func TestApply_TakesTheWorkbenchLockFirst(t *testing.T) {
 		t.Fatal("removed without the lock")
 	}
 
-	var locked []int64
+	var locked []string
 	held := false
-	d.Lock = func(_ context.Context, id int64) (func(), error) {
-		locked, held = append(locked, id), true
+	d.Lock = func(_ context.Context, repo string) (func(), error) {
+		locked, held = append(locked, repo), true
 		return func() { held = false }, nil
 	}
 	d.Git = &loggingGit{log: &opLog{}, before: func(args []string) *gitAnswer {
-		if !held {
+		if !held && !slices.Equal(args, []string{"rev-parse", "--git-common-dir"}) { // the key is read first
 			t.Errorf("git %s ran without the lock", strings.Join(args, " "))
 		}
 		return nil
@@ -47,8 +50,18 @@ func TestApply_TakesTheWorkbenchLockFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
-	if len(locked) != 1 || locked[0] != testWorkbench || held {
-		t.Fatalf("locked %v, still held %v", locked, held)
+	repo := filepath.Join(f.repo, ".git")
+	if len(locked) != 1 || locked[0] != repo || held {
+		t.Fatalf("locked %v, still held %v; want %s", locked, held, repo)
+	}
+	// Another workbench over the same repository, its sweep: the same key.
+	f.store.folders[testWorkbench+1] = f.repo
+	f.store.session.WorkbenchID = testWorkbench + 1
+	for _, r := range []Request{{SessionID: testSession}, {Sweep: true, WorkbenchID: testWorkbench}} {
+		keys, err := lockKeys(context.Background(), f.deps(), r)
+		if err != nil || len(keys) != 1 || keys[0] != repo {
+			t.Fatalf("%+v: keys %v, err %v", r, keys, err)
+		}
 	}
 }
 
@@ -59,7 +72,7 @@ type autoFixture struct {
 	live    map[int64]bool
 	liveErr error
 	busy    bool
-	locked  []int64
+	locked  []string
 	results *fakeResults
 }
 
@@ -72,7 +85,7 @@ func (a *autoFixture) run(now time.Time) (AutoResult, error) {
 	a.t.Helper()
 	d := a.deps()
 	d.Results = a.results
-	d.Lock = func(context.Context, int64) (func(), error) {
+	d.Lock = func(context.Context, string) (func(), error) {
 		a.t.Error("the pass took the waiting lock")
 		return func() {}, nil
 	}
@@ -85,11 +98,11 @@ func (a *autoFixture) run(now time.Time) (AutoResult, error) {
 			return a.cands, nil
 		},
 		Live: func(context.Context) (map[int64]bool, error) { return a.live, a.liveErr },
-		TryLock: func(id int64) (func(), bool, error) {
+		TryLock: func(repo string) (func(), bool, error) {
 			if a.busy {
 				return nil, false, nil
 			}
-			a.locked = append(a.locked, id)
+			a.locked = append(a.locked, repo)
 			return func() {}, true, nil
 		},
 	}, now)
@@ -122,7 +135,7 @@ func TestProj18_AutoCleanupOfAFinishedSession(t *testing.T) {
 	if !a.listsWorktree(kept) || exists(build) {
 		t.Fatalf("kept worktree listed %v, build exists %v", a.listsWorktree(kept), exists(build))
 	}
-	if len(a.locked) != 1 || a.locked[0] != testWorkbench || a.results.sessionID != testSession {
+	if len(a.locked) != 1 || a.locked[0] != filepath.Join(a.repo, ".git") || a.results.sessionID != testSession {
 		t.Fatalf("locked %v, saved for %d", a.locked, a.results.sessionID)
 	}
 }
@@ -178,7 +191,9 @@ func TestAutoRun_SkipsBusyAndFailsClosedOnLive(t *testing.T) {
 
 // TestAutoDue: never cleaned, or cleaned before the finish → due; cleaned
 // after the finish → due only autoRetry later and only while the result
-// left work that may still go.
+// left work that may still go — a worktree kept only for uncommitted
+// changes whose builds were checked, and a branch only checked out, are
+// not (review F6).
 func TestAutoDue(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
@@ -207,6 +222,13 @@ func TestAutoDue(t *testing.T) {
 		"old, an error":              {cleaned: now.Add(-autoRetry), result: failed, want: true},
 		"old, unreadable result":     {cleaned: now.Add(-autoRetry), result: "{", want: true},
 		"old, in use (may go later)": {cleaned: now.Add(-autoRetry), result: result(Item{Kind: KindWorktree, Action: ActionKeep, Reason: ReasonSessionInIt}), want: true},
+		"old, uncommitted, builds checked": {cleaned: now.Add(-autoRetry), result: result(
+			Item{Kind: KindWorktree, Action: ActionKeep, Reason: ReasonUncommittedChanges, BuildsChecked: true},
+			Item{Kind: KindBranch, Action: ActionKeep, Reason: ReasonCheckedOut})},
+		"old, uncommitted, builds not checked": {cleaned: now.Add(-autoRetry), want: true, result: result(
+			Item{Kind: KindWorktree, Action: ActionKeep, Reason: ReasonUncommittedChanges})},
+		"old, unpushed, builds checked": {cleaned: now.Add(-autoRetry), want: true, result: result(
+			Item{Kind: KindWorktree, Action: ActionKeep, Reason: ReasonUnpushedCommits, BuildsChecked: true})},
 	} {
 		c := AutoCandidate{SessionID: 1, WorkbenchID: 1, FinishedAt: finished, CleanupAt: tc.cleaned, CleanupResult: tc.result}
 		if got := autoDue(c, now); got != tc.want {
@@ -246,7 +268,7 @@ func TestAutoRun_StopsWhenCancelled(t *testing.T) {
 			return []AutoCandidate{{SessionID: 1, WorkbenchID: 1, FinishedAt: time.Now()}}, nil
 		},
 		Live: func(context.Context) (map[int64]bool, error) { return nil, nil },
-		TryLock: func(int64) (func(), bool, error) {
+		TryLock: func(string) (func(), bool, error) {
 			t.Error("a cancelled pass took a lock")
 			return func() {}, true, nil
 		},
@@ -254,4 +276,38 @@ func TestAutoRun_StopsWhenCancelled(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || res != (AutoResult{}) {
 		t.Fatalf("res %+v, err %v", res, err)
 	}
+}
+
+// TestProj18_AutoCleanupSignalsNoProcess (#2131, review F1): an orphan of
+// the session in a worktree that could otherwise go — an app the owner
+// opened from the session's build — is never signalled by the automatic
+// pass; the worktree stays (process_running), its build too.
+func TestProj18_AutoCleanupSignalsNoProcess(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root := a.pushedWork("wt", "feat/x")
+	a.commit(root, ".gitignore", ".build/\n")
+	gitIn(t, root, "push", "-q", "origin", "feat/x")
+	a.record(root, "feat/x")
+	build := swiftBuild(t, filepath.Join(root, ".build"))
+	a.procs.list = []Proc{{PID: 4245, PPID: 1, UID: os.Getuid(), Start: "s",
+		Exe: filepath.Join(build, "debug", "App"), Cwd: "/"}}
+	a.endSession()
+	now := time.Now()
+	a.cands = []AutoCandidate{{SessionID: testSession, WorkbenchID: testWorkbench, FinishedAt: now}}
+
+	if _, err := a.run(now); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.procs.terminated) > 0 {
+		t.Fatalf("signalled %+v", a.procs.terminated)
+	}
+	if !a.listsWorktree(root) || !exists(filepath.Join(build, buildMarker)) {
+		t.Fatal("the worktree or its build went")
+	}
+	var saved Result
+	if err := json.Unmarshal([]byte(a.results.body), &saved); err != nil {
+		t.Fatal(err)
+	}
+	wantItem(t, saved.Plan, "worktree:"+root, ActionKeep, ReasonProcessRunning)
 }

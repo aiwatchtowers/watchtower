@@ -49,6 +49,10 @@ type Request struct {
 	// delete the build output of the worktrees it keeps for their work
 	// (#2131, builds.go). Ignored anywhere else.
 	PruneBuilds bool
+	// NoTerminate: the apply signals no process; a worktree with an orphan
+	// in it is kept (process_running), as in a sweep. The daemon's
+	// automatic apply sets it (#2131): no owner action asked for it.
+	NoTerminate bool
 	Now         time.Time
 	// Observer hears the evaluation (and an apply) as it goes; nil = no
 	// events. Apply's re-checks never report.

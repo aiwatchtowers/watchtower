@@ -1,6 +1,7 @@
 package sessioncleanup
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,20 +15,39 @@ import (
 
 // Build output of an ended session's kept worktrees (board #2131, owner
 // decision in ask #1695): a worktree the cleanup must keep — unpushed or
-// uncommitted work — still loses its SwiftPM build folders, which hold
-// 7–15 GB each and are rebuilt by the next `swift build`. Only folders that
-// are certainly build output go: a real directory named .build holding
-// SwiftPM's workspace-state.json, not tracked by git, outside any nested
-// repository. Sources, untracked files and every other ignored file stay.
+// uncommitted work — still loses its build folders, which hold 7–15 GB each
+// and are rebuilt by the next build. Only folders that are certainly build
+// output go (buildKinds): a real, untracked directory that is not a nested
+// repository and holds its tool's marker. Sources, untracked files and every
+// other ignored file stay.
+
+// buildKind is one kind of build folder: its name and the entries that
+// prove it is that tool's output.
+type buildKind struct {
+	name string
+	// files must be regular files and dirs real directories inside it.
+	files, dirs []string
+}
+
+// buildKinds are the build folders a prune deletes: SwiftPM's .build (its
+// workspace-state.json) and an Xcode DerivedData folder a build was pointed
+// at inside the worktree with -derivedDataPath (its info.plist and Build).
+var buildKinds = []buildKind{
+	{name: ".build", files: []string{"workspace-state.json"}},
+	{name: "DerivedData", files: []string{"info.plist"}, dirs: []string{"Build"}},
+}
+
 const (
-	buildDirName = ".build"
-	// buildMarker is the file SwiftPM writes at the top of its build
-	// folder; a .build without it is not known to be SwiftPM's.
-	buildMarker = "workspace-state.json"
-	// buildTrashName is where a build folder is renamed before it is
-	// deleted, so a crash part-way never leaves a half-deleted .build that
-	// SwiftPM would read; a later prune deletes a leftover of this name.
-	buildTrashName = ".build.removing-by-watchtower"
+	// trashInfix names where a build folder is moved before it is deleted:
+	// <name><trashInfix><random>, a fresh directory the prune made itself,
+	// so a crash part-way never leaves a half-deleted build folder its
+	// tool would read.
+	trashInfix = ".removing-by-watchtower-"
+	// trashMarker is the file a prune writes into its trash folder before
+	// it moves the build folder in: a later prune deletes a leftover trash
+	// folder only when it carries it, with trashMarkerBody.
+	trashMarker     = ".watchtower-build-trash"
+	trashMarkerBody = "a build folder Watchtower's session cleanup is deleting\n"
 )
 
 // pruneReasons are the keep reasons of a worktree kept only for the work
@@ -89,18 +109,20 @@ func (a *applier) pruneBuilds(ctx context.Context) {
 // worktree on fresh facts (pruneCatches) right before deleting them, and
 // deletes them; any doubt leaves them. The walk comes first, so the
 // re-check is as close to the removal as it can be, and a worktree with no
-// build costs no re-check.
+// build costs no re-check. BuildsChecked is set once nothing is left to
+// delete: no build found, or every one found deleted or tracked.
 func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 	root := strings.TrimPrefix(it.Key, "worktree:")
 	if fi, err := os.Lstat(root); err != nil || !fi.IsDir() {
 		return // a prunable worktree: its directory, and any build, is gone
 	}
-	dirs, err := findBuildDirs(ctx, root, nestedScanBudget)
+	found, err := findBuildDirs(ctx, root, nestedScanBudget)
 	if err != nil {
 		it.BuildError = err.Error()
 		return
 	}
-	if len(dirs) == 0 {
+	if len(found) == 0 {
+		it.BuildsChecked = true
 		return
 	}
 	b, err := a.fresh(ctx)
@@ -125,16 +147,17 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 			return
 		}
 	}
-	for _, dir := range dirs {
-		removed, err := b.pruneBuildDir(ctx, root, dir)
+	for _, f := range found {
+		removed, err := b.pruneBuildDir(ctx, root, f)
 		if err != nil {
 			it.BuildError = err.Error()
 			return
 		}
 		if removed {
-			it.BuildsRemoved = append(it.BuildsRemoved, dir)
+			it.BuildsRemoved = append(it.BuildsRemoved, f.path)
 		}
 	}
+	it.BuildsChecked = true
 }
 
 // listedWorktree is root as git lists it now, when it is a linked worktree
@@ -148,37 +171,55 @@ func (b *builder) listedWorktree(root string) (worktree, bool) {
 	return worktree{}, false
 }
 
-// pruneBuildDir deletes one build folder of root and says whether it did:
-// a folder git tracks a file in stays (it is the repository's, not build
-// output); otherwise it is renamed to buildTrashName and the renamed folder
-// deleted.
-func (b *builder) pruneBuildDir(ctx context.Context, root, dir string) (bool, error) {
-	rel, err := filepath.Rel(root, dir)
+// foundBuild is a build folder, or a marked trash leftover, of a walk.
+type foundBuild struct {
+	path  string
+	trash bool
+}
+
+// pruneBuildDir deletes one find of root and says whether it did: a folder
+// git tracks a file in stays (it is the repository's, not build output); a
+// build folder is moved aside and deleted (removeBuildDir), a marked trash
+// leftover deleted as it is.
+func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) (bool, error) {
+	rel, err := filepath.Rel(root, f.path)
 	if err != nil {
-		return false, fmt.Errorf("locating %s: %w", dir, err)
+		return false, fmt.Errorf("locating %s: %w", f.path, err)
 	}
 	out, err := b.repo.git.output(ctx, root, "ls-files", "-z", "--", rel)
 	if err != nil {
-		return false, fmt.Errorf("reading what git tracks in %s: %w", dir, err)
+		return false, fmt.Errorf("reading what git tracks in %s: %w", f.path, err)
 	}
 	if len(out) > 0 {
 		return false, nil
 	}
-	return true, removeBuildDir(dir)
+	if f.trash {
+		if err := os.RemoveAll(f.path); err != nil {
+			return false, fmt.Errorf("deleting %s: %w", f.path, err)
+		}
+		return true, nil
+	}
+	return true, removeBuildDir(f.path)
 }
 
-// removeBuildDir renames dir to buildTrashName beside it (one atomic step:
-// no half-deleted .build is ever left) and deletes that; dir named
-// buildTrashName is an earlier crash's leftover and is deleted as it is.
+// removeBuildDir makes a fresh trash folder beside dir
+// (<name><trashInfix><random>, created by the prune itself, so never an
+// existing folder of someone else's), marks it (trashMarker), moves dir
+// into it in one rename and deletes it. A crash after the mark leaves a
+// marked trash folder a later prune deletes; one before it leaves an empty
+// folder at worst, and the build folder untouched.
 func removeBuildDir(dir string) error {
-	trash := filepath.Join(filepath.Dir(dir), buildTrashName)
-	if dir != trash {
-		if err := os.RemoveAll(trash); err != nil {
-			return fmt.Errorf("deleting %s: %w", trash, err)
-		}
-		if err := os.Rename(dir, trash); err != nil {
-			return fmt.Errorf("moving %s aside: %w", dir, err)
-		}
+	trash, err := os.MkdirTemp(filepath.Dir(dir), filepath.Base(dir)+trashInfix)
+	if err != nil {
+		return fmt.Errorf("making room to move %s aside: %w", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(trash, trashMarker), []byte(trashMarkerBody), 0o600); err != nil {
+		_ = os.RemoveAll(trash) // our own folder; the build stays
+		return fmt.Errorf("marking %s: %w", trash, err)
+	}
+	if err := os.Rename(dir, filepath.Join(trash, filepath.Base(dir))); err != nil {
+		_ = os.RemoveAll(trash) // still only our marker; the build stays
+		return fmt.Errorf("moving %s aside: %w", dir, err)
 	}
 	if err := os.RemoveAll(trash); err != nil {
 		return fmt.Errorf("deleting %s: %w", trash, err)
@@ -190,14 +231,14 @@ func removeBuildDir(dir string) error {
 var errBuildScanBudget = errors.New("looking for build folders took too long")
 
 // findBuildDirs walks root without following symlinks and returns every
-// SwiftPM build folder (a real directory named .build whose
-// workspace-state.json is a regular file) and every buildTrashName folder
-// a crash left. It never descends into .git, a nested worktree or
-// repository (a directory holding a .git entry), a build folder or
-// node_modules. Over budget it fails, and nothing is deleted.
-func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]string, error) {
+// build folder (isBuildDir) and every trash leftover of an interrupted
+// prune (isTrashLeftover). It never descends into .git, a nested worktree
+// or repository (a directory holding a .git entry), or a cache W9 skips
+// (regenerableCaches), and never into what it found. Over budget it fails,
+// and nothing is deleted.
+func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]foundBuild, error) {
 	deadline := time.Now().Add(budget)
-	var found []string
+	var found []foundBuild
 	n := 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -214,20 +255,18 @@ func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]st
 		if !d.IsDir() || path == root {
 			return nil
 		}
-		switch d.Name() {
-		case ".git", "node_modules":
+		name := d.Name()
+		switch {
+		case name == ".git":
 			return filepath.SkipDir
-		case buildTrashName:
-			found = append(found, path)
+		case isBuildDir(path, name):
+			found = append(found, foundBuild{path: path})
 			return filepath.SkipDir
-		case buildDirName:
-			if fi, err := os.Lstat(filepath.Join(path, buildMarker)); err == nil && fi.Mode().IsRegular() {
-				found = append(found, path)
-			}
+		case isTrashLeftover(path, name):
+			found = append(found, foundBuild{path: path, trash: true})
 			return filepath.SkipDir
-		}
-		if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
-			return filepath.SkipDir // a nested worktree or repository: not ours
+		case regenerableCaches[name] || hasGitEntry(path):
+			return filepath.SkipDir // a cache, or a nested worktree or repository: not ours
 		}
 		return nil
 	})
@@ -235,4 +274,56 @@ func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]st
 		return nil, fmt.Errorf("looking for build folders in %s: %w", root, err)
 	}
 	return found, nil
+}
+
+// isBuildDir: dir (named name, a real directory) is one of buildKinds —
+// it holds no .git entry (a repository or worktree of that name is never
+// build output) and every marker of its kind.
+func isBuildDir(dir, name string) bool {
+	for _, k := range buildKinds {
+		if k.name != name || hasGitEntry(dir) {
+			continue
+		}
+		ok := true
+		for _, f := range k.files {
+			fi, err := os.Lstat(filepath.Join(dir, f))
+			ok = ok && err == nil && fi.Mode().IsRegular()
+		}
+		for _, sub := range k.dirs {
+			fi, err := os.Lstat(filepath.Join(dir, sub))
+			ok = ok && err == nil && fi.IsDir()
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// isTrashLeftover: dir is a folder an interrupted prune moved aside —
+// named <build kind><trashInfix>…, with no .git entry, and carrying
+// trashMarker with trashMarkerBody as a regular file. A folder of that
+// name without the marker is someone else's and stays.
+func isTrashLeftover(dir, name string) bool {
+	named := false
+	for _, k := range buildKinds {
+		named = named || strings.HasPrefix(name, k.name+trashInfix)
+	}
+	if !named || hasGitEntry(dir) {
+		return false
+	}
+	marker := filepath.Join(dir, trashMarker)
+	fi, err := os.Lstat(marker)
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() != int64(len(trashMarkerBody)) {
+		return false
+	}
+	body, err := os.ReadFile(marker)
+	return err == nil && bytes.Equal(body, []byte(trashMarkerBody))
+}
+
+// hasGitEntry: dir holds a .git file or directory (or anything of that
+// name), or whether it does cannot be told (fail closed).
+func hasGitEntry(dir string) bool {
+	_, err := os.Lstat(filepath.Join(dir, ".git"))
+	return err == nil || !errors.Is(err, fs.ErrNotExist)
 }

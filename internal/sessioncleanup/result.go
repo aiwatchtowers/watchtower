@@ -52,10 +52,12 @@ type Item struct {
 	BranchKey string `json:"branch_key,omitempty"`
 	// BuildsRemoved are the build folders an ended session's apply deleted
 	// from this worktree, which it kept for the work in it (#2131,
-	// builds.go); BuildError is why that stopped. Neither changes the
-	// item's action, done or error.
+	// builds.go); BuildError is why that stopped; BuildsChecked: the prune
+	// ran to its end and no build folder is left to delete. None changes
+	// the item's action, done or error.
 	BuildsRemoved []string `json:"builds_removed,omitempty"`
 	BuildError    string   `json:"build_error,omitempty"`
+	BuildsChecked bool     `json:"builds_checked,omitempty"`
 }
 
 // OwnerHint is the sweep's guess at whose an item is: the session that

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"watchtower/internal/agentkind"
 )
 
 // MaxSessionWorktrees caps the terminal_session_worktrees rows of one
@@ -308,7 +310,7 @@ type FinishedSessionForCleanup struct {
 func (db *DB) FinishedSessionsForCleanup(ctx context.Context, since time.Time) ([]FinishedSessionForCleanup, error) {
 	rows, err := db.QueryContext(ctx, `SELECT id, project_id, finished_at, COALESCE(cleanup_at, ''),
 		COALESCE(cleanup_result, '') FROM terminal_sessions
-		WHERE project_id IS NOT NULL AND kind <> 'shell' AND finished_at IS NOT NULL AND finished_at >= ?
+		WHERE project_id IS NOT NULL AND kind IN `+agentkind.SQLKinds()+` AND finished_at IS NOT NULL AND finished_at >= ?
 		AND `+NotDeletingSQL+`
 		ORDER BY cleanup_at IS NOT NULL, cleanup_at, id`, AgentStateStamp(since))
 	if err != nil {
