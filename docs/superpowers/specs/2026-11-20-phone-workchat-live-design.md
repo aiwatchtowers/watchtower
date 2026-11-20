@@ -20,7 +20,7 @@ Board: #2112. Decisions: see the Decisions section.
 | C6 | The Mac's Workchat also refreshes on a file event instead of its 3 s poll (§8) | review round 1 of ask #1671: the owner asked for responsiveness "в целом" |
 | C7 | The live model and its presentation move to `WatchtowerChatText`; the Kit's `WatchtowerKit` target (not `WatchtowerSync`) depends on it | review round 1 of ask #1671 (architecture fixed in the spec) |
 | C8 | Summaries pass the shared secret redaction (today's `internal/watchman/redact.go`, moved to `internal/secretredact`) before they enter the payload | review round 1 of ask #1671 |
-| C9 | "Loading activity…" shows only while no record from a live-capable hub has arrived since the chat opened | review round 1 of ask #1671 |
+| C9 | "Loading activity…" shows only while no record from a live-capable hub has arrived since the chat opened. Amended: Loading lasts until a record echoing this open's `open_id` arrives (each opening sends a new `open_id` in `session_chat_request`, its keep-alives repeat it, and the hub's next read echoes it in the record), replacing the "first record since open" rule | review round 1 of ask #1671; amended after the review of Task 7 |
 
 ## Intent
 

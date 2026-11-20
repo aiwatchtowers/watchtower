@@ -126,19 +126,25 @@ public struct SessionChat: SliceMirror, Equatable {
     public let entriesMore: Int
     /// Oldest first.
     public let entries: [Entry]
+    /// The newest `open_id` the phone's `session_chat_request` carried: the
+    /// record answers that opening of the chat screen. nil from an older Mac
+    /// or for a request without one.
+    public let openID: String?
 
     public init(
         sessionID: Int64,
         agentID: String? = nil,
         live: Bool,
         entriesMore: Int = 0,
-        entries: [Entry]
+        entries: [Entry],
+        openID: String? = nil
     ) {
         self.sessionID = sessionID
         self.agentID = agentID
         self.live = live
         self.entriesMore = entriesMore
         self.entries = entries
+        self.openID = openID
     }
 
     public init(from decoder: Decoder) throws {
@@ -148,6 +154,7 @@ public struct SessionChat: SliceMirror, Equatable {
         live = try c.decodeIfPresent(Bool.self, forKey: .live) ?? false
         entriesMore = try c.decodeIfPresent(Int.self, forKey: .entriesMore) ?? 0
         entries = try c.decodeIfPresent([Entry].self, forKey: .entries) ?? []
+        openID = try c.decodeIfPresent(String.self, forKey: .openID)
     }
 
     // convertFromSnakeCase maps "session_id" -> "sessionId" (lowercase d).
@@ -155,6 +162,7 @@ public struct SessionChat: SliceMirror, Equatable {
         case sessionID = "sessionId"
         case agentID = "agentId"
         case live, entriesMore, entries
+        case openID = "openId"
     }
 
     /// `session_chat-<session id>` or `session_chat-<session id>-<agent id>`.

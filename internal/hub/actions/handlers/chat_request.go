@@ -19,6 +19,9 @@ const (
 	chatUnknownSession = "unknown_session"
 	// requestTimeout is the request handlers' own deadline (one DB read).
 	requestTimeout = 10 * time.Second
+	// maxOpenID bounds session_chat_request's open_id (the phone sends a
+	// UUID).
+	maxOpenID = 64
 )
 
 // SessionWindows answers whether a session is in a runner-fed slice's
@@ -38,6 +41,10 @@ type ChatWatch struct {
 	SessionID          int64
 	AgentID, ToolUseID string
 	Expires            time.Time
+	// OpenID is the request's open_id ("" from an older phone): one per
+	// opening of the chat screen, repeated by its keep-alives. The registry
+	// keeps no OpenID; the session_chat source echoes the newest.
+	OpenID string
 }
 
 // ChatWatches is the in-memory registry of the chats the phone asked for
@@ -103,8 +110,10 @@ func (r *ChatWatchRegistry) DropAll() {
 }
 
 // sessionChatRequest is `session_chat_request` (entity the session id,
-// params {session_id?, subagent_id?, tool_use_id?}: the subagent's two ids
-// come together or not at all; session_id, when sent, must be the entity).
+// params {session_id?, subagent_id?, tool_use_id?, open_id?}: the subagent's
+// two ids come together or not at all; session_id, when sent, must be the
+// entity; open_id, at most 64 characters, names this opening of the chat
+// screen, and the session_chat record echoes it).
 // Opens or extends the 5-minute watch of the session's chat (or one
 // subagent's), counted from when the phone asked: a request older than the
 // watch applies without one. Idempotent: a re-run only extends the watch.
@@ -139,6 +148,10 @@ func (h *Handlers) applySessionChatRequest(ctx context.Context, r actions.Reques
 	if (agentID == "") != (toolUseID == "") {
 		return failed(reasonInvalidParams, "subagent_id and tool_use_id come together")
 	}
+	openID, ok := optionalText(r, "open_id")
+	if !ok || len(openID) > maxOpenID {
+		return failed(reasonInvalidParams, "open_id must be a text of at most 64 characters")
+	}
 	known := false
 	if h.d.Windows != nil {
 		var err error
@@ -158,7 +171,7 @@ func (h *Handlers) applySessionChatRequest(ctx context.Context, r actions.Reques
 		return applied(nil)
 	}
 	remaining := min(ChatWatchLength, ChatWatchLength-age)
-	h.d.ChatWatches.Watch(ChatWatch{SessionID: sessionID, AgentID: agentID, ToolUseID: toolUseID, Expires: now.Add(remaining)})
+	h.d.ChatWatches.Watch(ChatWatch{SessionID: sessionID, AgentID: agentID, ToolUseID: toolUseID, Expires: now.Add(remaining), OpenID: openID})
 	return applied(nil)
 }
 

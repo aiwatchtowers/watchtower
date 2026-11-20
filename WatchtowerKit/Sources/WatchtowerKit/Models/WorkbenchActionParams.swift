@@ -252,7 +252,9 @@ public struct SessionInterruptParams: ActionParams {
 
 /// `session_chat_request`, entity: the session id. Idempotent: asks the Mac
 /// to watch the session's chat (or one subagent's) for the next five minutes;
-/// the phone repeats it while the screen is open.
+/// the phone repeats it while the screen is open. `openID` names this opening
+/// of the screen (a new one per open, the same on its keep-alives); the
+/// `session_chat` record echoes it.
 public struct SessionChatRequestParams: ActionParams {
     public static let actionKind = ActionKind.sessionChatRequest
 
@@ -262,17 +264,21 @@ public struct SessionChatRequestParams: ActionParams {
     /// The subagent marker's tool_use id (the CLI's `--subagent` selector);
     /// sent with `subagentID` or not at all.
     public let toolUseID: String?
+    /// Encoded only when set (an older Mac ignores it).
+    public let openID: String?
 
-    public init(sessionID: Int64, subagentID: String? = nil, toolUseID: String? = nil) {
+    public init(sessionID: Int64, subagentID: String? = nil, toolUseID: String? = nil, openID: String? = nil) {
         self.sessionID = sessionID
         self.subagentID = subagentID
         self.toolUseID = toolUseID
+        self.openID = openID
     }
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "sessionId"
         case subagentID = "subagentId"
         case toolUseID = "toolUseId"
+        case openID = "openId"
     }
 }
 

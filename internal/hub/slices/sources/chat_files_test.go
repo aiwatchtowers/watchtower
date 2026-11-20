@@ -122,6 +122,7 @@ type filesRig struct {
 	active      bool
 	addErr      error
 	watchers    []*fakeWatcher
+	changes     int // OnChange calls: published records
 	// block, when set, holds every read after the first until it is closed.
 	block chan struct{}
 	s     *SessionChatSource
@@ -250,6 +251,11 @@ func (r *filesRig) options() SessionChatOptions {
 			defer r.mu.Unlock()
 			return r.active
 		},
+		OnChange: func() {
+			r.mu.Lock()
+			r.changes++
+			r.mu.Unlock()
+		},
 	}
 }
 
@@ -284,8 +290,11 @@ func (r *filesRig) start() {
 
 // request is the phone's session_chat_request for the main feed ("") or
 // the agent record of toolUseID.
-func (r *filesRig) request(toolUseID string) {
-	cw := handlers.ChatWatch{SessionID: 7, Expires: time.Now().Add(handlers.ChatWatchLength)}
+func (r *filesRig) request(toolUseID string) { r.requestOpen(toolUseID, "") }
+
+// requestOpen is request carrying the phone's open_id.
+func (r *filesRig) requestOpen(toolUseID, openID string) {
+	cw := handlers.ChatWatch{SessionID: 7, Expires: time.Now().Add(handlers.ChatWatchLength), OpenID: openID}
 	if toolUseID != "" {
 		cw.AgentID, cw.ToolUseID = "a1", toolUseID
 	}
@@ -1129,5 +1138,92 @@ func TestChatFiles_RenameDuringResolveResolvesAgain(t *testing.T) {
 		synctest.Wait()
 		r.sleep(2 * time.Second)
 		r.wantWatched("after both renames", r1, r2)
+	})
+}
+
+func (r *filesRig) changeCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.changes
+}
+
+// openIDOf is the published main record's open_id ("" when absent).
+func (r *filesRig) openIDOf() string {
+	r.t.Helper()
+	items := chatItems(r.t, r.s)
+	p, ok := items["7"]
+	if !ok {
+		r.t.Fatalf("no main record: %v", items)
+	}
+	id, _ := p["open_id"].(string)
+	return id
+}
+
+// A new open_id reads once (MinGap kept) and publishes its echo even when
+// the chat itself is unchanged; its keep-alives publish nothing; a request
+// without one behaves as before.
+func TestChatFiles_OpenIDEchoedOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newFilesRig(t)
+		r.start() // an older phone: no open_id
+		if id := r.openIDOf(); id != "" {
+			t.Fatalf("open_id %q without one asked", id)
+		}
+		r.sleep(5 * time.Second)
+		reads, changes := r.readCount(), r.changeCount()
+		r.request("")
+		if r.readCount() != reads || r.changeCount() != changes {
+			t.Fatal("a request without open_id read or published")
+		}
+		r.requestOpen("", "open-1")
+		if r.readCount() != reads+1 || r.changeCount() != changes+1 || r.openIDOf() != "open-1" {
+			t.Fatalf("a new open: %d reads, %d changes, open_id %q", r.readCount()-reads, r.changeCount()-changes, r.openIDOf())
+		}
+		for range 3 { // its keep-alives
+			r.sleep(60 * time.Second)
+			r.requestOpen("", "open-1")
+		}
+		if r.readCount() != reads+1 || r.changeCount() != changes+1 {
+			t.Fatal("a keep-alive with the same open_id read or published")
+		}
+		// A second open inside MinGap of a read waits for MinGap's end.
+		r.fire(r.conv)
+		r.sleep(250 * time.Millisecond)
+		reads = r.readCount()
+		r.requestOpen("", "open-2")
+		r.wantReads(reads, "a new open inside MinGap")
+		r.sleep(time.Second)
+		r.wantReads(reads+1, "MinGap after the last read")
+		if id := r.openIDOf(); id != "open-2" {
+			t.Fatalf("open_id %q, want open-2", id)
+		}
+	})
+}
+
+// After a hub restart (a fresh source) or the watch's expiry, the request
+// carrying the open's id starts a run whose record echoes it.
+func TestChatFiles_OpenIDAfterRestartAndExpiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newFilesRig(t)
+		r.s = SessionChat(r.watches, nil, r.options())
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- r.s.Run(ctx) }()
+		defer func() { cancel(); <-done }()
+		synctest.Wait()
+		r.requestOpen("", "open-1")
+		r.wantReads(1, "the first request after a restart")
+		if id := r.openIDOf(); id != "open-1" {
+			t.Fatalf("open_id after a restart %q", id)
+		}
+		r.sleep(handlers.ChatWatchLength + 2*time.Second)
+		if items := chatItems(t, r.s); len(items) != 0 {
+			t.Fatalf("records after the watch expired: %v", items)
+		}
+		r.requestOpen("", "open-1")
+		r.wantReads(2, "the request after the expiry")
+		if id := r.openIDOf(); id != "open-1" {
+			t.Fatalf("open_id after the expiry %q", id)
+		}
 	})
 }
