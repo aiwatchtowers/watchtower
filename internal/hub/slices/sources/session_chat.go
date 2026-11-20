@@ -341,18 +341,46 @@ func (w wakingWatches) Watch(cw handlers.ChatWatch) {
 // during the pass stops it before its next read and the read in flight
 // stores nothing. It returns the record ids whose read was started.
 func (s *SessionChatSource) RunDue(ctx context.Context) []string {
-	active, live := s.activeKeys(), s.o.Liveness().Runs
-	s.checkConversations(ctx, active, live)
-	gen, due := s.takeDue(active, live)
+	gen := s.currentGeneration()
+	live := s.o.Liveness().Runs
+	s.checkConversations(ctx, gen, s.activeKeys(), live)
+	due := s.takeDue(gen, s.activeKeys(), live)
 	var attempted []string
 	for _, k := range due {
 		if ctx.Err() != nil || !s.isCurrent(gen) {
 			break
 		}
+		// An earlier read may have been slow: the watch may have expired
+		// meanwhile, and MinGap counts from this read's own start.
+		if !s.begin(k, gen) {
+			continue
+		}
 		attempted = append(attempted, k.id())
 		s.run(ctx, k, gen)
 	}
 	return attempted
+}
+
+func (s *SessionChatSource) currentGeneration() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.generation
+}
+
+// begin stamps k's read as started now, unless its watch closed or the
+// source was dropped since the pass of generation gen began.
+func (s *SessionChatSource) begin(k chatKey, gen int) bool {
+	active := s.activeKeys()
+	now := s.o.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.runs[k]
+	if !ok || !active[k] || s.generation != gen {
+		return false
+	}
+	r.last = now
+	r.dirty, r.convsChanged, r.reconcile, r.requested = false, false, false, false
+	return true
 }
 
 // isCurrent: nothing was dropped since the pass of generation gen began.
@@ -389,14 +417,18 @@ func (s *SessionChatSource) prune(active map[chatKey]bool) func() {
 	return s.lockedSync
 }
 
-// takeDue drops the runs of expired watches and stamps the due ones as
-// attempted now, by session then agent id.
-func (s *SessionChatSource) takeDue(active map[chatKey]bool, live map[int64]time.Time) (int, []chatKey) {
+// takeDue drops the runs of expired watches and lists the due ones, by
+// session then agent id (begin stamps each as its read starts). A pass
+// whose generation was dropped meanwhile lists none and creates no run.
+func (s *SessionChatSource) takeDue(gen int, active map[chatKey]bool, live map[int64]time.Time) []chatKey {
 	now := s.o.Now()
 	done := func() {}
 	defer func() { done() }() // after the unlock below
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.generation != gen {
+		return nil
+	}
 	done = s.prune(active)
 	var due []chatKey
 	for k := range active {
@@ -407,17 +439,14 @@ func (s *SessionChatSource) takeDue(active map[chatKey]bool, live map[int64]time
 		}
 		_, isLive := live[k.session]
 		r.live = isLive
-		if !s.isDue(k, r, isLive, now) {
-			continue
+		if s.isDue(k, r, isLive, now) {
+			due = append(due, k)
 		}
-		r.last = now
-		r.dirty, r.convsChanged, r.reconcile, r.requested = false, false, false, false
-		due = append(due, k)
 	}
 	slices.SortFunc(due, func(a, b chatKey) int {
 		return cmp.Or(cmp.Compare(a.session, b.session), cmp.Compare(a.agent, b.agent))
 	})
-	return s.generation, due
+	return due
 }
 
 // isDue says whether r reads now: its first read; then never within MinGap

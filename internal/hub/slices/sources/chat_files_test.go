@@ -112,10 +112,16 @@ type filesRig struct {
 	live     func() *sessionfeed.Live
 	liveErr  bool
 	fetchErr error
-	isLive   bool
-	active   bool
-	addErr   error
-	watchers []*fakeWatcher
+	// slowMain makes every main-feed read take that long; holdIDs and
+	// holdResolve, when set, hold the next agent-session listing or full
+	// resolve until closed (the resolve returns what it found before).
+	slowMain    time.Duration
+	holdIDs     chan struct{}
+	holdResolve chan struct{}
+	isLive      bool
+	active      bool
+	addErr      error
+	watchers    []*fakeWatcher
 	// block, when set, holds every read after the first until it is closed.
 	block chan struct{}
 	s     *SessionChatSource
@@ -166,8 +172,11 @@ func (r *filesRig) options() SessionChatOptions {
 				}
 			}
 			r.mu.Lock()
-			fetchErr := r.fetchErr
+			fetchErr, slow := r.fetchErr, r.slowMain
 			r.mu.Unlock()
+			if slow > 0 && toolUseID == "" {
+				time.Sleep(slow)
+			}
 			if fetchErr != nil && toolUseID == "" {
 				return ChatRead{}, fetchErr
 			}
@@ -193,23 +202,33 @@ func (r *filesRig) options() SessionChatOptions {
 		},
 		Conversations: func(context.Context, int64) ([]sessionfeed.Conversation, error) {
 			r.mu.Lock()
-			defer r.mu.Unlock()
 			r.resolves++
-			if r.resolveErr != nil {
-				return nil, r.resolveErr
-			}
+			resolveErr, hold := r.resolveErr, r.holdResolve
+			r.holdResolve = nil
 			var out []sessionfeed.Conversation
 			for _, c := range r.convs {
 				if exists(c.Path) { // SessionConversations lists only existing files
 					out = append(out, c)
 				}
 			}
+			r.mu.Unlock()
+			if hold != nil {
+				<-hold
+			}
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
 			return out, nil
 		},
 		AgentSessions: func(context.Context, int64) ([]string, error) {
 			r.mu.Lock()
-			defer r.mu.Unlock()
-			return slices.Clone(r.ids), nil
+			ids, hold := slices.Clone(r.ids), r.holdIDs
+			r.holdIDs = nil
+			r.mu.Unlock()
+			if hold != nil {
+				<-hold
+			}
+			return ids, nil
 		},
 		NewWatcher: func() (FileWatcher, error) {
 			r.mu.Lock()
@@ -1005,4 +1024,110 @@ func TestChatFiles_FailedAddRollsBack(t *testing.T) {
 	if len(s.byPath) != 1 || s.byPath[kept] == nil || !s.runs[k].fallback || len(s.runs[k].watched) != 0 {
 		t.Fatalf("after the failed Add: byPath %v, fallback %v, held %v", s.byPath, s.runs[k].fallback, s.runs[k].watched)
 	}
+}
+
+// A pass whose conversation check is held while the phone unlinks (dropAll)
+// or the watch expires reads nothing and recreates no run.
+func TestChatFiles_StalePassReadsNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// before is how long the watch runs before the held pass; end ends
+		// it while the pass is held (within the read Timeout).
+		before time.Duration
+		end    func(r *filesRig)
+	}{
+		{"dropAll", 5 * time.Second, func(r *filesRig) { r.s.dropAll() }},
+		{"expiry", handlers.ChatWatchLength - 10*time.Second, func(r *filesRig) { time.Sleep(20 * time.Second) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				r := newFilesRig(t)
+				r.start()
+				r.sleep(tc.before)
+				hold := make(chan struct{})
+				r.set(func() { r.holdIDs = hold })
+				renamed := filepath.Join(r.dir, "renamed.jsonl")
+				if err := os.Rename(r.conv, renamed); err != nil {
+					t.Fatal(err)
+				}
+				r.set(func() { r.convs = []sessionfeed.Conversation{{AgentSessionID: "c1", Path: renamed}} })
+				r.fire(r.conv) // a gone file: the pass checks the conversations, held
+				tc.end(r)
+				close(hold)
+				synctest.Wait()
+				r.wantReads(1, "after the stale pass")
+				r.s.mu.Lock()
+				runs := len(r.s.runs)
+				r.s.mu.Unlock()
+				if runs != 0 {
+					t.Fatalf("%d runs after the stale pass, want none", runs)
+				}
+			})
+		})
+	}
+}
+
+// MinGap counts from a read's own start: when an earlier chat's read is
+// slow, the next chat's following read still waits MinGap after its read.
+func TestChatFiles_MinGapFromTheReadsOwnStart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newFilesRig(t)
+		sub := touch(t, r.dir, "conv/subagents/agent-a1.jsonl")
+		r.start()
+		r.request("toolu_1")
+		r.sleep(5 * time.Second) // past the agent record's reconcile read
+		agent := r.readsOf("toolu_1")
+		r.set(func() { r.slowMain = 3 * time.Second })
+		r.fire(r.conv)
+		r.fire(sub)
+		r.sleep(250*time.Millisecond + 3*time.Second) // the main read, then the agent's
+		if n := r.readsOf("toolu_1"); n != agent+1 {
+			t.Fatalf("the agent record's read after the slow one: %d, want %d", n, agent+1)
+		}
+		r.fire(sub) // right after the agent's read started
+		r.sleep(900 * time.Millisecond)
+		if n := r.readsOf("toolu_1"); n != agent+1 {
+			t.Fatalf("the agent record read again %v after its read started", 900*time.Millisecond)
+		}
+		r.sleep(100 * time.Millisecond)
+		if n := r.readsOf("toolu_1"); n != agent+2 {
+			t.Fatalf("the agent record's next read: %d, want %d", n, agent+2)
+		}
+	})
+}
+
+// A file gone while a resolve runs asks for another resolve: the first one's
+// answer may predate it.
+func TestChatFiles_RenameDuringResolveResolvesAgain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newFilesRig(t)
+		other := touch(t, r.dir, "other.jsonl")
+		r.ids = []string{"c1", "c2"}
+		r.convs = append(r.convs, sessionfeed.Conversation{AgentSessionID: "c2", Path: other})
+		r.start()
+		r.sleep(5 * time.Second)
+		r.wantWatched("at the start", r.conv, other)
+		// The first file is renamed: its resolve is held after it looked.
+		r1 := filepath.Join(r.dir, "r1.jsonl")
+		if err := os.Rename(r.conv, r1); err != nil {
+			t.Fatal(err)
+		}
+		hold := make(chan struct{})
+		r.set(func() {
+			r.convs[0].Path = r1
+			r.holdResolve = hold
+		})
+		r.fire(r.conv)
+		// While it is held, the second file is renamed too.
+		r2 := filepath.Join(r.dir, "r2.jsonl")
+		if err := os.Rename(other, r2); err != nil {
+			t.Fatal(err)
+		}
+		r.set(func() { r.convs[1].Path = r2 })
+		r.fire(other)
+		close(hold)
+		synctest.Wait()
+		r.sleep(2 * time.Second)
+		r.wantWatched("after both renames", r1, r2)
+	})
 }
