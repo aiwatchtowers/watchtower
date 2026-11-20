@@ -16,8 +16,12 @@ enum WorkchatLiveMockups {
         var pulse = false
         var warning = false
         var retry = false
-        /// nil: no steps slot; true/false: open/closed.
-        var stepsOpen: Bool?
+        var steps: StepsChevron = .none
+    }
+
+    /// The steps disclosure on the line: none without a slot, else open or closed.
+    enum StepsChevron {
+        case none, open, closed
     }
 
     struct Step: Identifiable {
@@ -48,18 +52,18 @@ enum WorkchatLiveMockups {
     /// L1: a step runs: its symbol pulses, the summary, the step's timer; the steps chevron; toolbar agents 2.
     static var l1: some View {
         screen(line: Line(symbol: "terminal", text: "Running tests · go test ./internal/sessionfeed", elapsed: "0:12",
-                          pulse: true, stepsOpen: false), agents: 2)
+                          pulse: true, steps: .closed), agents: 2)
     }
 
     /// L2: the steps slot open above the line (6 rows tall, scrolls), the line sums up the turn.
     static var l2: some View {
-        screen(line: Line(symbol: "list.bullet", text: "This turn · 9 steps", elapsed: "1:47", stepsOpen: true),
+        screen(line: Line(symbol: "list.bullet", text: "This turn · 9 steps", elapsed: "1:47", steps: .open),
                steps: steps, agents: 2)
     }
 
     /// L3: between tools: "Working…" with the turn's timer.
     static var l3: some View {
-        screen(line: Line(symbol: "ellipsis", text: "Working…", elapsed: "0:31", stepsOpen: false), agents: nil)
+        screen(line: Line(symbol: "ellipsis", text: "Working…", elapsed: "0:31", steps: .closed), agents: nil)
     }
 
     /// L4: the chat just opened, the live block has not arrived: "Loading activity…" with the state timer.
@@ -87,14 +91,14 @@ enum WorkchatLiveMockups {
     /// L8: a subagent's own chat (narrow scope): the line shows that agent's step.
     static var l8: some View {
         screen(line: Line(symbol: "magnifyingglass", text: "Grep · \"func LiveOf\" in internal/", elapsed: "0:04",
-                          pulse: true, stepsOpen: false),
+                          pulse: true, steps: .closed),
                agents: nil, title: "Explore · Recon the DB layer", entries: subagentFeed)
     }
 
     /// L9: the agents sheet: Working rows say what each agent does now and for how long; Done collapsed.
     static var l9: some View {
         screen(line: Line(symbol: "person.2", text: "Agent · Codex review of the lane split", elapsed: "2:05",
-                          pulse: true, stepsOpen: false),
+                          pulse: true, steps: .closed),
                agents: 2, sheet: true)
     }
 
@@ -149,10 +153,16 @@ enum WorkchatLiveMockups {
         (.agent, "Looking for where the live snapshot is read and who calls it.")
     ]
 
-    // swiftlint:disable:next function_parameter_count
     private static func screen(
-        line: Line?, steps: [Step]? = nil, agents: Int?, state: StateLineModel? = nil, title: String = "Live line",
-        entries: [(ChatBubble.Role, String)]? = nil, freshness: String? = nil, permission: Bool = false, sheet: Bool = false
+        line: Line?,
+        steps: [Step]? = nil,
+        agents: Int?,
+        state: StateLineModel? = nil,
+        title: String = "Live line",
+        entries: [(ChatBubble.Role, String)]? = nil,
+        freshness: String? = nil,
+        permission: Bool = false,
+        sheet: Bool = false
     ) -> some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 0) {
@@ -238,8 +248,8 @@ private struct LiveLine: View {
             if let elapsed = line.elapsed {
                 Text(elapsed).monospacedDigit()
             }
-            if let open = line.stepsOpen {
-                Image(systemName: open ? "chevron.down" : "chevron.up").font(TypeScale.capsHeader)
+            if line.steps != .none {
+                Image(systemName: line.steps == .open ? "chevron.down" : "chevron.up").font(TypeScale.capsHeader)
             }
         }
         .font(TypeScale.meta)
