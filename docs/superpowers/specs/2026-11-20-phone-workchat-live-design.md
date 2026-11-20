@@ -88,13 +88,18 @@ draining the battery.
 
 ### 2. Reading on change, not on a tick (Go hub)
 
-- Per watched chat the source keeps an fsnotify watcher on the files `sessionfeed.SessionConversations` resolves
-  (the conversation `.jsonl` or Codex rollout), on the session's `subagents/` directory and on the conversation's
-  directory (a new conversation file after `/clear`, a new subagent file). macOS gets kqueue, Linux inotify — the hub
-  runs on both.
+- Per watched chat the source keeps an fsnotify watch on **files only**: the files `sessionfeed.SessionConversations`
+  resolves (the conversation `.jsonl` or Codex rollout) and the `.jsonl` of each subagent the last live snapshot lists
+  as running (≤ 32). No directory is watched: on macOS fsnotify's kqueue backend opens a descriptor for every file in
+  a watched directory, and a Claude projects directory holds hundreds. A new subagent shows up in the main
+  conversation first (its Agent call), so the read that follows adds its file; a file not created yet is retried on
+  the next read. macOS gets kqueue, Linux inotify — the hub runs on both.
+- A new conversation after `/clear` changes the session's agent-session rows in the database (the existing
+  `terminal_session_agent_sessions` triggers); the source's existing `Wake` loop compares the resolved conversation
+  list (a database query and a stat, no transcript read) and re-arms the watch when it changed.
 - An event marks the chat dirty; a dirty chat is read 250 ms after the last event (trailing debounce), and at most once
   per second while events keep coming (C3). A read whose payload equals the stored one publishes nothing (as today).
-- Re-resolve on `Remove`/`Rename`/a new file in the directory: the watcher set follows the conversation.
+- Re-resolve on `Remove`/`Rename` of a watched file and on a changed conversation list: the watch set follows the conversation.
 - The watch's other moments stay as they are: one read when the watch opens, one when the session stops being live
   (the liveness change already reaches the source on its `Wake` loop, which reads no file), drop on expiry or unlink.
 - Fallback: if a watcher cannot be added (descriptor limit, missing directory), that chat goes back to the 3 s tick,
@@ -220,7 +225,7 @@ a `PASSWORD=` env and a `user:pass@` URL reaches the payload as `[secret]`); the
   100 events in 500 ms → 1 read; events for 3 s → 3–4 reads.
 - **Watcher fails to add / directory removed.** Fallback to the 3 s tick for that chat. Test: fake watcher refusing
   `Add` → the tick reads.
-- **File replaced (new conversation after `/clear`).** Directory `Create` → re-resolve → the new file is watched; the
+- **File replaced (new conversation after `/clear`).** The conversation list changes on the `Wake` loop → re-resolve → the new file is watched; the
   live block's `conversation` changes and the steps slot closes. Test: rename/create sequence.
 - **Live read fails, feed read succeeds.** Entries update; `live` keeps the last value, `live_error` set → line "Activity
   unavailable" + Retry (Retry sends `session_chat_request`, which re-reads at once). Test per path.

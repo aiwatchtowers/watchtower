@@ -84,9 +84,10 @@ Depends on: Task 1.
   - `TestFeed05_LiveBlockSummariesOnly`: encoded JSON of `activity_live` has only the `sessionfeed.Live` keys, every `summary` ≤ 200 runes, steps ≤ 40, agents ≤ 32.
   - `TestFeed05_LiveBlockRedactsSecrets`: a step summary `curl -H "Authorization: Bearer abcdEFGH12345678" https://u:p4ss@x` and an agent description with `TOKEN=abc123def` encode with `[secret]` and without the raw values.
   - `TestSessionChat_LiveVersionAlways`, `TestSessionChat_NoLiveWhenFinished`, `TestSessionChat_LiveErrorKeepsLastLive` (fetch of the live block fails → last block + `live_error`, entries still update), `TestSessionChat_HungLiveReadSetsError` (fake read blocks past `Timing.Timeout` under `synctest`), `TestSessionChat_LiveReservedInBudget` (entries trimmed, block kept whole).
+  - `TestSessionChat_SubagentRecordUsesSidechainLive`: an agent record (`session_chat-<id>-<agent>`) carries the live block read from that subagent's sidechain (its own current step), not the main conversation's.
   - Existing five `TestFeed05_*` unchanged and green; `TestFeed05_MatchesKitFixtureKeys` with the updated fixture.
 - [ ] **Step 2:** `go test ./internal/hub/slices/sources -run 'Feed05|SessionChat'` → FAIL.
-- [ ] **Step 3:** Read the live block in the same pass as the feed (the main conversation, or the subagent's sidechain for an agent record); `ChatFetch` gains a live result (extend the type to return `(entries, live, liveErr, err)` or add `ChatLiveFetch` — one choice, used by the default in-process fetch).
+- [ ] **Step 3:** Read the live block in the same pass as the feed (the main conversation, or the subagent's sidechain for an agent record). `ChatFetch` changes to `func(ctx context.Context, sessionID int64, toolUseID string) (ChatRead, error)` with `type ChatRead struct { Entries []sessionfeed.Entry; Live *sessionfeed.Live; LiveErr error; Paths []string }` — `Paths` are the files read (Task 4 watches them); the default in-process fetch fills all four; every test fake is updated to the new type.
 - [ ] **Step 4:** Tests PASS; `go test ./internal/hub/...` PASS; `make gen-interface-check` clean; `make lint-diff` clean.
 - [ ] **Step 5:** Commit `feat(hub): live block in the session chat, redacted (FEED-05 amended, ask #1675) (#2112)`.
 
@@ -100,14 +101,18 @@ Depends on: Task 3.
 
 **Interfaces:**
 - Produces: `type FileWatcher interface { Add(path string) error; Remove(path string) error; Events() <-chan string; Errors() <-chan error; Close() error }`; `SessionChatOptions.NewWatcher func() (FileWatcher, error)` (nil = fsnotify); `ChatTiming.Debounce` (250 ms) and `ChatTiming.MinGap` (1 s) added to `StandardChatTiming`; `Every` (3 s) now only the fallback.
-- Paths per watch: the files `sessionfeed.SessionConversations` resolves, the conversation directory, `subagents/` (and each subagent `.jsonl` on Linux is covered by the dir watch; on macOS add each file).
+- Paths per watch: **files only** — `ChatRead.Paths` (conversation files) plus the `.jsonl` of each subagent the last live block lists as running, ≤ 32; no directory watch (kqueue opens every file of a watched directory). A path that does not exist yet is retried on the next read. A new conversation after `/clear` is caught by the `Wake` loop comparing `sessionfeed.SessionConversations` (DB query + stat, no transcript read) with the watched list.
 
 - [ ] **Step 1: Failing tests** (all under `synctest`, fake watcher):
   - `TestChatFiles_EventReadsAfterDebounce`: one event → one read 250 ms later, none before.
   - `TestChatFiles_BurstCapsReads`: 100 events in 500 ms → 1 read; events every 50 ms for 3 s → 3–4 reads; no read after the burst beyond the trailing one.
   - `TestChatFiles_NoEventNoRead`: a live watched chat with no event for 60 s → only the open read.
-  - `TestChatFiles_RenameReresolves`: `Remove` of the conversation + `Create` of a new file in the dir → the new path is added, read follows.
-  - `TestChatFiles_AddFailsFallsBackToTick`: `Add` error → reads every 3 s for that chat, logged once.
+  - `TestChatFiles_RenameReresolves`: `Remove`/`Rename` of the watched conversation → re-resolve; the new path is added, read follows.
+  - `TestChatFiles_NewConversationOnWake`: the resolved conversation list changes (new agent-session row) → the `Wake` loop swaps the watch to the new file and reads once.
+  - `TestChatFiles_SubagentFileAddedAfterAgentStarts`: no subagent file at open; a read whose live block lists a running agent whose `.jsonl` appears later → the file is added on the next read and its writes trigger reads; the agent finishing removes it.
+  - `TestChatFiles_HubRestartReadsOnFirstRequest`: a fresh source (no runs) gets a `session_chat_request` → one read at once and the watch armed.
+  - `TestChatFiles_RealWatcherOnlyListedFiles` (real fsnotify, temp dir with 200 `.jsonl` files, 1 watched): the process's open descriptor count (`/dev/fd`) grows by ≤ 4 after arming.
+  - `TestChatFiles_AddFailsFallsBackToTick`: `Add` error other than "does not exist" → reads every 3 s for that chat, logged once.
   - `TestChatFiles_WatchersClosedOnExpiryAndUnlink`: watch expiry and `dropAll` close the watcher; no read after.
   - `TestChatFiles_ReadInFlightRearms`: an event during a read gives exactly one more read.
 - [ ] **Step 2:** `go test ./internal/hub/slices/sources -run ChatFiles` → FAIL.
@@ -156,7 +161,7 @@ Depends on: Task 6.
 - Consumes: `SessionChat.activityLive/liveVersion/liveError`, `WorkchatLivePresentation.row(…)`/`stepsSlot(…)`, `ReplicaFreshness`.
 - Produces: `enum WorkchatLiveLine { static func row(chat: SessionChat?, arrivedSinceOpen: Bool, working: Bool, stateAt: Date?, freshness: ReplicaFreshness?, heartbeatAt: Date?, cardShown: Bool, stepsOpen: Bool, now: Date) -> WorkchatLivePresentation.Row?; static func steps(…) -> WorkchatLivePresentation.StepsSlot? }`.
 
-- [ ] **Step 1: Failing tests** `WorkchatLiveLineTests`, one per row of the spec §4 table plus: stale freshness → presentation's "Activity out of date · Ns ago", no elapsed, retry; card shown → `activity == false`; steps open → "This turn · N steps"; steps closed by default; steps close on turn end, Stop, card, conversation change; strings asserted literally (`"Loading activity…"`, `"Activity unavailable"`, `"Working…"`).
+- [ ] **Step 1: Failing tests** `WorkchatLiveLineTests`, one per row of the spec §4 table plus: a step `startedAt` 30 s after `now` (clock skew) → elapsed `"0:00"`; Retry calls the injected `requestNow` once, immediately (no outbox-repeat wait); stale freshness → presentation's "Activity out of date · Ns ago", no elapsed, retry; card shown → `activity == false`; steps open → "This turn · N steps"; steps closed by default; steps close on turn end, Stop, card, conversation change; strings asserted literally (`"Loading activity…"`, `"Activity unavailable"`, `"Working…"`).
 - [ ] **Step 2:** `make mobile-test MOBILE_FILTER=WorkchatLiveLineTests …` → FAIL. **Step 3:** implement (view per mockups L1–L10; `symbolEffect(.pulse)` off under Reduce Motion; middle truncation; monospaced timer). **Step 4:** PASS; `make mobile-gen` if files were added; swiftlint on `WatchtowerMobile` clean.
 - [ ] **Step 5:** `make mobile-shots SHOTS_ONLY=workchat-live SIM="iPhone 17 Pro"` with real captures; compare with the mockups, note differences in the report.
 - [ ] **Step 6:** Commit `feat(phone): Workchat live line and the turn's steps (#2112)`.
@@ -185,7 +190,7 @@ Depends on: Task 5.
 
 **Interfaces:**
 - Produces: `protocol FileEventSource { func open(_ path: String, onEvent: @escaping @Sendable () -> Void) throws -> Cancellable }` (live: `DispatchSource.makeFileSystemObjectSource` with `.write, .extend, .rename, .delete`); `final class TranscriptWatch` (`update(paths:running:)`, debounce 250 ms, min gap 1 s, ≤ 32 file sources, dirs for new files, injected clock/scheduler).
-- The state change already re-runs `follow` (`MainFollowKey` in `SessionChatView`) → one refresh; no liveness timer.
+- The state change re-runs `follow` (`MainFollowKey` in `SessionChatView`) → one refresh; no liveness timer. Test `SessionFeedStoreTests.testStateChangeRefreshesOnce`: re-entering `follow` with a new state kind performs exactly one refresh with the fake source idle.
 
 - [ ] **Step 1: Failing tests** (fake source, test scheduler): event → one refresh after 250 ms; burst → ≤ 1/s; a running subagent's file gets its own source, a finished one's is closed; > 32 files → capped; `open` throws → 3 s fallback; rename/delete → re-resolve on the next read's `paths`; no source while the pane is off screen.
 - [ ] **Step 2–4:** `make test-swift FILTER='TranscriptWatch|SessionFeedStore|SessionChatView'` FAIL → implement → PASS; `make lint-swift` clean.
