@@ -189,6 +189,9 @@ type chatRun struct {
 	// doc is payload before encoding: a failed read re-encodes it with
 	// live_error.
 	doc *chatPayload
+	// openID is the newest open_id the phone's requests carried; its reads
+	// echo it.
+	openID string
 	chatFiles
 }
 
@@ -329,8 +332,18 @@ func (w wakingWatches) Watch(cw handlers.ChatWatch) {
 	k := chatKey{session: cw.SessionID, agent: cw.AgentID, toolUseID: cw.ToolUseID}
 	w.s.mu.Lock()
 	// The phone repeats the request every 60 s to keep the watch: only a
-	// chat with nothing stored or a failed live read (the Retry) reads.
-	if r, ok := w.s.runs[k]; ok && (r.payload == nil || r.doc != nil && r.doc.LiveError != "") {
+	// chat with nothing stored or a failed live read (the Retry) reads, or a
+	// new open of the chat screen (a new open_id), whose read echoes it. A
+	// new open after a restart or an expiry starts the run that echoes it.
+	r, ok := w.s.runs[k]
+	if !ok && cw.OpenID != "" {
+		r, ok = &chatRun{}, true
+		w.s.runs[k] = r
+	}
+	if ok && cw.OpenID != "" && cw.OpenID != r.openID {
+		r.openID, r.requested = cw.OpenID, true
+	}
+	if ok && (r.payload == nil || r.doc != nil && r.doc.LiveError != "") {
 		r.requested = true
 	}
 	w.s.mu.Unlock()
@@ -491,8 +504,9 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 	}
 	s.mu.Lock()
 	var prev *chatPayload
+	var openID string
 	if r, ok := s.runs[k]; ok {
-		prev = r.doc
+		prev, openID = r.doc, r.openID
 	}
 	s.mu.Unlock()
 	var doc *chatPayload
@@ -511,18 +525,19 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 			}
 			// Nothing stored yet for a live session: say the read failed,
 			// so the phone shows Unavailable + Retry, never Loading forever.
-			if doc, err = chatDoc(nil, k.session, k.agent, true, nil, lineErr); err != nil {
+			if doc, err = chatDoc(nil, k.session, k.agent, true, nil, lineErr, openID); err != nil {
 				return
 			}
 			break
 		}
 		marked := *prev
+		marked.OpenID = openID
 		switch {
 		case !live:
 			// The session stopped: its last block is no longer current, and
 			// no live error either — the dialog stays, the liveness is real.
 			marked.Live, marked.ActivityLive, marked.LiveError = false, nil, ""
-		case prev.ActivityLive == nil && prev.LiveError == "":
+		case prev.ActivityLive == nil && prev.LiveError == "" && prev.OpenID == openID:
 			return
 		default:
 			marked.LiveError = lineErr
@@ -538,7 +553,7 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 				block = prev.ActivityLive
 			}
 		}
-		if doc, err = chatDoc(read.Entries, k.session, k.agent, live, block, lineErr); err != nil {
+		if doc, err = chatDoc(read.Entries, k.session, k.agent, live, block, lineErr, openID); err != nil {
 			log.Printf("hub slices: encoding the session chat of session %d failed", k.session)
 			return
 		}
@@ -628,6 +643,10 @@ type chatPayload struct {
 	ActivityLive *sessionfeed.Live `json:"activity_live,omitempty"`
 	LiveVersion  int               `json:"live_version"`
 	LiveError    string            `json:"live_error,omitempty"`
+	// OpenID echoes the newest open_id the phone's session_chat_request
+	// carried (each opening of the chat screen sends a new one): the phone
+	// shows Loading until a record echoing its open arrives.
+	OpenID string `json:"open_id,omitempty"`
 }
 
 // encodeChat is SessionChatPayload.encode: the FEED-02 kinds only, cut to
@@ -638,8 +657,8 @@ type chatPayload struct {
 // (liveErr) are reserved first and never cut: they travel only while the
 // session is live. The payload carries no clock but the block's
 // observed_at, so an unchanged feed encodes to the same bytes.
-func encodeChat(feed []sessionfeed.Entry, sessionID int64, agentID string, live bool, block *sessionfeed.Live, liveErr string) ([]byte, error) {
-	doc, err := chatDoc(feed, sessionID, agentID, live, block, liveErr)
+func encodeChat(feed []sessionfeed.Entry, sessionID int64, agentID string, live bool, block *sessionfeed.Live, liveErr, openID string) ([]byte, error) {
+	doc, err := chatDoc(feed, sessionID, agentID, live, block, liveErr, openID)
 	if err != nil {
 		return nil, err
 	}
@@ -647,7 +666,7 @@ func encodeChat(feed []sessionfeed.Entry, sessionID int64, agentID string, live 
 }
 
 // chatDoc is encodeChat before encoding.
-func chatDoc(feed []sessionfeed.Entry, sessionID int64, agentID string, live bool, block *sessionfeed.Live, liveErr string) (*chatPayload, error) {
+func chatDoc(feed []sessionfeed.Entry, sessionID int64, agentID string, live bool, block *sessionfeed.Live, liveErr, openID string) (*chatPayload, error) {
 	if !live {
 		block, liveErr = nil, ""
 	}
@@ -678,7 +697,7 @@ func chatDoc(feed []sessionfeed.Entry, sessionID int64, agentID string, live boo
 	// included whole.
 	envelope, err := wire.Marshal(chatPayload{
 		SessionID: sessionID, AgentID: agent, Live: live, EntriesMore: len(known), Entries: []chatEntry{},
-		ActivityLive: block, LiveVersion: chatLiveVersion, LiveError: liveErrTimedOut,
+		ActivityLive: block, LiveVersion: chatLiveVersion, LiveError: liveErrTimedOut, OpenID: openID,
 	})
 	if err != nil {
 		return nil, err
@@ -689,7 +708,7 @@ func chatDoc(feed []sessionfeed.Entry, sessionID int64, agentID string, live boo
 		block, liveErr = nil, liveErrUnavailable
 		if envelope, err = wire.Marshal(chatPayload{
 			SessionID: sessionID, AgentID: agent, Live: live, EntriesMore: len(known), Entries: []chatEntry{},
-			LiveVersion: chatLiveVersion, LiveError: liveErrTimedOut,
+			LiveVersion: chatLiveVersion, LiveError: liveErrTimedOut, OpenID: openID,
 		}); err != nil {
 			return nil, err
 		}
@@ -711,7 +730,7 @@ func chatDoc(feed []sessionfeed.Entry, sessionID int64, agentID string, live boo
 	return &chatPayload{
 		SessionID: sessionID, AgentID: agent, Live: live,
 		EntriesMore: more + dropped, Entries: entries[dropped:],
-		ActivityLive: block, LiveVersion: chatLiveVersion, LiveError: liveErr,
+		ActivityLive: block, LiveVersion: chatLiveVersion, LiveError: liveErr, OpenID: openID,
 	}, nil
 }
 

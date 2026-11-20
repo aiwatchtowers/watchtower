@@ -88,6 +88,7 @@
 
 ## Changelog
 
+- 2026-11-20 (#2112, plan Task 4 review of Task 7): the `session_chat` payload gains `open_id`, an opaque id the phone generates per opening of the chat screen and the hub echoes back so the phone knows the record answers this opening. It carries no transcript content; FEED-05's text and guards unchanged.
 - 2026-11-03 (go hub plan 3 Task 24, spec `docs/superpowers/specs/2026-10-31-go-hub-design.md` §13 "Ported guards", approved with the spec; asks #807, #812, #813, #814): the Swift hub is deleted, and FEED-05's five Swift guards go with it. Each keeps its same-meaning Go twin, already listed since phase 1: `testNoWatchPublishesNothing` → `TestFeed05_NoWatchPublishesNothing`, `testExpiredWatchLeavesWindow` → `TestFeed05_ExpiredWatchLeavesWindow`, `testUnlinkedPhoneDropsPayloadsForGood` → `TestFeed05_UnlinkedPhoneDropsPayloadsForGood`, `testMatchesKitFixtureKeys` → `TestFeed05_MatchesKitFixtureKeys`, `testOnlyFeedKindsPublished` → `TestFeed05_OnlyFeedKindsPublished` (all in `internal/hub/slices/sources/session_chat_test.go`). The module's phone path now names the Go files. Text unchanged.
 - 2026-10-31 (Go hub phase 1, board #1284, **ask #807**): strengthening, no guard relaxed. FEED-05's Go twins added for the Go hub's `session_chat` source (`internal/hub/slices/sources/session_chat.go`): the payload stays in the hub's memory (not in `watchtower.db`, not in the hub sidecar). Text unchanged. Note `docs/features/go-hub.md`.
 

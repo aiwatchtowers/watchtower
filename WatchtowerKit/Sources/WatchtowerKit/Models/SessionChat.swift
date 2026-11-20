@@ -139,6 +139,10 @@ public struct SessionChat: SliceMirror, Equatable {
     public let liveError: String?
     /// The hub's fixed `live_error` text, reused for an undecodable block.
     public static let liveUnavailable = "Activity unavailable"
+    /// The newest `open_id` the phone's `session_chat_request` carried: the
+    /// record answers that opening of the chat screen. nil from an older Mac
+    /// or for a request without one.
+    public let openID: String?
 
     public init(
         sessionID: Int64,
@@ -148,7 +152,8 @@ public struct SessionChat: SliceMirror, Equatable {
         entries: [Entry],
         activityLive: SessionFeedLive? = nil,
         liveVersion: Int? = nil,
-        liveError: String? = nil
+        liveError: String? = nil,
+        openID: String? = nil
     ) {
         self.sessionID = sessionID
         self.agentID = agentID
@@ -158,6 +163,7 @@ public struct SessionChat: SliceMirror, Equatable {
         self.activityLive = activityLive
         self.liveVersion = liveVersion
         self.liveError = liveError
+        self.openID = openID
     }
 
     public init(from decoder: Decoder) throws {
@@ -178,6 +184,7 @@ public struct SessionChat: SliceMirror, Equatable {
             activityLive = nil
             liveError = Self.liveUnavailable
         }
+        openID = try c.decodeIfPresent(String.self, forKey: .openID)
     }
 
     // convertFromSnakeCase maps "session_id" -> "sessionId" (lowercase d).
@@ -186,6 +193,7 @@ public struct SessionChat: SliceMirror, Equatable {
         case agentID = "agentId"
         case live, entriesMore, entries
         case activityLive, liveVersion, liveError
+        case openID = "openId"
     }
 
     /// `session_chat-<session id>` or `session_chat-<session id>-<agent id>`.

@@ -157,7 +157,11 @@ func encodeChatJSON(t *testing.T, entries []sessionfeed.Entry, agent string) ([]
 	if agent == "" {
 		liveErr = liveErrUnavailable
 	}
-	b, err := encodeChat(entries, 7, agent, true, phoneLive(sampleLive()), liveErr)
+	var openID string
+	if agent == "" {
+		openID = "open-1"
+	}
+	b, err := encodeChat(entries, 7, agent, true, phoneLive(sampleLive()), liveErr, openID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1276,7 +1280,7 @@ func TestSessionChat_LiveStringsBoundedAndOversizeDropped(t *testing.T) {
 		}
 	}
 	huge := &sessionfeed.Live{Conversation: strings.Repeat("x", MaxChatBytes)}
-	b, err := encodeChat([]sessionfeed.Entry{feedEntry(0, "hi")}, 7, "", true, huge, "")
+	b, err := encodeChat([]sessionfeed.Entry{feedEntry(0, "hi")}, 7, "", true, huge, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
