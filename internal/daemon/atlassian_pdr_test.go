@@ -135,6 +135,54 @@ func TestPhaseAtlassianPDR_AnsweredOnRetryStampsNormally(t *testing.T) {
 	assert.Zero(t, d.pdrIncomplete[1], "a complete run ends the streak")
 }
 
+// flakyReporter fails the calls whose 1-based index is in failOn and
+// otherwise answers every id as not found.
+type flakyReporter struct {
+	calls  *int
+	failOn map[int]bool
+}
+
+func (r flakyReporter) Report(_ context.Context, ids []string, _ map[string]time.Time) (map[string]atlassianpdr.Status, error) {
+	*r.calls++
+	if r.failOn[*r.calls] {
+		return nil, errors.New("network")
+	}
+	out := map[string]atlassianpdr.Status{}
+	for _, id := range ids {
+		out[id] = atlassianpdr.StatusUnknown
+	}
+	return out, nil
+}
+
+func (flakyReporter) Profiles(context.Context, []string) ([]db.AtlassianProfile, error) {
+	return nil, nil
+}
+
+// TestPhaseAtlassianPDR_ErrorResetsTheIncompleteStreak: incomplete,
+// incomplete, error, incomplete is not pdrIncompleteCap incomplete runs in a
+// row, so the report is not stamped yet; every try waits pdrRetryAfter.
+func TestPhaseAtlassianPDR_ErrorResetsTheIncompleteStreak(t *testing.T) {
+	d, database, _ := newExternalSyncTestDaemon(t)
+	seedConfluenceSource(t, database)
+	_, err := database.Exec(`INSERT INTO jira_user_map (jira_account_id) VALUES ('acme-1')`)
+	require.NoError(t, err)
+	var calls int
+	d.SetAtlassianPDR([]PDRAccount{{ID: 1, Reporter: flakyReporter{calls: &calls, failOn: map[int]bool{3: true}}}})
+	now := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	d.pdrNow = func() time.Time { return now }
+
+	for i := 1; i <= 4; i++ {
+		d.phaseAtlassianPDR(context.Background())
+		d.phaseAtlassianPDR(context.Background())
+		assert.Equal(t, i, calls, "one try per wait")
+		now = now.Add(pdrRetryAfter)
+	}
+	a, err := database.GetJiraAccount(1)
+	require.NoError(t, err)
+	assert.Empty(t, a.LastPDRAt, "the error broke the streak")
+	assert.Equal(t, 1, d.pdrIncomplete[1])
+}
+
 // pdrCount runs a count query.
 func pdrCount(t *testing.T, d *db.DB, q string, args ...any) int {
 	t.Helper()

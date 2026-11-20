@@ -286,3 +286,39 @@ func TestSync_PickerFieldsSharingARoleMerge(t *testing.T) {
 	assert.ElementsMatch(t, []db.CustomFieldPerson{{ID: "acme-r1", Name: "Ann"}, {ID: "acme-r2", Name: "Bo"}}, got.People["reviewers"])
 	assert.ElementsMatch(t, []string{"Ann", "Bo"}, strings.Split(got.Reviewers, ", "), "the display value names the merged people")
 }
+
+// A picker and a non-picker field mapped to one role, in either order:
+// the role keeps no people, so the erase never rewrites the non-picker text
+// (the picker's ids are not reported from that role).
+func TestSync_PickerAndTextSharingARoleKeepNoPeople(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		picker, txt string
+	}{
+		{"picker first", "customfield_600", "customfield_601"},
+		{"text first", "customfield_601", "customfield_600"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := openTestDB(t)
+			seedTestBoard(t, database)
+			require.NoError(t, database.UpsertJiraBoardFieldMap(1, 42, []db.JiraBoardFieldMap{
+				{FieldID: "customfield_600", Role: "owner"},
+				{FieldID: "customfield_601", Role: "owner"},
+			}))
+			srv, _ := customFieldSearchServer(t, map[string]any{
+				tc.picker: map[string]any{"accountId": "acme-o1", "displayName": "Ann"},
+				tc.txt:    "Platform team",
+			})
+			_, err := NewSyncer(makeTestClient(t, srv.URL), database, NewUserMapper(nil, database), []int{42}, 1).
+				Sync(context.Background())
+			require.NoError(t, err)
+			issue, err := database.GetJiraIssue(1, "TEST-1")
+			require.NoError(t, err)
+			require.NotNil(t, issue)
+			var got map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal([]byte(issue.CustomFieldsJSON), &got))
+			assert.NotContains(t, got, db.CustomFieldPeopleKey)
+			assert.Contains(t, got, "owner")
+		})
+	}
+}

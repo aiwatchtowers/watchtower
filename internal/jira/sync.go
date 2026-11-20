@@ -804,6 +804,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int, fie
 	var storyPoints *float64
 	customFieldsMap := make(map[string]any)
 	pickerPeople := make(map[string][]db.CustomFieldPerson)
+	nonPickerRoles := make(map[string]bool)
 
 	for _, fm := range fieldMap {
 		rawVal, ok := issue.CustomFields[fm.FieldID]
@@ -843,11 +844,17 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int, fie
 				// Personal Data Reporting can report and erase them. Fields
 				// sharing a role merge their people, and the role's display
 				// value is then the merged names (what the erase rebuilds).
-				if people := customFieldUsers(val); len(people) > 0 {
+				// A role that also holds a non-picker value keeps no people
+				// (either order): the erase must never rewrite that text.
+				switch people := customFieldUsers(val); {
+				case len(people) > 0 && !nonPickerRoles[fm.Role]:
 					pickerPeople[fm.Role] = mergeCustomFieldPeople(pickerPeople[fm.Role], people)
 					if names := customFieldPeopleNames(pickerPeople[fm.Role]); names != "" {
 						customFieldsMap[fm.Role] = names
 					}
+				case len(people) == 0 && displayVal != "":
+					nonPickerRoles[fm.Role] = true
+					delete(pickerPeople, fm.Role)
 				}
 			}
 		}

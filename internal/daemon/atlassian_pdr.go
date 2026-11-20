@@ -35,7 +35,8 @@ func (d *Daemon) SetAtlassianPDR(accounts []PDRAccount) {
 // an error erases nothing; the account tries again pdrRetryAfter later (in
 // memory: a restart tries at once) — as does one whose lookup left ids
 // unanswered (Result.Unknown, last_pdr_at not stamped), up to
-// pdrIncompleteCap incomplete runs in a row: the last one stamps
+// pdrIncompleteCap incomplete runs in a row (an error or a complete run
+// starts the count again): the last one stamps
 // last_pdr_at, so an id the token can never see (a cache row of another
 // site) returns the account to the 7-day cadence; an unanswered id is never
 // treated as closed. Skipped for a source the organization's policy forbids
@@ -62,8 +63,8 @@ func (d *Daemon) phaseAtlassianPDR(ctx context.Context) {
 			}
 			d.pdrRetryAt[a.ID] = now().Add(pdrRetryAfter)
 		}
-		if err == nil && res.Unknown == 0 {
-			delete(d.pdrIncomplete, a.ID) // a complete run ends the streak
+		if err != nil || res.Unknown == 0 {
+			delete(d.pdrIncomplete, a.ID) // a complete or failed run ends the streak
 		}
 		switch {
 		case err != nil:
