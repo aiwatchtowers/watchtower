@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -145,6 +146,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}
+	testRealHome = os.Getenv("HOME")
 	home, err := os.MkdirTemp("", "watchtower-cmd-tests-home-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
@@ -181,6 +183,39 @@ func TestMain(m *testing.M) {
 	// Execute does through cobra's initializers (#608).
 	applySourceGuards()
 	code := m.Run()
-	_ = os.RemoveAll(home)
+	// os.Exit skips deferred calls: the home goes here, and a run that
+	// cannot remove it fails instead of leaving it in $TMPDIR (#2130).
+	if err := removeTestHome(home); err != nil {
+		fmt.Fprintf(os.Stderr, "testmain: test HOME left behind: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
 	os.Exit(code)
+}
+
+// testRealHome is the developer's HOME before TestMain replaced it, for a
+// test that runs the go tool (its module cache lives under the real HOME).
+var testRealHome string
+
+// removeTestHome removes the package's temp HOME and reports when anything
+// is left. A read-only subtree (a Go module cache a `go` run downloaded
+// under it) is made writable first: os.RemoveAll alone stops at its files.
+func removeTestHome(home string) error {
+	if root, err := os.OpenRoot(home); err == nil {
+		_ = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
+			if err == nil && d.IsDir() {
+				_ = root.Chmod(path, 0o700)
+			}
+			return nil
+		})
+		_ = root.Close()
+	}
+	if err := os.RemoveAll(home); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(home); !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%s still exists (%v)", home, err)
+	}
+	return nil
 }

@@ -517,6 +517,8 @@ struct ConfigServiceTests {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("watchtower-config-tests-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // A Swift Testing suite has no tearDown: removed when the process exits.
+        TestTempDirectories.register(dir.path)
         let path = dir.appendingPathComponent("config.yaml").path
         try? yaml.write(toFile: path, atomically: true, encoding: .utf8)
         return path
