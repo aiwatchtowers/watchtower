@@ -50,8 +50,11 @@ Anti-goals (a failure even if it "works")
 
 - Agents live in `.claude/agents/*.md`. Their frontmatter `model` only accepts
   sonnet/opus/haiku/fable, so **security agents omit `model`** and inherit the session's
-  model: run the session on Mythos and the whole team runs on Mythos. The skill never
-  passes `model` to the Agent tool. (Owner rule: subagents are never below Opus — a
+  model: run the session on Mythos and the whole team runs on Mythos. To keep the main
+  thread on another model (e.g. Fable) and run only the agents on Mythos, start the
+  session as `CLAUDE_CODE_SUBAGENT_MODEL=<mythos model id> claude --model fable` — the
+  variable applies to subagents that have no `model` field, which is all of ours. No
+  model id is written into the repo. The skill never passes `model` to the Agent tool. (Owner rule: subagents are never below Opus — a
   session started for an audit must itself be Opus or stronger; the skill checks nothing
   here, it states it in its first line.)
 - Every agent is read-only, enforced by the tool list: all ten (the eight specialists,
