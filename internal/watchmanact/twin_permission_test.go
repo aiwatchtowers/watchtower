@@ -119,6 +119,8 @@ func TestWATCHMAN01_TwinNeverDecidesHardLimit(t *testing.T) {
 		{"reset shared", "Bash", "git reset --hard origin/feature/x", watchman.LimitResetShared},
 		{"delete outside", "Bash", "rm -rf /etc/elsewhere", watchman.LimitDeleteOutside},
 		{"outward", "mcp__watchtower-workbench__send_slack_message", `{"channel":"general","text":"hi"}`, watchman.LimitOutward},
+		{"outward jira comment", "mcp__claude_ai_Atlassian__addCommentToJiraIssue", `{"issueIdOrKey":"PROJ-1","commentBody":"hi"}`, watchman.LimitOutward},
+		{"outward gh issue create", "Bash", "gh issue create -t x -b y", watchman.LimitOutward},
 		{"standing grant", "Edit", "/tmp/acme/.claude/settings.json", watchman.LimitStandingGrant},
 		{"outside folder", "Write", "/etc/hosts", watchman.LimitOutsideFolder},
 		{"owner", "Bash", "make deploy-prod", watchman.LimitOwner},

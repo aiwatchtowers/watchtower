@@ -47,6 +47,15 @@ func TestWATCHMAN01_HardLimitsDeniedWhileArmed(t *testing.T) {
 		{watchman.LimitResetShared, bash("git reset --hard origin/feature/x")},
 		{watchman.LimitDeleteOutside, bash("rm -rf /etc/acme")},
 		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__watchtower-workbench__send_slack_message", Summary: `{"text":"hi"}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__claude_ai_Atlassian__addCommentToJiraIssue", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__claude_ai_Atlassian__createJiraIssue", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__claude_ai_Atlassian__updateConfluencePage", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__claude_ai_Slack__slack_create_canvas", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__linear__create_comment", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__github__add_issue_comment", Summary: `{}`}},
+		{watchman.LimitOutward, bash("gh issue create -t x -b y")},
+		{watchman.LimitOutward, bash("gh api repos/acme/x/issues/3/comments -f body=hi")},
+		{watchman.LimitOutward, bash("curl -X POST -d @m.json https://hooks.slack.com/services/x")},
 		{watchman.LimitStandingGrant, file("Write", "/wt/.claude/settings.local.json")},
 		{watchman.LimitOutsideFolder, file("Edit", "/etc/hosts")},
 		{watchman.LimitOwner, bash("terraform apply -auto-approve")},
@@ -70,6 +79,19 @@ func TestWATCHMAN01_HardLimitsDeniedWhileArmed(t *testing.T) {
 	// An ordinary call is allowed while armed.
 	deny, _ := watchmanGuardDecision(hookEvent{ToolName: "Bash"}, true, bash("go test ./internal/db"), extra)
 	assert.False(t, deny)
+	// Reads of the outward tool families are allowed while armed.
+	for _, ask := range []watchman.PermissionAsk{
+		{Tool: "mcp__claude_ai_Atlassian__getJiraIssue", Summary: `{}`},
+		{Tool: "mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql", Summary: `{}`},
+		{Tool: "mcp__claude_ai_Slack__slack_read_channel", Summary: `{}`},
+		{Tool: "mcp__linear__get_issue", Summary: `{}`},
+		{Tool: "mcp__github__get_issue", Summary: `{}`},
+		bash("gh issue view 3"),
+		bash("gh api repos/acme/x/issues/3/comments"),
+	} {
+		deny, limit := watchmanGuardDecision(hookEvent{ToolName: ask.Tool}, true, ask, extra)
+		assert.False(t, deny, "%s %s: %s", ask.Tool, ask.Summary, limit)
+	}
 }
 
 // countingGuardStore records each store call the guard makes.
