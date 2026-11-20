@@ -367,3 +367,27 @@ func TestPDR_MemoryUntouched(t *testing.T) {
 	assert.True(t, erased(t, d, acct))
 	assert.Equal(t, before, snapshot())
 }
+
+// TestPDR_PickerOnlyPersonReportedAndErased: a person stored only in an
+// issue's user-picker custom field (account id kept beside the name) is
+// reported, and "closed" erases their name from the field.
+func TestPDR_PickerOnlyPersonReportedAndErased(t *testing.T) {
+	d := db.OpenTestDB(t)
+	acct := newAccount(t, d, "acme")
+	const pickerOnly = "acme-picker-3"
+	custom := `{"qa":"Quinn","_people":{"qa":[{"id":"` + pickerOnly + `","name":"Quinn"}]}}`
+	_, err := d.Exec(`INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category, created_at, updated_at, synced_at, custom_fields_json)
+		VALUES (?, 'ACME-7', 'ACME', 's', 'Open', 'todo', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', '2026-11-02T00:00:00Z', ?)`, acct, custom)
+	require.NoError(t, err)
+	r := &fakeReporter{statuses: map[string]Status{pickerOnly: StatusClosed}}
+
+	res, err := Run(context.Background(), d, acct, r, t0)
+	require.NoError(t, err)
+	require.Len(t, r.calls, 1)
+	assert.Contains(t, r.calls[0], pickerOnly)
+	assert.Equal(t, 1, res.Closed)
+	var got string
+	require.NoError(t, d.QueryRow(`SELECT custom_fields_json FROM jira_issues WHERE account_id = ? AND key = 'ACME-7'`, acct).Scan(&got))
+	assert.NotContains(t, got, "Quinn")
+	assert.Contains(t, got, pickerOnly, "the bare id stays (Former user)")
+}

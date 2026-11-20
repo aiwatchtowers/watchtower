@@ -20,8 +20,10 @@ type AtlassianPerson struct {
 
 // atlassianPeopleSQL collects every Atlassian account id stored for one Jira
 // account (?1): the site's issue, linked-issue, comment and changelog
-// people, the account's own owner, the authors on its Confluence spaces, and
-// the site-independent jira_user_map and Confluence ext_users rows. Atlassian
+// people, the people its issues' user-picker custom fields name
+// (CustomFieldPeopleKey), the account's own owner, the authors on its
+// Confluence spaces, and the site-independent jira_user_map and Confluence
+// ext_users rows. Atlassian
 // ids are global, so the caches are reported through every account: a row
 // left by a removed site is still reported by one that remains. The time is
 // the OLDEST fetch of a row naming the id, so a fresh copy never hides a
@@ -42,6 +44,10 @@ const atlassianPeopleSQL = `SELECT id, MIN(NULLIF(ts, '')) FROM (
   UNION ALL SELECT d.author_id, d.synced_at FROM ext_documents d JOIN ext_sources s ON s.id = d.source_id WHERE s.jira_account_id = ?1
   UNION ALL SELECT c.author_id, COALESCE(d.synced_at, '') FROM ext_comments c JOIN ext_sources s ON s.id = c.source_id
     LEFT JOIN ext_documents d ON d.source_id = c.source_id AND d.ext_id = c.page_ext_id WHERE s.jira_account_id = ?1
+  UNION ALL SELECT json_extract(p.value, '$.id'), i.synced_at FROM jira_issues i,
+    json_each(CASE WHEN instr(i.custom_fields_json, '"_people"') > 0 AND json_valid(i.custom_fields_json) THEN i.custom_fields_json ELSE '{}' END, '$._people') r,
+    json_each(CASE WHEN r.type = 'array' THEN r.value ELSE '[]' END) p
+    WHERE i.account_id = ?1 AND p.type = 'object'
   UNION ALL SELECT jira_account_id, '' FROM jira_user_map
   UNION ALL SELECT ext_user_id, fetched_at FROM ext_users WHERE provider = 'confluence'
 ) WHERE id != '' GROUP BY id ORDER BY id`
@@ -113,26 +119,33 @@ var atlassianPeopleDeletedTables = []struct{ table, idCol, where string }{
 // coverage test reads it.
 var atlassianPeopleKeptColumns = map[string]string{}
 
-// AtlassianErasePlan is what EraseAtlassianPeople needs read before its
-// write transaction, so no scan of the issue payloads or Confluence bodies
-// runs while it holds the write lock. A row a concurrent sync writes between
-// the plan and the transaction misses only its payload blanking and its
-// re-render mark: its person columns are erased in the transaction itself,
-// and the next report (the id stays stored, so it is reported again)
-// repeats the erase.
+// AtlassianErasePlan is what EraseAtlassianPeople writes, computed before
+// its write transaction, so no scan of the issue payloads, custom fields or
+// Confluence bodies runs while it holds the write lock. A row a concurrent
+// sync writes between the plan and the transaction misses only its payload
+// blanking, its custom field edit (guarded by the value the plan read) and
+// its re-render mark: its person columns are erased in the transaction
+// itself, and the next report (the id stays stored, so it is reported
+// again) repeats the erase.
 type AtlassianErasePlan struct {
 	// RawJSONKeys are the account's issues whose stored payload names one
-	// of the ids; the erase blanks the payload and removes the names below
-	// from their custom field values (a quiet issue is never re-synced, so
-	// the next sync cannot be relied on to rewrite them).
+	// of the ids; the erase blanks the payload (a quiet issue is never
+	// re-synced, so the next sync cannot be relied on to rewrite it).
 	RawJSONKeys []string
-	// Names are the display names stored for the ids: a user-picker custom
-	// field keeps only the name, with no account id to match it by.
-	Names []string
+	// CustomFields are the custom field values to rewrite: the closed
+	// people's names removed from user-picker fields (by account id, one
+	// entry of a multi-user field at a time; on a row written before the
+	// ids were kept, a whole value equal to a name stored for the id, on
+	// the issues RawJSONKeys lists).
+	CustomFields []CustomFieldsEdit
 	// Dirty are the knowledge documents rendered from rows naming one of
 	// the ids, re-rendered on the next KB pass.
 	Dirty []KBDocKey
 }
+
+// CustomFieldsEdit rewrites one issue's custom_fields_json from Old (the
+// value the plan read; a row changed since is left alone) to New.
+type CustomFieldsEdit struct{ Key, Old, New string }
 
 // KBDocKey is one knowledge-index document (kb_dirty's source and key).
 type KBDocKey struct{ Source, Key string }
@@ -158,9 +171,15 @@ const atlassianNamesSQL = `SELECT display_name FROM jira_user_map WHERE jira_acc
   UNION SELECT assignee_display_name FROM jira_issues WHERE account_id = ?1 AND assignee_account_id = ?2
   UNION SELECT reporter_display_name FROM jira_issues WHERE account_id = ?1 AND reporter_account_id = ?2`
 
+// atlassianCustomFieldIssuesSQL lists the account's issues whose payload
+// (?2 found in raw_json) or custom field values may name ?2, with their
+// custom field values.
+const atlassianCustomFieldIssuesSQL = `SELECT key, custom_fields_json, instr(raw_json, '"' || ?2 || '"') > 0 FROM jira_issues
+  WHERE account_id = ?1 AND (instr(raw_json, '"' || ?2 || '"') > 0 OR instr(custom_fields_json, '"' || ?2 || '"') > 0)`
+
 // PlanAtlassianErase reads, outside any write transaction, which issue
-// payloads, names and knowledge documents the erase of ids on Jira account
-// accountID touches.
+// payloads and knowledge documents the erase of ids on Jira account
+// accountID touches, and computes the custom field rewrites.
 func (db *DB) PlanAtlassianErase(ctx context.Context, accountID int64, ids []string) (AtlassianErasePlan, error) {
 	var plan AtlassianErasePlan
 	seen := map[string]bool{}
@@ -170,22 +189,44 @@ func (db *DB) PlanAtlassianErase(ctx context.Context, accountID int64, ids []str
 			*list = append(*list, v)
 		}
 	}
+	closed := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		keys, err := db.queryStrings(ctx, `SELECT key FROM jira_issues WHERE account_id = ? AND instr(raw_json, '"' || ? || '"') > 0`, accountID, id)
-		if err != nil {
+		closed[id] = true
+	}
+	// The issues whose custom fields may change, in the order found, each
+	// with the value read and whether its payload names a closed id.
+	type candidate struct {
+		custom string
+		raw    bool
+	}
+	candidates := map[string]*candidate{}
+	var candidateKeys []string
+	names := map[string]bool{}
+	for _, id := range ids {
+		if err := db.scanCustomFieldIssues(ctx, accountID, id, func(key, custom string, raw bool) {
+			c := candidates[key]
+			if c == nil {
+				c = &candidate{custom: custom}
+				candidates[key] = c
+				candidateKeys = append(candidateKeys, key)
+			}
+			if raw {
+				c.raw = true
+				add(&plan.RawJSONKeys, "raw", key)
+			}
+		}); err != nil {
 			return plan, fmt.Errorf("planning atlassian erase (payloads): %w", err)
 		}
-		for _, k := range keys {
-			add(&plan.RawJSONKeys, "raw", k)
-		}
-		names, err := db.queryStrings(ctx, atlassianNamesSQL, accountID, id)
+		found, err := db.queryStrings(ctx, atlassianNamesSQL, accountID, id)
 		if err != nil {
 			return plan, fmt.Errorf("planning atlassian erase (names): %w", err)
 		}
-		for _, n := range names {
-			add(&plan.Names, "name", n)
+		for _, n := range found {
+			if n != "" {
+				names[n] = true
+			}
 		}
-		keys, err = db.queryStrings(ctx, atlassianDirtyJiraSQL, accountID, id)
+		keys, err := db.queryStrings(ctx, atlassianDirtyJiraSQL, accountID, id)
 		if err != nil {
 			return plan, fmt.Errorf("planning atlassian erase (jira documents): %w", err)
 		}
@@ -208,7 +249,109 @@ func (db *DB) PlanAtlassianErase(ctx context.Context, accountID int64, ids []str
 			plan.Dirty = append(plan.Dirty, KBDocKey{"confluence", k})
 		}
 	}
+	for _, key := range candidateKeys {
+		c := candidates[key]
+		legacyNames := names
+		if !c.raw {
+			legacyNames = nil
+		}
+		if updated, changed := eraseCustomFieldPeople(c.custom, closed, legacyNames); changed {
+			plan.CustomFields = append(plan.CustomFields, CustomFieldsEdit{Key: key, Old: c.custom, New: updated})
+		}
+	}
 	return plan, nil
+}
+
+// scanCustomFieldIssues calls fn for each row of atlassianCustomFieldIssuesSQL.
+func (db *DB) scanCustomFieldIssues(ctx context.Context, accountID int64, id string, fn func(key, custom string, raw bool)) error {
+	rows, err := db.QueryContext(ctx, atlassianCustomFieldIssuesSQL, accountID, id)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, custom string
+		var raw bool
+		if err := rows.Scan(&key, &custom, &raw); err != nil {
+			return err
+		}
+		fn(key, custom, raw)
+	}
+	return rows.Err()
+}
+
+// eraseCustomFieldPeople returns custom (a custom_fields_json value) with
+// the closed people's names removed: each CustomFieldPeopleKey entry whose
+// id is closed keeps its bare id with an empty name, and its role's display
+// value is rebuilt from the names left. A role without ids (a row written
+// before they were kept) whose whole value is one of names becomes "".
+// changed is false when nothing was removed. A value that is not a JSON
+// object only loses the quoted names (the textual replace of old).
+func eraseCustomFieldPeople(custom string, closed, names map[string]bool) (string, bool) {
+	if custom == "" {
+		return custom, false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(custom), &fields); err != nil || fields == nil {
+		out := custom
+		for n := range names {
+			if quoted, err := json.Marshal(n); err == nil {
+				out = strings.ReplaceAll(out, string(quoted), `""`)
+			}
+		}
+		return out, out != custom
+	}
+	changed := false
+	var people map[string][]CustomFieldPerson
+	if raw, ok := fields[CustomFieldPeopleKey]; ok && json.Unmarshal(raw, &people) != nil {
+		people = nil
+	}
+	for role, list := range people {
+		roleChanged := false
+		for i, p := range list {
+			if closed[p.ID] && p.Name != "" {
+				list[i].Name = ""
+				roleChanged = true
+			}
+		}
+		if !roleChanged {
+			continue
+		}
+		var left []string
+		for _, p := range list {
+			if p.Name != "" {
+				left = append(left, p.Name)
+			}
+		}
+		display, _ := json.Marshal(strings.Join(left, ", "))
+		fields[role] = display
+		changed = true
+	}
+	if changed {
+		raw, err := json.Marshal(people)
+		if err != nil {
+			return custom, false
+		}
+		fields[CustomFieldPeopleKey] = raw
+	}
+	for role, raw := range fields {
+		if role == CustomFieldPeopleKey || people[role] != nil {
+			continue
+		}
+		var v string
+		if json.Unmarshal(raw, &v) == nil && names[v] {
+			fields[role] = json.RawMessage(`""`)
+			changed = true
+		}
+	}
+	if !changed {
+		return custom, false
+	}
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return custom, false
+	}
+	return string(out), true
 }
 
 func (db *DB) queryStrings(ctx context.Context, q string, args ...any) ([]string, error) {
@@ -228,22 +371,30 @@ func (db *DB) queryStrings(ctx context.Context, q string, args ...any) ([]string
 	return out, rows.Err()
 }
 
-// eraseChunk bounds the ids one erase statement names.
+// eraseChunk bounds the ids (or rows) one erase statement names.
 const eraseChunk = 200
+
+// valueRows returns n copies of row ("(?,?)") separated by commas, for a
+// multi-row VALUES list.
+func valueRows(n int, row string) string {
+	return strings.TrimSuffix(strings.Repeat(row+",", n), ",")
+}
 
 // EraseAtlassianPeople erases, inside tx, what Atlassian told Watchtower
 // about each closed account in ids, for Jira account accountID (#1887 §6,
 // D17): the jira_user_map row (with its Slack mapping) and the Confluence
 // ext_users row go; every atlassianPersonColumns column on the account's rows
-// naming the id becomes empty; the payloads plan found are blanked and the
-// names it found removed from their custom field values; plan's documents
-// are marked in kb_dirty. One statement per column for all ids, so each
-// table is walked once. Memory and free-text derived texts are not touched
-// (P6, ask #1518). Idempotent: a second run changes nothing.
+// naming the id becomes empty; the payloads plan found are blanked, its
+// custom field rewrites applied and its documents marked in kb_dirty. Every
+// write is batched (one statement per column, per payload chunk, per edit
+// chunk, per mark chunk), and everything it writes was computed by
+// PlanAtlassianErase, so the write lock is held only for the writes. Memory
+// and free-text derived texts are not touched (P6, ask #1518). Idempotent: a
+// second run changes nothing.
 func (db *DB) EraseAtlassianPeople(ctx context.Context, tx *sql.Tx, accountID int64, ids []string, plan AtlassianErasePlan) error {
 	for start := 0; start < len(ids); start += eraseChunk {
 		chunk := ids[start:min(start+eraseChunk, len(ids))]
-		in := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		in := placeholders(len(chunk))
 		idArgs := make([]any, len(chunk))
 		for i, id := range chunk {
 			idArgs[i] = id
@@ -269,25 +420,43 @@ func (db *DB) EraseAtlassianPeople(ctx context.Context, tx *sql.Tx, accountID in
 			}
 		}
 	}
-	for _, key := range plan.RawJSONKeys {
-		if _, err := tx.ExecContext(ctx, `UPDATE jira_issues SET raw_json = '' WHERE account_id = ? AND key = ? AND raw_json != ''`, accountID, key); err != nil {
-			return fmt.Errorf("erasing an issue payload: %w", err)
+	for start := 0; start < len(plan.RawJSONKeys); start += eraseChunk {
+		chunk := plan.RawJSONKeys[start:min(start+eraseChunk, len(plan.RawJSONKeys))]
+		args := []any{accountID}
+		for _, k := range chunk {
+			args = append(args, k)
 		}
-		for _, name := range plan.Names {
-			quoted, err := json.Marshal(name)
-			if err != nil {
-				return fmt.Errorf("erasing a custom field name: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE jira_issues SET custom_fields_json = replace(custom_fields_json, ?, '""')
-				WHERE account_id = ? AND key = ? AND instr(custom_fields_json, ?) > 0`, string(quoted), accountID, key, string(quoted)); err != nil {
-				return fmt.Errorf("erasing a custom field name: %w", err)
-			}
+		//nolint:gosec // G202: the IN list is only "?" placeholders; every value is a bound arg.
+		q := `UPDATE jira_issues SET raw_json = '' WHERE account_id = ? AND raw_json != '' AND key IN (` + placeholders(len(chunk)) + `)`
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("erasing issue payloads: %w", err)
 		}
 	}
-	for _, k := range plan.Dirty {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO kb_dirty (source, key) VALUES (?, ?)
-			ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1`, k.Source, k.Key); err != nil {
-			return fmt.Errorf("marking %s for re-render: %w", k.Key, err)
+	for start := 0; start < len(plan.CustomFields); start += eraseChunk {
+		chunk := plan.CustomFields[start:min(start+eraseChunk, len(plan.CustomFields))]
+		args := make([]any, 0, 3*len(chunk)+1)
+		for _, e := range chunk {
+			args = append(args, e.Key, e.Old, e.New)
+		}
+		args = append(args, accountID)
+		//nolint:gosec // G202: the VALUES list is only "?" placeholders; every value is a bound arg.
+		q := `UPDATE jira_issues SET custom_fields_json = e.column3 FROM (VALUES ` + valueRows(len(chunk), "(?,?,?)") + `) AS e
+			WHERE jira_issues.account_id = ? AND jira_issues.key = e.column1 AND jira_issues.custom_fields_json = e.column2`
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("erasing custom field names: %w", err)
+		}
+	}
+	for start := 0; start < len(plan.Dirty); start += eraseChunk {
+		chunk := plan.Dirty[start:min(start+eraseChunk, len(plan.Dirty))]
+		args := make([]any, 0, 2*len(chunk))
+		for _, k := range chunk {
+			args = append(args, k.Source, k.Key)
+		}
+		//nolint:gosec // G202: the VALUES list is only "?" placeholders; every value is a bound arg.
+		q := `INSERT INTO kb_dirty (source, key) VALUES ` + valueRows(len(chunk), "(?,?)") + `
+			ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1`
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("marking documents for re-render: %w", err)
 		}
 	}
 	return nil

@@ -250,3 +250,107 @@ func TestRefreshAtlassianProfiles_UpdatesTheCaches(t *testing.T) {
 	assert.Equal(t, []string{"New Name", "2026-11-18T10:00:00Z"}, []string{name, fetched})
 	assert.Zero(t, pdrCount(t, d, `SELECT count(*) FROM jira_user_map WHERE jira_account_id = 'acme-unknown'`), "no row is created")
 }
+
+// pickerJSON is a custom_fields_json value with one multi-user picker
+// naming closedID between two live people, and a single-user picker naming
+// the closed account alone.
+const pickerJSON = `{"qa":"Closed Person","reviewers":"Ann, Closed Person, Bo","team":"Core",` +
+	`"_people":{"qa":[{"id":"` + closedID + `","name":"Closed Person"}],` +
+	`"reviewers":[{"id":"` + keptID + `","name":"Ann"},{"id":"` + closedID + `","name":"Closed Person"},{"id":"acme-kept-3","name":"Bo"}]}}`
+
+// TestPDR_PickerOnlyPersonReportedAndErased: a person Watchtower knows only
+// from a user-picker custom field (no column, no payload, no cache row
+// names them) is reported, and a "closed" answer erases their name from the
+// field — their single entry of a multi-user field included — keeping the
+// bare id; the live people beside them stay.
+func TestPDR_PickerOnlyPersonReportedAndErased(t *testing.T) {
+	d := openTestDB(t)
+	acct := SeedTestJiraAccount(t, d)
+	other := SeedTestJiraAccount(t, d)
+	for _, a := range []int64{acct, other} {
+		_, err := d.Exec(`INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category, created_at, updated_at, synced_at, raw_json, custom_fields_json)
+			VALUES (?, 'ACME-9', 'ACME', 's', 'Open', 'todo', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', '2026-11-04T00:00:00Z', '{"fields":{}}', ?)`, a, pickerJSON)
+		require.NoError(t, err)
+	}
+	_, err := d.Exec(`INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category, created_at, updated_at, synced_at, custom_fields_json)
+		VALUES (?, 'ACME-10', 'ACME', 's', 'Open', 'todo', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', '2026-11-04T00:00:00Z', 'not json')`, acct)
+	require.NoError(t, err)
+
+	people, err := d.AtlassianPeople(context.Background(), acct)
+	require.NoError(t, err)
+	got := map[string]time.Time{}
+	for _, p := range people {
+		got[p.ID] = p.UpdatedAt
+	}
+	assert.Equal(t, map[string]time.Time{
+		closedID:      time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC),
+		keptID:        time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC),
+		"acme-kept-3": time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC),
+	}, got, "a picker's people are reported, dated by the issue's sync")
+
+	eraseAtlassian(t, d, acct, []string{closedID})
+
+	var custom string
+	require.NoError(t, d.QueryRow(`SELECT custom_fields_json FROM jira_issues WHERE account_id = ? AND key = 'ACME-9'`, acct).Scan(&custom))
+	assert.JSONEq(t, `{"qa":"","reviewers":"Ann, Bo","team":"Core",
+		"_people":{"qa":[{"id":"`+closedID+`","name":""}],
+		"reviewers":[{"id":"`+keptID+`","name":"Ann"},{"id":"`+closedID+`","name":""},{"id":"acme-kept-3","name":"Bo"}]}}`, custom)
+	assert.NotContains(t, custom, "Closed Person")
+	require.NoError(t, d.QueryRow(`SELECT custom_fields_json FROM jira_issues WHERE account_id = ? AND key = 'ACME-9'`, other).Scan(&custom))
+	assert.Equal(t, pickerJSON, custom, "another Jira account's rows are that account's erase")
+	require.NoError(t, d.QueryRow(`SELECT custom_fields_json FROM jira_issues WHERE account_id = ? AND key = 'ACME-10'`, acct).Scan(&custom))
+	assert.Equal(t, "not json", custom)
+
+	people, err = d.AtlassianPeople(context.Background(), acct)
+	require.NoError(t, err)
+	assert.Len(t, people, 3, "the bare id stays stored and reported (Former user)")
+
+	plan, err := d.PlanAtlassianErase(context.Background(), acct, []string{closedID})
+	require.NoError(t, err)
+	assert.Empty(t, plan.CustomFields, "a repeat erase has nothing left to rewrite")
+}
+
+// TestPDR_EraseBatchesManyIssues: more issues than one erase statement
+// names (eraseChunk) are all erased — payloads, picker names and re-render
+// marks — and an issue a sync rewrote after the plan read it is left to the
+// next report instead of being overwritten with the stale edit.
+func TestPDR_EraseBatchesManyIssues(t *testing.T) {
+	d := openTestDB(t)
+	acct := SeedTestJiraAccount(t, d)
+	n := eraseChunk + 50
+	for i := range n {
+		_, err := d.Exec(`INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category, created_at, updated_at, synced_at, raw_json, custom_fields_json)
+			VALUES (?, ?, 'ACME', 's', 'Open', 'todo', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', '2026-11-04T00:00:00Z', ?, ?)`,
+			acct, fmt.Sprintf("ACME-%d", i+1), `{"fields":{"creator":{"accountId":"`+closedID+`"}}}`, pickerJSON)
+		require.NoError(t, err)
+	}
+	ctx := context.Background()
+	plan, err := d.PlanAtlassianErase(ctx, acct, []string{closedID})
+	require.NoError(t, err)
+	require.Len(t, plan.RawJSONKeys, n)
+	require.Len(t, plan.CustomFields, n)
+	_, err = d.Exec(`UPDATE jira_issues SET custom_fields_json = ? WHERE account_id = ? AND key = 'ACME-1'`, pickerJSON+" ", acct)
+	require.NoError(t, err)
+
+	require.NoError(t, d.WithTx(func(tx *sql.Tx) error { return d.EraseAtlassianPeople(ctx, tx, acct, []string{closedID}, plan) }))
+
+	assert.Zero(t, pdrCount(t, d, `SELECT count(*) FROM jira_issues WHERE account_id = ? AND raw_json != ''`, acct))
+	assert.Equal(t, 1, pdrCount(t, d, `SELECT count(*) FROM jira_issues WHERE account_id = ? AND instr(custom_fields_json, 'Closed Person') > 0`, acct),
+		"only the issue rewritten since the plan keeps the name, for the next report")
+	assert.Equal(t, 1, pdrCount(t, d, `SELECT count(*) FROM jira_issues WHERE account_id = ? AND key = 'ACME-1' AND custom_fields_json = ?`, acct, pickerJSON+" "))
+	assert.Equal(t, n, pdrCount(t, d, `SELECT count(*) FROM kb_dirty WHERE source = 'jira'`))
+}
+
+func TestEraseCustomFieldPeople_LegacyRows(t *testing.T) {
+	names := map[string]bool{"Closed Person": true}
+	closed := map[string]bool{closedID: true}
+	got, changed := eraseCustomFieldPeople(`{"qa":"Closed Person","team":"Core"}`, closed, names)
+	assert.True(t, changed)
+	assert.JSONEq(t, `{"qa":"","team":"Core"}`, got, "a row without ids still loses a whole-value name")
+	got, changed = eraseCustomFieldPeople(`{"qa":"Closed Person"}`, closed, nil)
+	assert.False(t, changed, "without a payload match, a row without ids is left alone (as before)")
+	assert.Equal(t, `{"qa":"Closed Person"}`, got)
+	got, changed = eraseCustomFieldPeople(`["Closed Person"]`, closed, names)
+	assert.True(t, changed)
+	assert.Equal(t, `[""]`, got, "a value that is not an object loses the quoted name")
+}

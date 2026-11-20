@@ -71,6 +71,7 @@ CREATE TABLE jira_board_field_map (
     ```json
     {"qa": "John Doe", "severity": "Critical", "environment": "Production", "branch": "feature/xyz"}
     ```
+  - A user-picker role (a user object, or an array of them, carrying `accountId`) also keeps its people under the reserved key `_people` (`db.CustomFieldPeopleKey`; a role mapped under that name is skipped): `{"qa": "John Doe", "_people": {"qa": [{"id": "<account id>", "name": "John Doe"}]}}`. The display value stays the names joined by ", " (picker fields sharing a role merge their people; a role that also holds a non-picker value keeps no `_people` entry, so its ids are not reported from that role). Atlassian Personal Data Reporting (`docs/features/company-setup.md`) reports these ids and, for a closed account, empties its `name` (the bare id stays) and rebuilds the role's display value from the names left. Rows synced before the key existed carry no ids until their next sync.
 
 **3.2 Update board profile with estimation info**
 - If a `story_points` mapping exists → `EstimationApproach.Type = "story_points"`, `Field = fieldID`
