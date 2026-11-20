@@ -555,6 +555,27 @@ func TestProj18_UnignoredBuildKeepsUntrackedWork(t *testing.T) {
 	}
 }
 
+// TestPrune_LeftoverUnderAnAnchoredIgnoreIsFinished (review round 7): with
+// "/.build/" the moved folder inside a marked trash leftover is no longer
+// ignored; the leftover is still finished (the marker proves it passed the
+// check before the move).
+func TestPrune_LeftoverUnderAnAnchoredIgnoreIsFinished(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.worktree("wt", "feat/x")
+	f.commit(root, ".gitignore", "/.build/\n")
+	f.record(root, "feat/x")
+	writeFile(t, filepath.Join(root, "notes.txt"), "uncommitted\n")
+	leftover := markedTrash(t, filepath.Join(root, ".build"+trashInfix+"123"))
+	f.endSession()
+
+	res := f.apply(Request{PruneBuilds: true}, nil, nil)
+	it := findItem(t, res.Plan, "worktree:"+root)
+	if !slices.Equal(it.BuildsRemoved, []string{leftover}) || exists(leftover) {
+		t.Fatalf("the leftover was not finished: %+v", it)
+	}
+}
+
 // TestProj18_CheckoutOfAnyRepoInABuildKeepsIt (review round 3): a gitfile
 // `.git` deep inside a build folder — a linked worktree or submodule
 // checkout of any repository, not only this one's — keeps the folder; a

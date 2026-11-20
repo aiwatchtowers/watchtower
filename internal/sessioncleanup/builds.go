@@ -323,12 +323,15 @@ func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) 
 	// --cached --others --exclude-standard: a tracked file, or an untracked
 	// one git does not ignore, is the owner's work, not build output; a
 	// build folder the repository does not ignore therefore always stays.
-	// A trash leftover is judged by the build folder moved into it (its
-	// marker is the prune's own file, never ignored by the repository).
+	// A marked trash leftover passed this check before it was moved (the
+	// marker is written only then), and an anchored ignore rule such as
+	// "/.build/" no longer matches it inside the trash folder: only a
+	// tracked file keeps it.
+	args := []string{"ls-files", "-z", "--cached", "--others", "--exclude-standard"}
 	if f.trash {
-		rel = filepath.Join(rel, f.kind.name)
+		args = []string{"ls-files", "-z", "--cached"}
 	}
-	out, err := b.repo.git.output(ctx, root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ":(literal)"+rel)
+	out, err := b.repo.git.output(ctx, root, append(args, "--", ":(literal)"+rel)...)
 	if err != nil {
 		return false, fmt.Errorf("reading what git tracks in %s: %w", f.path, err)
 	}
