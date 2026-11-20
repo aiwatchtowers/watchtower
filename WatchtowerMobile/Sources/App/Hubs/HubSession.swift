@@ -182,6 +182,8 @@ final class HubSession {
     let overlays: OverlayBook
     /// The owner's unsent ask answers, per ask: they survive navigation.
     let askDrafts = AskDraftStore()
+    /// The owner's steps toggles on the workchat's live line, per session (#2112 spec §5).
+    let workchatSteps = WorkchatStepsMemory()
     /// The phone's ask answers and what the Mac did with them.
     let askAnswerer: AskAnswerer
     /// The phone's session starts (with their progress) and stops.

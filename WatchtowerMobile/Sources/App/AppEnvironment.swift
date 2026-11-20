@@ -374,6 +374,7 @@ final class AppEnvironment {
     var chatRequests: SessionChatRequester { activeSession.chatRequests }
     var boardWriter: BoardWriter { activeSession.boardWriter }
     var askDrafts: AskDraftStore { activeSession.askDrafts }
+    var workchatSteps: WorkchatStepsMemory { activeSession.workchatSteps }
     var askAnswerer: AskAnswerer { activeSession.askAnswerer }
     var sessionStarts: SessionStarter { activeSession.sessionStarts }
     var sessionInputs: SessionInputSender { activeSession.sessionInputs }

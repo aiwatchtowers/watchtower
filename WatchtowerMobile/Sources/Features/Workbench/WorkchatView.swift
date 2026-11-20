@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerChatText
 import WatchtowerKit
 import WatchtowerSync
 
@@ -17,7 +18,8 @@ struct SessionRoute: Hashable {
 /// header, a card from the session's record says what to do next once its
 /// turn is over (#1784): the summary and Report, Continue, a new session.
 /// The actions menu stops, finishes or interrupts the session and opens its
-/// report and board target.
+/// report and board target. Above the composer, while the session works, the
+/// Mac's live line says what it does now; a tap opens the turn's steps (#2112).
 struct WorkchatView: View {
     static let screen = ChatScreen.session
 
@@ -68,7 +70,13 @@ struct WorkchatView: View {
         .background(Color(.systemBackground))
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let model { composer(model.composer) }
+            if let session, let model {
+                VStack(spacing: 0) {
+                    live(session, model)
+                    composer(model.composer)
+                }
+                .background(PhoneSurface.page)
+            }
         }
         .toolbar {
             if let badge = model?.agents.badge {
@@ -138,6 +146,9 @@ struct WorkchatView: View {
             Text(sendError ?? "")
         }
         .onChange(of: lines, initial: true) { _, rows in chat.noteOutgoing(rows.compactMap(SessionChatViewModel.Outgoing.init)) }
+        .onChange(of: session.map { stepsWatch($0, model) }, initial: true) { _, watch in
+            if let watch { env.workchatSteps.note(sessionID, watch) }
+        }
         .onAppear {
             chat.appeared()
             if let alertScreen { env.navigation.screenAppeared(alertScreen) }
@@ -223,7 +234,11 @@ struct WorkchatView: View {
                 .accessibilityAddTraits(.isHeader)
             // Ticks every second; the rest of the screen follows the replica.
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                StateLine(model: WorkchatModel.stateLine(session, asOf: env.macReachability(now: context.date).asOf, now: context.date))
+                VStack(alignment: .leading, spacing: Spacing.compact) {
+                    StateLine(model: WorkchatModel.stateLine(session, asOf: env.macReachability(now: context.date).asOf, now: context.date))
+                    // Why the live line is out of date (#2112 L6).
+                    ReplicaFreshnessLine(now: context.date)
+                }
             }
         }
         .padding(.horizontal, Spacing.large)
@@ -334,6 +349,58 @@ struct WorkchatView: View {
         }
     }
 
+    // MARK: - Live line
+
+    private func cardShown(_ model: WorkchatModel?) -> Bool {
+        model.map { $0.permission != nil || !$0.inlineAsks.isEmpty } ?? false
+    }
+
+    private func stepsWatch(_ session: TerminalSessionState, _ model: WorkchatModel?) -> WorkchatLiveLine.StepsWatch {
+        WorkchatLiveLine.StepsWatch(chat: chat.chat, working: WorkchatLiveLine.working(session), cardShown: cardShown(model))
+    }
+
+    /// When the tower stopped sending, at `now`; nil while it sends.
+    private func staleSince(_ now: Date) -> Date? {
+        let heartbeat = replica.snapshot.heartbeat
+        let freshness = ReplicaFreshness(
+            heartbeat: heartbeat, linked: env.linkedDevice != nil, relayUnansweredSince: env.activeSession.relayUnansweredSince, now: now
+        )
+        return WorkchatLiveLine.staleSince(freshness, heartbeat: heartbeat)
+    }
+
+    /// A record came since the screen opened; the demo's records stand for the hub's answer.
+    private var arrived: Bool { chat.recordArrivedSinceOpen || env.backend == .inMemoryDemo }
+
+    /// The live line at `now`.
+    private func liveRow(_ session: TerminalSessionState, _ model: WorkchatModel, now: Date) -> WorkchatLivePresentation.Row? {
+        WorkchatLiveLine.row(
+            chat: chat.chat, arrivedSinceOpen: arrived,
+            working: WorkchatLiveLine.working(session), stateAt: session.stateAt, staleSince: staleSince(now), cardShown: cardShown(model),
+            stepsOpen: env.workchatSteps.isOpen(sessionID), now: now
+        )
+    }
+
+    /// The line and its steps; nothing, and no timer, while no line shows.
+    @ViewBuilder
+    private func live(_ session: TerminalSessionState, _ model: WorkchatModel) -> some View {
+        if liveRow(session, model, now: .now) != nil {
+            if env.workchatSteps.isOpen(sessionID) {
+                WorkchatStepsSlotView { now in
+                    WorkchatLiveLine.steps(
+                        chat: chat.chat, arrivedSinceOpen: arrived,
+                        working: WorkchatLiveLine.working(session), staleSince: staleSince(now), cardShown: cardShown(model),
+                        stepsOpen: true, now: now
+                    )
+                }
+            }
+            WorkchatLiveLineView(
+                row: { liveRow(session, model, now: $0) },
+                onToggleSteps: { env.workchatSteps.toggle(sessionID, conversation: chat.chat?.activityLive?.conversation) },
+                onRetry: { chat.retry() }
+            )
+        }
+    }
+
     @ViewBuilder
     private func composer(_ state: ComposerState) -> some View {
         if case let .hidden(hint) = state {
@@ -418,6 +485,7 @@ struct WorkchatView: View {
     }
 
     private func stop() {
+        env.workchatSteps.close(sessionID)
         perform { try await env.sessionStarts.stop(sessionID: sessionID) }
     }
 

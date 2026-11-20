@@ -35,17 +35,22 @@ final class SessionChatRequester {
 
     private let send: (SessionChatRoute) async throws -> Void
     private let ticks: () -> AsyncStream<Void>
+    private let now: () -> Date
     private var loop: Task<Void, Never>?
     private var running: SessionChatRoute?
+    /// When each chat's last request went out, while the app runs.
+    private var sentAt: [SessionChatRoute: Date] = [:]
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "SessionChatRequester")
 
     /// `ticks` yields once per repeat; the default waits `interval` between
     /// yields, tests feed their own.
     init(
         ticks: @escaping () -> AsyncStream<Void> = SessionChatRequester.clockTicks,
+        now: @escaping () -> Date = Date.init,
         send: @escaping (SessionChatRoute) async throws -> Void
     ) {
         self.ticks = ticks
+        self.now = now
         self.send = send
     }
 
@@ -94,15 +99,28 @@ final class SessionChatRequester {
         cancel()
         let route = SessionChatRoute(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
         running = route
-        let send = send
         let stream = ticks()
-        loop = Task {
-            await Self.request(send, route)
+        loop = Task { [weak self] in
+            await self?.request(route)
             for await _ in stream {
                 if Task.isCancelled { break }
-                await Self.request(send, route)
+                await self?.request(route)
             }
         }
+    }
+
+    /// One request for a chat now, beside its repeat (the live line's Retry):
+    /// the hub re-reads a chat whose last read failed on the request.
+    func requestNow(sessionID: Int64, agentID: String?, toolUseID: String? = nil) {
+        let route = SessionChatRoute(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
+        Task { [weak self] in await self?.request(route) }
+    }
+
+    /// A request for this chat went out within the hub's watch: the hub has
+    /// published every change since, so the record the phone holds is current.
+    func watchOpen(sessionID: Int64, agentID: String?, toolUseID: String? = nil) -> Bool {
+        let route = SessionChatRoute(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
+        return sentAt[route].map { now().timeIntervalSince($0) < Self.queuedRequestFreshness } ?? false
     }
 
     /// Stops the requests for one chat; a no-op unless it is the one
@@ -119,11 +137,12 @@ final class SessionChatRequester {
         running = nil
     }
 
-    nonisolated private static func request(_ send: (SessionChatRoute) async throws -> Void, _ route: SessionChatRoute) async {
+    private func request(_ route: SessionChatRoute) async {
         do {
             try await send(route)
+            sentAt[route] = now()
         } catch {
-            logger.warning("session chat request failed: \(String(describing: error), privacy: .public)")
+            Self.logger.warning("session chat request failed: \(String(describing: error), privacy: .public)")
         }
     }
 }
@@ -143,6 +162,11 @@ final class SessionChatViewModel {
     /// Lines this phone sent whose outbox row is gone (the Mac applied
     /// them) and that the feed does not show yet.
     private(set) var sentLines: [SentLine] = []
+    /// The record shown came from the hub since the screen appeared, or the
+    /// hub's watch from an earlier visit was still open (it then published
+    /// every change, so the record held is current). Until then the live line
+    /// says Loading rather than a step from an expired watch (#2112 C9).
+    private(set) var recordArrivedSinceOpen = false
 
     @ObservationIgnored private let store: ReplicaStore
     @ObservationIgnored private let requester: SessionChatRequester
@@ -150,6 +174,10 @@ final class SessionChatViewModel {
     @ObservationIgnored private var cancellable: ResilientObservation?
     @ObservationIgnored private var patience: Task<Void, Never>?
     @ObservationIgnored private var shown = false
+    /// The observation's first value is the stored record, not an arrival.
+    @ObservationIgnored private var awaitingStored = false
+    /// The hub's watch was open when the screen appeared.
+    @ObservationIgnored private var watchWasOpen = false
     @ObservationIgnored private var tracked: [String: SentLine] = [:]
     @ObservationIgnored private var expiries: [String: Task<Void, Never>] = [:]
     @ObservationIgnored let decodeCache = ReplicaDecodeCache()
@@ -203,12 +231,20 @@ final class SessionChatViewModel {
     /// The screen appeared: observe and ask the Mac for the chat.
     func appeared() {
         shown = true
+        watchWasOpen = requester.watchOpen(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
+        recordArrivedSinceOpen = chat != nil && watchWasOpen
+        awaitingStored = cancellable == nil
         observe()
         requester.start(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
         patience?.cancel()
         patience = nil
         waitingTooLong = false
         if chat == nil { startPatience() }
+    }
+
+    /// Asks the hub for the chat at once (Retry on the live line).
+    func retry() {
+        requester.requestNow(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
     }
 
     /// The screen went away: stop asking.
@@ -301,6 +337,7 @@ final class SessionChatViewModel {
             },
             onWaitingForKeys: { [weak self] in self?.waitingForKeys = true },
             onChange: { [weak self] value in
+                self?.noteArrival(value)
                 self?.chat = value
                 if value != nil {
                     self?.waitingTooLong = false
@@ -314,6 +351,17 @@ final class SessionChatViewModel {
                 self?.waitingForKeys = false
             }
         )
+    }
+
+    private func noteArrival(_ value: SessionChat?) {
+        if value == nil {
+            recordArrivedSinceOpen = false
+        } else if awaitingStored {
+            recordArrivedSinceOpen = watchWasOpen
+        } else if shown {
+            recordArrivedSinceOpen = true
+        }
+        awaitingStored = false
     }
 
     /// Reads from an already-open database, inside the observation.
