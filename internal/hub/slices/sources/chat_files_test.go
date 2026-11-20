@@ -19,7 +19,7 @@ import (
 )
 
 // The session chat's file-event reads (#2112 Task 4): every test but the
-// real-watcher one runs in a synctest bubble over a fake watcher, its loop
+// real-watcher ones runs in a synctest bubble over a fake watcher, its loop
 // driven by bubble time.
 
 // fakeWatcher is a FileWatcher that holds paths and delivers what the test
@@ -85,18 +85,26 @@ func (f *fakeWatcher) isClosed() bool {
 	return f.closed
 }
 
-// filesRig is a live session 7 whose conversation is dir/conv.jsonl, read by
-// a fake fetch that lists the files that exist and a live block the test
-// sets.
+// filesRig is a live session 7 whose conversation c1 is dir/conv.jsonl,
+// read by a fake fetch that lists the files that exist and the live block
+// the test sets. An agent record (tool use toolu_1) reads agent a1's
+// transcript.
 type filesRig struct {
-	t        *testing.T
-	dir      string
-	conv     string
-	watches  *handlers.ChatWatchRegistry
-	mu       sync.Mutex
-	reads    int
-	convs    []string
-	live     *sessionfeed.Live
+	t       *testing.T
+	dir     string
+	conv    string
+	watches *handlers.ChatWatchRegistry
+	mu      sync.Mutex
+	reads   map[string]int // by tool use id ("" = the main feed)
+	// convs is what the full resolve finds, ids the session's agent-session
+	// ids; resolves counts full resolves, resolveErr fails them.
+	convs      []sessionfeed.Conversation
+	ids        []string
+	resolves   int
+	resolveErr error
+	// live is the main feed's live block (nil = none); liveErr fails it.
+	live     func() *sessionfeed.Live
+	liveErr  bool
 	isLive   bool
 	active   bool
 	addErr   error
@@ -104,13 +112,13 @@ type filesRig struct {
 	// block, when set, holds every read after the first until it is closed.
 	block chan struct{}
 	s     *SessionChatSource
-	stop  func()
 }
 
 func newFilesRig(t *testing.T) *filesRig {
 	dir := t.TempDir()
-	r := &filesRig{t: t, dir: dir, conv: touch(t, dir, "conv.jsonl"), watches: handlers.NewChatWatchRegistry(), isLive: true, active: true}
-	r.convs = []string{r.conv}
+	r := &filesRig{t: t, dir: dir, conv: touch(t, dir, "conv.jsonl"), watches: handlers.NewChatWatchRegistry(),
+		reads: map[string]int{}, isLive: true, active: true, ids: []string{"c1"}}
+	r.convs = []sessionfeed.Conversation{{AgentSessionID: "c1", Path: r.conv}}
 	return r
 }
 
@@ -126,13 +134,22 @@ func touch(t *testing.T, dir, name string) string {
 	return p
 }
 
+func (r *filesRig) set(f func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f()
+}
+
 func (r *filesRig) options() SessionChatOptions {
 	return SessionChatOptions{
 		Fetch: func(ctx context.Context, id int64, toolUseID string) (ChatRead, error) {
 			r.mu.Lock()
-			r.reads++
-			n, block, live := r.reads, r.block, r.live
-			paths := slices.Clone(r.convs)
+			r.reads[toolUseID]++
+			n, block, liveFn, liveErr := r.reads[toolUseID], r.block, r.live, r.liveErr
+			var paths []string
+			for _, c := range r.convs {
+				paths = append(paths, c.Path)
+			}
 			r.mu.Unlock()
 			if block != nil && n > 1 {
 				select {
@@ -141,19 +158,45 @@ func (r *filesRig) options() SessionChatOptions {
 					return ChatRead{}, ctx.Err()
 				}
 			}
-			if live != nil {
-				for _, a := range live.Agents {
-					if p := r.agentPath(a.Ref.AgentID); exists(p) {
+			if toolUseID != "" {
+				if p := r.agentPath("a1"); exists(p) {
+					return ChatRead{Entries: []sessionfeed.Entry{feedEntry(n, "agent")}, Paths: []string{p}}, nil
+				}
+				return ChatRead{}, errors.New("no sidechain yet")
+			}
+			read := ChatRead{Entries: []sessionfeed.Entry{feedEntry(n, "read")}}
+			if liveErr {
+				read.LiveErr = errors.New("live read failed")
+			} else if liveFn != nil {
+				read.Live = liveFn()
+				for _, a := range read.Live.Agents {
+					if p := r.agentPath(a.Ref.AgentID); a.Ref.AgentID != "" && exists(p) {
 						paths = append(paths, p)
 					}
 				}
 			}
-			return ChatRead{Entries: []sessionfeed.Entry{feedEntry(n, "read")}, Live: live, Paths: paths}, nil
+			read.Paths = paths
+			return read, nil
 		},
-		Conversations: func(context.Context, int64) ([]string, error) {
+		Conversations: func(context.Context, int64) ([]sessionfeed.Conversation, error) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			return slices.Clone(r.convs), nil
+			r.resolves++
+			if r.resolveErr != nil {
+				return nil, r.resolveErr
+			}
+			var out []sessionfeed.Conversation
+			for _, c := range r.convs {
+				if exists(c.Path) { // SessionConversations lists only existing files
+					out = append(out, c)
+				}
+			}
+			return out, nil
+		},
+		AgentSessions: func(context.Context, int64) ([]string, error) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return slices.Clone(r.ids), nil
 		},
 		NewWatcher: func() (FileWatcher, error) {
 			r.mu.Lock()
@@ -187,6 +230,14 @@ func (r *filesRig) agentPath(id string) string {
 	return filepath.Join(r.dir, "conv", "subagents", "agent-"+id+".jsonl")
 }
 
+// runningAgent is a live block listing agent id (empty: its sidecar, which
+// names it, is not written yet) with status.
+func runningAgent(id, status string) *sessionfeed.Live {
+	return &sessionfeed.Live{TurnActive: true, AgentsState: "known", Agents: []sessionfeed.LiveAgent{{
+		Ref: sessionfeed.SubagentRef{AgentID: id, ToolUseID: "toolu_1", Type: "Explore", Status: status},
+	}}}
+}
+
 // start runs the source's loop (stopped at the test's end) and opens the
 // phone's watch of session 7 the way session_chat_request does.
 func (r *filesRig) start() {
@@ -194,21 +245,34 @@ func (r *filesRig) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- r.s.Run(ctx) }()
-	r.stop = func() { cancel(); <-done }
-	r.t.Cleanup(r.stop)
+	r.t.Cleanup(func() { cancel(); <-done })
 	synctest.Wait()
-	r.request()
+	r.request("")
 }
 
-func (r *filesRig) request() {
-	r.s.RequestWatches().Watch(handlers.ChatWatch{SessionID: 7, Expires: time.Now().Add(handlers.ChatWatchLength)})
+// request is the phone's session_chat_request for the main feed ("") or
+// the agent record of toolUseID.
+func (r *filesRig) request(toolUseID string) {
+	cw := handlers.ChatWatch{SessionID: 7, Expires: time.Now().Add(handlers.ChatWatchLength)}
+	if toolUseID != "" {
+		cw.AgentID, cw.ToolUseID = "a1", toolUseID
+	}
+	r.s.RequestWatches().Watch(cw)
 	synctest.Wait()
 }
 
-func (r *filesRig) readCount() int {
+func (r *filesRig) readCount() int { return r.readsOf("") }
+
+func (r *filesRig) readsOf(toolUseID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.reads
+	return r.reads[toolUseID]
+}
+
+func (r *filesRig) resolveCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.resolves
 }
 
 func (r *filesRig) watcher() *fakeWatcher {
@@ -246,7 +310,7 @@ func (r *filesRig) wantWatched(when string, want ...string) {
 	r.t.Helper()
 	w := r.watcher()
 	var got []string
-	if w != nil {
+	if w != nil && !w.isClosed() {
 		got = w.watched()
 	}
 	slices.Sort(want)
@@ -300,12 +364,17 @@ func TestChatFiles_BurstCapsReads(t *testing.T) {
 	})
 }
 
+// An idle live chat costs no read and no full resolve: the Wake loop only
+// lists the agent-session ids.
 func TestChatFiles_NoEventNoRead(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newFilesRig(t)
 		r.start()
 		r.sleep(60 * time.Second)
 		r.wantReads(1, "a live chat with no event for 60 s")
+		if n := r.resolveCount(); n != 1 {
+			t.Fatalf("%d full resolves in 60 idle seconds, want the first only", n)
+		}
 	})
 }
 
@@ -318,9 +387,7 @@ func TestChatFiles_RenameReresolves(t *testing.T) {
 		if err := os.Rename(r.conv, renamed); err != nil {
 			t.Fatal(err)
 		}
-		r.mu.Lock()
-		r.convs = []string{renamed}
-		r.mu.Unlock()
+		r.set(func() { r.convs = []sessionfeed.Conversation{{AgentSessionID: "c1", Path: renamed}} })
 		r.fire(r.conv)
 		r.wantReads(2, "right after the rename")
 		r.wantWatched("after the rename", renamed)
@@ -338,55 +405,72 @@ func TestChatFiles_NewConversationOnWake(t *testing.T) {
 		r.start()
 		r.sleep(time.Second)
 		next := touch(t, r.dir, "next.jsonl")
-		r.mu.Lock()
-		r.convs = []string{r.conv, next}
-		r.mu.Unlock()
+		r.set(func() {
+			r.ids = []string{"c1", "c2"}
+			r.convs = append(r.convs, sessionfeed.Conversation{AgentSessionID: "c2", Path: next})
+		})
 		r.sleep(time.Second) // the Wake tick, 2 s after the open
 		r.wantReads(2, "one Wake after the new conversation")
 		r.wantWatched("after the new conversation", r.conv, next)
 		r.sleep(30 * time.Second)
 		r.wantReads(2, "30 s later")
+		if n := r.resolveCount(); n != 2 {
+			t.Fatalf("%d full resolves, want 2 (the open, the new id)", n)
+		}
 		r.fire(next)
 		r.sleep(250 * time.Millisecond)
 		r.wantReads(3, "a write to the new conversation")
 	})
 }
 
+// The real order: the Agent call lands in the main transcript (one event),
+// the agent's id is known only once its sidecar is written, and the main
+// transcript stays quiet while the agent works. The chat ticks until the
+// agent's transcript is watched, then reads on its writes only.
 func TestChatFiles_SubagentFileAddedAfterAgentStarts(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newFilesRig(t)
+		sidecar := filepath.Join(r.dir, "conv", "subagents", "agent-a1.meta.json")
+		status := sessionfeed.StatusRunning
+		r.live = func() *sessionfeed.Live {
+			if !exists(sidecar) {
+				return &sessionfeed.Live{TurnActive: true, AgentsState: "known", Agents: []sessionfeed.LiveAgent{}}
+			}
+			return runningAgent("a1", status)
+		}
 		r.start()
 		r.sleep(5 * time.Second)
-		agent := func(status string) *sessionfeed.Live {
-			return &sessionfeed.Live{TurnActive: true, AgentsState: "known", Agents: []sessionfeed.LiveAgent{{
-				Ref: sessionfeed.SubagentRef{AgentID: "a1", ToolUseID: "toolu_1", Type: "Explore", Status: status},
-			}}}
-		}
-		// The Agent call lands in the conversation; the agent's file is not
-		// there yet.
-		r.mu.Lock()
-		r.live = agent(sessionfeed.StatusRunning)
-		r.mu.Unlock()
+		// The Agent call: running, no id yet.
+		r.set(func() {
+			r.live = func() *sessionfeed.Live {
+				if !exists(sidecar) {
+					return runningAgent("", sessionfeed.StatusRunning)
+				}
+				return runningAgent("a1", status)
+			}
+		})
 		r.fire(r.conv)
-		r.sleep(time.Second)
+		r.sleep(250 * time.Millisecond)
 		r.wantReads(2, "the Agent call")
-		r.wantWatched("before the agent's file exists", r.conv)
-		// Its file appears; the next read adds it.
+		r.wantWatched("before the agent's id is known", r.conv)
+		// The sidecar and the agent's transcript appear; no main event.
+		touch(t, r.dir, "conv/subagents/agent-a1.meta.json")
 		sub := touch(t, r.dir, "conv/subagents/agent-a1.jsonl")
-		r.fire(r.conv)
+		r.sleep(3 * time.Second) // the fallback tick
+		r.wantReads(3, "the tick after the sidecar")
+		r.wantWatched("after the agent's id is known", r.conv, sub)
 		r.sleep(time.Second)
-		r.wantReads(3, "the next conversation write")
-		r.wantWatched("after the agent's file appeared", r.conv, sub)
+		r.wantReads(4, "the reconcile read for the newly watched transcript")
+		r.sleep(30 * time.Second)
+		r.wantReads(4, "30 s with every running agent watched")
+		r.fire(sub)
+		r.sleep(250 * time.Millisecond)
+		r.wantReads(5, "a write to the agent's transcript")
+		// The agent finishes: its transcript is let go.
+		r.set(func() { status = sessionfeed.StatusFinished })
 		r.fire(sub)
 		r.sleep(time.Second)
-		r.wantReads(4, "a write to the agent's file")
-		// The agent finishes: its file is no longer watched.
-		r.mu.Lock()
-		r.live = agent(sessionfeed.StatusFinished)
-		r.mu.Unlock()
-		r.fire(r.conv)
-		r.sleep(time.Second)
-		r.wantReads(5, "the agent's end")
+		r.wantReads(6, "the agent's end")
 		r.wantWatched("after the agent finished", r.conv)
 	})
 }
@@ -397,7 +481,6 @@ func TestChatFiles_ConversationFileAppearsLater(t *testing.T) {
 		if err := os.Remove(r.conv); err != nil {
 			t.Fatal(err)
 		}
-		r.convs = nil // SessionConversations lists only existing files
 		r.start()
 		r.wantReads(1, "the open read")
 		r.sleep(30 * time.Second)
@@ -406,15 +489,28 @@ func TestChatFiles_ConversationFileAppearsLater(t *testing.T) {
 			t.Fatal("a watcher was opened with nothing to watch")
 		}
 		touch(t, r.dir, "conv.jsonl")
-		r.mu.Lock()
-		r.convs = []string{r.conv}
-		r.mu.Unlock()
 		r.sleep(2 * time.Second) // one Wake
 		r.wantReads(2, "one Wake after the file appeared")
 		r.wantWatched("after the file appeared", r.conv)
 		r.fire(r.conv)
 		r.sleep(time.Second) // MinGap after the read the file's arrival made
 		r.wantReads(3, "a write to the new file")
+	})
+}
+
+// A first resolve that fails, then one that succeeds, arms the watch and
+// reads (the success is a change even though nothing was known before).
+func TestChatFiles_FirstResolveFailsThenArms(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newFilesRig(t)
+		r.resolveErr = errors.New("database is locked")
+		r.start()
+		r.wantReads(1, "the open read")
+		r.wantWatched("with the resolve failing")
+		r.set(func() { r.resolveErr = nil })
+		r.sleep(2 * time.Second)
+		r.wantReads(2, "the Wake after the resolve succeeded")
+		r.wantWatched("after the resolve succeeded", r.conv)
 	})
 }
 
@@ -427,18 +523,143 @@ func TestChatFiles_HubRestartReadsOnFirstRequest(t *testing.T) {
 	})
 }
 
-// The phone's Retry is a repeated session_chat_request: it reads again at
-// once when the last read is at least MinGap old.
-func TestChatFiles_RepeatRequestReadsAgain(t *testing.T) {
+// The phone repeats session_chat_request every 60 s to keep the watch: that
+// reads nothing.
+func TestChatFiles_KeepAliveRequestDoesNotRead(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newFilesRig(t)
 		r.start()
-		r.request()
-		r.wantReads(1, "a repeat inside MinGap")
-		r.sleep(5 * time.Second)
-		r.request()
-		r.wantReads(2, "a repeat 5 s later")
+		for range 3 {
+			r.sleep(60 * time.Second)
+			r.request("")
+		}
+		r.wantReads(1, "three keep-alive requests")
 	})
+}
+
+// The Retry is a request while the stored chat has live_error: it reads,
+// and inside MinGap it waits for MinGap's end instead of being dropped.
+func TestChatFiles_RetryRequestReads(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newFilesRig(t)
+		r.live = func() *sessionfeed.Live { return runningAgent("", sessionfeed.StatusFinished) }
+		r.start()
+		r.sleep(5 * time.Second)
+		r.set(func() { r.liveErr = true })
+		r.fire(r.conv)
+		r.sleep(250 * time.Millisecond)
+		r.wantReads(2, "the read whose live part failed")
+		r.set(func() { r.liveErr = false })
+		r.sleep(500 * time.Millisecond)
+		r.request("") // Retry, 500 ms after that read
+		r.wantReads(2, "a Retry inside MinGap")
+		r.sleep(500 * time.Millisecond)
+		r.wantReads(3, "MinGap after the failed read")
+		r.sleep(5 * time.Second)
+		r.request("") // live_error is gone: a keep-alive now
+		r.wantReads(3, "a request after the recovery")
+	})
+}
+
+func TestChatFiles_StopsBeingLiveReadsOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newFilesRig(t)
+		r.start()
+		r.sleep(5 * time.Second)
+		r.set(func() { r.isLive = false })
+		r.sleep(2 * time.Second) // the Wake tick sees it
+		r.wantReads(2, "the session stopped being live")
+		r.sleep(60 * time.Second)
+		r.wantReads(2, "a minute after it stopped")
+	})
+}
+
+// An agent record with nothing to watch (its read failed: no sidechain yet)
+// ticks while the session is live, until its read arms the watch.
+func TestChatFiles_AgentRecordTicksUntilArmed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newFilesRig(t)
+		r.start()
+		r.request("toolu_1")
+		if n := r.readsOf("toolu_1"); n != 1 {
+			t.Fatalf("the agent record's open read: %d", n)
+		}
+		r.sleep(3 * time.Second)
+		if n := r.readsOf("toolu_1"); n != 2 {
+			t.Fatalf("an unarmed agent record did not tick: %d reads", n)
+		}
+		sub := touch(t, r.dir, "conv/subagents/agent-a1.jsonl")
+		r.sleep(4 * time.Second) // the arming tick and its reconcile read
+		n := r.readsOf("toolu_1")
+		r.sleep(30 * time.Second)
+		if m := r.readsOf("toolu_1"); m != n {
+			t.Fatalf("the armed agent record kept ticking: %d → %d reads", n, m)
+		}
+		r.wantWatched("the armed agent record", r.conv, sub)
+	})
+}
+
+// A read that finds a new file to watch asks for one more read MinGap
+// later: what was written to it before it was watched sent no event. That
+// reconcile adds nothing new, so it never loops.
+func TestChatFiles_NewFileGetsOneReconcileRead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newFilesRig(t)
+		sub := touch(t, r.dir, "conv/subagents/agent-a1.jsonl")
+		r.live = func() *sessionfeed.Live { return runningAgent("a1", sessionfeed.StatusRunning) }
+		r.start()
+		r.wantReads(1, "the open read")
+		r.wantWatched("after the open read", r.conv, sub)
+		r.sleep(time.Second)
+		r.wantReads(2, "the reconcile read")
+		r.sleep(30 * time.Second)
+		r.wantReads(2, "30 s after the reconcile")
+	})
+}
+
+// A file both the main feed and an agent record hold is watched once, and
+// one write reads each record once.
+func TestChatFiles_SharedFileOneWatch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newFilesRig(t)
+		sub := touch(t, r.dir, "conv/subagents/agent-a1.jsonl")
+		r.live = func() *sessionfeed.Live { return runningAgent("a1", sessionfeed.StatusRunning) }
+		r.start()
+		r.request("toolu_1")
+		r.sleep(5 * time.Second) // past the reconcile reads
+		main, agent := r.readCount(), r.readsOf("toolu_1")
+		r.fire(sub)
+		r.sleep(250 * time.Millisecond)
+		if r.readCount() != main+1 || r.readsOf("toolu_1") != agent+1 {
+			t.Fatalf("one write: main %d → %d, agent %d → %d reads, want one each", main, r.readCount(), agent, r.readsOf("toolu_1"))
+		}
+		if n := len(r.watchers); n != 1 {
+			t.Fatalf("%d watchers, want one for the source", n)
+		}
+		holders := func() int {
+			r.s.mu.Lock()
+			defer r.s.mu.Unlock()
+			return len(r.s.byPath[sub])
+		}
+		if holders() != 2 {
+			t.Fatalf("%d records hold the shared file, want 2", holders())
+		}
+	})
+}
+
+// A dirty chat whose debounce has already passed (a read held it) is due at
+// once, not skipped.
+func TestChatFiles_NextDueKeepsAPastDebounce(t *testing.T) {
+	r := newChatRig(t)
+	s := r.source(nil, ChatTiming{})
+	now := r.clock.Now()
+	s.runs[chatKey{session: 7}] = &chatRun{last: now.Add(-5 * time.Second), chatFiles: chatFiles{
+		dirty: true, dirtySince: now.Add(-4 * time.Second), lastEvent: now.Add(-4 * time.Second),
+	}}
+	at, ok := s.nextDue()
+	if !ok || at.After(now) {
+		t.Fatalf("nextDue = %v, %v; want a moment not after now", at, ok)
+	}
 }
 
 func TestChatFiles_RealWatcherOnlyListedFiles(t *testing.T) {
@@ -452,7 +673,10 @@ func TestChatFiles_RealWatcherOnlyListedFiles(t *testing.T) {
 		Fetch: func(context.Context, int64, string) (ChatRead, error) {
 			return ChatRead{Entries: []sessionfeed.Entry{feedEntry(1, "hi")}, Paths: []string{files[0]}}, nil
 		},
-		Conversations: func(context.Context, int64) ([]string, error) { return []string{files[0]}, nil },
+		Conversations: func(context.Context, int64) ([]sessionfeed.Conversation, error) {
+			return []sessionfeed.Conversation{{AgentSessionID: "c1", Path: files[0]}}, nil
+		},
+		AgentSessions: func(context.Context, int64) ([]string, error) { return []string{"c1"}, nil },
 		Liveness:      func() Liveness { return Liveness{Runs: map[int64]time.Time{7: time.Now()}} },
 	})
 	defer s.dropAll()
@@ -460,13 +684,71 @@ func TestChatFiles_RealWatcherOnlyListedFiles(t *testing.T) {
 	watches.Watch(handlers.ChatWatch{SessionID: 7, Expires: time.Now().Add(handlers.ChatWatchLength)})
 	s.RunDue(context.Background())
 	s.mu.Lock()
-	armed := s.runs[chatKey{session: 7}].watcher != nil
+	armed := s.fw != nil && s.byPath[files[0]] != nil
 	s.mu.Unlock()
 	if !armed {
 		t.Fatal("no watcher armed")
 	}
 	if grew := openFiles(t) - before; grew > 4 {
 		t.Fatalf("arming one file's watch opened %d descriptors, want ≤ 4", grew)
+	}
+}
+
+// The real fsnotify path end to end: a write to the watched file reads the
+// chat once.
+func TestChatFiles_RealWatcherWriteReadsOnce(t *testing.T) {
+	conv := touch(t, t.TempDir(), "conv.jsonl")
+	reads := make(chan struct{}, 16)
+	var mu sync.Mutex
+	n := 0
+	watches := handlers.NewChatWatchRegistry()
+	s := SessionChat(watches, nil, SessionChatOptions{
+		Timing: ChatTiming{Every: time.Hour, Timeout: 30 * time.Second, Wake: time.Hour, Debounce: time.Millisecond, MinGap: time.Millisecond},
+		Fetch: func(context.Context, int64, string) (ChatRead, error) {
+			mu.Lock()
+			n++
+			mu.Unlock()
+			reads <- struct{}{}
+			return ChatRead{Entries: []sessionfeed.Entry{feedEntry(1, "hi")}, Paths: []string{conv}}, nil
+		},
+		Conversations: func(context.Context, int64) ([]sessionfeed.Conversation, error) {
+			return []sessionfeed.Conversation{{AgentSessionID: "c1", Path: conv}}, nil
+		},
+		AgentSessions: func(context.Context, int64) ([]string, error) { return []string{"c1"}, nil },
+		Liveness:      func() Liveness { return Liveness{Runs: map[int64]time.Time{7: time.Now()}} },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	s.RequestWatches().Watch(handlers.ChatWatch{SessionID: 7, Expires: time.Now().Add(handlers.ChatWatchLength)})
+	go func() { done <- s.Run(ctx) }()
+	await := func(what string) {
+		t.Helper()
+		select {
+		case <-reads:
+		case <-time.After(10 * time.Second):
+			cancel()
+			<-done
+			t.Fatalf("no read: %s", what)
+		}
+	}
+	await("the open read")
+	f, err := os.OpenFile(conv, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{\"type\":\"user\"}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	await("the write")
+	cancel()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if n != 2 {
+		t.Fatalf("%d reads, want the open read and one for the write", n)
 	}
 }
 
@@ -500,15 +782,13 @@ func TestChatFiles_AddFailsFallsBackToTick(t *testing.T) {
 		r.sleep(9 * time.Second)
 		r.wantReads(4, "9 s on the fallback tick")
 		if w := r.watcher(); w == nil || !w.isClosed() {
-			t.Fatal("the failed watcher was not closed")
+			t.Fatal("the watcher holding nothing was not closed")
 		}
 		if n := strings.Count(logs.String(), "cannot watch the files"); n != 1 {
 			t.Fatalf("the fallback was logged %d times, want once:\n%s", n, logs.String())
 		}
 		// Not live any more: one read for the end, then none.
-		r.mu.Lock()
-		r.isLive = false
-		r.mu.Unlock()
+		r.set(func() { r.isLive = false })
 		r.sleep(30 * time.Second)
 		r.wantReads(5, "after the session stopped")
 	})
@@ -533,9 +813,7 @@ func TestChatFiles_WatchersClosedOnExpiryAndUnlink(t *testing.T) {
 			r := newFilesRig(t)
 			r.start()
 			w := r.watcher()
-			r.mu.Lock()
-			r.active = false
-			r.mu.Unlock()
+			r.set(func() { r.active = false })
 			r.sleep(2 * time.Second)
 			if !w.isClosed() {
 				t.Fatal("the watcher outlived the phone's link")
@@ -562,7 +840,8 @@ func TestChatFiles_ReadInFlightRearms(t *testing.T) {
 		r.wantReads(2, "while the read is held")
 		close(release)
 		synctest.Wait()
+		r.wantReads(3, "right after the held read")
 		r.sleep(10 * time.Second)
-		r.wantReads(3, "after the held read")
+		r.wantReads(3, "10 s after the held read")
 	})
 }

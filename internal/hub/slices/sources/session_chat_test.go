@@ -103,9 +103,11 @@ func (r *chatRig) source(fetch ChatFetch, timing ChatTiming) *SessionChatSource 
 			r.nudges++
 			r.mu.Unlock()
 		},
-		Conversations: func(context.Context, int64) ([]string, error) { return []string{"/conversation.jsonl"}, nil },
-		NewWatcher:    func() (FileWatcher, error) { return nil, errors.New("no watcher in this test") },
-		Now:           r.clock.Now,
+		Conversations: func(context.Context, int64) ([]sessionfeed.Conversation, error) {
+			return []sessionfeed.Conversation{{Path: "/conversation.jsonl"}}, nil
+		},
+		NewWatcher: func() (FileWatcher, error) { return nil, errors.New("no watcher in this test") },
+		Now:        r.clock.Now,
 	})
 }
 
