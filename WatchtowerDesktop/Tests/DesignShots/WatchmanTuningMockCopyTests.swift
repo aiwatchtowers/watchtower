@@ -19,5 +19,6 @@ final class WatchmanTuningMockCopyTests: XCTestCase {
         XCTAssertTrue(Copy.saveFailed.hasPrefix("Could not save: "))
         XCTAssertTrue(Copy.learningLine.contains("Questions asked meanwhile wait and are decided once it finishes"))
         XCTAssertEqual(Copy.counter(1912), "1912 / 2000")
+        XCTAssertEqual(Copy.trayHeader(8), "Hands over 8 sessions:")
     }
 }

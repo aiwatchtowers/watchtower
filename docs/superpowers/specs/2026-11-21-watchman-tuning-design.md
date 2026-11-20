@@ -8,7 +8,7 @@ The first real night with Watchman (2026-11-20) showed four gaps. This spec clos
 |---|---|---|
 | 1 | The icon is the wrong one (`moon.stars`, left from "Sleep") | `binoculars` everywhere Watchman shows |
 | 2 | Watchman cannot be told what a session is for | An optional instruction on every hand-over, editable while armed |
-| 3 | Nothing happens at first: learning starts only on the first hand-over, runs 5 min per daemon cycle (75 min on the owner's workbench), and every question asked meanwhile is parked and never looked at again | Learning starts when Watchman is turned on for the workbench and runs to the end in one go; questions asked meanwhile wait and are decided once it ends |
+| 3 | Nothing happens at first: learning starts only on the first hand-over, runs 5 min per daemon cycle (75 min on the owner's workbench), and every question asked meanwhile is parked and never looked at again | Learning starts when Watchman is turned on for the workbench and runs to the end in one go; questions asked meanwhile wait and are decided once it ends. Turned on from Settings before the first hand-over, Watchman decides from the first question; turned on by the hand-over itself, it decides from the end of learning (one continuous run instead of 75 min of slices), not from the first minute |
 | 4 | An agent can end its turn with a question as text, or just stop, and nobody notices | The Stop guard sends back a text question in a handed session; Watchman pings a session that has stopped with nothing running, at most 3 times, then puts it in WAITING FOR YOU |
 
 ## Decisions
@@ -16,8 +16,10 @@ The first real night with Watchman (2026-11-20) showed four gaps. This spec clos
 - D1 — Icon is SF Symbol `binoculars` (ask #1699).
 - D2 — Learning starts when Watchman is turned on for a workbench (Settings **Start Learning**, `watchman learn --start`, or the first hand-over) and runs in one go until done (ask #1699).
 - D3 — Instructions per session/target and "questions held while learning are decided after it" accepted (ask #1699, "Да, пиши спеку").
-- D4 — The stall ping must tell a stopped agent from one whose sub-agents or background jobs still run (ask #1699, owner's comment "надо понимать что бегут там агенты или фоновая задача"). The thresholds (3 min, 3 pings) are this spec's proposal.
-- D5 — Questions asked while learning **wait queued** instead of being parked and requeued later (conversation, this spec): the same result for the owner with one state fewer; it replaces the "park, then requeue" wording of ask #1699.
+- D4 — The stall ping must tell a stopped agent from one whose sub-agents or background jobs still run (ask #1699, owner's comment "надо понимать что бегут там агенты или фоновая задача"). The thresholds (3 min, 3 pings) are **this spec's proposal**, for the owner's approval in this review (he answered "тут надо смотреть"); they are constants in one place (`watchmanact.StallAfter`, `StallMaxPings`) so a later change is one line.
+- D5 — **Proposal, for the owner's approval in this review:** asks, checks, handovers and reviews asked while learning **wait queued** instead of being parked and requeued later — the outcome ask #1699 approved ("decided after learning") with one state fewer. Permission prompts are the exception: they keep parking to the owner while learning (§3), since an agent blocks on one.
+- D6 — **Proposal, for the owner's approval in this review:** the PROJ-13 amendment of §4a (a handed session reads the owner as away in the Stop guard).
+- D7 — The instruction outlives **Take back** (stored per session/target, not on the arming row), so handing over again pre-fills it (review round 1).
 
 ## 1. Icon (Task 1)
 
@@ -29,19 +31,19 @@ The first real night with Watchman (2026-11-20) showed four gaps. This spec clos
 
 ### What the owner sees
 
-- **Hand to Watchman** always opens the arm sheet now. The first hand-over on a workbench keeps today's content (what turns on, limits, warnings) with the instruction field added under the body; every later hand-over opens the short sheet: title `Hand to Watchman`, the field, **Cancel** / **Hand over**. Return in the field adds a line; ⌘Return hands over.
+- **Hand to Watchman** always opens the arm sheet now: the owner asked to give the instruction when he hands a session over, and the sheet is that moment. To keep it one keystroke, the field has focus and **Return hands over** (with or without text); ⌥Return adds a line. The first hand-over on a workbench keeps today's content (what turns on, limits, warnings) with the field under the body; every later one opens the short sheet: title `Hand to Watchman`, the session, the field, **Cancel** / **Hand over**. The field is pre-filled with the session's (or target's) stored instruction, if any.
 - Field label `Instruction for Watchman (optional)`, placeholder `What this session is for, what to prefer, what to leave to you — e.g. "ship task 3 only; ask me before touching the schema"`. At most 2000 characters; the count shows past 1800.
 - The armed chip and the target panel gain an **Instruction…** button (`text.quote`) that opens the same short sheet in edit mode (title `Instruction for Watchman`, **Save**); with an instruction set, the chip's tooltip shows its first line.
-- The tray's **Hand all running sessions to Watchman** opens the short sheet listing the sessions; the one instruction goes to each of them.
+- The tray's **Hand all running sessions to Watchman** opens the short sheet listing the sessions (at most six rows show, more scroll, as today's first-time sheet; mockup `arm-tray`); the one instruction goes to each of them and replaces what each had (the field starts empty here).
 - Saving or handing over runs the CLI; while it runs the button shows a spinner and is disabled; a failure keeps the sheet and the text with `Could not save: <error>` and **Retry**.
 
 All copy lives in `WatchmanArmingCopy` (WatchtowerCore) with tests.
 
 ### Data and CLI
 
-- Migration: `watchman_arming.instructions TEXT NOT NULL DEFAULT ''`. Mirrored into `schema.sql`, golden and the Swift test schema.
-- `watchman arm … [--instructions-file F]` (`-` = stdin): with the flag, the row's text is set (an empty file clears it); without it, a new row gets `''` and a re-arm **keeps** the stored text (today's upsert keeps `armed_at` the same way).
-- New owner verb `watchman instruct --session N | --target N --text-file F [--json]` (refused under an agent's markers, AGENT-07, like `arm`): updates an armed row's text; a row that is not armed → `{"ok":false,"error":"not armed"}`. JSON: `ok`, `scope`, `ref_id`, `instructions`, `error`.
+- Migration: table `watchman_instructions` (`scope` `session`/`target`, `ref_id`, `text`, `updated_at`; PK `(scope, ref_id)`), apart from `watchman_arming` so **Take back** (which deletes the arming row) keeps the text (D7). Pruned with the session or target it names (`phaseWatchmanUpkeep`, as the arming). Mirrored into `schema.sql`, golden, `TestAllTablesExist` and the Swift test schema.
+- `watchman arm … [--instructions-file F]` (`-` = stdin): with the flag, the scope's text is set (an empty file clears it) in the same transaction as the arming row; without it, the stored text is kept.
+- New owner verb `watchman instruct --session N | --target N --text-file F [--json]` (refused under an agent's markers, AGENT-07, like `arm`): sets the text for that session or target, armed or not (the sheet's pre-fill and the next hand-over use it). JSON: `ok`, `scope`, `ref_id`, `instructions`, `error`.
 - Text is trimmed and clipped to 2000 runes in Go; it is the owner's own words, stored as typed (no redaction: it never leaves the machine except inside the twin's own model call, like the workbench Instructions today).
 - `watchman status --json`: `armed_sessions[].instructions` (Swift decodes it tolerantly, missing = `''`).
 
@@ -54,8 +56,8 @@ All copy lives in `WatchmanArmingCopy` (WatchtowerCore) with tests.
 
 ### Writers and races
 
-- `watchman_arming.instructions` is written only by `watchman arm` and `watchman instruct` (the Desktop runs them). Two edits race as last write wins; the twin reads the text when it builds an item's context, so an item already deciding uses the text it read.
-- **Take back** deletes the row and its text; handing over again starts empty (the sheet pre-fills the last text the Desktop saw for that session within this app run — not stored).
+- `watchman_instructions` is written only by `watchman arm` and `watchman instruct` (the Desktop runs them). Two edits race as last write wins; the twin reads the text when it builds an item's context, so an item already deciding uses the text it read.
+- **Take back** deletes the arming row only; the instruction stays and pre-fills the next hand-over (D7). The twin reads instructions only for an armed scope, so a stored text acts on nothing while taken back (WATCHMAN-04).
 
 ### Failures
 
@@ -73,7 +75,8 @@ All copy lives in `WatchmanArmingCopy` (WatchtowerCore) with tests.
 
 ### Questions asked meanwhile (D5)
 
-- While the workbench is not learned, the twin **does not lease** its items: they stay `queued`. Only parking for learning is removed: `LearningReason` items are no longer written.
+- While the workbench is not learned, the twin **does not lease** its `ask`, `check`, `handover`, `review_doc` and `review_code` items: they stay `queued` (D5).
+- **Permission prompts still park** with `LearningReason` while learning, as today: the agent is blocked on the prompt, so it goes to the owner at once (WAITING FOR YOU, the strip's needs-approval state) instead of holding the agent for the whole run.
 - The journal shows them on tonight's busy line: `Waiting for learning (<p>%): <n> questions`.
 - When learning ends, the next twin pass leases them in creation order, as any queued item.
 - The owner may still answer any of them himself; the item then closes `owner_first` without a model call (WATCHMAN-02, unchanged).
@@ -131,7 +134,7 @@ The twin worker gets a 60 s tick for armed sessions with a live run (the session
 
 ## Contracts
 
-- **PROJ-13** amended (4a): a short text question passes only when the owner is present **and the session is not armed**. Guard test `TestPROJ13_…` gains the armed case. Needs the owner's approval with this spec.
+- **PROJ-13** amended (4a, D6 — a proposal; approving this spec approves the amendment, rejecting it drops §4a and leaves the stall watch alone to catch a text question): a short text question passes only when the owner is present **and the session is not armed**. Guard test `TestPROJ13_…` gains the armed case.
 - **WATCHMAN-04**: the stall watch is a new actor; `TestWATCHMAN04_NothingActsOnUnarmedSession` gains "no ping to an unarmed or taken-back session".
 - **WATCHMAN-01** unchanged: instructions never lift a hard limit; a test where the instruction asks for a main merge still parks.
 - **WATCHMAN-03** unchanged: `stall` items are never read by learning.
@@ -142,8 +145,8 @@ The twin worker gets a 60 s tick for armed sessions with a live run (the session
 | Task | Promise | Tests |
 |---|---|---|
 | 1 Icon | binoculars everywhere | `WatchmanStyleTests` (constant), the `moon.stars` grep test; re-rendered shots |
-| 2 Instructions | field on every hand-over, edit while armed, twin uses it, never lifts a limit | migration golden; `TestWatchmanArm_InstructionsKeptOnRearm`, `TestWatchmanInstruct_NotArmed`, `TestWatchmanInstruct_RefusedUnderAgent`, JSON keys pinned; `TestLiveContext_SessionInstructions` (target then session); `TestTwin_InstructionNeverLiftsHardLimit`; Swift: `WatchmanArmingCopyTests` (all new strings), `WatchmanCenterTests` (arm with text, save failure keeps text + Retry), status decoding fixture with `instructions` |
-| 3 Learning | starts on turn-on, runs to the end, one learner per workbench, items wait and are decided after | `TestLearner_RunsToEndWithoutBudget`, `TestLearner_StopsOnShutdownAndResumes`, `TestLearner_PausedByConsent`, `TestLearner_LockSkipsSecond`, `TestTwin_DoesNotLeaseWhileLearning`, `TestTwin_LeasesHeldItemsAfterLearning`, `TestTwin_OwnerAnswersWhileLearning_OwnerFirst`; Swift: busy line and chip copy tests |
+| 2 Instructions | field on every hand-over, edit while armed, twin uses it, never lifts a limit | migration golden; `TestWatchmanArm_InstructionsKeptOnRearm`, `TestWatchmanDisarm_KeepsInstruction`, `TestWatchmanInstruct_UnarmedStoredNotActed`, `TestWatchmanUpkeep_PrunesInstructions`, `TestWatchmanInstruct_RefusedUnderAgent`, JSON keys pinned; `TestLiveContext_SessionInstructions` (target then session); `TestTwin_InstructionNeverLiftsHardLimit`; Swift: `WatchmanArmingCopyTests` (all new strings), `WatchmanCenterTests` (arm with text, save failure keeps text + Retry), status decoding fixture with `instructions` |
+| 3 Learning | starts on turn-on, runs to the end, one learner per workbench, items wait and are decided after | `TestLearner_RunsToEndWithoutBudget`, `TestLearner_StopsOnShutdownAndResumes`, `TestLearner_PausedByConsent`, `TestLearner_LockSkipsSecond`, `TestTwin_DoesNotLeaseWhileLearning`, `TestTwin_PermissionParksWhileLearning`, `TestTwin_LeasesHeldItemsAfterLearning`, `TestTwin_OwnerAnswersWhileLearning_OwnerFirst`; Swift: busy line and chip copy tests |
 | 4a Stop guard | armed → owner read as away | `TestPROJ13_…` armed case, `TestAskGuard_ArmingUnreadableKeepsPresence` |
 | 4b Stall watch | ping only a truly stopped armed session, ≤ 3, then journal | `TestStall_NotPingedWhileAgentsWork`, `…WhileShellsRun`, `…ShellsPastCapIsStopped`, `…NeedsApprovalNotPinged`, `TestStall_PingAfter3Min`, `TestStall_ThreePingsThenParked`, `TestStall_ProgressResets` (ask, finish, HEAD), `TestStall_HeldLineNotCounted`, `TestStall_RestartKeepsCount`, WATCHMAN-04 case; migration rebuild golden; Swift: journal `stall` card + Mark done |
 
@@ -153,6 +156,7 @@ The twin worker gets a 60 s tick for armed sessions with a live run (the session
 
 - [`arm-short`](../../design/mockups/watchman-tuning/arm-short-light.png) — the short sheet, empty field (placeholder); [`arm-short-filled`](../../design/mockups/watchman-tuning/arm-short-filled-light.png) — with text; [`arm-short-saving`](../../design/mockups/watchman-tuning/arm-short-saving-light.png) — busy (spinner, disabled); [`arm-short-error`](../../design/mockups/watchman-tuning/arm-short-error-light.png) — `Could not save: …` with **Retry**; [`arm-short-near-limit`](../../design/mockups/watchman-tuning/arm-short-near-limit-light.png) — a long instruction with the counter.
 - [`arm-first-time`](../../design/mockups/watchman-tuning/arm-first-time-light.png) — the first hand-over with the field and the new learning line.
+- [`arm-tray`](../../design/mockups/watchman-tuning/arm-tray-light.png) — the tray's sheet for all running sessions, the list scrolling past six.
 - [`instruction-edit`](../../design/mockups/watchman-tuning/instruction-edit-light.png) — the edit sheet from the chip (**Save**).
 - [`strip-armed-instruction`](../../design/mockups/watchman-tuning/strip-armed-instruction-light.png) — the chip with **Instruction…**; [`strip-armed-learning`](../../design/mockups/watchman-tuning/strip-armed-learning-light.png) — `Watchman · learning 42%`.
 - [`journal-waiting-learning`](../../design/mockups/watchman-tuning/journal-waiting-learning-light.png) — tonight's busy line `Waiting for learning (42%): 3 questions`.

@@ -20,6 +20,7 @@ enum WatchmanTuningShotFixtures {
         case armShortError = "arm-short-error"
         case armShortNearLimit = "arm-short-near-limit"
         case armFirstTime = "arm-first-time"
+        case armTray = "arm-tray"
         case instructionEdit = "instruction-edit"
         case stripArmedInstruction = "strip-armed-instruction"
         case stripArmedLearning = "strip-armed-learning"
@@ -42,6 +43,7 @@ enum WatchmanTuningShotFixtures {
             case .armShortError: InstructionSheetMock(state: .failed, text: Copy.sampleInstruction)
             case .armShortNearLimit: InstructionSheetMock(state: .idle, text: Copy.longInstruction, count: 1912)
             case .armFirstTime: InstructionSheetMock(state: .idle, text: "", firstTime: true)
+            case .armTray: InstructionSheetMock(state: .idle, text: "", sessions: Copy.traySessions)
             case .instructionEdit: InstructionSheetMock(state: .idle, text: Copy.sampleInstruction, edit: true)
             case .stripArmedInstruction: StripMock(learning: false)
             case .stripArmedLearning: StripMock(learning: true)
@@ -72,6 +74,10 @@ enum WatchmanTuningMockCopy {
     static let retry = "Retry"
     static let saveFailed = "Could not save: the database is busy — try again"
     static let session = "#41 Ship task 3 of the billing plan"
+    static let traySessions = ["#41 Ship task 3 of the billing plan", "#42 Fix the login redirect",
+                               "#43 Spec: export to CSV", "#44 Bump the parser", "#45 Review the cache layer",
+                               "#46 Flaky upload test", "#47 Docs: install guide", "#48 Retry on 429"]
+    static func trayHeader(_ n: Int) -> String { WatchmanArmingCopy.sessionsHeader(n) }
     static let sampleInstruction = "Ship task 3 only, then finish.\nAsk me before touching the schema."
     static let longInstruction = String(repeating: "Prefer the smaller change; keep the public API as is. ", count: 34)
     static func counter(_ n: Int) -> String { "\(n) / 2000" }
@@ -109,13 +115,25 @@ private struct InstructionSheetMock: View {
     var count: Int?
     var firstTime = false
     var edit = false
+    var sessions: [String] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.large) {
             VStack(alignment: .leading, spacing: Spacing.small) {
                 Text(edit ? Copy.editTitle : (firstTime ? Copy.firstTimeTitle : Copy.sheetTitle))
                     .font(.title3.weight(.semibold))
-                if firstTime {
+                if !sessions.isEmpty {
+                    Text(Copy.trayHeader(sessions.count)).font(.callout.weight(.semibold))
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(sessions, id: \.self) { session in
+                                Text(session).font(.callout).lineLimit(1).frame(minHeight: ListLayout.lineMinHeight)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: CGFloat(min(sessions.count, 6)) * ListLayout.lineMinHeight)
+                } else if firstTime {
                     Text(Copy.firstTimeBody).font(.callout).fixedSize(horizontal: false, vertical: true)
                 } else {
                     Label(Copy.session, systemImage: "terminal").font(.callout).foregroundStyle(.secondary)
