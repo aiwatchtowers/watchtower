@@ -61,7 +61,9 @@ func (f *fixture) endSession() {
 func (f *fixture) unpushedWithBuild() (root string, builds []string) {
 	f.t.Helper()
 	root = f.worktree("wt", "feat/x")
-	f.commit(root, ".gitignore", ".build/\n")
+	// As a real repository does: build output is ignored (a build folder
+	// git does not ignore stays — TestProj18_UnignoredBuildKeepsUntrackedWork).
+	f.commit(root, ".gitignore", ".build/\nDerivedData/\n")
 	f.commit(root, "Pkg/Package.swift", "// swift-tools-version:5.10\n")
 	f.record(root, "feat/x")
 	return root, []string{swiftBuild(f.t, filepath.Join(root, ".build")),
@@ -232,6 +234,7 @@ func TestPrune_OnlySwiftPMBuildFolders(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	root := f.worktree("wt", "feat/x")
+	f.commit(root, ".gitignore", ".build/\n")
 	f.record(root, "feat/x")
 	tracked := filepath.Join(root, "Tracked", ".build")
 	writeFile(t, filepath.Join(tracked, buildMarker), "{}\n")
@@ -529,6 +532,26 @@ func TestProj18_TrackedBuildPathIsMatchedLiterally(t *testing.T) {
 				t.Fatalf("the tracked build went: %+v", it)
 			}
 		})
+	}
+}
+
+// TestProj18_UnignoredBuildKeepsUntrackedWork (review round 6): a build
+// folder the repository does not ignore holds untracked files git would
+// commit — the owner's work, not build output — so it stays.
+func TestProj18_UnignoredBuildKeepsUntrackedWork(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root, _ := f.unpushedWithBuild()
+	unignored := filepath.Join(root, "sub", ".build")
+	writeFile(t, filepath.Join(root, "sub", ".gitignore"), "!.build/\n")
+	writeFile(t, filepath.Join(unignored, buildMarker), "{}\n")
+	writeFile(t, filepath.Join(unignored, "notes.swift"), "// work\n")
+	f.endSession()
+
+	res := f.apply(Request{PruneBuilds: true}, nil, nil)
+	it := findItem(t, res.Plan, "worktree:"+root)
+	if slices.Contains(it.BuildsRemoved, unignored) || !exists(filepath.Join(unignored, "notes.swift")) {
+		t.Fatalf("the unignored build went: %+v", it)
 	}
 }
 

@@ -320,7 +320,15 @@ func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) 
 	}
 	// ":(literal)": the folder's path is a path, never pathspec magic or a
 	// glob (a folder named ":(literal)x" or "a*" must still match itself).
-	out, err := b.repo.git.output(ctx, root, "ls-files", "-z", "--", ":(literal)"+rel)
+	// --cached --others --exclude-standard: a tracked file, or an untracked
+	// one git does not ignore, is the owner's work, not build output; a
+	// build folder the repository does not ignore therefore always stays.
+	// A trash leftover is judged by the build folder moved into it (its
+	// marker is the prune's own file, never ignored by the repository).
+	if f.trash {
+		rel = filepath.Join(rel, f.kind.name)
+	}
+	out, err := b.repo.git.output(ctx, root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ":(literal)"+rel)
 	if err != nil {
 		return false, fmt.Errorf("reading what git tracks in %s: %w", f.path, err)
 	}
