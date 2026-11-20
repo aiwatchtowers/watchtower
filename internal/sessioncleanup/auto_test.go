@@ -76,6 +76,8 @@ type autoFixture struct {
 	cands   []AutoCandidate
 	live    map[int64]bool
 	liveErr error
+	// liveFn, when set, answers Live instead of live/liveErr.
+	liveFn  func() (map[int64]bool, error)
 	busy    bool
 	locked  []string
 	results *fakeResults
@@ -103,7 +105,12 @@ func (a *autoFixture) run(now time.Time) (AutoResult, error) {
 			}
 			return a.cands, nil
 		},
-		Live: func(context.Context) (map[int64]bool, error) { return a.live, a.liveErr },
+		Live: func(context.Context) (map[int64]bool, error) {
+			if a.liveFn != nil {
+				return a.liveFn()
+			}
+			return a.live, a.liveErr
+		},
 		TryLock: func(repo string) (func(), bool, error) {
 			if a.busy {
 				return nil, false, nil
@@ -171,9 +178,9 @@ func TestProj18_AutoCleanupKeepsWhatIsInUse(t *testing.T) {
 	}
 }
 
-// TestAutoRun_SkipsBusyAndFailsClosedOnLive: a workbench whose lock is held
-// is skipped this pass; a live list that cannot be read stops the pass
-// before anything is applied.
+// TestAutoRun_SkipsBusyAndFailsClosedOnLive: a repository whose lock is
+// held is skipped this pass; a session whose live list cannot be read is
+// skipped too (a failure), nothing applied.
 func TestAutoRun_SkipsBusyAndFailsClosedOnLive(t *testing.T) {
 	t.Parallel()
 	a := newAutoFixture(t)
@@ -188,8 +195,8 @@ func TestAutoRun_SkipsBusyAndFailsClosedOnLive(t *testing.T) {
 		t.Fatalf("busy: res %+v, err %v", res, err)
 	}
 	a.busy, a.liveErr = false, errors.New("host refused")
-	if _, err := a.run(now); err == nil {
-		t.Fatal("no error without the live list")
+	if res, err := a.run(now); err != nil || res.Failed != 1 || res.Applied != 0 {
+		t.Fatalf("no live list: res %+v, err %v", res, err)
 	}
 	if !exists(root) || len(a.locked) != 0 {
 		t.Fatal("something was applied")
@@ -431,5 +438,34 @@ func TestAutoRun_RetryDoesNotWalkCheckedBuilds(t *testing.T) {
 				t.Fatalf("pruned %v, want %v", pruned, tc.wantPruned)
 			}
 		})
+	}
+}
+
+// TestAutoRun_ReadsTheLiveListPerSession (review round 4): the host's live
+// list is read again right before each session's apply, so a terminal that
+// went live after the pass began keeps its worktree.
+func TestAutoRun_ReadsTheLiveListPerSession(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root := a.pushedWork("wt", "feat/x")
+	a.record(root, "feat/x")
+	a.endSession()
+	a.store.activity[0].AgentCwd = root
+	now := time.Now()
+	broken := AutoCandidate{SessionID: 404, WorkbenchID: testWorkbench, FinishedAt: now} // no such row
+	a.cands = []AutoCandidate{broken, {SessionID: testSession, WorkbenchID: testWorkbench, FinishedAt: now}}
+	calls := 0
+	a.liveFn = func() (map[int64]bool, error) {
+		calls++
+		if calls == 1 {
+			return map[int64]bool{}, nil
+		}
+		return map[int64]bool{testSession: true}, nil // its terminal went live
+	}
+	if _, err := a.run(now); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || !a.listsWorktree(root) {
+		t.Fatalf("live read %d times, worktree listed %v", calls, a.listsWorktree(root))
 	}
 }

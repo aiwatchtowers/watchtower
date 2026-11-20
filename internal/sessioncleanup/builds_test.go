@@ -31,11 +31,12 @@ func trashIn(t *testing.T, dir string) []string {
 	return out
 }
 
-// markedTrash makes a leftover of an interrupted prune at dir: a file and
-// the prune's marker.
+// markedTrash makes a leftover of an interrupted prune at dir: the prune's
+// marker and the build folder it moved in, half deleted.
 func markedTrash(t *testing.T, dir string) string {
 	t.Helper()
-	writeFile(t, filepath.Join(dir, "half"), "x\n")
+	name, _, _ := strings.Cut(filepath.Base(dir), trashInfix)
+	writeFile(t, filepath.Join(dir, name, "half"), "x\n")
 	writeFile(t, filepath.Join(dir, trashMarker), trashMarkerBody)
 	return dir
 }
@@ -341,7 +342,7 @@ func TestRemoveBuildDir_UniqueTrashAndMarker(t *testing.T) {
 	writeFile(t, filepath.Join(lookalike, "precious"), "x\n")
 	old := filepath.Join(dir, ".build.removing-by-watchtower")
 	writeFile(t, filepath.Join(old, "precious"), "x\n")
-	if err := removeBuildDir(build); err != nil {
+	if err := removeBuildDir(build, os.RemoveAll); err != nil {
 		t.Fatal(err)
 	}
 	if exists(build) {
@@ -557,10 +558,10 @@ func TestHoldsGitfile_FailsClosed(t *testing.T) {
 	for i := range nestedClockEvery + 1 {
 		writeFile(t, filepath.Join(dir, "d"+strconv.Itoa(i)), "x")
 	}
-	if _, err := holdsGitfile(context.Background(), dir, -time.Second); err == nil {
+	if _, err := holdsForeignGit(context.Background(), foundBuild{path: dir, kind: buildKinds[0]}, -time.Second); err == nil {
 		t.Fatal("no error over budget")
 	}
-	if holds, err := holdsGitfile(context.Background(), dir, time.Minute); holds || err != nil {
+	if holds, err := holdsForeignGit(context.Background(), foundBuild{path: dir, kind: buildKinds[0]}, time.Minute); holds || err != nil {
 		t.Fatalf("holds %v, err %v", holds, err)
 	}
 }
@@ -588,5 +589,72 @@ func TestApply_EvaluatesTheFolderItLocked(t *testing.T) {
 	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
 	if !slices.Equal(locked, []string{filepath.Join(f.repo, ".git")}) {
 		t.Fatalf("locked %v", locked)
+	}
+}
+
+// TestProj18_ForeignRepositoryInABuildKeepsIt (review round 4): a git
+// repository anywhere in a build folder outside the tool's own clones keeps
+// the folder; SwiftPM's checkouts (with their submodules' gitfiles) and
+// repositories (bare mirrors) of .build, and Xcode's
+// SourcePackages/checkouts of DerivedData, do not.
+func TestProj18_ForeignRepositoryInABuildKeepsIt(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root, builds := f.unpushedWithBuild()
+	foreign := filepath.Join(builds[0], "some", "other", "repo")
+	gitIn(t, f.base, "clone", "-q", f.repo, foreign)
+	writeFile(t, filepath.Join(foreign, "edit.txt"), "local edit\n")
+	clone := filepath.Join(builds[1], "checkouts", "pkg")
+	gitIn(t, f.base, "clone", "-q", f.repo, clone)
+	writeFile(t, filepath.Join(clone, "Sub", ".git"), "gitdir: ../.git/modules/Sub\n")
+	gitIn(t, f.base, "clone", "-q", "--bare", f.repo, filepath.Join(builds[1], "repositories", "pkg-1234"))
+	derived := filepath.Join(root, "build", "DerivedData")
+	writeFile(t, filepath.Join(derived, "info.plist"), "<plist/>\n")
+	writeFile(t, filepath.Join(derived, "Build", "Products", "App"), "binary\n")
+	gitIn(t, f.base, "clone", "-q", f.repo, filepath.Join(derived, "SourcePackages", "checkouts", "pkg"))
+	f.endSession()
+
+	res := f.apply(Request{PruneBuilds: true}, nil, nil)
+	it := findItem(t, res.Plan, "worktree:"+root)
+	got := slices.Clone(it.BuildsRemoved)
+	slices.Sort(got)
+	want := []string{builds[1], derived}
+	slices.Sort(want)
+	if !slices.Equal(got, want) || it.BuildError != "" || it.BuildsChecked != true {
+		t.Fatalf("item %+v, want removed %v", it, want)
+	}
+	if !exists(filepath.Join(foreign, "edit.txt")) || !exists(filepath.Join(builds[0], buildMarker)) {
+		t.Fatal("the foreign repository in the build, or its build, went")
+	}
+}
+
+// TestFinishTrash_InterruptedDeleteIsFinishedLater (review round 4): the
+// moved build goes first and the marker last, so a delete that fails part
+// way leaves a marked leftover the next walk recognises and finishes.
+func TestFinishTrash_InterruptedDeleteIsFinishedLater(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	build := swiftBuild(t, filepath.Join(dir, ".build"))
+	interrupted := errors.New("interrupted")
+	err := removeBuildDir(build, func(p string) error {
+		_ = os.Remove(filepath.Join(p, buildMarker)) // part of it went
+		return interrupted
+	})
+	if !errors.Is(err, interrupted) {
+		t.Fatalf("err %v", err)
+	}
+	trash := trashIn(t, dir)
+	if len(trash) != 1 || !exists(filepath.Join(trash[0], trashMarker)) {
+		t.Fatalf("trash %v, marker missing", trash)
+	}
+	found, err := findBuildDirs(context.Background(), dir, time.Minute)
+	if err != nil || len(found) != 1 || !found[0].trash || found[0].path != trash[0] {
+		t.Fatalf("found %+v, err %v", found, err)
+	}
+	if err := finishTrash(found[0].path, found[0].kind.name, os.RemoveAll); err != nil {
+		t.Fatal(err)
+	}
+	if exists(trash[0]) {
+		t.Fatal("the leftover is still there")
 	}
 }

@@ -27,14 +27,23 @@ type buildKind struct {
 	name string
 	// files must be regular files and dirs real directories inside it.
 	files, dirs []string
+	// managed are the folders (relative to the build folder) whose every
+	// child is the tool's own git clone or mirror of a package — SwiftPM's
+	// checkouts (a clone, with its submodules' gitfiles) and repositories
+	// (bare mirrors). SwiftPM resets them on the next resolve, and an
+	// edited package lives in Packages/ (`swift package edit`), outside the
+	// build folder, so they are build output. A `.git` anywhere else in the
+	// folder keeps it (holdsForeignGit).
+	managed []string
 }
 
 // buildKinds are the build folders a prune deletes: SwiftPM's .build (its
 // workspace-state.json) and an Xcode DerivedData folder a build was pointed
 // at inside the worktree with -derivedDataPath (its info.plist and Build).
 var buildKinds = []buildKind{
-	{name: ".build", files: []string{"workspace-state.json"}},
-	{name: "DerivedData", files: []string{"info.plist"}, dirs: []string{"Build"}},
+	{name: ".build", files: []string{"workspace-state.json"}, managed: []string{"checkouts", "repositories"}},
+	{name: "DerivedData", files: []string{"info.plist"}, dirs: []string{"Build"},
+		managed: []string{filepath.Join("SourcePackages", "checkouts"), filepath.Join("SourcePackages", "repositories")}},
 }
 
 const (
@@ -115,7 +124,7 @@ func (a *applier) pruneBuilds(ctx context.Context) {
 }
 
 // pruneWorktreeBuilds finds the worktree's build folders, drops those a
-// git checkout lives in (holdsGitfile), re-checks the worktree on fresh
+// repository or checkout lives in outside the tool's own clones (holdsForeignGit), re-checks the worktree on fresh
 // facts (pruneCatches) right before deleting the rest, keeps any folder a
 // listed worktree lives in (worktreeInside), and deletes the rest; any
 // doubt leaves them. The walks come first, so the re-check is as close to
@@ -141,7 +150,7 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 	doubt := false
 	var found []foundBuild
 	for _, f := range all {
-		switch holds, err := holdsGitfile(ctx, f.path, nestedScanBudget); {
+		switch holds, err := holdsForeignGit(ctx, f, nestedScanBudget); {
 		case err != nil:
 			doubt = true // unreadable or over budget: kept, quietly
 		case !holds:
@@ -190,17 +199,17 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 	it.BuildsChecked = !doubt
 }
 
-// holdsGitfile walks dir without following symlinks for a `.git` entry
-// that is not a directory — a gitfile (`gitdir: …`) of a linked worktree
-// or submodule checkout, of any repository, or anything else of that name:
-// true keeps dir. A `.git` directory (a clone, such as SwiftPM's
-// .build/checkouts/*) does not count and is not entered. Over budget, or
-// on an unreadable entry, it fails, and dir is kept.
-func holdsGitfile(ctx context.Context, dir string, budget time.Duration) (bool, error) {
+// holdsForeignGit walks a find without following symlinks for a `.git`
+// entry of any kind (a directory, a gitfile of a linked worktree or
+// submodule checkout, anything of that name) outside its kind's managed
+// folders, whose children it does not enter: true keeps the find, whose
+// .git could be anyone's work. Over budget, or on an unreadable entry, it
+// fails, and the find is kept.
+func holdsForeignGit(ctx context.Context, f foundBuild, budget time.Duration) (bool, error) {
 	deadline := time.Now().Add(budget)
 	n := 0
 	errFound := errors.New("found")
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(f.path, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -212,21 +221,38 @@ func holdsGitfile(ctx context.Context, dir string, budget time.Duration) (bool, 
 				return errBuildScanBudget
 			}
 		}
-		if d.Name() != ".git" || path == dir {
+		if path == f.path {
 			return nil
 		}
-		if d.IsDir() {
-			return filepath.SkipDir // a clone's own repository
+		if d.IsDir() && f.managedChild(path) {
+			return filepath.SkipDir // the tool's own clone or mirror of a package
 		}
-		return errFound
+		if d.Name() == ".git" {
+			return errFound
+		}
+		return nil
 	})
 	switch {
 	case errors.Is(err, errFound):
 		return true, nil
 	case err != nil:
-		return false, fmt.Errorf("looking for checkouts in %s: %w", dir, err)
+		return false, fmt.Errorf("looking for repositories in %s: %w", f.path, err)
 	}
 	return false, nil
+}
+
+// managedChild: path is a direct child of one of the find's managed
+// folders (for a trash leftover, of the build folder moved into it).
+func (f foundBuild) managedChild(path string) bool {
+	content := f.path
+	if f.trash {
+		content = filepath.Join(f.path, f.kind.name)
+	}
+	rel, err := filepath.Rel(content, path)
+	if err != nil {
+		return false
+	}
+	return slices.Contains(f.kind.managed, filepath.Dir(rel))
 }
 
 // listedWorktree is root as git lists it now, when it is a linked worktree
@@ -256,10 +282,12 @@ func (b *builder) worktreeInside(dir string) string {
 	return ""
 }
 
-// foundBuild is a build folder, or a marked trash leftover, of a walk.
+// foundBuild is a build folder, or a marked trash leftover, of a walk,
+// and its kind.
 type foundBuild struct {
 	path  string
 	trash bool
+	kind  buildKind
 }
 
 // pruneBuildDir deletes one find of root and says whether it did: a folder
@@ -281,21 +309,19 @@ func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) 
 		return false, nil
 	}
 	if f.trash {
-		if err := os.RemoveAll(f.path); err != nil {
-			return false, fmt.Errorf("deleting %s: %w", f.path, err)
-		}
-		return true, nil
+		return true, finishTrash(f.path, f.kind.name, os.RemoveAll)
 	}
-	return true, removeBuildDir(f.path)
+	return true, removeBuildDir(f.path, os.RemoveAll)
 }
 
 // removeBuildDir makes a fresh trash folder beside dir
 // (<name><trashInfix><random>, created by the prune itself, so never an
 // existing folder of someone else's), marks it (trashMarker), moves dir
-// into it in one rename and deletes it. A crash after the mark leaves a
-// marked trash folder a later prune deletes; one before it leaves an empty
-// folder at worst, and the build folder untouched.
-func removeBuildDir(dir string) error {
+// into it in one rename and deletes it (finishTrash, with rm). A crash
+// after the mark leaves a marked trash folder a later prune finishes; one
+// before it leaves an empty folder at worst, and the build folder
+// untouched.
+func removeBuildDir(dir string, rm func(string) error) error {
 	trash, err := os.MkdirTemp(filepath.Dir(dir), filepath.Base(dir)+trashInfix)
 	if err != nil {
 		return fmt.Errorf("making room to move %s aside: %w", dir, err)
@@ -308,7 +334,22 @@ func removeBuildDir(dir string) error {
 		_ = os.RemoveAll(trash) // still only our marker; the build stays
 		return fmt.Errorf("moving %s aside: %w", dir, err)
 	}
-	if err := os.RemoveAll(trash); err != nil {
+	return finishTrash(trash, filepath.Base(dir), rm)
+}
+
+// finishTrash deletes a marked trash folder in an order that keeps it
+// recognisable until the build in it is gone: the moved build folder
+// (<trash>/<name>, with rm) first, then the marker, then the now empty
+// trash folder. An interrupted delete leaves the marker, so a later prune
+// finishes it.
+func finishTrash(trash, name string, rm func(string) error) error {
+	if err := rm(filepath.Join(trash, name)); err != nil {
+		return fmt.Errorf("deleting %s: %w", trash, err)
+	}
+	if err := os.Remove(filepath.Join(trash, trashMarker)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("deleting %s: %w", trash, err)
+	}
+	if err := os.Remove(trash); err != nil {
 		return fmt.Errorf("deleting %s: %w", trash, err)
 	}
 	return nil
@@ -343,16 +384,18 @@ func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]fo
 			return nil
 		}
 		name := d.Name()
-		switch {
-		case name == ".git":
+		if name == ".git" {
 			return filepath.SkipDir
-		case isBuildDir(path, name):
-			found = append(found, foundBuild{path: path})
+		}
+		if k, ok := isBuildDir(path, name); ok {
+			found = append(found, foundBuild{path: path, kind: k})
 			return filepath.SkipDir
-		case isTrashLeftover(path, name):
-			found = append(found, foundBuild{path: path, trash: true})
+		}
+		if k, ok := isTrashLeftover(path, name); ok {
+			found = append(found, foundBuild{path: path, trash: true, kind: k})
 			return filepath.SkipDir
-		case regenerableCaches[name] || hasGitEntry(path):
+		}
+		if regenerableCaches[name] || hasGitEntry(path) {
 			return filepath.SkipDir // a cache, or a nested worktree or repository: not ours
 		}
 		return nil
@@ -363,10 +406,11 @@ func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]fo
 	return found, nil
 }
 
-// isBuildDir: dir (named name, a real directory) is one of buildKinds —
+// isBuildDir: dir (named name, a real directory) is one of buildKinds,
+// returned —
 // it holds no .git entry (a repository or worktree of that name is never
 // build output) and every marker of its kind.
-func isBuildDir(dir, name string) bool {
+func isBuildDir(dir, name string) (buildKind, bool) {
 	for _, k := range buildKinds {
 		if k.name != name || hasGitEntry(dir) {
 			continue
@@ -381,31 +425,34 @@ func isBuildDir(dir, name string) bool {
 			ok = ok && err == nil && fi.IsDir()
 		}
 		if ok {
-			return true
+			return k, true
 		}
 	}
-	return false
+	return buildKind{}, false
 }
 
 // isTrashLeftover: dir is a folder an interrupted prune moved aside —
 // named <build kind><trashInfix>…, with no .git entry, and carrying
 // trashMarker with trashMarkerBody as a regular file. A folder of that
 // name without the marker is someone else's and stays.
-func isTrashLeftover(dir, name string) bool {
+func isTrashLeftover(dir, name string) (buildKind, bool) {
+	var kind buildKind
 	named := false
 	for _, k := range buildKinds {
-		named = named || strings.HasPrefix(name, k.name+trashInfix)
+		if strings.HasPrefix(name, k.name+trashInfix) {
+			kind, named = k, true
+		}
 	}
 	if !named || hasGitEntry(dir) {
-		return false
+		return buildKind{}, false
 	}
 	marker := filepath.Join(dir, trashMarker)
 	fi, err := os.Lstat(marker)
 	if err != nil || !fi.Mode().IsRegular() || fi.Size() != int64(len(trashMarkerBody)) {
-		return false
+		return buildKind{}, false
 	}
 	body, err := os.ReadFile(marker)
-	return err == nil && bytes.Equal(body, []byte(trashMarkerBody))
+	return kind, err == nil && bytes.Equal(body, []byte(trashMarkerBody))
 }
 
 // hasGitEntry: dir holds a .git file or directory (or anything of that

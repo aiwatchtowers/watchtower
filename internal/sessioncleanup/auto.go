@@ -48,9 +48,10 @@ type AutoDeps struct {
 	// Candidates lists the sessions finished at or after since, the
 	// longest-waiting first.
 	Candidates func(ctx context.Context, since time.Time) ([]AutoCandidate, error)
-	// Live is the session host's live terminal rows. An error stops the
-	// pass: without it a finished session still on screen would not count
-	// as working in its worktree (W6).
+	// Live is the session host's live terminal rows, read right before
+	// each session's apply. An error skips that session (a failure of the
+	// pass): without it a finished session still on screen would not
+	// count as working in its worktree (W6).
 	Live func(ctx context.Context) (map[int64]bool, error)
 	// TryLock takes a repository's cleanup lock (keyed as Deps.Lock) when
 	// it is free now; ok=false = another cleanup holds it, and that
@@ -98,22 +99,21 @@ func AutoRun(ctx context.Context, ad AutoDeps, now time.Time) (AutoResult, error
 	if len(due) == 0 {
 		return out, nil
 	}
-	live, err := ad.Live(ctx)
-	if err != nil {
-		return out, fmt.Errorf("listing the live sessions: %w", err)
-	}
-	liveIDs := make([]int64, 0, len(live))
-	for id, ok := range live {
-		if ok {
-			liveIDs = append(liveIDs, id)
-		}
-	}
 	for _, c := range due {
 		if err := ctx.Err(); err != nil {
 			return out, fmt.Errorf("the pass stopped: %w", err)
 		}
 		if out.Applied >= autoBatch {
 			break
+		}
+		// The host's live runs, read right before this session's apply: a
+		// terminal opened during the pass still counts. Unreadable: this
+		// session waits for the next pass.
+		liveIDs, err := ad.liveIDs(ctx)
+		if err != nil {
+			out.Failed++
+			ad.logf("session cleanup: session %d: listing the live sessions: %v", c.SessionID, err)
+			continue
 		}
 		res, applyErr := autoApply(ctx, ad, c, liveIDs, now)
 		switch {
@@ -216,6 +216,21 @@ func removedSomething(items []Item) bool {
 		}
 	}
 	return false
+}
+
+// liveIDs are the live rows Live reports, as a list.
+func (ad AutoDeps) liveIDs(ctx context.Context) ([]int64, error) {
+	live, err := ad.Live(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, len(live))
+	for id, ok := range live {
+		if ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 func (ad AutoDeps) logf(format string, args ...any) {
