@@ -25,6 +25,10 @@ type rule struct {
 // summary cut mid-value still loses it).
 const (
 	quoted = `"(?:[^"\\]|\\[\s\S])*\\?(?:"|$)|'(?:[^'\\]|\\[\s\S])*\\?(?:'|$)`
+	// shellWord is an assignment's whole value: unquoted text, "…" and '…'
+	// segments and backslash escapes, run together (pre"a b"'c'). It stops at
+	// whitespace, & (the next query parameter) and shell syntax.
+	shellWord = `(?:"(?:[^"\\]|\\[\s\S])*\\?(?:"|$)|'(?:[^'\\]|\\[\s\S])*\\?(?:'|$)|\\[\s\S]|\\$|[^\s"'&<>;|\\])+`
 	// secretName is a name whose value is a secret: FOO_API_KEY, client_secret,
 	// db.password, MYSQL_PWD, credentials. A bare "key" (sort-key, monkey) is not.
 	secretName = `(?:api[_.-]?key|access[_.-]?key|secret[_.-]?key|private[_.-]?key|auth[_.-]?key|token|secret|password|passwd|pwd|credentials?)`
@@ -35,44 +39,63 @@ const (
 // the whole header value.
 var authSchemes = regexp.MustCompile(`(?i)^((?:bearer|basic|token|negotiate|ntlm|apikey|key)[ \t]+)(` + quoted + `|[^\s"',;]+)`)
 
-// authHeader is an Authorization header: 1 a quote before the name, 2 the
-// name, 3 a quote closing a JSON key, 4 the colon, 5 a quote opening the
-// value, 6 the rest of the line. authRepl finds where the value ends.
-var authHeader = regexp.MustCompile(`(?i)(["']?)(\b(?:proxy-)?authorization)(["']?)([ \t]*:[ \t]*)(["']?)([^\r\n]*)`)
+// header is an Authorization or Cookie header up to its value: 1 a quote
+// before the name, 2 the name, 3 a quote closing a JSON key, 4 the colon, 5 a
+// quote opening the value.
+var header = regexp.MustCompile(`(?i)(["']?)(\b(?:proxy-authorization|authorization|set-cookie|cookie))(["']?)([ \t]*:[ \t]*)(["']?)`)
 
-// authRepl masks an Authorization header's value up to its outer delimiter:
-// the value's own quote, else the quote that opened the header (-H "…"),
-// else the end of the line. The rest of the line is scanned again.
-func authRepl(m []string) string {
-	q := m[5]
-	if q == "" && m[3] == "" {
-		q = m[1]
-	}
-	value, rest := m[6], ""
-	if q != "" {
-		if i := unescapedIndex(m[6], q[0]); i >= 0 {
-			value, rest = m[6][:i], m[6][i:]
+// redactHeaders masks each Authorization and Cookie header value up to its
+// outer delimiter: the value's own quote, else the quote that opened the
+// header (-H "…"), else the end of the line; escaped quotes do not end it.
+// An Authorization value with a one-word scheme (Bearer, Basic) keeps the
+// scheme and loses the credential; any other value (Digest, cookies) goes
+// whole. One forward pass: each search starts where the last value ended.
+func redactHeaders(s string) string {
+	var b strings.Builder
+	pos := 0
+	for pos < len(s) {
+		loc := header.FindStringSubmatchIndex(s[pos:])
+		if loc == nil {
+			break
 		}
+		group := func(i int) string { return s[pos+loc[2*i] : pos+loc[2*i+1]] }
+		q := group(5)
+		if q == "" && group(3) == "" {
+			q = group(1)
+		}
+		start := pos + loc[1]
+		end := valueEnd(s, start, q)
+		masked := Mark
+		if value := s[start:end]; !strings.Contains(strings.ToLower(group(2)), "cookie") {
+			if a := authSchemes.FindStringSubmatchIndex(value); a != nil {
+				masked = value[:a[3]] + Mark + value[a[1]:]
+			}
+		}
+		b.WriteString(s[pos:start])
+		b.WriteString(masked)
+		pos = end
 	}
-	masked := Mark
-	if a := authSchemes.FindStringSubmatchIndex(value); a != nil {
-		masked = value[:a[3]] + Mark + value[a[1]:]
+	if pos == 0 {
+		return s
 	}
-	return m[1] + m[2] + m[3] + m[4] + m[5] + masked + replaceAll(authHeader, rest, authRepl)
+	b.WriteString(s[pos:])
+	return b.String()
 }
 
-// unescapedIndex is the index of the first q in s not escaped by a
-// backslash, or -1.
-func unescapedIndex(s string, q byte) int {
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '\\':
+// valueEnd is where a header value starting at start ends: the first
+// unescaped q (when q is a quote), else the end of the line or of s.
+func valueEnd(s string, start int, q string) int {
+	for i := start; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\r' || c == '\n':
+			return i
+		case c == '\\':
 			i++
-		case q:
+		case q != "" && c == q[0]:
 			return i
 		}
 	}
-	return -1
+	return len(s)
 }
 
 // flagWord is the next flag after a --password-style flag: letters and dashes
@@ -91,7 +114,8 @@ func whole(_ []string) string { return Mark }
 // labelled keeps group 1 and replaces group 2 with Mark.
 func labelled(m []string) string { return m[1] + Mark }
 
-var rules = []rule{
+// tokenRules run first: credentials in URLs and vendor token shapes.
+var tokenRules = []rule{
 	// user:pass@ in a URL, first so a password that looks like key=value is
 	// taken whole. The password runs to the last "@" before the host; the user
 	// may be empty (redis://:pw@host). A bare user@ or host:port stays.
@@ -110,19 +134,16 @@ var rules = []rule{
 	{regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`), whole},
 	{regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}`), whole},
 	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`), whole},
+}
 
-	// Authorization: <scheme> <credential> keeps a one-word scheme and loses
-	// the credential; any other value (Digest, unknown schemes) goes whole.
-	{authHeader, authRepl},
-	// Cookie / Set-Cookie: the whole header value.
-	{regexp.MustCompile(`(?i)(\b(?:set-)?cookie["']?[ \t]*:[ \t]*["']?)([^"'\r\n]+)`), labelled},
-
+// labelRules run after the headers; each keeps a label and loses its value.
+var labelRules = []rule{
 	// NAME=value: env lines, URL queries, --flag=value.
-	{regexp.MustCompile(`(?i)(\b[A-Za-z0-9_.-]*?` + secretName + `=)(` + quoted + `|[^\s&"'<>;|]+)`), labelled},
+	{regexp.MustCompile(`(?i)(\b[A-Za-z0-9_.-]*?` + secretName + `=)(` + shellWord + `)`), labelled},
 	// DB_KEY=, SIGNING_KEY=, x.key= and ?key= / &key= in a query. A --flag
 	// (--key=path, --sort-key=name) or a word ending in "key" (monkey=) stays:
 	// the name must start after a character that is not part of a name.
-	{regexp.MustCompile(`(?i)((?:^|[^A-Za-z0-9_.-])([A-Za-z0-9][A-Za-z0-9_.-]*[_.-]key|key)=)(` + quoted + `|[^\s&"'<>;|]+)`),
+	{regexp.MustCompile(`(?i)((?:^|[^A-Za-z0-9_.-])([A-Za-z0-9][A-Za-z0-9_.-]*[_.-]key|key)=)(` + shellWord + `)`),
 		func(m []string) string {
 			if len(m[2]) == 3 && !strings.ContainsAny(m[1][:1], "?&") {
 				return m[0]
@@ -209,7 +230,11 @@ func replaceAll(re *regexp.Regexp, s string, repl func(m []string) string) strin
 // in URLs) keep their label and lose the value. Its work is linear in len(s);
 // a caller that keeps only a short prefix uses TextBounded.
 func Text(s string) string {
-	for _, r := range rules {
+	for _, r := range tokenRules {
+		s = replaceAll(r.re, s, r.repl)
+	}
+	s = redactHeaders(s)
+	for _, r := range labelRules {
 		s = replaceAll(r.re, s, r.repl)
 	}
 	return s

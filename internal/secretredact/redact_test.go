@@ -94,6 +94,14 @@ func TestText(t *testing.T) {
 		{"curl numeric user", "curl -u 1000:secret url", "curl -u [secret] url"},                                                                                                 // leak-check:allow
 		{"curl numeric pair", "curl -u 1000:1000 url", "curl -u [secret] url"},                                                                                                   // leak-check:allow
 		{"docker named user", "docker run -u app:pw img", "docker run -u [secret] img"},                                                                                          // leak-check:allow
+		// Review round 3 (#2112).
+		{"cookie quoted inner value", `-H 'Cookie: session="example"; other=abc' url`, `-H 'Cookie: [secret]' url`}, // leak-check:allow
+		{"cookie escaped quote", `-H "Cookie: a=\"x\"; b=y" url`, `-H "Cookie: [secret]" url`},                      // leak-check:allow
+		{"set-cookie line", "Set-Cookie: sid=abc; Path=/\nnext", "Set-Cookie: [secret]\nnext"},                      // leak-check:allow
+		{"assignment mixed quotes", `export PASSWORD=pre"example value" && x`, "export PASSWORD=[secret] && x"},     // leak-check:allow
+		{"assignment adjacent segments", `TOKEN='a'b"c" run`, "TOKEN=[secret] run"},                                 // leak-check:allow
+		{"assignment escaped space", `TOKEN=a\ b run`, "TOKEN=[secret] run"},                                        // leak-check:allow
+		{"key assignment mixed", `DB_KEY=x"y z" run`, "DB_KEY=[secret] run"},                                        // leak-check:allow
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -213,5 +221,27 @@ func TestTextBounded_OpenAuthorityAtCut(t *testing.T) {
 	// Not cut: a URL ending the text stays.
 	if got := TextBounded("open https://example.com", 200); got != "open https://example.com" {
 		t.Fatalf("uncut URL changed: %q", got)
+	}
+}
+
+// Many headers on one line are one forward pass: 1000 headers cost about ten
+// times what 100 do (input-size scaling, not wall time).
+func TestText_ManyHeadersLinear(t *testing.T) {
+	unit := `-H "Authorization: Bearer abcdEFGH12345678" ` // leak-check:allow
+	small, big := strings.Repeat(unit, 100), strings.Repeat(unit, 1000)
+	if got := Text(big); strings.Contains(got, "abcdEFGH") || strings.Count(got, Mark) != 1000 {
+		t.Fatalf("not every header redacted: %d marks", strings.Count(got, Mark))
+	}
+	allocated := func(s string) uint64 {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		Text(s)
+		runtime.ReadMemStats(&after)
+		return after.TotalAlloc - before.TotalAlloc
+	}
+	a, b := allocated(small), allocated(big)
+	if b > 20*a+64<<10 {
+		t.Fatalf("1000 headers allocated %d bytes vs %d for 100: work grows faster than the input", b, a)
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/logredact"
+	"watchtower/internal/secretredact"
 )
 
 // Source reads one kind of owner decision for one workbench, newest first, resumable by an opaque cursor ("" = nothing seen yet).
@@ -78,8 +79,13 @@ func unreadable(what string, err error) error {
 }
 
 // clean redacts secrets and caps text at SituationLimit: every text a source
-// stores goes through it.
-func clean(s string) string { return Clip(Redact(strings.TrimSpace(s)), SituationLimit) }
+// stores goes through it. It redacts only a bounded prefix (one rune past the
+// limit, so Clip still sees the text was cut and ends it in "…"): a huge
+// transcript turn costs what a short one does, and text within the limit
+// comes out as Clip(Redact(s), SituationLimit) would give it.
+func clean(s string) string {
+	return Clip(secretredact.TextBounded(strings.TrimSpace(s), SituationLimit+1), SituationLimit)
+}
 
 // joinNonEmpty joins the non-blank parts with sep.
 func joinNonEmpty(sep string, parts ...string) string {
