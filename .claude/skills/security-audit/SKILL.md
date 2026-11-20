@@ -67,8 +67,19 @@ inside 0700 directories, and the modes are re-applied at Cleanup.
 2. **Plain terminal session only.** Say: "Run this from a plain Claude Code terminal
    session — not a Watchtower workbench session (its transcript reaches Workchat and the
    phone)." If the session has `mcp__watchtower-workbench__*` tools (connected or
-   deferred), it is a workbench session: a real run or a real `import` stops here;
-   `--test` and `--plan-only` continue with this warning.
+   deferred), it is a workbench session — including a headless `claude -p` started
+   from a workbench session's shell that inherited those tools; the rule below is the
+   same there. In a workbench session only three invocations continue, with this
+   warning: `--plan-only` (it produces no findings); `--test` together with `--target`
+   (findings about an invented fixture repo, never Watchtower); and
+   `import <run-dir> --test --report <url>` when `realpath <run-dir>` lies under
+   `realpath ~/security-audit-skill/watchtower-test/` **and** the run was a `--target`
+   run: its `run-metadata.json` has `watchtower_source_repo`, and
+   `realpath "$(git -C <that repo> rev-parse --git-common-dir)"` differs from the same for
+   the session's Watchtower checkout (a missing field, an unreadable repo or the same
+   repository → stop; a `--test` run without `--target` holds real findings). Everything
+   else stops here: a real `full`/`range`, `--test` without `--target` (it would audit
+   real Watchtower), and every other `import`.
 3. Speak the session's language to the owner; everything written to files stays English.
 
 ## Subcommands
