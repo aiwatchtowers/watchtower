@@ -132,19 +132,26 @@ final class WorkbenchesFeedStoreTests: XCTestCase {
     }
 
     /// The store's own gate: a follow loop that runs while the window is off
-    /// screen spawns nothing. A kept store whose pane is closed has no follow
-    /// loop at all: that guarantee is structural (`follow` lives in the pane's
-    /// `.task`, cancelled with the pane), so this pins the gate only.
+    /// screen spawns nothing and watches no file. A kept store whose pane is
+    /// closed has no follow loop at all: that guarantee is structural
+    /// (`follow` lives in the pane's `.task`, cancelled with the pane), so
+    /// this pins the gate only.
     func testHiddenKeptStoreDoesNotPoll() async {
         let runner = FeedRunner()
         let vm = makeVM(runner)
+        let source = FakeFileEventSource(), clock = ManualWatchClock()
+        vm.feedFileEvents = source
+        vm.feedWatchClock = clock
         let store = vm.feedStore(sessionID: 1)
         // An idle session: the one read is skipped off screen.
         await store.follow(isActive: { false }, isOnScreen: { false })
-        // A working one: its first read is skipped and nothing is watched
-        // until the window is back, so no event or tick reads either.
+        // A working one: its first read is skipped and nothing is watched.
         let task = Task { await store.follow(isActive: { true }, isOnScreen: { false }) }
         for _ in 0..<100 { await Task.yield() }
+        clock.advance(by: .seconds(30))
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertTrue(source.opens.isEmpty, "no file source is opened off screen")
+        XCTAssertEqual(clock.pendingTimers, 0, "and no timer is armed")
         task.cancel()
         await task.value
         XCTAssertTrue(runner.feedCalls.isEmpty, "a kept store off screen spawns no CLI")

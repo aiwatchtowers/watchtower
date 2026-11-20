@@ -521,6 +521,9 @@ final class WorkbenchesViewModel {
     /// sidebar on Projects, main window visible). The git status refresh
     /// runs only then. Unwired = never on screen.
     var isTabOnScreen: () -> Bool = { false }
+    /// The Workchat stores' file watches (`TranscriptWatch`); tests swap in fakes.
+    @ObservationIgnored var feedFileEvents: FileEventSource = DispatchFileEventSource()
+    @ObservationIgnored var feedWatchClock: TranscriptWatchClock = MainQueueWatchClock()
     /// `refreshOnPoll`'s visibility gate (board #731).
     @ObservationIgnored private var pollRefreshGate = ForegroundRefreshGate()
     /// The reload `setOnScreen` started — held so tests can await it.

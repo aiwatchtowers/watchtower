@@ -423,7 +423,8 @@ extension WorkbenchesViewModel {
             store.beginOpenTrace(reopen: !store.entries.isEmpty)
             return store
         }
-        let store = SessionFeedStore(sessionID: sessionID, runner: cli?.runner)
+        let store = SessionFeedStore(sessionID: sessionID, runner: cli?.runner,
+                                     fileEvents: feedFileEvents, watchClock: feedWatchClock)
         feedStores[sessionID] = store
         trimFeedStores()
         return store

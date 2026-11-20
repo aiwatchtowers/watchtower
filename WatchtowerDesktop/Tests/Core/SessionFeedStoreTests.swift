@@ -502,27 +502,76 @@ final class SessionFeedStoreTests: XCTestCase {
     // MARK: - follow on file events (#2112 Task 9)
 
     private let conv = "/p/proj/s1.jsonl"
+    private let convDir = "/p/proj"
 
     private final class Flag: @unchecked Sendable {
         var value: Bool
         init(_ value: Bool) { self.value = value }
     }
 
-    /// Lets the follow task and the reads it started run as far as they can.
+    /// Serves one payload to every read; `holdNext()` suspends the next read
+    /// until `release()`.
+    private final class GateRunner: CLIRunnerProtocol, @unchecked Sendable {
+        private let lock = NSLock()
+        private var payloads: [String]
+        private var recorded: [[String]] = []
+        private var holdArmed = false
+        private var held: CheckedContinuation<Void, Never>?
+
+        init(_ payloads: [String]) { self.payloads = payloads }
+
+        var calls: [[String]] { lock.withLock { recorded } }
+        var isHolding: Bool { lock.withLock { held != nil } }
+        func holdNext() { lock.withLock { holdArmed = true } }
+        func release() {
+            let wake = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                defer { held = nil }
+                return held
+            }
+            wake?.resume()
+        }
+
+        func run(args: [String]) async throws -> Data {
+            let (hold, body) = lock.withLock { () -> (Bool, String) in
+                recorded.append(args)
+                defer { holdArmed = false }
+                let body = payloads.count > 1 ? payloads.removeFirst() : (payloads.first ?? "{}")
+                return (holdArmed, body)
+            }
+            if hold { await withCheckedContinuation { wake in lock.withLock { held = wake } } }
+            return Data(body.utf8)
+        }
+    }
+
+    /// Lets the follow tasks and the reads they started run as far as they can.
     private func settle(until done: () -> Bool = { false }) async {
         for _ in 0..<500 where !done() { await Task.yield() }
     }
 
     private func watchedStore(
-        _ runner: FakeRunner
+        _ runner: any CLIRunnerProtocol
     ) -> (SessionFeedStore, FakeFileEventSource, ManualWatchClock) {
         let source = FakeFileEventSource(), clock = ManualWatchClock()
         return (SessionFeedStore(sessionID: 7, runner: runner, fileEvents: source, watchClock: clock), source, clock)
     }
 
     /// A runner whose every read lists the conversation file.
-    private func pathsRunner() -> FakeRunner {
-        FakeRunner(Array(repeating: .success(payload(paths: [conv])), count: 20))
+    private func pathsRunner() -> GateRunner { GateRunner([payload(paths: [conv])]) }
+
+    /// Follows on screen until the first read and its reconcile read are done.
+    private func startFollowing(
+        _ store: SessionFeedStore,
+        _ runner: GateRunner,
+        _ source: FakeFileEventSource,
+        _ clock: ManualWatchClock,
+        isOnScreen: @escaping () -> Bool = { true }
+    ) async -> Task<Void, Never> {
+        let calls = runner.calls.count
+        let task = Task { await store.follow(isActive: { true }, isOnScreen: isOnScreen) }
+        await settle { runner.calls.count == calls + 1 && !source.openPaths.isEmpty }
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == calls + 2 }
+        return task
     }
 
     func testDecodesPathsAndOlderPayloadWithout() throws {
@@ -535,17 +584,16 @@ final class SessionFeedStoreTests: XCTestCase {
     func testFollowReadsOnEachFileEvent() async {
         let runner = pathsRunner()
         let (store, source, clock) = watchedStore(runner)
-        let task = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
-        await settle { source.openPaths == [conv] }
-        XCTAssertEqual(runner.calls.count, 1, "one read at once")
-        XCTAssertEqual(source.openPaths, [conv], "the read's paths are watched")
+        let task = await startFollowing(store, runner, source, clock)
+        XCTAssertEqual(runner.calls.count, 2, "one read at once, one reconcile read after the files opened")
+        XCTAssertEqual(source.openPaths, [conv, convDir], "the conversation and its directory are watched")
         source.fire(conv)
-        clock.advance(by: .milliseconds(250))
-        await settle { runner.calls.count == 2 }
-        XCTAssertEqual(runner.calls.count, 2, "a change is read")
-        clock.advance(by: .seconds(10))
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 3 }
+        XCTAssertEqual(runner.calls.count, 3, "a change is read")
+        clock.advance(by: .seconds(30))
         await settle()
-        XCTAssertEqual(runner.calls.count, 2, "no tick while the file is watched")
+        XCTAssertEqual(runner.calls.count, 3, "no tick while the file is watched")
         task.cancel()
         await task.value
         XCTAssertTrue(source.openPaths.isEmpty, "the pane's task ends: every source closes")
@@ -556,39 +604,116 @@ final class SessionFeedStoreTests: XCTestCase {
     func testStateChangeRefreshesOnce() async {
         let runner = pathsRunner()
         let (store, source, clock) = watchedStore(runner)
-        let working = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
-        await settle { source.openPaths == [conv] }
+        let working = await startFollowing(store, runner, source, clock)
         working.cancel()
         await working.value
-        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertEqual(runner.calls.count, 2)
+        XCTAssertTrue(source.openPaths.isEmpty)
         let approval = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
-        await settle { source.openPaths == [conv] }
+        await settle { runner.calls.count == 3 }
         clock.advance(by: .seconds(30))
         await settle()
-        XCTAssertEqual(runner.calls.count, 2, "the new state reads exactly once")
+        XCTAssertEqual(runner.calls.count, 3, "the new state reads exactly once")
+        XCTAssertEqual(source.openPaths, [conv, convDir], "the last read's files are watched again")
         approval.cancel()
         await approval.value
         // The session left working: one read, then no watch.
         await store.follow(isActive: { false }, isOnScreen: { true })
-        XCTAssertEqual(runner.calls.count, 3)
+        XCTAssertEqual(runner.calls.count, 4)
         XCTAssertTrue(source.openPaths.isEmpty)
         XCTAssertEqual(clock.pendingTimers, 0, "no liveness timer")
     }
 
+    func testTwoFollowersShareOneWatchAndOneLeavingKeepsTheOther() async {
+        let runner = pathsRunner()
+        let (store, source, clock) = watchedStore(runner)
+        let pane = await startFollowing(store, runner, source, clock)
+        let panel = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
+        await settle { runner.calls.count == 3 }
+        pane.cancel()
+        await pane.value
+        await settle()
+        XCTAssertEqual(source.openPaths, [conv, convDir], "the other follower keeps the watch")
+        source.fire(conv)
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 4 }
+        XCTAssertEqual(runner.calls.count, 4, "and still reads on a change")
+        panel.cancel()
+        await panel.value
+        XCTAssertTrue(source.openPaths.isEmpty, "the last follower closes it")
+    }
+
+    func testAnEventDuringASuspendedReadGivesExactlyOneFollowUpRead() async {
+        let runner = pathsRunner()
+        let (store, source, clock) = watchedStore(runner)
+        let task = await startFollowing(store, runner, source, clock)
+        runner.holdNext()
+        source.fire(conv)
+        clock.advance(by: .seconds(1))
+        await settle { runner.isHolding }
+        XCTAssertEqual(runner.calls.count, 3)
+        source.fire(conv)
+        source.fire(conv)
+        clock.advance(by: .seconds(2))
+        await settle()
+        XCTAssertEqual(runner.calls.count, 3, "never a second CLI while one runs")
+        runner.release()
+        await settle { runner.calls.count == 4 }
+        clock.advance(by: .seconds(30))
+        await settle()
+        XCTAssertEqual(runner.calls.count, 4, "the events during the read give one more read, no more")
+        task.cancel()
+        await task.value
+    }
+
     func testFollowWithoutPathsFallsBackToTheTick() async {
-        let runner = FakeRunner(Array(repeating: .success(payload()), count: 2) + Array(repeating: .success(payload(paths: [conv])), count: 5))
+        let runner = GateRunner([payload(), payload(), payload(paths: [conv])])
         let (store, source, clock) = watchedStore(runner)
         let task = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
-        await settle { clock.pendingTimers == 1 }
-        XCTAssertEqual(runner.calls.count, 1)
+        await settle { runner.calls.count == 1 && clock.pendingTimers == 1 }
         clock.advance(by: .seconds(3))
         await settle { runner.calls.count == 2 }
         clock.advance(by: .seconds(3))
-        await settle { source.openPaths == [conv] }
+        await settle { source.openPaths == [conv, convDir] }
         XCTAssertEqual(runner.calls.count, 3, "the tick reads until the transcript is listed")
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 4 }
         clock.advance(by: .seconds(30))
         await settle()
-        XCTAssertEqual(runner.calls.count, 3, "then the file is watched, no tick")
+        XCTAssertEqual(runner.calls.count, 4, "then the file is watched, no tick")
+        task.cancel()
+        await task.value
+    }
+
+    func testAFailedReadKeepsTheTickUntilAReadSucceeds() async {
+        let runner = FakeRunner([.success(payload(paths: [conv])), .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))]
+                                + Array(repeating: .success(payload(paths: [conv])), count: 5))
+        let (store, source, clock) = watchedStore(runner)
+        let task = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
+        await settle { runner.calls.count == 1 && !source.openPaths.isEmpty }
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 2 && store.error != nil }
+        clock.advance(by: .seconds(3))
+        await settle { runner.calls.count == 3 }
+        XCTAssertEqual(runner.calls.count, 3, "a failed read is retried by the tick, never silent")
+        await settle()
+        clock.advance(by: .seconds(30))
+        await settle()
+        XCTAssertEqual(runner.calls.count, 3, "a good read with open files stops the tick")
+        task.cancel()
+        await task.value
+    }
+
+    func testANewConversationFileIsReadWithoutAStateChange() async {
+        let conv2 = "/p/proj/s2.jsonl"
+        let runner = GateRunner([payload(paths: [conv]), payload(paths: [conv]), payload(paths: [conv, conv2])])
+        let (store, source, clock) = watchedStore(runner)
+        let task = await startFollowing(store, runner, source, clock)
+        // /clear: a new conversation file appears in the conversation directory.
+        source.fire(convDir)
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 3 && source.openPaths.contains(conv2) }
+        XCTAssertEqual(source.openPaths, [conv2, convDir], "the new conversation is followed, the old one closed")
         task.cancel()
         await task.value
     }
@@ -604,12 +729,51 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 0)
         await store.screenChanged(true)
         XCTAssertEqual(runner.calls.count, 1, "back on screen after skipped reads: one read now")
-        XCTAssertEqual(source.openPaths, [conv], "and its paths are watched")
+        XCTAssertEqual(source.openPaths, [conv, convDir], "and its files are watched")
         await store.screenChanged(true)
         XCTAssertEqual(runner.calls.count, 1, "already on screen: no extra read")
         task.cancel()
         await task.value
         XCTAssertTrue(source.openPaths.isEmpty)
+    }
+
+    func testGoingOffScreenClosesTheWatchAndComingBackCatchesUp() async {
+        let runner = pathsRunner()
+        let (store, source, clock) = watchedStore(runner)
+        let task = await startFollowing(store, runner, source, clock)
+        await store.screenChanged(false)
+        XCTAssertTrue(source.openPaths.isEmpty, "off screen nothing is watched")
+        XCTAssertEqual(clock.pendingTimers, 0, "and no timer runs")
+        clock.advance(by: .seconds(30))
+        await settle()
+        XCTAssertEqual(runner.calls.count, 2)
+        await store.screenChanged(true)
+        XCTAssertEqual(runner.calls.count, 3, "a catch-up read on the way back")
+        XCTAssertEqual(source.openPaths, [conv, convDir])
+        clock.advance(by: .seconds(30))
+        await settle()
+        XCTAssertEqual(runner.calls.count, 3, "the files were reopened before that read: no reconcile read")
+        task.cancel()
+        await task.value
+    }
+
+    func testComingBackWithAFailingReadKeepsTheTick() async {
+        let runner = FakeRunner([.failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))]
+                                + Array(repeating: .success(payload(paths: [conv])), count: 5))
+        let (store, source, clock) = watchedStore(runner)
+        let screen = Flag(false)
+        let task = Task { await store.follow(isActive: { true }, isOnScreen: { screen.value }) }
+        await settle()
+        screen.value = true
+        await store.screenChanged(true)
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertNotNil(store.error)
+        clock.advance(by: .seconds(3))
+        await settle { runner.calls.count == 2 && !source.openPaths.isEmpty }
+        XCTAssertEqual(runner.calls.count, 2, "the failed catch-up read is retried by the tick")
+        XCTAssertEqual(source.openPaths, [conv, convDir])
+        task.cancel()
+        await task.value
     }
 
     func testScreenChangedWithoutSkippedReadDoesNothing() async {
@@ -631,28 +795,19 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertNil(store.error)
     }
 
-    func testFollowGoesOffScreenAndBackInsideTheLoop() async {
+    func testAChangeWhileTheTabIsHiddenIsSkipped() async {
         let runner = pathsRunner()
         let (store, source, clock) = watchedStore(runner)
         let screen = Flag(true)
-        let task = Task { await store.follow(isActive: { true }, isOnScreen: { screen.value }) }
-        await settle { source.openPaths == [conv] }
-        func change() async {
-            source.fire(conv)
-            clock.advance(by: .seconds(1))
-            await settle()
-        }
-        await change()
-        XCTAssertEqual(runner.calls.count, 2)
+        let task = await startFollowing(store, runner, source, clock) { screen.value }
         screen.value = false
-        await change()
-        await change()
-        XCTAssertEqual(runner.calls.count, 2, "the two off-screen changes spawn nothing")
+        source.fire(conv)
+        clock.advance(by: .seconds(1))
+        await settle()
+        XCTAssertEqual(runner.calls.count, 2, "a change while the tab is hidden spawns nothing")
         screen.value = true
-        await change()
-        XCTAssertEqual(runner.calls.count, 3)
         await store.screenChanged(true)
-        XCTAssertEqual(runner.calls.count, 3, "the on-screen read already caught up")
+        XCTAssertEqual(runner.calls.count, 3, "the skipped read runs on the way back")
         task.cancel()
         await task.value
     }
@@ -673,20 +828,52 @@ final class SessionFeedStoreTests: XCTestCase {
                 + #"{"tool_use_id":"tu1","agent_id":"a1","type":"general","description":"d","status":"\#(status)"}}"#
         }
         let paths = [conv, dir, "\(dir)/agent-a1.jsonl"]
-        let runner = FakeRunner([
-            .success(payload(subagents: marker("running"), paths: paths)),
-            .success(payload(subagents: marker("finished"), paths: paths))
-        ])
+        let runner = GateRunner([payload(subagents: marker("running"), paths: paths),
+                                 payload(subagents: marker("finished"), paths: paths)])
         let (store, source, clock) = watchedStore(runner)
         let task = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
-        await settle { source.openPaths.count == 3 }
-        XCTAssertEqual(source.openPaths, Set(paths), "a running subagent's transcript has its own source")
-        source.fire("\(dir)/agent-a1.jsonl")
-        clock.advance(by: .milliseconds(250))
-        await settle { runner.calls.count == 2 && source.openPaths.count == 2 }
-        XCTAssertEqual(source.openPaths, [conv, dir], "the finished one's source closes")
+        await settle { source.openPaths.count == 4 }
+        XCTAssertEqual(source.openPaths, [conv, convDir, dir, "\(dir)/agent-a1.jsonl"],
+                       "a running subagent's transcript has its own source")
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 2 && source.openPaths.count == 3 }
+        XCTAssertEqual(source.openPaths, [conv, convDir, dir], "the finished one's source closes")
         task.cancel()
         await task.value
+    }
+
+    func testSubagentFollowReadsOnItsTranscriptEvents() async {
+        let child = "/p/proj/s1/subagents/agent-a1.jsonl"
+        let runner = GateRunner([payload(paths: [child, conv])])
+        let (store, source, clock) = watchedStore(runner)
+        let running = Flag(true)
+        let task = Task {
+            await store.followSubagent("tu1", isRunning: { running.value }, isOnScreen: { true }, onEntries: { _ in })
+        }
+        await settle { runner.calls.count == 1 && !source.openPaths.isEmpty }
+        XCTAssertEqual(source.openPaths, [child, "/p/proj/s1/subagents"], "the child's transcript and its directory")
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 2 }
+        source.fire(child)
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 3 }
+        clock.advance(by: .seconds(30))
+        await settle()
+        XCTAssertEqual(runner.calls.count, 3, "reads on a change only, no 3 s poll")
+        XCTAssertTrue(runner.calls.allSatisfy { $0.contains("--subagent") })
+        running.value = false
+        source.fire(child)
+        clock.advance(by: .seconds(1))
+        await task.value
+        XCTAssertTrue(source.openPaths.isEmpty, "a finished run's follow closes its watch")
+    }
+
+    func testSubagentFollowOffScreenReturnsAtOnce() async {
+        let runner = pathsRunner()
+        let (store, source, _) = watchedStore(runner)
+        await store.followSubagent("tu1", isRunning: { true }, isOnScreen: { false }, onEntries: { _ in })
+        XCTAssertTrue(runner.calls.isEmpty)
+        XCTAssertTrue(source.openPaths.isEmpty)
     }
 
     // MARK: - subagents in place (#711)
