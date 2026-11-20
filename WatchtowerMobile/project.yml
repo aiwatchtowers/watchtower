@@ -235,6 +235,10 @@ targets:
         product: WatchtowerHostedRelay
       - package: WatchtowerChat
         product: ChatWire
+      # The Kit links WatchtowerChatText since #2112 Task 2, so the test target
+      # names it too: the app's copy is no longer the one the tests resolve.
+      - package: WatchtowerChatText
+        product: WatchtowerChatText
       - package: GRDB
         product: GRDB
       - package: SwiftProtobuf
