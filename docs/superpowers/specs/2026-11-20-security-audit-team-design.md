@@ -116,10 +116,9 @@ Anti-goals
   the report URL, `lock`). Audit target: a detached worktree of the pinned commit under
   `~/Library/Caches/watchtower-security-audit/<root>-run-<N>/`, removed after the run.
 - Runs need the Agent, `Artifact` and `ArtifactData` tools, so they start from a
-  top-level Claude Code session with claude.ai artifacts — not a subagent and not a
-  Watchtower workbench session (its transcript shows in Workchat and can reach the phone).
-  The local Claude Code transcript still holds the run — accepted residual on the owner's
-  machine.
+  top-level Claude Code session with claude.ai artifacts — not a subagent. A Watchtower
+  workbench session is fine (owner decision 2026-11-20: its transcript, shown in Workchat
+  and sent to the phone on request, may hold the run — accepted).
 
 ## 4. Approaches
 
@@ -326,4 +325,5 @@ The full engine reports stay in the engine run dir; the page links to nothing lo
 | Both engine roles → one read-only `sec-audit-agent` | Builder (follows from read-only) |
 | Owner's accepted/false_positive handed to the engine like prior `rejected` records (live again when the code behind them changes) | Builder |
 | First run imports the two old audits as legacy rows | Builder |
-| Nothing to the board; run from a non-workbench session | Builder |
+| Nothing to the board | Builder |
+| Runs allowed from any top-level session, a workbench session included | Owner, chat 2026-11-20 |

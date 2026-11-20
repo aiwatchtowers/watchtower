@@ -73,22 +73,9 @@ list with a shell glob: enumerate with `find <dir> -mindepth 1 -maxdepth 1 …` 
    a Sonnet- or Haiku-class model → stop and tell the owner to start the session as
    `CLAUDE_CODE_SUBAGENT_MODEL=<model id> claude --model <main model>`. Unsure which
    class a value is → ask before continuing. Never write a model id into the repo.
-2. **Plain terminal session only.** Say: "Run this from a plain Claude Code terminal
-   session — not a Watchtower workbench session (its transcript reaches Workchat and the
-   phone)." If the session has `mcp__watchtower-workbench__*` tools (connected or
-   deferred), it is a workbench session — including a headless `claude -p` started
-   from a workbench session's shell that inherited those tools; the rule below is the
-   same there. In a workbench session only three invocations continue, with this
-   warning: `--plan-only` (it produces no findings); `--test` together with `--target`
-   (findings about an invented fixture repo, never Watchtower); and
-   `import <run-dir> --test --report <url>` when `realpath <run-dir>` lies under
-   `realpath ~/security-audit-skill/watchtower-test/` **and** the run was a `--target`
-   run: its `run-metadata.json` has `watchtower_source_repo`, and
-   `realpath "$(git -C <that repo> rev-parse --git-common-dir)"` differs from the same for
-   the session's Watchtower checkout (a missing field, an unreadable repo or the same
-   repository → stop; a `--test` run without `--target` holds real findings). Everything
-   else stops here: a real `full`/`range`, `--test` without `--target` (it would audit
-   real Watchtower), and every other `import`.
+2. **Any top-level session works, a Watchtower workbench session included** (owner
+   decision, 2026-11-20). Nothing to check or say here; the run's transcript lives
+   wherever the session's does, and that is accepted.
 3. Speak the session's language to the owner; everything written to files stays English.
 
 ## Subcommands
