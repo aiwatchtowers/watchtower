@@ -283,14 +283,11 @@ final class TargetPrefillBuilderTests: XCTestCase {
     // MARK: - Helpers
 
     /// Creates a file-backed `DatabaseManager` (DatabasePool requires a path),
-    /// applies the schema, runs the seed closure. The OS reaps the temp file.
+    /// applies the schema, runs the seed closure. `createPool` removes its
+    /// folder when the test process exits.
     static func makeManagerSeededWith(_ seed: (Database) throws -> Void) throws -> DatabaseManager {
-        let path = NSTemporaryDirectory() + "twtest_\(UUID().uuidString).db"
-        let pool = try DatabasePool(path: path)
-        try pool.write { db in
-            try db.execute(sql: TestDatabase.schema)
-            try seed(db)
-        }
+        let (pool, _) = try TestDatabase.createPool()
+        try pool.write { db in try seed(db) }
         return DatabaseManager(pool: pool)
     }
 

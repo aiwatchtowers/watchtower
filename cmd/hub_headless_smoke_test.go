@@ -472,6 +472,11 @@ func buildWatchtower(t *testing.T, dir string) string {
 	bin := filepath.Join(dir, "bin", "watchtower")
 	cmd := exec.Command("go", "build", "-o", bin, ".")
 	cmd.Dir = ".."
+	// The real HOME's module and build caches: under TestMain's temp HOME
+	// the go tool would download a read-only module cache there (#2130).
+	if testRealHome != "" {
+		cmd.Env = append(os.Environ(), "HOME="+testRealHome)
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}
