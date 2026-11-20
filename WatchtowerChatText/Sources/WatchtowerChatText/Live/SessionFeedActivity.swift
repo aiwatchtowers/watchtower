@@ -17,16 +17,11 @@ public struct SessionFeedActivity: Decodable, Equatable, Sendable {
         self.more = more
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case tool, summary, more
-        case startedAt = "started_at"
-    }
-
     public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        tool = try c.decodeIfPresent(String.self, forKey: .tool) ?? ""
-        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
-        startedAt = SessionFeedDate.parse(try c.decodeIfPresent(String.self, forKey: .startedAt))
-        more = try c.decodeIfPresent(Int.self, forKey: .more) ?? 0
+        let c = try decoder.container(keyedBy: FeedWireKey.self)
+        tool = try c.wire(String.self, "tool") ?? ""
+        summary = try c.wire(String.self, "summary") ?? ""
+        startedAt = try c.wireDate("started_at")
+        more = try c.wire(Int.self, "more") ?? 0
     }
 }

@@ -1,7 +1,9 @@
 import Foundation
 
-/// Additive, Desktop-only hint. Existing `activity` remains an open tool call.
-public struct SessionFeedLive: Decodable, Equatable, Sendable {
+/// Additive live hint (Go `sessionfeed.Live`): the Mac reads it from the CLI,
+/// the phone from the hub's `activity_live`. Existing `activity` remains an
+/// open tool call.
+public struct SessionFeedLive: Decodable, Hashable, Sendable {
     public var observedAt: Date?
     public var conversation: String
     public var turnAt: Date?
@@ -34,28 +36,23 @@ public struct SessionFeedLive: Decodable, Equatable, Sendable {
         self.current = current; self.latest = latest; self.agents = agents; self.agentsState = agentsState; self.agentsMore = agentsMore
         self.steps = steps; self.stepsMore = stepsMore
     }
-    private enum CodingKeys: String, CodingKey {
-        case observedAt = "observed_at", conversation, turnAt = "turn_at", turnActive = "turn_active"
-        case current, latest, agents, agentsState = "agents_state", agentsMore = "agents_more"
-        case steps, stepsMore = "steps_more"
-    }
     public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        observedAt = SessionFeedDate.parse(try c.decodeIfPresent(String.self, forKey: .observedAt))
-        conversation = try c.decodeIfPresent(String.self, forKey: .conversation) ?? ""
-        turnAt = SessionFeedDate.parse(try c.decodeIfPresent(String.self, forKey: .turnAt))
-        turnActive = try c.decodeIfPresent(Bool.self, forKey: .turnActive) ?? false
-        current = try c.decodeIfPresent(SessionLiveAction.self, forKey: .current)
-        latest = try c.decodeIfPresent(SessionLiveAction.self, forKey: .latest)
-        agents = try c.decodeIfPresent([SessionLiveAgent].self, forKey: .agents) ?? []
-        agentsState = try c.decodeIfPresent(String.self, forKey: .agentsState) ?? "unknown"
-        agentsMore = try c.decodeIfPresent(Int.self, forKey: .agentsMore) ?? 0
-        steps = try c.decodeIfPresent([SessionLiveAction].self, forKey: .steps) ?? []
-        stepsMore = try c.decodeIfPresent(Int.self, forKey: .stepsMore) ?? 0
+        let c = try decoder.container(keyedBy: FeedWireKey.self)
+        observedAt = try c.wireDate("observed_at")
+        conversation = try c.wire(String.self, "conversation") ?? ""
+        turnAt = try c.wireDate("turn_at")
+        turnActive = try c.wire(Bool.self, "turn_active") ?? false
+        current = try c.wire(SessionLiveAction.self, "current")
+        latest = try c.wire(SessionLiveAction.self, "latest")
+        agents = try c.wire([SessionLiveAgent].self, "agents") ?? []
+        agentsState = try c.wire(String.self, "agents_state") ?? "unknown"
+        agentsMore = try c.wire(Int.self, "agents_more") ?? 0
+        steps = try c.wire([SessionLiveAction].self, "steps") ?? []
+        stepsMore = try c.wire(Int.self, "steps_more") ?? 0
     }
 }
 
-public struct SessionLiveAction: Decodable, Equatable, Sendable {
+public struct SessionLiveAction: Decodable, Hashable, Sendable {
     public var id: String
     public var tool: String
     public var summary: String
@@ -66,19 +63,18 @@ public struct SessionLiveAction: Decodable, Equatable, Sendable {
     public init(id: String = "", tool: String, summary: String, startedAt: Date? = nil, completedAt: Date? = nil, more: Int = 0) {
         self.id = id; self.tool = tool; self.summary = summary; self.startedAt = startedAt; self.completedAt = completedAt; self.more = more
     }
-    private enum CodingKeys: String, CodingKey { case id, tool, summary, startedAt = "started_at", completedAt = "completed_at", more }
     public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
-        tool = try c.decodeIfPresent(String.self, forKey: .tool) ?? ""
-        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
-        startedAt = SessionFeedDate.parse(try c.decodeIfPresent(String.self, forKey: .startedAt))
-        completedAt = SessionFeedDate.parse(try c.decodeIfPresent(String.self, forKey: .completedAt))
-        more = try c.decodeIfPresent(Int.self, forKey: .more) ?? 0
+        let c = try decoder.container(keyedBy: FeedWireKey.self)
+        id = try c.wire(String.self, "id") ?? ""
+        tool = try c.wire(String.self, "tool") ?? ""
+        summary = try c.wire(String.self, "summary") ?? ""
+        startedAt = try c.wireDate("started_at")
+        completedAt = try c.wireDate("completed_at")
+        more = try c.wire(Int.self, "more") ?? 0
     }
 }
 
-public struct SessionLiveAgent: Decodable, Equatable, Sendable, Identifiable {
+public struct SessionLiveAgent: Decodable, Hashable, Sendable, Identifiable {
     public var ref: SessionFeedSubagent
     public var startedAt: Date?
     public var action: SessionLiveAction?
@@ -87,12 +83,11 @@ public struct SessionLiveAgent: Decodable, Equatable, Sendable, Identifiable {
     public init(ref: SessionFeedSubagent, startedAt: Date? = nil, action: SessionLiveAction? = nil, canOpen: Bool = false) {
         self.ref = ref; self.startedAt = startedAt; self.action = action; self.canOpen = canOpen
     }
-    private enum CodingKeys: String, CodingKey { case ref, startedAt = "started_at", action, canOpen = "can_open" }
     public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        ref = try c.decode(SessionFeedSubagent.self, forKey: .ref)
-        startedAt = SessionFeedDate.parse(try c.decodeIfPresent(String.self, forKey: .startedAt))
-        action = try c.decodeIfPresent(SessionLiveAction.self, forKey: .action)
-        canOpen = try c.decodeIfPresent(Bool.self, forKey: .canOpen) ?? false
+        let c = try decoder.container(keyedBy: FeedWireKey.self)
+        ref = try c.decode(SessionFeedSubagent.self, forKey: FeedWireKey("ref"))
+        startedAt = try c.wireDate("started_at")
+        action = try c.wire(SessionLiveAction.self, "action")
+        canOpen = try c.wire(Bool.self, "can_open") ?? false
     }
 }

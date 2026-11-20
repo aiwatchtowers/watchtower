@@ -19,17 +19,17 @@
         "started_at": "2023-11-14T22:14:20Z"
       }
     ],
-    "agents_more": 0,
+    "agents_more": 2,
     "agents_state": "known",
     "conversation": "conv-1",
-    "current": {"completed_at": "0001-01-01T00:00:00Z", "id": "toolu_02", "more": 0, "started_at": "2023-11-14T22:14:22Z", "summary": "go test ./internal/db", "tool": "Bash"},
+    "current": {"completed_at": "0001-01-01T00:00:00Z", "id": "toolu_02", "more": 1, "started_at": "2023-11-14T22:14:22Z", "summary": "go test ./internal/db", "tool": "Bash"},
     "latest": {"completed_at": "2023-11-14T22:14:21Z", "id": "toolu_01", "more": 0, "started_at": "2023-11-14T22:14:20Z", "summary": "internal/db/db.go", "tool": "Read"},
     "observed_at": "2023-11-14T22:14:25Z",
     "steps": [
       {"completed_at": "2023-11-14T22:14:21Z", "id": "toolu_01", "more": 0, "started_at": "2023-11-14T22:14:20Z", "summary": "internal/db/db.go", "tool": "Read"},
       {"completed_at": "0001-01-01T00:00:00Z", "id": "toolu_02", "more": 0, "started_at": "2023-11-14T22:14:22Z", "summary": "go test ./internal/db", "tool": "Bash"}
     ],
-    "steps_more": 0,
+    "steps_more": 3,
     "turn_active": true,
     "turn_at": "2023-11-14T22:14:20Z"
   },

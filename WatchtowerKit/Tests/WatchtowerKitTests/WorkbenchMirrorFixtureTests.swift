@@ -644,6 +644,94 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(sub.entries.count, 2)
     }
 
+    /// The hub's live block (#2112) through RelayCoder's convertFromSnakeCase:
+    /// every multi-word key (`observed_at`, `can_open`, `tool_use_id`, …) must
+    /// still land, and Go's zero `completed_at` means the step is still open.
+    func testSessionChatLiveBlockDecodes() throws {
+        let chat = try SessionChat.decode(payload: try fixture("session_chat"))
+        XCTAssertEqual(chat.liveVersion, 1)
+        XCTAssertEqual(chat.liveError, "Activity unavailable")
+        let live = try XCTUnwrap(chat.activityLive)
+        XCTAssertEqual(live.observedAt, Date(timeIntervalSince1970: 1_700_000_065))
+        XCTAssertEqual(live.turnAt, Date(timeIntervalSince1970: 1_700_000_060))
+        XCTAssertEqual(live.conversation, "conv-1")
+        XCTAssertTrue(live.turnActive)
+        XCTAssertEqual(live.agentsState, "known")
+        XCTAssertEqual(live.agentsMore, 2)
+        XCTAssertEqual(live.stepsMore, 3)
+
+        let current = try XCTUnwrap(live.current)
+        XCTAssertEqual(current.id, "toolu_02")
+        XCTAssertEqual(current.tool, "Bash")
+        XCTAssertEqual(current.summary, "go test ./internal/db")
+        XCTAssertEqual(current.startedAt, Date(timeIntervalSince1970: 1_700_000_062))
+        XCTAssertNil(current.completedAt, "Go's zero completed_at is an open step")
+        XCTAssertEqual(current.more, 1)
+        XCTAssertEqual(live.latest?.completedAt, Date(timeIntervalSince1970: 1_700_000_061))
+
+        XCTAssertEqual(live.steps.map(\.id), ["toolu_01", "toolu_02"])
+        XCTAssertEqual(live.steps.map { $0.completedAt == nil }, [false, true])
+
+        let agent = try XCTUnwrap(live.agents.first)
+        XCTAssertEqual(live.agents.count, 1)
+        XCTAssertTrue(agent.canOpen)
+        XCTAssertEqual(agent.startedAt, Date(timeIntervalSince1970: 1_700_000_060))
+        XCTAssertEqual(agent.ref.toolUseID, "toolu_01a")
+        XCTAssertEqual(agent.ref.agentID, "a1b2")
+        XCTAssertEqual(agent.ref.type, "Explore")
+        XCTAssertEqual(agent.ref.description, "Check the fixtures")
+        XCTAssertEqual(agent.ref.status, "running")
+        XCTAssertEqual(agent.action?.summary, "internal/db/db.go")
+
+        let sub = try SessionChat.decode(payload: try fixture("session_chat_subagent"))
+        XCTAssertEqual(sub.liveVersion, 1)
+        // A live agent record carries the subagent's own block (#2112 Task 3 review F4).
+        XCTAssertEqual(sub.activityLive?.conversation, "a1b2")
+        XCTAssertEqual(sub.activityLive?.current?.summary, "Read the parser")
+        XCTAssertNil(sub.liveError)
+    }
+
+    /// A payload from a hub older than #2112 carries none of the keys.
+    func testSessionChatWithoutLiveKeysDecodesNil() throws {
+        var json = try object("session_chat")
+        json["activity_live"] = nil
+        json["live_version"] = nil
+        json["live_error"] = nil
+        let chat = try SessionChat.decode(payload: try data(json))
+        XCTAssertNil(chat.activityLive)
+        XCTAssertNil(chat.liveVersion)
+        XCTAssertNil(chat.liveError)
+        XCTAssertEqual(chat.entries.count, try SessionChat.decode(payload: try fixture("session_chat")).entries.count)
+    }
+
+    /// A block this build cannot read (an agent without its required `ref`)
+    /// drops only the block: the entries survive and the line says why.
+    func testSessionChatMalformedLiveBlockKeepsEntries() throws {
+        var json = try object("session_chat")
+        var live = try XCTUnwrap(json["activity_live"] as? [String: Any])
+        live["agents"] = [["started_at": "2023-11-14T22:14:20Z", "can_open": true]]
+        json["activity_live"] = live
+        json["live_error"] = nil
+        let chat = try SessionChat.decode(payload: try data(json))
+        XCTAssertNil(chat.activityLive)
+        XCTAssertEqual(chat.liveError, "Activity unavailable")
+        XCTAssertEqual(chat.liveError, SessionChat.liveUnavailable)
+        XCTAssertEqual(chat.liveVersion, 1)
+        XCTAssertEqual(chat.entries.count, try SessionChat.decode(payload: try fixture("session_chat")).entries.count)
+    }
+
+    /// A newer hub may add keys at the top level and inside the block.
+    func testSessionChatLiveBlockIgnoresFutureKeys() throws {
+        var json = try object("session_chat")
+        var live = try XCTUnwrap(json["activity_live"] as? [String: Any])
+        live["future_field"] = ["nested": true]
+        json["activity_live"] = live
+        json["live_future"] = 3
+        let chat = try SessionChat.decode(payload: try data(json))
+        XCTAssertEqual(chat.activityLive?.current?.id, "toolu_02")
+        XCTAssertEqual(chat.liveVersion, 1)
+    }
+
     func testSessionChatRecordName() {
         XCTAssertEqual(SessionChat.recordName(sessionID: 7, agentID: nil), "session_chat-7")
         XCTAssertEqual(SessionChat.recordName(sessionID: 7, agentID: "a1b2"), "session_chat-7-a1b2")
