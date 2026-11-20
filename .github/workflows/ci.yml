@@ -127,9 +127,11 @@ jobs:
               - 'WatchtowerMobile/*'
               - 'WatchtowerMobile/WatchtowerMobile.xcodeproj/**'
               - deleted|renamed: '{WatchtowerDesktop,WatchtowerKit,WatchtowerMobile}/**/*.swift'
-              # docs/ Go tests read: the inventory (its guard). The guide is
-              # Guide Check's, which runs the packages that read its pages.
+              # docs/ Go tests read: the inventory (its guard) and the MDM key
+              # table + IT page URL (policy goldens). The guide is Guide Check's,
+              # which runs the packages that read its pages.
               - 'docs/inventory/**'
+              - 'docs/mdm/*.json'
             swift:
               - 'WatchtowerDesktop/**'
               - 'WatchtowerKit/**'
@@ -140,6 +142,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'scripts/**'
               - 'docs/guide/reference/keyboard-shortcuts.md'
+              - 'docs/mdm/site.json'
               - 'cmd/testdata/**'
               - 'internal/{aiconsent,asks,automations,automations/blocks,automations/builtin,chat,chatengine,chatstore,coach,codewalk,codex,companybundle,config,db,ideas,inbox,inboxfeed,instructions,jira,planusage,policy,purge,reviewdiff,sessionhost,sessionstart,sessionstate,skills,slackconnect,slackmode,specreview,tools,watchman}/testdata/**'
               - 'internal/hub/{identity,secure,transport/cloudkit}/testdata/**'
