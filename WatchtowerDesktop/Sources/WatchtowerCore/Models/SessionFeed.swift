@@ -163,10 +163,14 @@ package struct SessionFeedPayload: Decodable, Sendable {
     /// A `--tail` read's page start: the id to pass as `--before` for the
     /// page before it; "" when absent (nothing earlier, or not a tail read).
     package var before: String
+    /// Every file and directory the read went through (transcripts, rollouts,
+    /// sidecars, `subagents/` directories), absolute; [] from an older CLI.
+    /// The pane watches them instead of polling (`TranscriptWatch`).
+    package var paths: [String]
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
-        case cursor, entries, subagents, activity, live, before
+        case cursor, entries, subagents, activity, live, before, paths
         case liveOK = "live_ok", liveError = "live_error"
     }
 
@@ -181,5 +185,6 @@ package struct SessionFeedPayload: Decodable, Sendable {
         liveOK = try c.decodeIfPresent(Bool.self, forKey: .liveOK) ?? false
         liveError = try c.decodeIfPresent(String.self, forKey: .liveError)
         before = try c.decodeIfPresent(String.self, forKey: .before) ?? ""
+        paths = try c.decodeIfPresent([String].self, forKey: .paths) ?? []
     }
 }

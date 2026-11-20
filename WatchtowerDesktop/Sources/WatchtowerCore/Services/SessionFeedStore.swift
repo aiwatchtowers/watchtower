@@ -69,12 +69,26 @@ package final class SessionFeedStore: ObservableObject {
     /// The last CLI read started; the next one waits for it, so the pane
     /// never runs two CLI processes at once (main feed and subagent alike).
     private var lastRead: Task<Void, Never>?
+    private let fileEvents: FileEventSource
+    private let watchClock: TranscriptWatchClock
+    /// The open pane's watch of the last read's `paths`; nil while no
+    /// `follow` runs (the pane closed, a subagent open, the session idle).
+    private var watch: TranscriptWatch?
+    /// `paths` of the last good read.
+    private var readPaths: [String] = []
 
     /// `runner` nil: the CLI binary is missing (`runnerMissing`).
-    package init(sessionID: Int64, runner: CLIRunnerProtocol?) {
+    package init(
+        sessionID: Int64,
+        runner: CLIRunnerProtocol?,
+        fileEvents: FileEventSource = DispatchFileEventSource(),
+        watchClock: TranscriptWatchClock = MainQueueWatchClock()
+    ) {
         self.sessionID = sessionID
         self.runner = runner ?? UnavailableRunner()
         runnerMissing = runner == nil
+        self.fileEvents = fileEvents
+        self.watchClock = watchClock
         beginOpenTrace(reopen: false)
     }
 
@@ -90,20 +104,32 @@ package final class SessionFeedStore: ObservableObject {
         trace.mark(.appear)
     }
 
-    /// The pane's poll: one read now, then while `isActive` one more every
-    /// `interval`. A read due while `isOnScreen` is false (the main window
-    /// hidden, minimised or covered) is skipped, and `screenChanged` reads at
-    /// once on the way back. Returns when inactive or cancelled.
-    package func follow(
-        interval: Duration = .seconds(3),
-        isActive: () -> Bool,
-        isOnScreen: () -> Bool
-    ) async {
+    /// The pane's reads: one now, then while `isActive` one on each change
+    /// of a file the last read listed (`TranscriptWatch`: 250 ms debounce, at
+    /// most one a second, a 3 s tick only for a path that cannot be watched).
+    /// The session's state change re-enters `follow` (the pane's task key),
+    /// which is its one read; no liveness timer. A read due while `isOnScreen`
+    /// is false (the main window hidden, minimised or covered) is skipped, and
+    /// `screenChanged` reads at once on the way back; a pane opened off screen
+    /// watches nothing until that read. Returns when inactive or cancelled,
+    /// closing every source.
+    package func follow(isActive: () -> Bool, isOnScreen: () -> Bool) async {
         guard !runnerMissing else { return }
-        if gatedTick(isOnScreen()) { await poller.refresh() }
-        while isActive() {
-            try? await Task.sleep(for: interval)
-            if Task.isCancelled { return }
+        let readNow = gatedTick(isOnScreen())
+        if readNow { await poller.refresh() }
+        guard isActive(), !Task.isCancelled else { return }
+        let (events, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        let watch = TranscriptWatch(fileEvents: fileEvents, clock: watchClock) { continuation.yield() }
+        self.watch?.stop()
+        self.watch = watch
+        defer {
+            watch.stop()
+            if self.watch === watch { self.watch = nil }
+            continuation.finish()
+        }
+        if readNow { updateWatch() }
+        for await _ in events {
+            guard isActive() else { return }
             if gatedTick(isOnScreen()) { await poller.refresh() }
         }
     }
@@ -154,6 +180,8 @@ package final class SessionFeedStore: ObservableObject {
                 }
             }
             error = nil
+            readPaths = payload.paths
+            updateWatch()
         } catch {
             self.error = error.localizedDescription
             if generation == liveGeneration {
@@ -161,6 +189,21 @@ package final class SessionFeedStore: ObservableObject {
                 liveError = WorkchatLivePresentation.unavailable
             }
         }
+    }
+
+    /// Points the open pane's watch at the last read's paths. A subagent the
+    /// newest word on calls finished (the live snapshot over the markers) is
+    /// not watched; one running or not known yet is.
+    private func updateWatch() {
+        guard let watch else { return }
+        var status: [String: String] = [:]
+        for marker in subagents {
+            if let ref = marker.subagent, !ref.agentID.isEmpty { status[ref.agentID] = ref.status }
+        }
+        for agent in live?.agents ?? [] where !agent.ref.agentID.isEmpty {
+            status[agent.ref.agentID] = agent.ref.status
+        }
+        watch.update(paths: readPaths, finishedAgents: Set(status.filter { $0.value == "finished" }.keys))
     }
 
     /// Reads the page of `tailSize` entries before the first one held and

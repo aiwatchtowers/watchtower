@@ -139,13 +139,14 @@ final class WorkbenchesFeedStoreTests: XCTestCase {
         let runner = FeedRunner()
         let vm = makeVM(runner)
         let store = vm.feedStore(sessionID: 1)
-        var ticks = 0
-        // Three poll ticks with the pane off screen; `.zero` stands in for the clock.
-        await store.follow(interval: .zero, isActive: {
-            ticks += 1
-            return ticks <= 3
-        }, isOnScreen: { false })
-        XCTAssertEqual(ticks, 4)
+        // An idle session: the one read is skipped off screen.
+        await store.follow(isActive: { false }, isOnScreen: { false })
+        // A working one: its first read is skipped and nothing is watched
+        // until the window is back, so no event or tick reads either.
+        let task = Task { await store.follow(isActive: { true }, isOnScreen: { false }) }
+        for _ in 0..<100 { await Task.yield() }
+        task.cancel()
+        await task.value
         XCTAssertTrue(runner.feedCalls.isEmpty, "a kept store off screen spawns no CLI")
     }
 
