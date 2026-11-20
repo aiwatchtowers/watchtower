@@ -11,6 +11,18 @@ private final class LockedReports: @unchecked Sendable {
     func append(_ line: String) { lock.withLock { stored.append(line) } }
 }
 
+/// How many fake bridge steps run at once, and the most that ever did.
+private final class BridgeConcurrency: @unchecked Sendable {
+    private let lock = NSLock()
+    private var now = 0
+    private var maxSeen = 0
+    private var count = 0
+    var maxInFlight: Int { lock.withLock { maxSeen } }
+    var total: Int { lock.withLock { count } }
+    func enter() { lock.withLock { now += 1; count += 1; maxSeen = max(maxSeen, now) } }
+    func leave() { lock.withLock { now -= 1 } }
+}
+
 /// The channel of an install the company bridge has not migrated.
 private func unmigrated(
     flavor: String, feedURL: String?, clientID: String?, clientSecret: String?
@@ -299,6 +311,49 @@ struct UpdateChannelTests {
         #expect(CompanyBridgeLaunch.runOthers(than: "beta", flavor: "", basePath: base, step: step))
         #expect(CompanyBridgeLaunch.runAll(flavor: "", basePath: base, step: step))
         #expect(calls.isEmpty, "the public build bridges no workspace")
+    }
+
+    @Test("an install's bridge waits for the launch's background bridge instead of overlapping it")
+    func bridgeRunsNeverOverlap() throws {
+        let base = try makeWorkspaces(["alpha", "beta"])
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let runs = BridgeConcurrency()
+        let othersStep: CompanyBridgeLaunch.LaunchStep = { _, _, _ in
+            runs.enter()
+            entered.signal()
+            release.wait()
+            runs.leave()
+            return true
+        }
+        let allStep: CompanyBridgeLaunch.LaunchStep = { _, _, _ in
+            runs.enter()
+            runs.leave()
+            return true
+        }
+        // Two threads of their own, as `ProcessPipes.offPool` gives the real runs.
+        let done = DispatchGroup()
+        let results = LockedReports()
+        done.enter()
+        Thread.detachNewThread {
+            let bridged = CompanyBridgeLaunch.runOthers(than: "alpha", flavor: "corp", basePath: base, step: othersStep)
+            results.append("others \(bridged)")
+            done.leave()
+        }
+        entered.wait()
+        #expect(!CompanyBridgeLaunch.runLock.try(), "the background bridge holds the run lock")
+        done.enter()
+        Thread.detachNewThread {
+            let bridged = CompanyBridgeLaunch.runAll(flavor: "corp", basePath: base, step: allStep)
+            results.append("all \(bridged)")
+            done.leave()
+        }
+        release.signal()
+        done.wait()
+        #expect(Set(results.items) == ["others true", "all true"])
+        #expect(runs.maxInFlight == 1)
+        #expect(runs.total == 3, "beta in the background, then alpha and beta for the install")
     }
 
     /// A temporary data root holding `names`, each with a `watchtower.db`.

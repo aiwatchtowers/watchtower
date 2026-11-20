@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -663,4 +666,52 @@ func TestBridge_UnreadableJiraTokenWithholdsOnlyAtlassian(t *testing.T) {
 	res, err = c.bridge(t)
 	require.NoError(t, err)
 	assert.Contains(t, res.Tied, bridgeAccountJSON{Source: "jira", ID: c.ids["jira"]})
+}
+
+// TestBridge_WorkspaceFlagTakesOverLegacySchema: the root's
+// ensureSchemaFormat upgrades only the active database from the pre-goose
+// schema, so `company bridge --workspace <inactive>` (the real Cobra path)
+// runs the takeover on the workspace it bridges: a database at the legacy
+// tip gets its goose baseline, one stranded below it gets the takeover's
+// "run the previous release" refusal rather than a migration failure.
+func TestBridge_WorkspaceFlagTakesOverLegacySchema(t *testing.T) {
+	active := newCorpWorkspace(t)
+	prevFlavor, prevName, prevWS := BuildFlavor, BuildCompanyName, flagWorkspace
+	t.Cleanup(func() { BuildFlavor, BuildCompanyName, flagWorkspace = prevFlavor, prevName, prevWS })
+	BuildFlavor, BuildCompanyName = "corp", corpCompany
+
+	legacy := func(name string, userVersion int) string {
+		t.Helper()
+		path := filepath.Join(filepath.Dir(active.ws), name, "watchtower.db")
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		raw, err := sql.Open("sqlite3", path)
+		require.NoError(t, err)
+		defer raw.Close()
+		_, err = raw.Exec(`CREATE TABLE workspace (id TEXT PRIMARY KEY); PRAGMA user_version = ` + strconv.Itoa(userVersion))
+		require.NoError(t, err)
+		return path
+	}
+	run := func(workspace string) error {
+		t.Helper()
+		rootCmd.SetOut(&bytes.Buffer{})
+		rootCmd.SetErr(&bytes.Buffer{})
+		rootCmd.SetArgs([]string{"company", "bridge", "--json", "--workspace", workspace})
+		t.Cleanup(func() { rootCmd.SetArgs(nil); flagWorkspace = prevWS })
+		return rootCmd.Execute()
+	}
+
+	legacy("stranded", 31)
+	err := run("stranded")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "legacy schema version 31")
+
+	tip := legacy("tip", 73)
+	_ = run("tip") // a bare fixture has none of the baseline's tables, so the later migrations fail
+	raw, err := sql.Open("sqlite3", tip)
+	require.NoError(t, err)
+	defer raw.Close()
+	var baseline int
+	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id = 1`).Scan(&baseline))
+	assert.Equal(t, 1, baseline, "the inactive database got its goose baseline")
+	assert.NoFileExists(t, filepath.Join(active.ws, companyMigratedMarker), "the active workspace is not bridged")
 }

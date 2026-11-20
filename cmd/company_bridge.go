@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/calendar"
 	"watchtower/internal/company"
 	"watchtower/internal/companybundle"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
 	"watchtower/internal/imap"
@@ -62,7 +63,7 @@ leaves everything as it was and the next launch retries.`,
 		if res, ok := companyBridgeSkip(BuildFlavor, BuildCompanyName, currentCorpBaked()); !ok {
 			return writeCompanyResult(cmd, res, func(w io.Writer) { _, _ = fmt.Fprintf(w, "nothing to do: %s\n", res.Reason) })
 		}
-		cfg, database, err := openJiraCmdDB()
+		cfg, database, err := openBridgeDB()
 		if err != nil {
 			return err
 		}
@@ -78,6 +79,34 @@ leaves everything as it was and the next launch retries.`,
 			}
 		})
 	},
+}
+
+// openBridgeDB is openJiraCmdDB with the pre-goose takeover first: the app
+// bridges every workspace (`--workspace <name>`), and the root's
+// ensureSchemaFormat only ever upgrades the active one, so a legacy
+// inactive database would otherwise fail every run. RunSchemaUpgrade is
+// idempotent and one read on a goose database.
+func openBridgeDB() (*config.Config, *db.DB, error) {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return nil, nil, err
+	}
+	if _, err := os.Stat(cfg.DBPath()); err == nil {
+		if err := db.RunSchemaUpgrade(cfg.DBPath()); err != nil {
+			return nil, nil, fmt.Errorf("schema upgrade: %w", err)
+		}
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening database: %w", err)
+	}
+	return cfg, database, nil
 }
 
 func init() {

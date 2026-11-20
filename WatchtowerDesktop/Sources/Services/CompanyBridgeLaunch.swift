@@ -42,6 +42,13 @@ enum CompanyBridgeLaunch {
     nonisolated static let activeTimeout = 30
     nonisolated static let otherTimeout = 300
 
+    /// Held for the whole of every run (`runActive`, `runOthers`, `runAll`),
+    /// so they never overlap: the launch's background `runOthers` and the
+    /// installer's `runAll` would otherwise both read the old bundle, and the
+    /// loser's compare-and-save fails the install. Callers are off the
+    /// concurrency pool, so the wait blocks only their own thread.
+    nonisolated static let runLock = NSLock()
+
     /// The real runner: the installed CLI under `runCLILaunchStep`.
     nonisolated static func launchStep(
         cliPath: @escaping @autoclosure () -> String? = Constants.findCLIPath(),
@@ -70,7 +77,7 @@ enum CompanyBridgeLaunch {
     @discardableResult
     nonisolated static func runActive(flavor: String = bundleFlavor, step: LaunchStep = launchStep()) -> Bool {
         guard applies(flavor: flavor) else { return true }
-        return step(["company", "bridge", "--json"], "Company bridge", activeTimeout)
+        return runLock.withLock { step(["company", "bridge", "--json"], "Company bridge", activeTimeout) }
     }
 
     /// Bridges every workspace under `basePath` with a database except
@@ -100,11 +107,14 @@ enum CompanyBridgeLaunch {
         return bridge(Constants.workspacesWithDatabase(under: basePath), step: step)
     }
 
-    /// One `company bridge --workspace <name>` per workspace. A workspace
+    /// One `company bridge --workspace <name>` per workspace, under
+    /// `runLock`. A workspace
     /// that fails does not stop the others; its marker stays missing and the
     /// next run retries it. `--workspace` only picks the database for that
     /// run; the CLI never writes it back as the active workspace.
     nonisolated private static func bridge(_ workspaces: [String], step: LaunchStep) -> Bool {
+        runLock.lock()
+        defer { runLock.unlock() }
         var allBridged = true
         for name in workspaces {
             let bridged = step(["company", "bridge", "--json", "--workspace", name],
