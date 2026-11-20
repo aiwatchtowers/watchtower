@@ -143,6 +143,9 @@ type chatFiles struct {
 	fallback bool
 	// live is the session's liveness at the last pass.
 	live bool
+	// fetched: a read succeeded; failed: the last read failed. Until one
+	// succeeds a failure ticks (a live_error-only record does not count).
+	fetched, failed bool
 	// dirty: an event since the last read started, the first at dirtySince
 	// and the newest at lastEvent.
 	dirty                 bool
@@ -167,10 +170,13 @@ func (f *chatFiles) dirtyDue(t ChatTiming) time.Time {
 }
 
 // ticks says whether the chat reads on the Every tick: its files cannot be
-// watched, or — while the session is live — a running agent's transcript is
-// not watched yet, or it is an agent record with nothing watched.
+// watched; no read succeeded yet and the last one failed (however healthy
+// the watch); or — while the session is live — a running agent's
+// transcript is not watched yet, or it is an agent record with nothing
+// watched.
 func (f *chatFiles) ticks(k chatKey, isLive bool) bool {
-	return f.fallback || isLive && (f.agentsUnwatched || k.toolUseID != "" && len(f.watched) == 0)
+	return f.fallback || !f.fetched && f.failed ||
+		isLive && (f.agentsUnwatched || k.toolUseID != "" && len(f.watched) == 0)
 }
 
 // want is the files to watch: the conversations then the extras, without
@@ -205,7 +211,7 @@ func (f *chatFiles) unlocated() bool {
 // lists) and the transcript of each subagent its live block lists as
 // running (at most maxLiveAgents; the live block lists no more). running is
 // those transcripts; found is false when a running agent has no id or no
-// transcript in the read yet.
+// transcript in the read yet, or an agent's status is still unknown.
 func watchedExtras(k chatKey, read ChatRead) (extra, running []string, found bool) {
 	if k.toolUseID != "" && len(read.Paths) > 0 {
 		extra = append(extra, read.Paths[0])
@@ -215,7 +221,14 @@ func watchedExtras(k chatKey, read ChatRead) (extra, running []string, found boo
 	}
 	found = true
 	for _, a := range read.Live.Agents {
-		if a.Ref.Status != sessionfeed.StatusRunning {
+		switch a.Ref.Status {
+		case sessionfeed.StatusRunning:
+		case sessionfeed.StatusUnknown:
+			// A launch not resolved yet (its sidecar unread): not
+			// watchable until it shows as running.
+			found = false
+			continue
+		default:
 			continue
 		}
 		id := a.Ref.AgentID
@@ -361,8 +374,13 @@ func (s *SessionChatSource) settle(k chatKey, gen int, read *ChatRead) {
 // added that k did not hold: it adds every wanted file — again too, since a
 // removed or renamed file's watch is gone — and lets go of the rest. A file
 // that does not exist yet is skipped; any other failure, or no watcher at
-// all, sends the chat to the Every tick, logged once.
+// all, sends the chat to the Every tick, logged once, and lets go of what
+// this pass added. The watcher's I/O and its ownership change together
+// under s.wmu, so a file another chat lets go of meanwhile is never removed
+// from under its new holder.
 func (s *SessionChatSource) arm(k chatKey, gen int) int {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
 	s.mu.Lock()
 	r, ok := s.runs[k]
 	if !ok || s.generation != gen || r.fallback {
@@ -374,7 +392,7 @@ func (s *SessionChatSource) arm(k chatKey, gen int) int {
 		var err error
 		if w, err = s.o.NewWatcher(); err != nil {
 			s.mu.Unlock()
-			s.fallBack(k, gen, err)
+			s.fallBack(k, gen, nil, err)
 			return 0
 		}
 		s.fw = w
@@ -388,12 +406,7 @@ func (s *SessionChatSource) arm(k chatKey, gen int) int {
 			continue
 		}
 		if err != nil {
-			s.mu.Lock()
-			replaced := s.fw != w
-			s.mu.Unlock()
-			if !replaced { // a watcher closed meanwhile is no failure: the next read re-arms
-				s.fallBack(k, gen, err)
-			}
+			s.fallBack(k, gen, holds, err)
 			return 0
 		}
 		holds = append(holds, p)
@@ -402,9 +415,9 @@ func (s *SessionChatSource) arm(k chatKey, gen int) int {
 	r, ok = s.runs[k]
 	if !ok || s.generation != gen || r.fallback {
 		// Dropped meanwhile: hold nothing for it.
-		done := s.release(chatKey{}, &chatRun{chatFiles: chatFiles{watched: setOf(holds)}})
+		s.unheld(holds)
 		s.mu.Unlock()
-		done()
+		s.syncWatcher()
 		return 0
 	}
 	added := 0
@@ -412,25 +425,20 @@ func (s *SessionChatSource) arm(k chatKey, gen int) int {
 		if !r.watched[p] {
 			added++
 		}
-	}
-	keep := setOf(holds)
-	var gone []string
-	for p := range r.watched {
-		if !keep[p] {
-			gone = append(gone, p)
-		}
-	}
-	for _, p := range holds {
 		if s.byPath[p] == nil {
 			s.byPath[p] = map[chatKey]bool{}
 		}
 		s.byPath[p][k] = true
 	}
+	keep := setOf(holds)
+	for p := range r.watched {
+		if !keep[p] {
+			s.release(k, p)
+		}
+	}
 	r.watched = keep
-	// After the holds are in: a watcher holding nothing would be closed.
-	done := s.release(k, &chatRun{chatFiles: chatFiles{watched: setOf(gone)}})
 	s.mu.Unlock()
-	done()
+	s.syncWatcher()
 	return added
 }
 
@@ -442,34 +450,58 @@ func setOf(paths []string) map[string]bool {
 	return out
 }
 
-// release lets go of r's files for k (s.mu held): a file no chat holds any
-// more leaves the watcher, and a watcher holding nothing is closed. The
-// returned func does the watcher's I/O and must be called after unlocking.
-func (s *SessionChatSource) release(k chatKey, r *chatRun) func() {
+// release lets go of p for k (s.mu held); a file no chat holds any more is
+// queued for syncWatcher.
+func (s *SessionChatSource) release(k chatKey, p string) {
+	if holders := s.byPath[p]; holders != nil {
+		delete(holders, k)
+		if len(holders) > 0 {
+			return
+		}
+		delete(s.byPath, p)
+	}
+	s.unwatch[p] = true
+}
+
+// releaseAll lets go of every file of r (s.mu held).
+func (s *SessionChatSource) releaseAll(k chatKey, r *chatRun) {
+	for p := range r.watched {
+		s.release(k, p)
+	}
+}
+
+// unheld queues the files of paths no chat holds (s.mu held).
+func (s *SessionChatSource) unheld(paths []string) {
+	for _, p := range paths {
+		if s.byPath[p] == nil {
+			s.unwatch[p] = true
+		}
+	}
+}
+
+// syncWatcher does the watcher's I/O for the queued files (s.wmu held, s.mu
+// not): a file still unheld is removed — one held again since it was queued
+// stays — and a watcher holding nothing is closed.
+func (s *SessionChatSource) syncWatcher() {
+	s.mu.Lock()
 	w := s.fw
 	var remove []string
-	for p := range r.watched {
-		if holders := s.byPath[p]; holders != nil {
-			delete(holders, k)
-			if len(holders) > 0 {
-				continue
-			}
-			delete(s.byPath, p)
+	for p := range s.unwatch {
+		if s.byPath[p] == nil {
+			remove = append(remove, p)
 		}
-		remove = append(remove, p)
 	}
+	clear(s.unwatch)
 	closing := w != nil && len(s.byPath) == 0
 	if closing {
 		s.fw = nil
 	}
-	return func() {
-		if w == nil {
-			return
-		}
-		if closing {
-			_ = w.Close()
-			return
-		}
+	s.mu.Unlock()
+	switch {
+	case w == nil:
+	case closing:
+		_ = w.Close()
+	default:
 		for _, p := range remove {
 			if err := w.Remove(p); err != nil && !errors.Is(err, fsnotify.ErrNonExistentWatch) {
 				log.Printf("hub slices: unwatching a session chat file failed (%s)", errClass(err))
@@ -478,19 +510,29 @@ func (s *SessionChatSource) release(k chatKey, r *chatRun) func() {
 	}
 }
 
-// fallBack sends k to the Every tick and lets go of its files.
-func (s *SessionChatSource) fallBack(k chatKey, gen int, err error) {
+// lockedSync is syncWatcher for a caller not holding s.wmu.
+func (s *SessionChatSource) lockedSync() {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	s.syncWatcher()
+}
+
+// fallBack sends k to the Every tick, lets go of its files and of added —
+// the files this pass added for it — and logs once (s.wmu held, s.mu not).
+func (s *SessionChatSource) fallBack(k chatKey, gen int, added []string, err error) {
 	s.mu.Lock()
+	s.unheld(added)
 	r, ok := s.runs[k]
-	if !ok || s.generation != gen || r.fallback {
-		s.mu.Unlock()
-		return
+	first := ok && s.generation == gen && !r.fallback
+	if first {
+		s.releaseAll(k, r)
+		r.fallback, r.watched = true, nil
 	}
-	done := s.release(k, r)
-	r.fallback, r.watched = true, nil
 	s.mu.Unlock()
-	done()
-	log.Printf("hub slices: cannot watch the files of the session chat of session %d (%s); reading it every %s", k.session, errClass(err), s.o.Timing.Every)
+	s.syncWatcher()
+	if first {
+		log.Printf("hub slices: cannot watch the files of the session chat of session %d (%s); reading it every %s", k.session, errClass(err), s.o.Timing.Every)
+	}
 }
 
 // forward turns w's events into dirty marks until w is closed.
@@ -583,7 +625,7 @@ func (s *SessionChatSource) nextDue() (time.Time, bool) {
 			}
 			consider(at)
 		}
-		if r.ticks(k, r.live) || r.fallback && r.payload == nil {
+		if r.ticks(k, r.live) && (r.live || r.payload == nil || !r.fetched) {
 			if at := r.last.Add(t.Every); at.After(now) {
 				consider(at)
 			}

@@ -32,6 +32,8 @@ type fakeWatcher struct {
 	errs   chan error
 	closed bool
 	addErr error
+	// failAdd > 0 fails the failAdd-th Add of an existing file.
+	failAdd, adds int
 }
 
 func (f *fakeWatcher) Add(p string) error {
@@ -40,8 +42,12 @@ func (f *fakeWatcher) Add(p string) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.adds++
 	if f.addErr != nil {
 		return f.addErr
+	}
+	if f.failAdd > 0 && f.adds == f.failAdd {
+		return errors.New("too many open files")
 	}
 	f.paths[p] = true
 	return nil
@@ -105,6 +111,7 @@ type filesRig struct {
 	// live is the main feed's live block (nil = none); liveErr fails it.
 	live     func() *sessionfeed.Live
 	liveErr  bool
+	fetchErr error
 	isLive   bool
 	active   bool
 	addErr   error
@@ -157,6 +164,12 @@ func (r *filesRig) options() SessionChatOptions {
 				case <-ctx.Done():
 					return ChatRead{}, ctx.Err()
 				}
+			}
+			r.mu.Lock()
+			fetchErr := r.fetchErr
+			r.mu.Unlock()
+			if fetchErr != nil && toolUseID == "" {
+				return ChatRead{}, fetchErr
 			}
 			if toolUseID != "" {
 				if p := r.agentPath("a1"); exists(p) {
@@ -844,4 +857,152 @@ func TestChatFiles_ReadInFlightRearms(t *testing.T) {
 		r.sleep(10 * time.Second)
 		r.wantReads(3, "10 s after the held read")
 	})
+}
+
+// A launch whose status is still unknown (its sidecar unread) is not
+// watchable yet: the chat ticks while the parent transcript is quiet, and
+// the child's run is picked up when it resolves.
+func TestChatFiles_UnknownLaunchTicksUntilResolved(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newFilesRig(t)
+		sidecar := filepath.Join(r.dir, "conv", "subagents", "agent-a1.meta.json")
+		r.live = func() *sessionfeed.Live {
+			if !exists(sidecar) {
+				return runningAgent("", sessionfeed.StatusUnknown)
+			}
+			return runningAgent("a1", sessionfeed.StatusRunning)
+		}
+		r.start()
+		r.sleep(3 * time.Second)
+		r.wantReads(2, "the tick while the launch is unresolved")
+		touch(t, r.dir, "conv/subagents/agent-a1.meta.json")
+		sub := touch(t, r.dir, "conv/subagents/agent-a1.jsonl")
+		r.sleep(3 * time.Second)
+		r.wantReads(3, "the tick after the child appeared")
+		r.wantWatched("after the launch resolved", r.conv, sub)
+		r.sleep(time.Second)
+		r.wantReads(4, "the reconcile read")
+		r.sleep(30 * time.Second)
+		r.wantReads(4, "30 s once the child is watched")
+		r.fire(sub)
+		r.sleep(250 * time.Millisecond)
+		r.wantReads(5, "the child's write")
+	})
+}
+
+// A first read that fails while the files are watched retries on the tick
+// until one succeeds, then stops.
+func TestChatFiles_FirstFetchFailsTicks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newFilesRig(t)
+		r.fetchErr = errors.New("database is locked")
+		r.start()
+		r.wantWatched("with the read failing", r.conv)
+		r.sleep(6 * time.Second)
+		r.wantReads(3, "two ticks after the failed open read")
+		r.set(func() { r.fetchErr = nil })
+		r.sleep(3 * time.Second)
+		r.wantReads(4, "the tick that succeeds")
+		r.sleep(30 * time.Second)
+		r.wantReads(4, "30 s after a read succeeded")
+	})
+}
+
+// armRig is a source with chats held by hand, for the watcher's
+// bookkeeping.
+func armRig(t *testing.T, w *fakeWatcher) *SessionChatSource {
+	t.Helper()
+	return SessionChat(handlers.NewChatWatchRegistry(), nil, SessionChatOptions{
+		Fetch:      func(context.Context, int64, string) (ChatRead, error) { return ChatRead{}, nil },
+		NewWatcher: func() (FileWatcher, error) { return w, nil },
+	})
+}
+
+func holdRun(s *SessionChatSource, k chatKey, paths ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := &chatRun{}
+	for _, p := range paths {
+		r.convs = append(r.convs, sessionfeed.Conversation{Path: p})
+	}
+	s.runs[k] = r
+}
+
+func dropRun(s *SessionChatSource, k chatKey) {
+	s.mu.Lock()
+	if r, ok := s.runs[k]; ok {
+		s.releaseAll(k, r)
+		delete(s.runs, k)
+	}
+	s.mu.Unlock()
+	s.lockedSync()
+}
+
+// A file one chat lets go of while another takes it is never removed from
+// under the new holder, which still gets its events.
+func TestChatFiles_ReleaseAndReaddKeepTheWatch(t *testing.T) {
+	p := touch(t, t.TempDir(), "conv.jsonl")
+	w := &fakeWatcher{paths: map[string]bool{}, events: make(chan string, 16), errs: make(chan error, 1)}
+	s := armRig(t, w)
+	defer s.dropAll()
+	a, b := chatKey{session: 1}, chatKey{session: 2}
+	// Chat 1 lets go of the file (queued, not yet removed), then chat 2
+	// takes it: the queued removal must not drop chat 2's watch.
+	holdRun(s, a, p)
+	s.arm(a, 0)
+	s.mu.Lock()
+	s.releaseAll(a, s.runs[a])
+	delete(s.runs, a)
+	s.mu.Unlock()
+	holdRun(s, b, p)
+	s.arm(b, 0)
+	if got := w.watched(); !slices.Equal(got, []string{p}) {
+		t.Fatalf("after the hand-over the watcher holds %v, want %s", got, p)
+	}
+	dropRun(s, b)
+	for i := range 200 {
+		holdRun(s, a, p)
+		holdRun(s, b, p)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); s.arm(a, 0); dropRun(s, a) }()
+		go func() { defer wg.Done(); dropRun(s, b); holdRun(s, b, p); s.arm(b, 0) }()
+		wg.Wait()
+		if got := w.watched(); !slices.Equal(got, []string{p}) {
+			t.Fatalf("round %d: the watcher holds %v while chat 2 holds %s", i, got, p)
+		}
+		dropRun(s, b)
+	}
+	holdRun(s, b, p)
+	s.arm(b, 0)
+	s.fileEvent(w, p, false)
+	s.mu.Lock()
+	dirty := s.runs[b].dirty
+	s.mu.Unlock()
+	if !dirty {
+		t.Fatal("the new holder got no event")
+	}
+}
+
+// An Add failing part-way lets go of what that pass added: only the other
+// chat's file stays watched, and the failed chat holds nothing.
+func TestChatFiles_FailedAddRollsBack(t *testing.T) {
+	dir := t.TempDir()
+	w := &fakeWatcher{paths: map[string]bool{}, events: make(chan string, 16), errs: make(chan error, 1), failAdd: 4}
+	s := armRig(t, w)
+	defer s.dropAll()
+	other, k := chatKey{session: 1}, chatKey{session: 2}
+	kept := touch(t, dir, "other.jsonl")
+	holdRun(s, other, kept)
+	s.arm(other, 0) // Add 1
+	holdRun(s, k, touch(t, dir, "a.jsonl"), touch(t, dir, "b.jsonl"), touch(t, dir, "c.jsonl"))
+	s.arm(k, 0) // Adds 2, 3, then 4 fails
+	if got := w.watched(); !slices.Equal(got, []string{kept}) {
+		t.Fatalf("after the failed Add the watcher holds %v, want only %s", got, kept)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.byPath) != 1 || s.byPath[kept] == nil || !s.runs[k].fallback || len(s.runs[k].watched) != 0 {
+		t.Fatalf("after the failed Add: byPath %v, fallback %v, held %v", s.byPath, s.runs[k].fallback, s.runs[k].watched)
+	}
 }

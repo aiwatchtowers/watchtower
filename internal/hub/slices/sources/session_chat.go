@@ -159,8 +159,13 @@ type SessionChatSource struct {
 	// fw is the one file watcher of every chat (nil while none holds a
 	// file); byPath is which chats hold each watched file, so a file two
 	// records watch is opened once and one write marks both.
-	fw     FileWatcher
-	byPath map[string]map[chatKey]bool
+	// wmu serialises the watcher's I/O with its ownership changes (taken
+	// before mu); unwatch is the files that lost their last holder, for
+	// syncWatcher to remove unless held again.
+	fw      FileWatcher
+	byPath  map[string]map[chatKey]bool
+	wmu     sync.Mutex
+	unwatch map[string]bool
 }
 
 // chatKey is one watched feed.
@@ -210,7 +215,7 @@ func SessionChat(w handlers.ChatWatches, d *db.DB, o SessionChatOptions) *Sessio
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	s := &SessionChatSource{w: w, d: d, o: o, runs: map[chatKey]*chatRun{}, byPath: map[string]map[chatKey]bool{}, wake: make(chan struct{}, 1)}
+	s := &SessionChatSource{w: w, d: d, o: o, runs: map[chatKey]*chatRun{}, byPath: map[string]map[chatKey]bool{}, unwatch: map[string]bool{}, wake: make(chan struct{}, 1)}
 	dirs := o.Dirs
 	if dirs == (sessionfeed.Dirs{}) && (s.o.Fetch == nil || s.o.Conversations == nil) {
 		dirs = defaultFeedDirs()
@@ -370,18 +375,18 @@ func (s *SessionChatSource) activeKeys() map[chatKey]bool {
 // files; s.mu held. The returned func does the watcher's I/O and must be
 // called after unlocking.
 func (s *SessionChatSource) prune(active map[chatKey]bool) func() {
-	var dones []func()
+	pruned := false
 	for k, r := range s.runs {
 		if !active[k] {
-			dones = append(dones, s.release(k, r))
+			s.releaseAll(k, r)
 			delete(s.runs, k)
+			pruned = true
 		}
 	}
-	return func() {
-		for _, d := range dones {
-			d()
-		}
+	if !pruned {
+		return func() {}
 	}
+	return s.lockedSync
 }
 
 // takeDue drops the runs of expired watches and stamps the due ones as
@@ -430,7 +435,7 @@ func (s *SessionChatSource) isDue(k chatKey, r *chatRun, isLive bool, now time.T
 	case r.requested || r.convsChanged || r.reconcile || r.payload != nil && isLive != r.storedLive:
 		return true
 	}
-	tick := r.ticks(k, isLive) && (isLive || r.payload == nil)
+	tick := r.ticks(k, isLive) && (isLive || r.payload == nil || !r.fetched)
 	return tick && now.Sub(r.last) >= t.Every || r.dirty && !now.Before(r.dirtyDue(t))
 }
 
@@ -446,6 +451,10 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 	if ctx.Err() != nil {
 		return
 	}
+	s.withRun(k, gen, func(r *chatRun) {
+		r.failed = err != nil
+		r.fetched = r.fetched || err == nil
+	})
 	if err == nil {
 		defer s.settle(k, gen, &read)
 	} else {
@@ -543,10 +552,13 @@ func sameLiveBlock(a, b *sessionfeed.Live) bool {
 // stopped).
 func (s *SessionChatSource) dropAll() {
 	s.w.DropAll()
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
 	s.mu.Lock()
 	w := s.fw
 	s.fw = nil
 	clear(s.byPath)
+	clear(s.unwatch)
 	clear(s.runs)
 	s.generation++
 	s.mu.Unlock()
