@@ -412,13 +412,19 @@ type flipGit struct {
 	mu    sync.Mutex
 	lists int
 	flip  func()
+	// at is the `worktree list` run flip comes before; 0 = the 2nd.
+	at int
 }
 
 func (g *flipGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
 	if slices.Equal(args, []string{"worktree", "list", "--porcelain"}) {
 		g.mu.Lock()
 		g.lists++
-		if g.lists == 2 && g.flip != nil {
+		at := g.at
+		if at == 0 {
+			at = 2
+		}
+		if g.lists == at && g.flip != nil {
 			g.flip()
 		}
 		g.mu.Unlock()
@@ -657,4 +663,109 @@ func TestFinishTrash_InterruptedDeleteIsFinishedLater(t *testing.T) {
 	if exists(trash[0]) {
 		t.Fatal("the leftover is still there")
 	}
+}
+
+// TestProj18_PruneRechecksBeforeEachFolder (review round 5): the fresh
+// re-check runs again right before each build folder, so facts that change
+// while the first one is deleted — a process starts in the worktree, the
+// session resumes — keep the next one.
+func TestProj18_PruneRechecksBeforeEachFolder(t *testing.T) {
+	t.Parallel()
+	for name, flip := range map[string]func(f *fixture, root string){
+		"a process starts": func(f *fixture, root string) {
+			f.procs.list = []Proc{{PID: 4246, PPID: 77, UID: os.Getuid(), Start: "s", Exe: "/bin/zsh", Cwd: root}}
+		},
+		"the session resumes": func(f *fixture, _ string) { f.store.activity[0].Finished = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			root, builds := f.unpushedWithBuild() // <root>/.build is walked before <root>/Pkg/.build
+			f.endSession()
+			// Runs: the evaluation's, the re-check before the first
+			// folder, the re-check before the second.
+			f.git = &flipGit{at: 3, flip: func() { flip(f, root) }}
+			res := f.apply(Request{PruneBuilds: true, RequireEnded: true}, nil, nil)
+			it := findItem(t, res.Plan, "worktree:"+root)
+			if !slices.Equal(it.BuildsRemoved, []string{builds[0]}) || it.BuildsChecked {
+				t.Fatalf("item %+v", it)
+			}
+			if !exists(filepath.Join(builds[1], buildMarker)) {
+				t.Fatal("the second build went on a stale check")
+			}
+		})
+	}
+}
+
+// onceFailingGit fails the first `rev-parse --git-common-dir` run in dir
+// (the lock-key discovery's), as a broken repository would, and runs the
+// rest as the real git.
+type onceFailingGit struct {
+	SystemGit
+	dir    string
+	mu     sync.Mutex
+	failed bool
+}
+
+func (g *onceFailingGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	g.mu.Lock()
+	fail := !g.failed && dir == g.dir && slices.Equal(args, []string{"rev-parse", "--git-common-dir"})
+	g.failed = g.failed || fail
+	g.mu.Unlock()
+	if fail {
+		return nil, 128, &GitError{Args: args, Code: 128, Stderr: "fatal: injected failure"}
+	}
+	return g.SystemGit.RunGit(ctx, dir, bin, args...)
+}
+
+// TestProj18_UnlockableRepositoryIsNeverEvaluated (review round 5): a
+// folder whose repository the lock-key discovery cannot tell is never
+// evaluated, even when git answers later: a session's apply fails with
+// nothing done; a sweep of several folders leaves that folder out with a
+// note and acts on the others under their locks.
+func TestProj18_UnlockableRepositoryIsNeverEvaluated(t *testing.T) {
+	t.Parallel()
+	lock := func(locked *[]string) func(*Deps) {
+		return func(d *Deps) {
+			d.Lock = func(_ context.Context, repo string) (func(), error) {
+				*locked = append(*locked, repo)
+				return func() {}, nil
+			}
+		}
+	}
+	t.Run("session", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		root := f.pushedWork("wt", "feat/x")
+		f.record(root, "feat/x")
+		f.git = &onceFailingGit{dir: f.repo}
+		var locked []string
+		d := f.deps()
+		lock(&locked)(&d)
+		if _, err := Apply(context.Background(), d, Request{SessionID: testSession}, nil); err == nil {
+			t.Fatal("applied without the repository's lock")
+		}
+		if !exists(root) || len(locked) != 0 {
+			t.Fatalf("root exists %v, locked %v", exists(root), locked)
+		}
+	})
+	t.Run("sweep", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		hub := f.otherRepo("hub")
+		f.store.bench = []string{f.repo, hub}
+		homeWork := f.pushedWork("home-wt", "feat/home")
+		hubWork := f.pushedWorkIn(hub, "hub-wt", "feat/hub")
+		f.git = &onceFailingGit{dir: hub}
+		var locked []string
+		res := f.apply(Request{Sweep: true}, []string{"worktree:" + homeWork, "worktree:" + hubWork}, lock(&locked))
+		wantResultItem(t, res, "worktree:"+homeWork, ActionRemove, "", true)
+		wantResultItem(t, res, "worktree:"+hubWork, ActionKeep, ReasonNotInPlan, false)
+		if !exists(hubWork) || !slices.Equal(locked, []string{filepath.Join(f.repo, ".git")}) {
+			t.Fatalf("hub work exists %v, locked %v", exists(hubWork), locked)
+		}
+		if !slices.ContainsFunc(res.Notes, func(n string) bool { return strings.Contains(n, "injected failure") }) {
+			t.Fatalf("notes %v", res.Notes)
+		}
+	})
 }

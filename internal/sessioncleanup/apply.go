@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -156,6 +157,9 @@ type repoScope struct {
 	// home is the workbench's home folder, read when the folders above
 	// leave the evaluation to it.
 	home string
+	// unlocked are the folders (resolved) whose repository lockKeys could
+	// not tell, each with its note: never evaluated (sweepBuilders).
+	unlocked map[string]string
 }
 
 // folders are the folders the scope evaluates.
@@ -216,7 +220,21 @@ func lockRepositories(ctx context.Context, d Deps, r Request) (func(), error) {
 			unlocks[i]()
 		}
 	}
-	for _, k := range lockKeys(ctx, d, r.scope.folders(r.Sweep)) {
+	folders := r.scope.folders(r.Sweep)
+	keys, unlocked := lockKeys(ctx, d, folders)
+	// A folder whose repository could not be told is never evaluated: its
+	// lock is not held. A sweep of several folders leaves it out with a
+	// note; anywhere else the apply fails, nothing done.
+	r.scope.unlocked = unlocked
+	if len(unlocked) > 0 && (!r.Sweep || len(folders) <= 1) {
+		folder := slices.Sorted(maps.Keys(unlocked))[0]
+		if !gitbin.InsideRepository(folder) {
+			// As the evaluation words it (loadRepo).
+			return nil, fmt.Errorf("the workbench folder %s is not in a git repository", folder)
+		}
+		return nil, errors.New(unlocked[folder])
+	}
+	for _, k := range keys {
 		unlock, err := d.Lock(ctx, k)
 		if err != nil {
 			unlockAll()
@@ -228,24 +246,29 @@ func lockRepositories(ctx context.Context, d Deps, r Request) (func(), error) {
 }
 
 // lockKeys are the git common dirs (symlink-resolved, sorted, distinct) of
-// folders. A folder in no repository, or whose common dir git cannot tell,
-// gives no key: the evaluation fails on it, or a sweep skips it, as it
-// does today.
-func lockKeys(ctx context.Context, d Deps, folders []string) []string {
+// folders. A folder that is missing, in no repository, or whose common dir
+// git cannot tell gives no key and is returned in unlocked with its note
+// (fail closed: lockRepositories keeps it out of the evaluation).
+func lockKeys(ctx context.Context, d Deps, folders []string) (keys []string, unlocked map[string]string) {
 	bin, ok := d.Git.GitBinary()
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	g := gitCmd{run: d.Git, bin: bin}
 	seen := map[string]bool{}
-	var keys []string
+	unlocked = map[string]string{}
 	for _, f := range folders {
+		if f == "" {
+			continue
+		}
 		folder := resolvePath(f)
-		if f == "" || !gitbin.InsideRepository(folder) {
+		if note := unsweptNote(folder); note != "" {
+			unlocked[folder] = note
 			continue
 		}
 		out, err := g.output(ctx, folder, "rev-parse", "--git-common-dir")
 		if err != nil {
+			unlocked[folder] = fmt.Sprintf("%s: its repository could not be read (%v), not cleaned up", folder, err)
 			continue
 		}
 		k := absFrom(folder, strings.TrimSpace(string(out)))
@@ -255,7 +278,7 @@ func lockKeys(ctx context.Context, d Deps, folders []string) []string {
 		}
 	}
 	slices.Sort(keys)
-	return keys
+	return keys, unlocked
 }
 
 // applier carries one apply: the evaluated items it updates in place and

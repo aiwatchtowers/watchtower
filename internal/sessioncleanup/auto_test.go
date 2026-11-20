@@ -63,7 +63,7 @@ func TestApply_TakesTheRepositoryLockFirst(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		keys := lockKeys(context.Background(), f.deps(), sc.folders(r.Sweep))
+		keys, _ := lockKeys(context.Background(), f.deps(), sc.folders(r.Sweep))
 		if len(keys) != 1 || keys[0] != repo {
 			t.Fatalf("%+v: keys %v, err %v", r, keys, err)
 		}

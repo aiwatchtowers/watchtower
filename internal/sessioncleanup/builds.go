@@ -124,8 +124,9 @@ func (a *applier) pruneBuilds(ctx context.Context) {
 }
 
 // pruneWorktreeBuilds finds the worktree's build folders, drops those a
-// repository or checkout lives in outside the tool's own clones (holdsForeignGit), re-checks the worktree on fresh
-// facts (pruneCatches) right before deleting the rest, keeps any folder a
+// repository or checkout lives in outside the tool's own clones
+// (holdsForeignGit), re-checks the worktree on fresh facts (mayPrune)
+// right before deleting each of the rest, keeps any folder a
 // listed worktree lives in (worktreeInside), and deletes the rest; any
 // doubt leaves them. The walks come first, so the re-check is as close to
 // the removal as it can be, and a worktree with no build costs no
@@ -161,29 +162,18 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 		it.BuildsChecked = !doubt
 		return
 	}
-	b, err := a.fresh(ctx)
-	if err != nil {
-		it.BuildError = err.Error()
-		return
-	}
-	if !b.sessionEnded() || (a.req.RequireEnded && !b.sessionFinished()) {
-		return
-	}
-	w, ok := b.listedWorktree(root)
-	if !ok {
-		return
-	}
-	for _, c := range pruneCatches() {
-		reason, _, err := c(ctx, b, w)
+	for _, f := range found {
+		// Fresh facts right before each folder: deleting the one before
+		// may have taken long enough for a process, a session or a
+		// worktree to appear.
+		b, ok, err := a.mayPrune(ctx, root)
 		if err != nil {
 			it.BuildError = err.Error()
 			return
 		}
-		if reason != "" {
+		if !ok {
 			return
 		}
-	}
-	for _, f := range found {
 		if holder := b.worktreeInside(f.path); holder != "" {
 			continue // a linked worktree lives in it: its work is not build output
 		}
@@ -253,6 +243,35 @@ func (f foundBuild) managedChild(path string) bool {
 		return false
 	}
 	return slices.Contains(f.kind.managed, filepath.Dir(rel))
+}
+
+// mayPrune re-reads every fact (a fresh evaluation) and says whether root's
+// build may go now: the session ended (and, for RequireEnded, its finish
+// stands), root is still a listed linked worktree, and it passes every
+// pruneCatches check. The fresh builder comes back for the per-folder
+// checks; err is a check that could not be made.
+func (a *applier) mayPrune(ctx context.Context, root string) (*builder, bool, error) {
+	b, err := a.fresh(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if !b.sessionEnded() || (a.req.RequireEnded && !b.sessionFinished()) {
+		return nil, false, nil
+	}
+	w, ok := b.listedWorktree(root)
+	if !ok {
+		return nil, false, nil
+	}
+	for _, c := range pruneCatches() {
+		reason, _, err := c(ctx, b, w)
+		if err != nil {
+			return nil, false, err
+		}
+		if reason != "" {
+			return nil, false, nil
+		}
+	}
+	return b, true, nil
 }
 
 // listedWorktree is root as git lists it now, when it is a linked worktree

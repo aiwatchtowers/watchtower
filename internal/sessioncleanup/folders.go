@@ -73,6 +73,10 @@ func sweepBuilders(ctx context.Context, d Deps, r Request) ([]*builder, error) {
 	byRepo := map[string]*builder{}
 	for _, f := range folders {
 		folder := resolvePath(f)
+		if note, ok := r.scope.unlockedNote(folder); ok {
+			notes = append(notes, note) // its lock is not held: never evaluated
+			continue
+		}
 		if note := unsweptNote(folder); note != "" {
 			notes = append(notes, note)
 			continue
@@ -208,4 +212,13 @@ func dropForeignNotInPlan(items []Item) []Item {
 		out = append(out, it)
 	}
 	return out
+}
+
+// unlockedNote is the note of a folder Apply could not lock (repoScope.unlocked).
+func (s *repoScope) unlockedNote(folder string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	note, ok := s.unlocked[folder]
+	return note, ok
 }
