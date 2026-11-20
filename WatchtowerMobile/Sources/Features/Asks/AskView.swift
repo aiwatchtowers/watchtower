@@ -301,9 +301,9 @@ struct AskStatusRow: View {
 }
 
 /// The ask's bottom bar, as `AskFormModel.Bar` says: Close without answering
-/// beside Send or Next question (the Mac's Dismiss beside its answer
-/// buttons), or under a review's Request changes and Approve (mockup 10), or
-/// alone on a too-large ask; Previous and the footer under it.
+/// full width under the main action (Send, Next question, or a review's
+/// Request changes and Approve, mockup 10), or alone on a too-large ask;
+/// Previous and the footer under it.
 private struct AskSendBar: View {
     let form: AskFormModel
     let bar: AskFormModel.Bar
@@ -345,16 +345,31 @@ private struct AskSendBar: View {
             reviewBar
         case .next:
             if let page = form.question {
-                PrimaryActionBar(primary: BarAction(title: AskText.next) { model.next(of: page.count) }, secondary: close)
+                actionBar(BarAction(title: AskText.next) { model.next(of: page.count) })
             }
         case .send:
-            PrimaryActionBar(primary: BarAction(title: AskText.send, isEnabled: form.canSend) {
-                Task { await model.send(ask) }
-            }, secondary: close)
+            actionBar(BarAction(title: AskText.send, isEnabled: form.canSend) { Task { await model.send(ask) } })
         case .none:
             if let close {
                 BottomActionBar { closeButton(close) }
             }
+        }
+    }
+
+    /// Send or Next question, the bar's one main action, with Close without answering full width under it (as
+    /// under a review's verdicts).
+    @ViewBuilder private func actionBar(_ primary: BarAction) -> some View {
+        if let close {
+            BottomActionBar {
+                VStack(spacing: Spacing.regular) {
+                    Button(primary.title, action: primary.action)
+                        .buttonStyle(ProminentActionStyle())
+                        .disabled(!primary.isEnabled)
+                    closeButton(close)
+                }
+            }
+        } else {
+            PrimaryActionBar(primary: primary)
         }
     }
 
