@@ -76,6 +76,24 @@ func TestText(t *testing.T) {
 		{"stripe restricted", "k rk_live_abcdefghijklmnop1234 end", "k [secret] end"}, // leak-check:allow
 		{"gitlab", "t glpat-abcdefghijklmnopqrst end", "t [secret] end"},              // leak-check:allow
 		{"google", "k AIzaSyA1234567890abcdefghijklmnopqrstuv end", "k [secret] end"}, // leak-check:allow
+		// Review round 2 (#2112).
+		{"db key env", "DB_KEY=abc run", "DB_KEY=[secret] run"},                                                                                                                  // leak-check:allow
+		{"signing key env", "SIGNING_KEY='a b' run", "SIGNING_KEY=[secret] run"},                                                                                                 // leak-check:allow
+		{"dotted key", "x.key=abc", "x.key=[secret]"},                                                                                                                            // leak-check:allow
+		{"dash key", "tls-key=abc", "tls-key=[secret]"},                                                                                                                          // leak-check:allow
+		{"query key first", "https://example.com/m?key=abc&n=1", "https://example.com/m?key=[secret]&n=1"},                                                                       // leak-check:allow
+		{"query key later", "https://example.com/m?n=1&key=abc", "https://example.com/m?n=1&key=[secret]"},                                                                       // leak-check:allow
+		{"json escaped quote", `{"password":"pa\"ss","n":1}`, `{"password":[secret],"n":1}`},                                                                                     // leak-check:allow
+		{"shell escaped quote", `PASSWORD='it\'s' run`, "PASSWORD=[secret] run"},                                                                                                 // leak-check:allow
+		{"digest", `curl -H 'Authorization: Digest username="bob", nonce="n1", response="r1"' url`, `curl -H 'Authorization: [secret]' url`},                                     // leak-check:allow
+		{"digest double quoted", `-H "Authorization: Digest username=\"bob\", response=\"r1\"" url`, `-H "Authorization: [secret]" url`},                                         // leak-check:allow
+		{"digest unquoted line", "Authorization: Digest username=\"bob\", response=\"r1\"\nnext", "Authorization: [secret]\nnext"},                                               // leak-check:allow
+		{"two auth headers", `-H "Authorization: Bearer a1" -H "Proxy-Authorization: Basic b2"`, `-H "Authorization: Bearer [secret]" -H "Proxy-Authorization: Basic [secret]"`}, // leak-check:allow
+		{"adjacent secret flags", "x --password --token abc1", "x --password --token [secret]"},                                                                                  // leak-check:allow
+		{"short flag then secret flag", "x --password -v --token abc1", "x --password -v --token [secret]"},                                                                      // leak-check:allow
+		{"curl numeric user", "curl -u 1000:secret url", "curl -u [secret] url"},                                                                                                 // leak-check:allow
+		{"curl numeric pair", "curl -u 1000:1000 url", "curl -u [secret] url"},                                                                                                   // leak-check:allow
+		{"docker named user", "docker run -u app:pw img", "docker run -u [secret] img"},                                                                                          // leak-check:allow
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -101,6 +119,11 @@ func TestText_LeavesOrdinaryText(t *testing.T) {
 		"login --password --verbose",
 		"see http://localhost:8080/x",
 		"docker run -u 1000:1000 img",
+		"docker run --rm -it -u 0:0 img sh",
+		"podman exec -u 1000:1000 box sh",
+		"nerdctl container create -u 10:10 img",
+		"key=value sort",
+		"echo $PWD/x",
 		"tool --key=path/to/file --sort-key=name monkey=banana",
 		"gh auth login --with-token < tok.txt",
 		"x --token | jq",
@@ -171,5 +194,24 @@ func TestTextBounded_WorkBoundedByLimit(t *testing.T) {
 	a, b := allocated(small), allocated(big)
 	if b > 2*a+64<<10 {
 		t.Fatalf("4 MiB input allocated %d bytes vs %d for 4 KiB: work grows with input", b, a)
+	}
+}
+
+// A URL whose "@" falls past the read window: the kept text ends inside the
+// authority, so everything after "://" is masked.
+func TestTextBounded_OpenAuthorityAtCut(t *testing.T) {
+	in := "clone https://bob:" + strings.Repeat("p", 3000) + "@host/r.git" // leak-check:allow
+	if got, want := TextBounded(in, 200), "clone https://[secret]"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	// Cut by the rune limit inside the authority, @ within the window: the URL
+	// rule already redacted it.
+	in = strings.Repeat("a", 190) + " https://bob:pw@host/x" // leak-check:allow
+	if got := TextBounded(in, 200); strings.Contains(got, "pw") || strings.Contains(got, "bob") {
+		t.Fatalf("leaked: %q", got)
+	}
+	// Not cut: a URL ending the text stays.
+	if got := TextBounded("open https://example.com", 200); got != "open https://example.com" {
+		t.Fatalf("uncut URL changed: %q", got)
 	}
 }
