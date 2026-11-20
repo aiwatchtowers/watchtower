@@ -158,9 +158,10 @@ func (flakyReporter) Profiles(context.Context, []string) ([]db.AtlassianProfile,
 	return nil, nil
 }
 
-// TestPhaseAtlassianPDR_ErrorResetsTheIncompleteStreak: incomplete,
-// incomplete, error, incomplete is not pdrIncompleteCap incomplete runs in a
-// row, so the report is not stamped yet; every try waits pdrRetryAfter.
+// TestPhaseAtlassianPDR_ErrorResetsTheIncompleteStreak: two incomplete
+// runs, an error, then one more incomplete run are not pdrIncompleteCap
+// incomplete runs in a row, so the report is not stamped yet; every try
+// waits pdrRetryAfter.
 func TestPhaseAtlassianPDR_ErrorResetsTheIncompleteStreak(t *testing.T) {
 	d, database, _ := newExternalSyncTestDaemon(t)
 	seedConfluenceSource(t, database)
