@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import os
+import WatchtowerChatText
 
 /// What a watched file did: written or grown in place, or renamed/deleted
 /// (the source then watches a file no longer at its path).
@@ -85,9 +86,13 @@ package struct TranscriptWatchTargets: Equatable, Sendable {
     package var current: [String]
     /// Agent ids the newest read calls running.
     package var running: Set<String>
+    /// The running agents of the live snapshot: while one has no transcript
+    /// listed yet (a Codex rollout made later in another date directory),
+    /// nothing would report its change, so the fallback tick runs.
+    package var mustCover: Set<String>
 
-    package init(paths: [String] = [], current: [String] = [], running: Set<String> = []) {
-        self.paths = paths; self.current = current; self.running = running
+    package init(paths: [String] = [], current: [String] = [], running: Set<String> = [], mustCover: Set<String> = []) {
+        self.paths = paths; self.current = current; self.running = running; self.mustCover = mustCover
     }
 }
 
@@ -127,6 +132,7 @@ package final class TranscriptWatch {
     private var timer: (any Cancellable)?
     private var loggedOpenFailures: Set<String> = []
     private var loggedNoPaths = false
+    private var loggedUncovered = false
 
     package init(
         fileEvents: FileEventSource,
@@ -144,12 +150,17 @@ package final class TranscriptWatch {
     package var watchedPaths: Set<String> { Set(sources.keys) }
     /// Reads also come from the fallback timer.
     package var isFallback: Bool { isRunning && (sources.isEmpty || openFailed || readFailed) }
+    /// Every change reaches the watch: it runs, every followed file is
+    /// open and the last read succeeded. A quiet transcript then means
+    /// nothing happened, not that the pane is out of date (spec C4).
+    package var isHealthy: Bool { isRunning && !isFallback }
 
-    /// A read succeeded: follow its targets (applied at once while running,
-    /// kept for `start()` otherwise).
-    package func update(_ targets: TranscriptWatchTargets) {
+    /// A read came back: follow its targets (applied at once while running,
+    /// kept for `start()` otherwise). `readFailed` keeps the fallback tick
+    /// (a follow whose other read failed).
+    package func update(_ targets: TranscriptWatchTargets, readFailed: Bool = false) {
         self.targets = targets
-        readFailed = false
+        self.readFailed = readFailed
         guard isRunning else { return }
         apply()
     }
@@ -204,8 +215,9 @@ package final class TranscriptWatch {
         return stem.isEmpty ? nil : stem
     }
 
-    /// The paths to watch in priority order, and how many the cap cut.
-    package static func select(_ targets: TranscriptWatchTargets) -> (paths: [String], cut: Int) {
+    /// The paths to watch in priority order, how many the cap cut, and
+    /// whether a `mustCover` agent has no transcript listed.
+    package static func select(_ targets: TranscriptWatchTargets) -> (paths: [String], cut: Int, uncovered: Bool) {
         var out: [String] = []
         var seen: Set<String> = []
         func add(_ path: String) { if seen.insert(path).inserted { out.append(path) } }
@@ -222,18 +234,27 @@ package final class TranscriptWatch {
             if agentFile, let id = fileID(path), targets.running.contains(id) { add(path) }
         }
         let kept = Array(out.prefix(maxSources))
-        return (kept, out.count - kept.count)
+        let listedAgents = Set(targets.paths.compactMap { path -> String? in
+            let name = (path as NSString).lastPathComponent
+            guard name.hasSuffix(".jsonl"), name.hasPrefix("agent-") || name.hasPrefix("rollout-") else { return nil }
+            return fileID(path)
+        })
+        return (kept, out.count - kept.count, !targets.mustCover.isSubset(of: listedAgents))
     }
 
     private func apply() {
-        let (wanted, cut) = Self.select(targets)
+        let (wanted, cut, uncovered) = Self.select(targets)
         let wantedSet = Set(wanted)
         for path in sources.keys where !wantedSet.contains(path) {
             sources.removeValue(forKey: path)?.cancel()
         }
         var opened = false
-        var failed = cut > 0
+        var failed = cut > 0 || uncovered
         if cut > 0 { Self.log.notice("Workchat watch: \(cut) paths over the \(Self.maxSources)-source cap, reading every 3 s too") }
+        if uncovered, !loggedUncovered {
+            Self.log.notice("Workchat watch: a running agent has no transcript to watch yet, reading every 3 s too")
+        }
+        loggedUncovered = uncovered
         for path in wanted where sources[path] == nil {
             do {
                 sources[path] = try fileEvents.open(path) { [weak self] event in
@@ -318,5 +339,20 @@ package final class TranscriptWatch {
         } else {
             DispatchQueue.main.async { MainActor.assumeIsolated(work) }
         }
+    }
+}
+
+/// The live line's freshness on the Mac (spec C4, as on the phone): the
+/// line goes out of date by the health of the watch behind it, not by the
+/// age of the last read. Reads come on change only, so a long quiet tool
+/// run has an old `observedAt` and is still current while the watch sees
+/// every change.
+package enum WorkchatLiveFreshness {
+    /// `snapshot` observed at `now` while `watched`; as read otherwise. A
+    /// snapshot without `observedAt` (unavailable) stays as it is.
+    package static func effective(_ snapshot: SessionFeedLive?, watched: Bool, now: Date) -> SessionFeedLive? {
+        guard watched, var shown = snapshot, shown.observedAt != nil else { return snapshot }
+        shown.observedAt = now
+        return shown
     }
 }

@@ -257,7 +257,7 @@ struct SessionChatView: View {
         let view = self, store = store, memory = vm.paneMemory, pane = paneKey
         return {
             Self.toggleSteps(memory: memory, pane: pane) {
-                WorkchatLivePresentation.stepsSlot(snapshot: view.activityHidden ? nil : store.live, error: store.liveError,
+                WorkchatLivePresentation.stepsSlot(snapshot: view.activityHidden ? nil : store.presentedLive(now: .now), error: store.liveError,
                                                    working: view.busy, now: .now)
             }
         }
@@ -287,7 +287,8 @@ struct SessionChatView: View {
                          feedLoaded: store.feedLoaded, feedError: store.error,
                          onRetry: { Task { await store.poller.refresh() } },
                          onRetryList: { Task { await store.poller.refresh() } },
-                         onOpenAgent: { path.push($0) })
+                         onOpenAgent: { path.push($0) },
+                         isWatched: { store.isLiveWatched })
     }
 
     /// One subagent in place of the feed: the path bar, its run, and the

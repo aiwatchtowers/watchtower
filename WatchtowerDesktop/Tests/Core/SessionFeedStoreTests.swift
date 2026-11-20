@@ -868,6 +868,100 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertTrue(source.openPaths.isEmpty, "a finished run's follow closes its watch")
     }
 
+    // MARK: - freshness by watch health (spec C4)
+
+    private let observed = "2026-11-02T12:00:00Z"
+
+    private func livePayload() -> String {
+        #"{"session_id":7,"cursor":"c1","entries":[],"subagents":[],"paths":["/p/proj/s1.jsonl"],"live_ok":true,"#
+            + #""live":{"observed_at":"\#(observed)","turn_active":true,"agents":[],"agents_state":"known","#
+            + #""current":{"id":"t1","tool":"Bash","summary":"go test","started_at":"2026-11-02T11:59:55Z","more":0}}}"#
+    }
+
+    private func row(_ store: SessionFeedStore, at now: Date) -> WorkchatLivePresentation.Row? {
+        WorkchatLivePresentation.row(snapshot: store.presentedLive(now: now), error: store.liveError, loaded: store.liveLoaded,
+                                     working: true, stateAt: nil, now: now)
+    }
+
+    func testAHealthyWatchKeepsAQuietLineCurrent() async throws {
+        let runner = GateRunner([livePayload()])
+        let (store, source, clock) = watchedStore(runner)
+        let task = await startFollowing(store, runner, source, clock)
+        await settle { store.isLiveWatched }
+        XCTAssertTrue(store.isLiveWatched)
+        clock.advance(by: .seconds(60))
+        await settle()
+        XCTAssertEqual(runner.calls.count, 2, "no event for a minute: no read")
+        let now = try XCTUnwrap(SessionFeedEntry.parseDate(observed)).addingTimeInterval(60)
+        let shown = try XCTUnwrap(row(store, at: now))
+        XCTAssertFalse(shown.warning, "a quiet transcript under a healthy watch is not out of date")
+        XCTAssertEqual(shown.text, "go test")
+        XCTAssertNotNil(shown.elapsed, "the step's timer still counts")
+        XCTAssertEqual(store.live?.observedAt, SessionFeedEntry.parseDate(observed), "the snapshot itself is unchanged")
+        task.cancel()
+        await task.value
+    }
+
+    func testLostCoverageShowsTheLineOutOfDate() async throws {
+        let runner = GateRunner([livePayload()])
+        let (store, source, clock) = watchedStore(runner)
+        source.failing = [conv]
+        let task = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
+        await settle { runner.calls.count == 1 && store.liveLoaded }
+        XCTAssertFalse(store.isLiveWatched, "a file that cannot be watched")
+        let now = try XCTUnwrap(SessionFeedEntry.parseDate(observed)).addingTimeInterval(60)
+        let shown = try XCTUnwrap(row(store, at: now))
+        XCTAssertTrue(shown.warning)
+        XCTAssertTrue(shown.text.hasPrefix("Activity out of date"), shown.text)
+        _ = clock
+        task.cancel()
+        await task.value
+    }
+
+    func testAFailedReadShowsTheLineUnavailable() async throws {
+        let runner = FakeRunner([.success(livePayload()), .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))]
+                                + Array(repeating: .success(livePayload()), count: 3))
+        let (store, source, clock) = watchedStore(runner)
+        let task = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
+        await settle { runner.calls.count == 1 && !source.openPaths.isEmpty }
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 2 && store.error != nil }
+        XCTAssertFalse(store.isLiveWatched, "the last read failed")
+        let now = try XCTUnwrap(SessionFeedEntry.parseDate(observed)).addingTimeInterval(60)
+        let shown = try XCTUnwrap(row(store, at: now))
+        XCTAssertTrue(shown.warning, "never shown as current after a failed read")
+        task.cancel()
+        await task.value
+    }
+
+    /// A failed child read is not masked by the parent's good one: the tick
+    /// keeps running until both have succeeded since.
+    func testSubagentChildFailureKeepsTheFallbackAfterAParentSuccess() async {
+        let child = "/p/proj/s1/subagents/agent-a1.jsonl"
+        let runner = FakeRunner([
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")),
+            .success(payload(paths: [conv])),
+            .success(payload(paths: [child])),
+            .success(payload(paths: [conv]))
+        ])
+        let (store, source, clock) = watchedStore(runner)
+        let running = Flag(true)
+        let task = Task {
+            await store.followSubagent("tu1", readsMainFeed: true, isRunning: { running.value }, isOnScreen: { true },
+                                       onEntries: { _ in })
+        }
+        await settle { runner.calls.count == 2 && !source.openPaths.isEmpty }
+        await settle()
+        XCTAssertFalse(store.isSubagentWatched("tu1"), "the child's failure keeps the fallback armed")
+        clock.advance(by: .seconds(3))
+        await settle { runner.calls.count == 4 }
+        await settle()
+        XCTAssertTrue(store.isSubagentWatched("tu1"), "both reads succeeded since: watched")
+        running.value = false
+        task.cancel()
+        await task.value
+    }
+
     func testSubagentFollowOffScreenReturnsAtOnce() async {
         let runner = pathsRunner()
         let (store, source, _) = watchedStore(runner)

@@ -257,6 +257,35 @@ final class TranscriptWatchTests: XCTestCase {
         XCTAssertEqual(rig.source.opens.filter { $0 == conv }.count, 2, "the path is opened again")
     }
 
+    func testARunningAgentWithoutATranscriptKeepsTheFallback() {
+        let rolloutID = "0198a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b"
+        let rollout = "/s/2026/11/21/rollout-2026-11-21T00-00-01-\(rolloutID).jsonl"
+        let rig = ready(targets([conv], running: [rolloutID]))
+        rig.watch.update(TranscriptWatchTargets(paths: [conv], current: [conv], running: [rolloutID], mustCover: [rolloutID]))
+        XCTAssertTrue(rig.watch.isFallback, "a running agent whose file is not listed yet is read by the tick")
+        XCTAssertFalse(rig.watch.isHealthy)
+        rig.clock.advance(by: .seconds(3))
+        XCTAssertEqual(rig.refreshes.at.count, 1)
+        rig.watch.readStarted()
+        rig.watch.update(TranscriptWatchTargets(paths: [conv, rollout], current: [conv], running: [rolloutID],
+                                                mustCover: [rolloutID]))
+        XCTAssertFalse(rig.watch.isFallback, "its transcript is listed and watched: the tick stops")
+        XCTAssertTrue(rig.source.openPaths.contains(rollout))
+    }
+
+    func testHealthyOnlyWhileRunningWithEverySourceOpenAndAGoodRead() {
+        let rig = ready(targets())
+        XCTAssertTrue(rig.watch.isHealthy)
+        rig.watch.markReadFailed()
+        XCTAssertFalse(rig.watch.isHealthy)
+        rig.watch.update(targets(), readFailed: true)
+        XCTAssertFalse(rig.watch.isHealthy, "a follow's other read still failing keeps the tick")
+        rig.watch.update(targets())
+        XCTAssertTrue(rig.watch.isHealthy)
+        rig.watch.stop()
+        XCTAssertFalse(rig.watch.isHealthy)
+    }
+
     func testStopClosesEverySourceAndTimerAndStartReopens() {
         let rig = ready(targets([conv, subagentsDir]))
         rig.source.fire(conv)
