@@ -1,0 +1,329 @@
+# Security audit team — design
+
+**Date:** 2026-11-20 (rev. 2: Cloudflare engine) · **Board:** #1115 · **Branch:** `feature/security-audit-team`
+
+## 1. Intent
+
+The owner wants to point the strongest available model (Mythos) at Watchtower's `main`
+periodically and work through the findings. The owner starts a run; the skill asks which
+kind (ask #779):
+
+- **Full**: the whole of `origin/main`.
+- **Range**: the code changed between two tags (default: the last audited tag → the
+  newest tag), plus what that changed code now reaches.
+
+The audit engine is Cloudflare's open-source
+[`security-audit-skill`](https://github.com/cloudflare/security-audit-skill) (MIT), picked
+by the owner on 2026-11-20 over our own hand-built team: it already has reconnaissance, a
+deterministic coverage ledger, coverage-led hunter waves with coverage critics, an
+independent fresh verifier per candidate, prior-run carry-over, `quick|standard|deep`
+profiles, scoped runs over the diff between two refs, a JSON findings schema with node
+validators, and domain companions (LLM, desktop/mobile/local IPC, data lifecycle, supply
+chain…) that match Watchtower's surfaces.
+
+What we build is the **Watchtower layer** around it:
+1. a pinned, vendored copy of the engine;
+2. Watchtower context the engine's reconnaissance and hunters read (surfaces, trust
+   boundaries, inventory contracts, accepted risks);
+3. the run policy Watchtower needs (read-only, nothing executed; outputs outside git);
+4. a wrapper skill `/security-audit` (preflight, Full/Range question, model routing,
+   run, import);
+5. the owner's triage: one private claude.ai Artifact fed from the engine's
+   `findings.json`, where the owner sets a status and a note per finding, and the next run
+   reads those back.
+
+Why outside git: the repository is public; an open vulnerability written into a spec, a
+PR, a commit or a board comment is a disclosure.
+
+## 2. Goals, non-goals, anti-goals
+
+Goals
+- Depth and few false positives — delivered by the engine's method (candidate gate,
+  independent verifier, coverage critic).
+- The owner's triage persists across runs: `accepted` and `false_positive` are not
+  re-reported; a `fixed` finding that comes back is flagged as regressed.
+- Coverage is visible — the engine's coverage ledger and its partial-coverage statement
+  for Range runs show what was not looked at.
+
+Non-goals
+- No automatic fixes; no per-PR gate (ask #779); no scheduled runs in v1.
+- No changes to the engine's method. Watchtower-specific behaviour goes into the layer,
+  never into the vendored files.
+
+Anti-goals
+- Finding text, PoC or fix hint in git, a PR, a commit message, the board or any synced
+  surface.
+- Anything executed against the target, live services, the owner's accounts or data.
+- The vendored engine silently changing under us (it instructs agents — it is supply
+  chain).
+
+## 3. Constraints
+
+- **Read-only, nothing executed** (owner decision, 2026-11-20). The engine allows
+  sandboxed local execution; the Watchtower run policy forbids it: no builds, tests,
+  processes or fixtures from the target. Under the engine's own rules a check that needs
+  execution leaves the finding `needs_validation` with the blocker named, and `confirmed`
+  requires an execution record — so in our runs findings land as `needs_validation`
+  (source trace verified, not demonstrated) or `rejected`. The owner demonstrates during
+  triage. The policy is stated in the run metadata (`execution_policy:
+  "source-read-only"`) and in every delegated prompt through the Watchtower context.
+- **Agents.** The engine delegates to two roles (`research`, `general`). Both map to one
+  Watchtower agent, `.claude/agents/sec-audit-agent.md`, with `tools: Read, Grep, Glob`
+  — no Bash, Write or Edit, so text inside the audited code cannot make any agent run or
+  write anything. The parent (the session running the skill) is the only writer, as the
+  engine already requires.
+- **Model routing.** `sec-audit-agent` has no `model` field. Agents run on
+  `CLAUDE_CODE_SUBAGENT_MODEL` when set, else on the session's model. Mythos agents under
+  a Fable main thread: `CLAUDE_CODE_SUBAGENT_MODEL=<mythos model id> claude --model fable`.
+  No model id is written into the repo. The skill states at start which model the agents
+  will use. (Owner rule: never below Opus.)
+- **Engine pinning.** The engine is vendored at
+  `.claude/skills/security-audit/engine/` (nested, so Claude Code does not register the
+  engine's own `name: security-audit` as a second skill clashing with the wrapper) from commit
+  `c1c8a8c1471069fb0e188eeaff69b8e8db6564a8`, with its `LICENSE` and a `VERSION` file:
+  upstream URL, commit, date, and a SHA-256 manifest line per vendored file
+  (`<sha256>  <path>`, `shasum -a 256` format). Preflight runs `shasum -a 256 -c` on that
+  manifest and also refuses a file in the engine dir that the manifest does not list —
+  a local edit, a stray file or a half-applied update stops the run. The manifest is
+  produced only by the update procedure: clone upstream at the chosen commit into a temp
+  dir, copy the files, regenerate the manifest from that clone, and open a PR whose diff
+  is reviewed like code (it instructs agents).
+- **Node.** The engine's validators are node scripts. Node is not on the default PATH
+  (nvm); the skill resolves `node` from PATH or the newest `~/.nvm/versions/node/*/bin/node`
+  and stops at preflight if none.
+- **Where things live.** Engine output: `~/security-audit-skill/watchtower/run-<N>/`
+  (outside git; the engine reads prior runs from there). Only real runs whose
+  `findings.json` passed the engine's validators stay there: a run that ended without a
+  valid `findings.json` (crash, interruption) is moved by the next preflight to
+  `~/security-audit-skill/watchtower-aborted/`, and test runs (`--test`) use
+  `~/security-audit-skill/watchtower-test/`, so neither becomes history for a later run.
+  A validated but `incomplete` run stays — the engine already treats an incomplete prior
+  ledger as recorded evidence and gaps only. The whole `~/security-audit-skill/` tree is
+  0700 (dirs) / 0600 (files) from the first byte: the wrapper creates the dirs 0700 and
+  runs the session's file-writing steps under `umask 077` before the engine starts, then
+  re-applies the modes after the run as a safety net; and excluded from Time
+  Machine (`tmutil addexclusion`). Retention: the wrapper keeps the newest complete Full run and
+  every run after it as engine history; an older run dir that the triage Artifact has a
+  run row for is reduced to its reports and its coverage ledger
+  (`REPORT.md`, `FINDINGS-DETAIL.md`, `NEEDS-VALIDATION.md`, `findings.json`,
+  `run-metadata.json`, `coverage-ledger.json` — the import's not-re-found check reads the
+  ledger of a finding's last run) and moved to `~/security-audit-skill/watchtower-archive/`, which
+  the engine never reads; a run dir without a run row is never archived (the owner is told
+  to import it) — the bulky per-agent dirs are deleted, the full
+  reports are kept for 180 days after the run and then deleted (by then the triage
+  Artifact holds what the owner decided); `watchtower-aborted/` and `watchtower-test/` are emptied after 7
+  days. Wrapper state: `~/.config/watchtower/security-audit/` (`config.json` with
+  the report URL, `lock`). Audit target: a detached worktree of the pinned commit under
+  `~/Library/Caches/watchtower-security-audit/<root>-run-<N>/`, removed after the run.
+- Runs need the Agent, `Artifact` and `ArtifactData` tools, so they start from a
+  top-level Claude Code session with claude.ai artifacts — not a subagent. A Watchtower
+  workbench session is fine (owner decision 2026-11-20: its transcript, shown in Workchat
+  and sent to the phone on request, may hold the run — accepted).
+
+## 4. Approaches
+
+| | Approach | Trade-off |
+|---|---|---|
+| A | Our own team: eight surface specialists + verifier + coverage, merge rules in a skill | Fully ours, but a younger method we would have to mature ourselves |
+| **B (picked)** | Cloudflare engine + Watchtower layer | Proven method, less to write; more agent calls per run (cost on Mythos); node needed; a third-party skill to pin and review |
+| C | Both side by side | Two reports, two baselines |
+
+The owner picked B on 2026-11-20 (option 1 in the session).
+
+## 5. Components
+
+```
+.claude/
+  agents/sec-audit-agent.md            read-only agent for both engine roles
+  skills/
+    security-audit/
+      SKILL.md                         wrapper: preflight, Full/Range, run, import
+      engine/                          vendored engine, untouched + VERSION
+      watchtower-context.md            context + run policy handed to the engine
+      import-rules.md                  findings.json → triage rows (rules + examples)
+      baseline-import.json             first-run baseline from the two old audits
+      report-page.html                 Artifact page template (no data)
+docs/security/surfaces.md              Watchtower surfaces: paths, boundaries, contracts
+```
+
+### 5.1 `watchtower-context.md`
+
+What the engine's parent reads at setup and passes into reconnaissance and every hunter
+and verifier prompt as source-visible context (it never replaces the engine's own
+reasoning):
+- **Run policy**: source-read-only; no execution of any kind; outputs only under the
+  engine output dir; nothing written into the target.
+- **Product and principals**: the owner, the owner's colleagues (message senders), web
+  pages, the owner's own agents, a co-resident local process — and what each controls.
+- **Surfaces** (from `docs/security/surfaces.md`): `llm-injection`, `local-endpoints`,
+  `auth-secrets`, `crypto-sync`, `exec-sandbox`, `network-ssrf`, `data-lifecycle`,
+  `supply-chain`, each with paths, entry points, sinks and the strongest existing control.
+- **Inventory contracts** (`docs/inventory/`): load-bearing; a fix that weakens one is
+  "needs owner decision".
+- **Owner triage to honour** (generated per run, §6.1 step 3), three lists with the
+  owner's notes:
+  - `accepted` / `false_positive` fingerprints — handled like the engine's prior
+    `rejected` records: the unchanged claim is suppressed, the unit is still covered, and
+    if the code behind the claim changed the claim is live again (a changed accepted risk
+    deserves a fresh look — deliberate);
+  - `fixed` fingerprints — re-checked; found again → regressed;
+  - **disputed rejections** — fingerprints the engine `rejected` that the owner disputed
+    on the page (the owner field `disputed: true`, written by the Dispute button or by
+    reopening a rejected finding) and keeps `open` or `in_progress`: handed to the engine as current work with the owner's note,
+    to be re-validated by a fresh verifier, never suppressed. **The owner's list wins over
+    the engine's own history**: the wrapper instructs the engine's parent that a disputed
+    fingerprint is never carried as a prior `rejected` record and is seeded as a `planned`
+    unit even when its source is unchanged. After the engine finishes, the wrapper checks
+    the promise: every disputed fingerprint must appear in this run's coverage ledger
+    with a verifier check from this run, or in this run's `findings.json` with a fresh
+    verdict. One that does not is reported in the terminal summary and on the run row
+    (`disputed_not_revalidated: [...]`), shown on the page as **Your dispute was not
+    re-checked**, and stays in the next run's disputed list. One re-checked and rejected
+    again is reported the same way (`disputed_rejected_again: [...]`, **Re-checked:
+    rejected again**) and stays on the list until the owner sets `false_positive`. A
+    verdict that flips to `rejected` on a finding the owner still has open is not a
+    dispute: the page shows **The engine now rejects it** and the owner decides.
+
+### 5.2 `docs/security/surfaces.md`
+
+One section per surface: `Paths:` (pathspec globs), feature notes, inventory ids, entry
+points, sinks, existing controls. Used by the context file and by the Range mapping
+(which surfaces a tag diff touches, reported to the owner before the run).
+
+## 6. A run (`/security-audit`)
+
+### 6.1 Flow
+
+0. **Preflight.** Agent, `Artifact`, `ArtifactData` tools present; `node` found; the
+   engine passes the manifest check of §3 (`shasum -a 256 -c` on `VERSION`'s manifest, no
+   unlisted file).
+   Report lookup: `config.json` → else `Artifact list` for "Security audit" (one: confirm;
+   several: owner picks; none: new only on an explicit yes) → a URL that no longer opens
+   stops the run. Lock: refuse while another run's pid is alive.
+1. **Ask the kind** (`AskUserQuestion`): **Full** (profile `deep`) or **Range** (scoped
+   run over `git diff <from>..<to>`, profile `standard`), with the proposed tag pair, the
+   date of the last Full, and the engine's agent-invocation estimate; the owner may set
+   an agent budget (the engine's `budget`). `/security-audit full|range <from>..<to>`
+   skips the question. `--test --report <url>` runs against a fixture Artifact and the
+   `watchtower-test/` output dir and never reads or writes `config.json`.
+2. **Pin.** `git fetch origin main --tags`; Full = `origin/main` SHA, Range = the `to`
+   tag. Remove leftovers of dead runs under the cache dir, `git worktree prune`, then
+   `git worktree add --detach` the target.
+3. **Owner triage in.** `ArtifactData list findings` → write the per-run "owner triage"
+   section of the context (§5.1) into the engine output dir (never into the repo). First
+   run: `baseline-import.json` instead (a row without `status` reads as `open`).
+4. **Run the engine** in full audit mode on the target with `watchtower-context.md` +
+   the triage section, `repo = watchtower`, the profile and scope from step 1, and every
+   delegation through `sec-audit-agent`. The engine writes its run directory, validates
+   `findings.json` and the coverage ledger with its node validators, and produces
+   `REPORT.md`/`FINDINGS-DETAIL.md`/`NEEDS-VALIDATION.md`.
+5. **Import** `findings.json` into the Artifact by `import-rules.md` (§7).
+6. **Summary** in the terminal: counts by verdict and severity, regressed, coverage
+   status (complete / partial with reasons), the report link, and the engine run dir.
+   Nothing to the board.
+7. **Cleanup**: remove the target worktree and its cache dir, release the lock. The
+   engine run dir stays (it is the next run's prior evidence).
+
+### 6.2 Failure paths
+
+| What fails | What happens | Check |
+|---|---|---|
+| Artifact tools, node or the engine's integrity missing | Preflight stops with the reason; nothing created | Run with each one missing |
+| Config lost | Report found through `Artifact list`; new report only on explicit yes | Delete config, run |
+| Report URL dead / `ArtifactData` read fails | Stop before the engine runs (without triage the engine would re-report accepted risks) | Wrong URL in config |
+| Engine stops early with a valid `findings.json` (budget) | The engine marks the run `incomplete`; the wrapper imports it, labels it "incomplete" in the report, keeps the run dir | Run with a tiny budget |
+| Engine run ends without a valid `findings.json` (crash, interruption, validator failure) | Nothing imported; next preflight moves the dir to `watchtower-aborted/` so it never becomes history | Interrupt a run, start another, check the dir moved |
+| The engine suppresses a disputed rejection anyway | Post-run check lists it as `disputed_not_revalidated`, page badge, carried to the next run | Fixture: dispute a rejected record, run `--test`, confirm it is re-validated or flagged |
+| Engine files changed or extra | Preflight `shasum -c` + unlisted-file check stops the run | Edit one engine file, run |
+| Import/publish fails | Engine run dir is intact; `/security-audit import <run-dir>` re-runs the import alone | Deny the publish prompt, then re-import |
+| Two runs at once | Lock refuses the second | Start a second run |
+| Owner edits while importing | Import writes only run-owned fields (§7) | Edit during import |
+
+## 7. Triage Artifact
+
+One private Artifact, URL in `config.json`. The page holds no findings; all data lives in
+its `db` (`db` rules: read `view`, write `owner`; plus `user`).
+
+Collections and the writer of every field:
+
+`runs/<run-id>` — all written by the wrapper: `engine_run_dir, kind (full|range), from,
+to, sha, profile, budget, run_status (complete|incomplete), incomplete_reason,
+coverage {covered, deferred, out_of_scope, blocked}, disputed_not_revalidated[], disputed_rejected_again[],
+counts {by verdict, by severity, regressed, resurfaced, new}, started_at, finished_at`.
+
+`findings/<doc-id>` (doc id = first 16 hex of SHA-256 of the engine fingerprint, or
+`legacy-<legacy_id>` for a baseline row):
+
+| Field | Writer | Notes |
+|---|---|---|
+| `fingerprint` | wrapper, on create | absent on legacy rows |
+| `legacy_id` | wrapper, on create | legacy rows only |
+| `verdict` (needs_validation\|rejected\|confirmed), `title`, `description`, `root_cause`/`claimed_root_cause`, `trace[]`, `evidence[]`, `blockers[]`, `validation_plan`, `remediation`, `severity`, `reason` | wrapper, every run that sees it | copied from `findings.json` |
+| `first_seen_run`, `last_seen_run`, `run_state` (new\|still_open\|regressed\|resurfaced\|not_refound\|fixed) | wrapper | `resurfaced`: an `accepted`/`false_positive` finding found again as `confirmed`/`needs_validation` (its code changed) |
+| `legacy_match` (a `legacy_id`) | wrapper, only while the field is empty and `legacy_decision` is unset | the engine's schema has no such field, so the wrapper proposes it after the import: a legacy row sharing a file with the record's trace/evidence and describing the same weakness in its note; once set, or once the owner decided, no run writes it again |
+| `status` (open\|in_progress\|fixed\|accepted\|false_positive) | owner (wrapper only on create: `open`, or `false_positive` for an engine-`rejected` record; legacy rows: the row's `status` from `baseline-import.json`, which carries one only where the old audit already published it as `fixed` or `accepted`; a row without one is created `open` and the owner adjusts it) | |
+| `note` | owner (wrapper on create: "Rejected by the engine's verifier." for an engine-`rejected` record; legacy rows: from `baseline-import.json`) | |
+| `disputed` (bool) | owner | `true` when the owner disputes a `rejected` finding (Dispute button, or reopening it to `open`/`in_progress`); the disputed list = `verdict: rejected`, `disputed: true`, `status` open\|in_progress; the wrapper never writes it |
+| `legacy_decision` (merged\|split) | owner | **Merged**: the finding takes the legacy row's `status` and `note` (owner write), the legacy row gets `merged_into: <doc-id>` and leaves the list; **Split**: `legacy_match` stays for the record, the badge goes, both rows live on |
+| `merged_into` | owner (on the legacy row) | |
+
+A finding with `legacy_match` and no `legacy_decision` shows the **Matches an old audit
+item — check** badge. The wrapper changes existing docs only with `ArtifactData update`
+naming wrapper fields from this table, and creates with `set`.
+
+`import-rules.md` (deterministic, with worked examples): create a new fingerprint with
+`set` and `status: open` — except a record the engine `rejected`, created with
+`status: false_positive` and the note "Rejected by the engine's verifier.", so that only
+an owner act (`disputed: true`) makes it a dispute; `run_state` = `regressed` when the owner's status is `fixed`
+and the fingerprint is back, `still_open` when it is open/in_progress, `resurfaced` when
+it is `accepted`/`false_positive` and the record is `confirmed`/`needs_validation`, `not_refound` for
+an open finding the run's coverage ledger marks its unit `covered` without re-finding it,
+and `fixed` only when additionally its source changed since it was last seen; findings in
+units the run did not cover are left untouched.
+
+Page (sketch):
+
+```
+┌ Security audit ───────────────────────── run 2026-11-20 · Range v0.28.3..v0.28.4 ▾ ┐
+│  Needs validation 7  Rejected 12  Regressed 1   Coverage: partial (Range) · last Full: — │
+│  [Severity ▾] [Status: open ▾] [Verdict ▾] [New only ☐]  search…                  │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│ ● HIGH  NEW  needs_validation   <title>                                           │
+│ ● MED   REGRESSED  needs_validation   <title>                                     │
+├ Finding ──────────────────────────────────────────────────────────────────────────┤
+│ Trace: entrypoint file:line → propagation … → sink file:line                      │
+│ Root cause · Evidence · Blockers · Validation plan · Remediation                  │
+│ Status [open ▾]   Note [_________________________]                                │
+├ Rejected (12) ▸   Coverage ▸   Runs ▸                                             ┘
+```
+States: loading (10 s → "Could not load the audit data"), empty, non-owner read-only.
+The full engine reports stay in the engine run dir; the page links to nothing local.
+
+## 8. Left to the builder
+
+- Exact text of `watchtower-context.md` and `surfaces.md`, drawn from the feature notes
+  and inventory files.
+- How the wrapper hands context and policy to the engine's parent without editing the
+  engine (prepended instructions in the wrapper skill), as long as every delegated prompt
+  receives them.
+- Page design within the sketch (`artifact-design`).
+
+## 9. Decisions
+
+| Decision | Source |
+|---|---|
+| Periodic audit; report is a private Artifact outside git | Owner, chat + ask #776 |
+| No per-PR gate; a run asks Full or Range between tags | Owner, ask #779 |
+| Nothing executed during a run; owner demonstrates at triage | Owner, chat 2026-11-20 |
+| No product code; the team is prompts, skills and a page | Owner, chat 2026-11-20 |
+| Use Cloudflare's security-audit-skill as the engine, Watchtower layer around it | Owner, chat 2026-11-20 |
+| Agents on Mythos via `CLAUDE_CODE_SUBAGENT_MODEL`, main thread on another model | Owner question, chat 2026-11-20 |
+| Engine vendored, pinned to a commit, SHA-256 manifest checked at every run; updates are reviewed PRs | Builder |
+| Only validated real runs are engine history; aborted and test runs kept apart; run dirs 0700/0600 from creation (umask 077), out of Time Machine; imported runs older than the newest complete Full reduced to their reports and coverage ledger in an archive the engine never reads, deleted 180 days after the run | Builder |
+| Owner's disputed rejections handed back to the engine for re-validation | Builder |
+| Full = `deep` profile, Range = scoped `standard` | Builder |
+| Both engine roles → one read-only `sec-audit-agent` | Builder (follows from read-only) |
+| Owner's accepted/false_positive handed to the engine like prior `rejected` records (live again when the code behind them changes) | Builder |
+| First run imports the two old audits as legacy rows | Builder |
+| Nothing to the board | Builder |
+| Runs allowed from any top-level session, a workbench session included | Owner, chat 2026-11-20 |
