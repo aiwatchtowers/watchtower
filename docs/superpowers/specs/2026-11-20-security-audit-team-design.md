@@ -56,10 +56,17 @@ Anti-goals (a failure even if it "works")
   here, it states it in its first line.)
 - Read-only is enforced by the tool list, not only by the prompt: the eight specialists
   and `sec-coverage` get `tools: Read, Grep, Glob` — no Bash, so injection text inside
-  the audited code cannot make them run anything. Only `sec-verifier` has Bash, its
-  prompt lists the allowed commands (`git -C <its scratch worktree> …` read verbs,
-  `git worktree add/remove` for its own scratch copy, `go test ./internal/<pkg> -run …`
-  there), and it writes only inside that copy (see §6.4).
+  the audited code cannot make them run anything. Only `sec-verifier` has Bash, and its
+  limit is enforced by a hook, not by its prompt: the agent's frontmatter declares a
+  `PreToolUse` hook on Bash (`.claude/skills/security-audit/verifier-bash-guard.sh`)
+  that denies every command except an allow-list — `git -C <scratch> <read verb>`,
+  `git worktree add|remove` under the audit scratch root, `go test ./internal/<pkg>
+  -run <name>` with the working directory inside its scratch copy — and denies any
+  command containing `;`, `&&`, `||`, `|`, `$(`, backticks, redirection or a path
+  outside the scratch root. A denied command is reported in the verifier's output. The
+  guard has its own tests (allowed and denied samples, including injection-shaped
+  ones). It writes only inside its copy (see §6.4). Residual: `go test` runs the
+  repository's own test code; that is the owner's code, not attacker input.
 - Runs need the Agent tool and the `Artifact`/`ArtifactData` tools, so they start from a
   top-level Claude Code session with claude.ai artifacts available, not from a subagent.
 - Run from a plain terminal session, not a Watchtower workbench session: a workbench
@@ -74,7 +81,6 @@ Anti-goals (a failure even if it "works")
   contract or a guard test is marked **needs owner decision**, never "just fix it".
 - The existing review stack (`local-review`, `debate-review`, `release-audit`) is not
   changed.
-- Runs need the Agent tool, so they start from a top-level session, not from a subagent.
 
 ## 4. Approaches
 
@@ -157,8 +163,10 @@ verification.
    message before anything else — it never falls through to the first-run branch. Then
    **find the report Artifact**: the URL in
    `~/.config/watchtower/security-audit/config.json`; if the file is missing, the skill
-   lists the owner's artifacts (`Artifact list`) for one titled "Security audit". One
-   found → it asks the owner to confirm it and rewrites the config. None found → it asks
+   lists the owner's artifacts (`Artifact list`) for ones titled "Security audit". One
+   found → it asks the owner to confirm it and rewrites the config. Several found → it
+   lists them with each one's last run (sha, date, finding count from its `runs`
+   collection) and the owner picks one; it never picks by itself. None found → it asks
    the owner "no previous audit found — start a new report?" and only a yes takes the
    first-run branch. A config URL that no longer opens stops the run (failure table).
    **Ask the kind.** One `AskUserQuestion`: **Full** (whole `origin/main`) or **Range**
@@ -355,6 +363,6 @@ The flow in §6.1 is the same; these steps change:
 | Range audits changed code and what it reaches, not whole surfaces | Builder (follows from ask #779) |
 | Verifier runs Go tests only in v1; Swift findings confirmed by reading | Builder |
 | Nothing written to the board; run from a non-workbench session | Builder |
-| Specialists have no Bash; only the verifier does, with a listed command set | Builder |
+| Specialists have no Bash; the verifier's Bash is limited by a PreToolUse allow-list hook | Builder |
 
 None open. Any Builder row the owner rejects in review changes only its own section.
