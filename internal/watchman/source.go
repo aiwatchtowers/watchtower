@@ -12,7 +12,6 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/logredact"
-	"watchtower/internal/secretredact"
 )
 
 // Source reads one kind of owner decision for one workbench, newest first, resumable by an opaque cursor ("" = nothing seen yet).
@@ -80,7 +79,7 @@ func unreadable(what string, err error) error {
 
 // clean redacts secrets and caps text at SituationLimit: every text a source
 // stores goes through it.
-func clean(s string) string { return Clip(secretredact.Text(strings.TrimSpace(s)), SituationLimit) }
+func clean(s string) string { return Clip(Redact(strings.TrimSpace(s)), SituationLimit) }
 
 // joinNonEmpty joins the non-blank parts with sep.
 func joinNonEmpty(sep string, parts ...string) string {

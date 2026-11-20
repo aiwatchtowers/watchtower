@@ -1,44 +1,123 @@
 // Package secretredact replaces secrets in free text with a mark before the
 // text is stored or shown: the watchman's situations and the live line's tool
-// summaries both go through Text.
+// summaries both go through Text. It errs towards redacting too much — a
+// redacted word costs a summary some meaning, a leaked secret reaches a phone.
 package secretredact
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+	"unicode/utf8"
+)
 
 // Mark replaces every redacted secret.
 const Mark = "[secret]"
 
-// wholeSecrets match a secret in full; the whole match is replaced.
-var wholeSecrets = []*regexp.Regexp{
-	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)`),
-	regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{8,}`),
-	regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`),
-	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`),
-	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}`),
-	regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
-	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`),
-}
-
-// labelled keep their label (group 1) and replace only the value with repl.
-var labelled = []struct {
+// rule replaces each match of re with what repl returns for its submatches
+// (m[0] the whole match, m[1…] the groups; an unmatched group is "").
+type rule struct {
 	re   *regexp.Regexp
-	repl string
-}{
-	// key|token|secret|password=<value>, in env lines, URL queries and --flag=value.
-	{regexp.MustCompile(`(?i)(\b[A-Za-z0-9_.-]*(?:key|token|secret|password|passwd)=)[^\s&"'<>]+`), "${1}" + Mark},
-	// user:pass@ in a URL; a bare user@ or host:port stays.
-	{regexp.MustCompile(`(\b[A-Za-z][A-Za-z0-9+.-]*://)[^\s/@:]+:[^\s/@?#]+@`), "${1}" + Mark + "@"},
-	// curl -u user:pass / --user user:pass.
-	{regexp.MustCompile(`((?:^|\s)(?:-u|--user)\s+)[^\s:]+:\S+`), "${1}" + Mark},
-	// --password <value>, --api-token <value>: a space-separated value that is
-	// not the next flag.
-	{regexp.MustCompile(`(?i)(--[a-z0-9-]*(?:password|passwd|token|secret)\s+)[^\s-]\S*`), "${1}" + Mark},
+	repl func(m []string) string
 }
 
-// bearer matches "Bearer <token>"; the token is redacted only when it looks
-// like one (16+ chars with a digit or mixed case), so prose such as
-// "Bearer authentication" stays.
-var bearer = regexp.MustCompile(`(\bBearer\s+)([A-Za-z0-9._~+/=-]{16,})`)
+// Value shapes. A quoted value is taken whole, up to its closing quote or the
+// end of the text (a summary cut mid-value still loses it).
+const (
+	quoted = `"[^"]*(?:"|$)|'[^']*(?:'|$)`
+	// secretName is a name whose value is a secret: FOO_API_KEY, client_secret,
+	// db.password, MYSQL_PWD, credentials. A bare "key" (sort-key, monkey) is not.
+	secretName = `(?:api[_.-]?key|access[_.-]?key|secret[_.-]?key|private[_.-]?key|auth[_.-]?key|token|secret|password|passwd|pwd|credentials?)`
+)
+
+// authSchemes are the Authorization schemes whose next word is the credential.
+var authSchemes = regexp.MustCompile(`(?i)^((?:bearer|basic|token|digest|negotiate|ntlm|apikey|key)[ \t]+)(` + quoted + `|[^\s"',;]+)`)
+
+// flagWord is the next flag after a --password-style flag: letters and dashes
+// only, so "--verbose" stays a flag while "-Xy9" is a value.
+var flagWord = regexp.MustCompile(`^--?[A-Za-z][A-Za-z-]*$`)
+
+// shellSyntax starts a word that is never a value: a pipe, redirect or list.
+func shellSyntax(v string) bool { return v != "" && strings.ContainsRune("|<>;&", rune(v[0])) }
+
+// numericUserGroup is a uid:gid pair ("-u 1000:1000"), not credentials.
+var numericUserGroup = regexp.MustCompile(`^\d+:\d+$`)
+
+func whole(_ []string) string { return Mark }
+
+// labelled keeps group 1 and replaces group 2 with Mark.
+func labelled(m []string) string { return m[1] + Mark }
+
+var rules = []rule{
+	// user:pass@ in a URL, first so a password that looks like key=value is
+	// taken whole. The password runs to the last "@" before the host; the user
+	// may be empty (redis://:pw@host). A bare user@ or host:port stays.
+	{regexp.MustCompile(`(\b[A-Za-z][A-Za-z0-9+.-]*://)[^\s/?#@:"'<>]*:[^\s/?#"'<>]*@`),
+		func(m []string) string { return m[1] + Mark + "@" }},
+
+	// Vendor token shapes, replaced whole.
+	{regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)`), whole},
+	{regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{8,}`), whole},
+	{regexp.MustCompile(`\bxapp-[A-Za-z0-9-]{8,}`), whole},
+	{regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`), whole},
+	{regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`), whole},
+	{regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}`), whole},
+	{regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}`), whole},
+	{regexp.MustCompile(`\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}`), whole},
+	{regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`), whole},
+	{regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}`), whole},
+	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`), whole},
+
+	// Authorization: <scheme> <credential> keeps a known scheme and loses the
+	// credential; with no known scheme the whole header value goes.
+	{regexp.MustCompile(`(?i)(\b(?:proxy-)?authorization["']?[ \t]*:[ \t]*["']?)([^"'\r\n]+)`),
+		func(m []string) string {
+			if a := authSchemes.FindStringSubmatchIndex(m[2]); a != nil {
+				return m[1] + m[2][:a[3]] + Mark + m[2][a[1]:]
+			}
+			return m[1] + Mark
+		}},
+	// Cookie / Set-Cookie: the whole header value.
+	{regexp.MustCompile(`(?i)(\b(?:set-)?cookie["']?[ \t]*:[ \t]*["']?)([^"'\r\n]+)`), labelled},
+
+	// NAME=value: env lines, URL queries, --flag=value.
+	{regexp.MustCompile(`(?i)(\b[A-Za-z0-9_.-]*?` + secretName + `=)(` + quoted + `|[^\s&"'<>;|]+)`), labelled},
+	// NAME: value — JSON, YAML, HTTP headers (X-Api-Key, PRIVATE-TOKEN). A
+	// value starting with "=" is Go's ":=", not a secret.
+	{regexp.MustCompile(`(?i)(\b[A-Za-z0-9_.-]*?` + secretName + `["']?[ \t]*:[ \t]*)(` + quoted + `|[^\s"'=,;{}\[\]][^\s"',;{}]*)`), labelled},
+
+	// -u user:pass, -uuser:pass, --user user:pass, --user=user:pass. A value
+	// without a colon (git push -u origin) or a uid:gid pair stays.
+	{regexp.MustCompile(`((?:^|\s)(?:-u[ \t]*|--user(?:[ \t]+|=)))(` + quoted + `|[^\s"']+)`),
+		func(m []string) string {
+			v := strings.Trim(m[2], `"'`)
+			if !strings.Contains(v, ":") || numericUserGroup.MatchString(v) || shellSyntax(m[2]) {
+				return m[0]
+			}
+			return m[1] + Mark
+		}},
+	// mysql -phunter2: the password attached to -p.
+	{regexp.MustCompile(`(\b(?i:mysql|mysqldump|mysqladmin|mariadb)\b[^\n|;&]*?\s-p)(` + quoted + `|[^\s"']+)`), labelled},
+	// --password <value>, --api-key <value>: a space-separated value. The next
+	// flag (--verbose) or shell syntax (< file, | cmd) is not a value.
+	{regexp.MustCompile(`(?i)(--[A-Za-z0-9-]*?` + secretName + `[ \t]+)(` + quoted + `|[^\s"']+)`),
+		func(m []string) string {
+			if flagWord.MatchString(m[2]) || shellSyntax(m[2]) {
+				return m[0]
+			}
+			return m[1] + Mark
+		}},
+
+	// A bare "Bearer <token>" outside an Authorization header; redacted only
+	// when it looks like a token (16+ chars with a digit or mixed case), so
+	// prose such as "Bearer authentication" stays.
+	{regexp.MustCompile(`(\bBearer\s+)([A-Za-z0-9._~+/=-]{16,})`),
+		func(m []string) string {
+			if !looksLikeToken(m[2]) {
+				return m[0]
+			}
+			return m[1] + Mark
+		}},
+}
 
 var (
 	hasDigit = regexp.MustCompile(`[0-9]`)
@@ -50,21 +129,60 @@ func looksLikeToken(t string) bool {
 	return hasDigit.MatchString(t) || (hasLower.MatchString(t) && hasUpper.MatchString(t))
 }
 
-// Text replaces every secret in s with Mark. Labelled secrets (Bearer
-// tokens, key|token|secret|password=<value>, --password <value>, -u
-// user:pass, user:pass@ in URLs) keep their label and lose the value.
-func Text(s string) string {
-	for _, re := range wholeSecrets {
-		s = re.ReplaceAllString(s, Mark)
+// apply runs one rule over s.
+func (r rule) apply(s string) string {
+	idx := r.re.FindAllStringSubmatchIndex(s, -1)
+	if idx == nil {
+		return s
 	}
-	for _, l := range labelled {
-		s = l.re.ReplaceAllString(s, l.repl)
-	}
-	return bearer.ReplaceAllStringFunc(s, func(m string) string {
-		g := bearer.FindStringSubmatch(m)
-		if !looksLikeToken(g[2]) {
-			return m
+	var b strings.Builder
+	last := 0
+	for _, loc := range idx {
+		m := make([]string, len(loc)/2)
+		for i := range m {
+			if loc[2*i] >= 0 {
+				m[i] = s[loc[2*i]:loc[2*i+1]]
+			}
 		}
-		return g[1] + Mark
-	})
+		b.WriteString(s[last:loc[0]])
+		b.WriteString(r.repl(m))
+		last = loc[1]
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// Text replaces every secret in s with Mark. Labelled secrets (Bearer
+// tokens, NAME=value, NAME: value, --password value, -u user:pass, user:pass@
+// in URLs) keep their label and lose the value. Its work is linear in len(s);
+// a caller that keeps only a short prefix uses TextBounded.
+func Text(s string) string {
+	for _, r := range rules {
+		s = r.apply(s)
+	}
+	return s
+}
+
+// boundSlack is how far past the kept text TextBounded still reads, so a
+// secret straddling the cut is still recognised and redacted.
+const boundSlack = 512
+
+// TextBounded redacts s and keeps at most limit runes of the result. It reads
+// at most limit*utf8.UTFMax+boundSlack bytes of s, so its work does not grow
+// with s: a multi-megabyte tool argument costs the same as a short one.
+func TextBounded(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if window := limit*utf8.UTFMax + boundSlack; len(s) > window {
+		for window > 0 && !utf8.RuneStart(s[window]) {
+			window--
+		}
+		s = s[:window]
+	}
+	s = Text(s)
+	if utf8.RuneCountInString(s) <= limit {
+		return s
+	}
+	return string([]rune(s)[:limit])
 }
