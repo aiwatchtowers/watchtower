@@ -1691,6 +1691,11 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         applyBackground()
     }
 
+    override func viewDidMoveToWindow() { // Metal: PalettedTerminalView+Metal.swift
+        super.viewDidMoveToWindow()
+        updateMetalForWindow()
+    }
+
     // MARK: Selection under streaming output
 
     /// SwiftTerm clears the selection on every feed and line feed while
@@ -2046,6 +2051,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     override func didAddSubview(_ subview: NSView) {
         super.didAddSubview(subview)
         (subview as? NSTextField)?.textColor = TerminalPalette.background
+        liftOverlaysIfMetalView(subview)
     }
 
     /// Through `backgroundOpacity`, not a bare `nativeBackgroundColor`: its
@@ -2056,6 +2062,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     private func applyBackground() {
         nativeBackgroundColor = TerminalPalette.background
         backgroundOpacity = TerminalPalette.backgroundOpacity(for: effectiveAppearance)
+        keepLayerBackgroundUnderMetal()
     }
 }
 
