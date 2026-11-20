@@ -681,7 +681,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(agent.ref.type, "Explore")
         XCTAssertEqual(agent.ref.description, "Check the fixtures")
         XCTAssertEqual(agent.ref.status, "running")
-        XCTAssertEqual(agent.action?.summary, "internal/db/db.go")
+        XCTAssertEqual(agent.action?.summary, "store/example.go")
 
         let sub = try SessionChat.decode(payload: try fixture("session_chat_subagent"))
         XCTAssertEqual(sub.liveVersion, 1)
