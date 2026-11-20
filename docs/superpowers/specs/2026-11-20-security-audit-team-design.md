@@ -68,8 +68,9 @@ Anti-goals (a failure even if it "works")
   reported in the verifier's output.
 - The test the verifier writes is itself steered by untrusted code, so it runs in an OS
   sandbox, not on trust: `sandboxed-go-test.sh` runs `go test -run <name>` under
-  `sandbox-exec` with a profile that denies all network, denies writes outside the
-  scratch copy and a per-run temp dir, and denies reads of the
+  `sandbox-exec` with a profile that denies all network, allows writes only to three
+  paths — the scratch copy, the per-run `GOCACHE` and the per-run temp dir, all three
+  under the run's scratch root — and denies reads of the
   owner's secrets and data (`~/.config/watchtower`, `~/Library/Application
   Support/Watchtower`, `~/.claude`, `~/.ssh`, the keychains). Child processes inherit the
   sandbox. The owner's Go caches are never writable: the script sets `GOCACHE` to a
@@ -80,8 +81,12 @@ Anti-goals (a failure even if it "works")
   with the scratch root. If `sandbox-exec` is missing or the profile fails to load, the script refuses
   to run the test (the finding stays `plausible`). The hook and the sandbox profile have
   their own tests: allowed and denied command samples including injection-shaped ones,
-  and a test that tries network, an outside write, a write into the owner's `GOCACHE`
-  and a secret read under the sandbox and expects all four to fail.
+  a positive test that a small passing Go test in a scratch copy builds and passes
+  under the sandbox with the per-run cache (so a broken profile cannot silently leave
+  every finding `plausible`), and a test that tries network, an outside write, a write
+  into the owner's `GOCACHE` and a secret read under the sandbox and expects all four
+  to fail. The skill also counts sandbox refusals per run and shows "verifier could not
+  run tests" in the report header when every attempt was refused.
 - Runs need the Agent tool and the `Artifact`/`ArtifactData` tools, so they start from a
   top-level Claude Code session with claude.ai artifacts available, not from a subagent.
 - Run from a plain terminal session, not a Watchtower workbench session: a workbench
