@@ -104,13 +104,16 @@ func (m *ModeTracker) parse(s []byte) (int, bool) {
 	}
 	on := final == 'h'
 	for _, p := range pars {
-		if _, ok := trackedModes[p]; ok {
-			m.state[p] = on
-			if p == 47 || p == 1047 || p == 1049 {
-				// SwiftTerm switches buffers on any of the three.
-				m.alt = on
-			}
+		if _, ok := trackedModes[p]; !ok {
+			continue
 		}
+		if p == 47 || p == 1047 || p == 1049 {
+			// SwiftTerm switches buffers on any of the three, so only the
+			// one that switched last reads as set.
+			m.state[47], m.state[1047], m.state[1049] = false, false, false
+			m.alt = on
+		}
+		m.state[p] = on
 	}
 	return n, true
 }
@@ -118,7 +121,9 @@ func (m *ModeTracker) parse(s []byte) (int, bool) {
 // csiParams reads a CSI sequence with a one-byte prefix (s[2]): its length,
 // its numeric parameters (an empty field reads as 0, a field that is not a
 // number is skipped) and its final byte; false when s ends mid-sequence.
-// Anything other than a digit or ; ends the parameters.
+// Anything other than a digit or ; ends the parameters; when that is not a
+// final byte (0x40–0x7E) the sequence is abandoned there, final is 0 and the
+// byte is not consumed.
 func csiParams(s []byte) (n int, pars []int, final byte, complete bool) {
 	j := 3
 	for j < len(s) && (s[j] >= '0' && s[j] <= '9' || s[j] == ';') {
@@ -126,6 +131,11 @@ func csiParams(s []byte) (n int, pars []int, final byte, complete bool) {
 	}
 	if j >= len(s) {
 		return 0, nil, 0, false
+	}
+	if s[j] < 0x40 || s[j] > 0x7e {
+		// Not a final byte (an ESC that cancels the sequence, say): leave it
+		// for the next scan.
+		return j, nil, 0, true
 	}
 	if j > 3 {
 		for f := range bytes.SplitSeq(s[3:j], []byte{';'}) {
@@ -204,27 +214,42 @@ func (m *ModeTracker) On(mode int) bool {
 // keeps a flag the agent's pop clears); they draw nothing, so the tail goes
 // without them and the final state follows it, which also survives a RIS
 // inside the tail. While the alternate screen is active the normal screen's
-// state goes first, on the fresh terminal's normal screen: switching screens
-// after the tail would clear the alternate one. An inactive alternate
+// state goes first (or just after the tail's last RIS), on a power-on normal
+// screen: switching screens after the tail would clear the alternate one. An inactive alternate
 // screen's state is not restored — programs set it after switching to it.
 // An unfinished escape or CSI sequence at the end of snapshot stays last, so
 // the stream's next bytes complete it.
 func (m *ModeTracker) Replay(snapshot []byte) []byte {
 	cut := unfinishedTail(snapshot)
 	snapshot, tail := snapshot[:cut], snapshot[cut:]
-	var out []byte
+	out := m.ReplayPrefix()
+	body := stripKeyboard(snapshot)
 	if m.alt {
-		out = appendLevels(out, m.keyboard[0])
+		// The normal screen's state goes where the viewer is last on a
+		// power-on normal screen: the start, or just after the tail's last
+		// RIS.
+		at := 0
+		if i := bytes.LastIndex(body, []byte("\x1bc")); i >= 0 {
+			at = i + 2
+		} else {
+			out = appendLevels(nil, m.keyboard[0])
+			out = append(out, m.ReplayPrefix()...)
+		}
+		out = append(out, body[:at]...)
+		if at > 0 {
+			out = appendLevels(out, m.keyboard[0])
+		}
+		body = body[at:]
 	}
-	out = append(out, m.ReplayPrefix()...)
-	out = append(out, stripKeyboard(snapshot)...)
+	out = append(out, body...)
 	out = appendLevels(out, m.keyboard[m.screen()])
 	return append(out, tail...)
 }
 
 // unfinishedTail returns where an escape or CSI sequence that b ends in the
-// middle of starts, or len(b): an ESC alone, or ESC [ followed only by
-// parameter and intermediate bytes (0x20–0x3F) up to the end.
+// middle of starts, or len(b): an ESC alone, ESC [ followed only by
+// parameter and intermediate bytes (0x20–0x3F) up to the end, or a string
+// sequence (OSC, DCS, APC, PM, SOS) with no terminator yet.
 func unfinishedTail(b []byte) int {
 	i := bytes.LastIndexByte(b, 0x1b)
 	if i < 0 {
@@ -234,7 +259,16 @@ func unfinishedTail(b []byte) int {
 	if len(rest) == 0 {
 		return i
 	}
-	if rest[0] != '[' {
+	switch rest[0] {
+	case ']', 'P', '_', '^', 'X':
+		// OSC, DCS, APC, PM, SOS: open until BEL or ST (ESC \, whose ESC
+		// would be the last one).
+		if bytes.IndexByte(rest, 0x07) < 0 {
+			return i
+		}
+		return len(b)
+	case '[':
+	default:
 		return len(b)
 	}
 	for _, c := range rest[1:] {

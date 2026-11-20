@@ -120,6 +120,8 @@ func TestModeTracker_ReplayKeyboardMatchesAgent(t *testing.T) {
 		{"RIS in the tail", "\x1b[>1u", "a\x1bcb\x1b[>5u"},
 		{"alt screen, both stacks", "\x1b[>1u\x1b[?1049h", "\x1b[>5uz"},
 		{"alt entered with 1049, left with 47", "\x1b[?1049h\x1b[>5u", "\x1b[?47l\x1b[>3u"},
+		{"alt entered with 1049, left with 47, aged out", "\x1b[?1049h\x1b[>5u\x1b[?47l", "\x1b[>3u"},
+		{"RIS in the tail on the alt screen", "\x1b[>1u", "\x1bc\x1b[>2u\x1b[?1049h\x1b[>5u"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -207,11 +209,32 @@ func TestUnfinishedTail(t *testing.T) {
 		"ab\x1b[":          2,
 		"ab\x1b[?20":       2,
 		"ab\x1b[31m":       7,
-		"ab\x1b]0;title":   11,
+		"ab\x1b]0;title":   2,
+		"ab\x1b]0;t\x07cd": 10,
 		"\x1b[1mab\x1b[1;": 6,
 	} {
 		if got := unfinishedTail([]byte(in)); got != want {
 			t.Errorf("unfinishedTail(%q) = %d, want %d", in, got, want)
 		}
+	}
+}
+
+// An abandoned CSI leaves the ESC that cancels it for the next sequence.
+func TestModeTracker_CancelledSequenceKeepsNext(t *testing.T) {
+	var m ModeTracker
+	m.Observe([]byte("\x1b[?25\x1b[?2004h\x1b[>\x1b[>5u"))
+	if !m.On(bracketedPasteMode) || m.keyboard[0].flags != 5 {
+		t.Fatalf("2004 = %v, keyboard = %+v", m.On(bracketedPasteMode), m.keyboard[0])
+	}
+}
+
+// A title the tail ends in the middle of stays last; the keyboard state
+// goes before it.
+func TestModeTracker_ReplayKeepsOpenTitleLast(t *testing.T) {
+	var m ModeTracker
+	tail := "\x1b[>5ux\x1b]0;half a ti"
+	m.Observe([]byte(tail))
+	if got, want := string(m.Replay([]byte(tail))), "x\x1b[>5u\x1b]0;half a ti"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
