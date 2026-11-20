@@ -526,13 +526,14 @@ func TestBridge_CorpBuildWithoutCompanyNameFails(t *testing.T) {
 // is the public build's retired shared app (one client id). After the bridge,
 // the public build lists the tied corp account as the company's app — no
 // shared-app banner, Re-login connects — while an untied row on the same id
-// is still shared (ask #1644).
+// is still shared (ask #1644). The rows arrive as 0.28.4 left them, with no
+// client id: the bridge fills it, else the tied row is never backfilled.
 func TestBridge_PublicSlackOnRetiredIDStaysCompanyApp(t *testing.T) {
 	c := newCorpWorkspace(t)
 	other, err := c.database.CreateSlackAccount(db.SlackAccount{TeamID: "T0STR", TeamName: "Stranger"})
 	require.NoError(t, err)
-	_, err = c.database.Exec(`UPDATE slack_accounts SET client_id = ? WHERE id IN (?, ?)`, corpSlackID, c.ids["slack"], other)
-	require.NoError(t, err)
+	// Both rows come from 0.28.4: no client id yet (migration 00196 added
+	// the column); the bridge fills it before tying.
 	_, err = c.bridge(t)
 	require.NoError(t, err)
 
@@ -558,5 +559,22 @@ func TestBridge_PublicSlackOnRetiredIDStaysCompanyApp(t *testing.T) {
 	assert.Equal(t, "connect", corp.Relogin)
 	stranger := byID[other]
 	assert.True(t, stranger.SharedApp, "an untied row on the retired id is still shared")
+	assert.Equal(t, corpSlackID, stranger.ClientID)
 	assert.Equal(t, "move", stranger.Relogin)
+}
+
+// TestBridge_SlackOnOwnAppStaysUntied: a Slack row connected through a
+// workspace's own app (its client_id, migration 00196) is not on the corp
+// build's baked app, so the bridge neither ties it nor takes its team for
+// the bundle; rows without a client id are the baked app's.
+func TestBridge_SlackOnOwnAppStaysUntied(t *testing.T) {
+	c := newCorpWorkspace(t)
+	require.NoError(t, c.database.SetSlackAccountClientID(c.ids["slack"], "3000.0003"))
+	_, err := c.bridge(t)
+	require.NoError(t, err)
+
+	own, err := c.database.GetSlackAccount(c.ids["slack"])
+	require.NoError(t, err)
+	assert.Empty(t, own.CompanySlug, "an own-app row is not the company's")
+	assert.Equal(t, "3000.0003", own.ClientID, "its client id is kept")
 }
