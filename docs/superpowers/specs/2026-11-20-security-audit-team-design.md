@@ -54,39 +54,14 @@ Anti-goals (a failure even if it "works")
   passes `model` to the Agent tool. (Owner rule: subagents are never below Opus — a
   session started for an audit must itself be Opus or stronger; the skill checks nothing
   here, it states it in its first line.)
-- Read-only is enforced by the tool list, not only by the prompt: the eight specialists
-  and `sec-coverage` get `tools: Read, Grep, Glob` — no Bash, so injection text inside
-  the audited code cannot make them run anything. Only `sec-verifier` has Bash, and its
-  limit is enforced by a hook, not by its prompt: the agent's frontmatter declares a
-  `PreToolUse` hook on Bash (`.claude/skills/security-audit/verifier-bash-guard.sh`)
-  that denies every command except an allow-list — `git -C <scratch> <read verb>`,
-  `git worktree add|remove` under the audit scratch root, and
-  `.claude/skills/security-audit/sandboxed-go-test.sh <scratch copy> <pkg> <name>` —
-  and denies any command containing `;`, `&&`, `||`, `|`, `$(`, backticks, redirection
-  or a path outside the scratch root. The same hook covers `Write`/`Edit`: the verifier
-  may only create or change `*_test.go` files inside its scratch copy. A denied call is
-  reported in the verifier's output.
-- The test the verifier writes is itself steered by untrusted code, so it runs in an OS
-  sandbox, not on trust: `sandboxed-go-test.sh` runs `go test -run <name>` under
-  `sandbox-exec` with a profile that denies all network, allows writes only to three
-  paths — the scratch copy, the per-run `GOCACHE` and the per-run temp dir, all three
-  under the run's scratch root — and denies reads of the
-  owner's secrets and data (`~/.config/watchtower`, `~/Library/Application
-  Support/Watchtower`, `~/.claude`, `~/.ssh`, the keychains). Child processes inherit the
-  sandbox. The owner's Go caches are never writable: the script sets `GOCACHE` to a
-  per-run directory inside the scratch root (seeded once per run as an APFS clone,
-  `cp -c`, of the owner's cache so the SQLCipher build stays warm; the original is only
-  read), `GOMODCACHE` stays the owner's but is read-only in the profile, and
-  `GOPROXY=off`/`GOFLAGS=-mod=mod` keep it from fetching. The per-run cache is deleted
-  with the scratch root. If `sandbox-exec` is missing or the profile fails to load, the script refuses
-  to run the test (the finding stays `plausible`). The hook and the sandbox profile have
-  their own tests: allowed and denied command samples including injection-shaped ones,
-  a positive test that a small passing Go test in a scratch copy builds and passes
-  under the sandbox with the per-run cache (so a broken profile cannot silently leave
-  every finding `plausible`), and a test that tries network, an outside write, a write
-  into the owner's `GOCACHE` and a secret read under the sandbox and expects all four
-  to fail. The skill also counts sandbox refusals per run and shows "verifier could not
-  run tests" in the report header when every attempt was refused.
+- Every agent is read-only, enforced by the tool list: all ten (the eight specialists,
+  `sec-verifier`, `sec-coverage`) get `tools: Read, Grep, Glob` — no Bash, Write or Edit,
+  so injection text inside the audited code cannot make any of them run or write
+  anything. Nothing is executed during a run; proving a finding by running it is the
+  owner's step during triage (owner decision, 2026-11-20).
+- No product code: the team is agent prompts, a skill and an HTML page. Deterministic
+  steps (dropping malformed findings, dedupe, classification against the baseline) are
+  done by the skill from its written rules (owner decision, 2026-11-20).
 - Runs need the Agent tool and the `Artifact`/`ArtifactData` tools, so they start from a
   top-level Claude Code session with claude.ai artifacts available, not from a subagent.
 - Run from a plain terminal session, not a Watchtower workbench session: a workbench
@@ -265,14 +240,10 @@ contract is never below high (same rule as `release-audit`).
 
 Persona: tries to prove each finding wrong. For every step of the chain it re-reads the
 code and checks for a guard the finder missed (a validator upstream, a policy check, a
-sandbox, a type that cannot carry the value). It may write a throwaway Go test
-**in its own scratch worktree** to demonstrate a finding (never in the audit worktree,
-never committed, deleted at the end) and runs it only through `sandboxed-go-test.sh`
-(§3: no network, no writes outside the copy, no reads of the owner's secrets) — no live
-accounts, no `make` targets.
-v1 runs Go tests only: a Swift test in a fresh worktree needs a cold `.build` (minutes,
-~5 GB), so Swift findings are confirmed by reading or stay `plausible`. (Builder's call, see §10.)
-A demonstrated finding is `confirmed` with the test's output quoted.
+sandbox, a type that cannot carry the value). It reads only — it writes and runs
+nothing. A finding whose every step it could check in the code and found no guard for
+is `confirmed`; one it could neither refute nor fully check is `plausible`. Running a
+PoC is the owner's step during triage.
 
 ### 6.5 Failure paths
 
@@ -293,7 +264,9 @@ One private Artifact for all audits, its URL kept in
 `~/.config/watchtower/security-audit/config.json` (outside the repo). Each run
 republishes the page from `report-page.html` and writes data with `ArtifactData`;
 the page holds no findings in its HTML — everything comes from its database, so
-republishing never loses triage.
+republishing never loses triage. A run creates a new finding with `ArtifactData set`
+and changes an existing one only with `ArtifactData update` (fields merged) naming its
+own fields, so the owner's `status` and `note` are never part of a run's write.
 
 Capabilities: `db` (rules: read `view`, write `owner` on every path — the Artifact stays
 private and only the owner writes) and `user` (to show the owner's controls only to the
@@ -329,7 +302,7 @@ Page (sketch):
 │ …                                                                          │
 ├ Finding ───────────────────────────────────────────────────────────────────┤
 │ Chain  1 internal/…:120  "…"   2 internal/…:88  "…"   3 …                  │
-│ Impact · Preconditions · PoC · Fix · Verifier: confirmed (test output)     │
+│ Impact · Preconditions · PoC · Fix · Verifier: confirmed (by reading)     │
 │ Status [open ▾]   Note [______________________________]                    │
 ├ Coverage gaps (3) ▸   Refuted (7) ▸   Runs history ▸                       ┘
 ```
@@ -382,8 +355,8 @@ The flow in §6.1 is the same; these steps change:
 | First run imports the two old audits as text-only baseline rows; mixed items split; old leftovers `open` | Builder |
 | Baseline match after a refactor is proposed by the verifier, marked `match: model`, confirmed by the owner on the page | Builder (owner confirms each match) |
 | Range audits changed code and what it reaches, not whole surfaces | Builder (follows from ask #779) |
-| Verifier runs Go tests only in v1; Swift findings confirmed by reading | Builder |
+| Nothing runs during a run; the verifier only reads; PoCs are run by the owner during triage | Owner, chat 2026-11-20 |
 | Nothing written to the board; run from a non-workbench session | Builder |
-| Specialists have no Bash; the verifier's Bash/Write/Edit are limited by a PreToolUse allow-list hook and its tests run under `sandbox-exec` (no network, no outside writes, no secret reads) | Builder |
+| All agents `tools: Read, Grep, Glob`; no product code, merge rules live in the skill | Owner, chat 2026-11-20 |
 
 None open. Any Builder row the owner rejects in review changes only its own section.
