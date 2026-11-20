@@ -222,7 +222,9 @@ final class ChatsTabOneClockTests: XCTestCase {
             .deletingLastPathComponent() // WatchtowerMobile
             .appendingPathComponent("Sources/Features/Chats/ChatListView.swift")
         let source = try String(contentsOf: file, encoding: .utf8)
-        XCTAssertEqual(source.components(separatedBy: "TimelineView(").count - 1, 1)
-        XCTAssertTrue(source.contains("HubSwitcherChip(now: now)"))
+        XCTAssertEqual(
+            source.components(separatedBy: "TimelineView(").count - 1, 1, "ChatListView keeps exactly one TimelineView (the screen's clock)"
+        )
+        XCTAssertTrue(source.contains("HubSwitcherChip(now: now)"), "the hub switcher takes the screen's now")
     }
 }
