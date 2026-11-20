@@ -48,7 +48,7 @@ Success: a customer who has never seen Slack's app console connects Slack, Googl
 
 ### 5.1 Playbooks
 
-- One file per connector: `docs/guide/connect/{slack,slack-company,google,mail,calendar,jira,confluence,linear,quick-connections}.md`. A guide page (four-section template is replaced for this folder by the playbook template below; `WRITING.md` gains a "Connect playbooks" section), ≤ 8 KB, public-safe, listed in `docs/guide/README.md`.
+- One file per connector: `docs/guide/connect/{slack,google,mail,calendar,jira,confluence,linear,quick-connections}.md` for a person's own accounts, and `docs/guide/connect/company-{slack,google,atlassian,microsoft,linear}.md` plus `own-google-project.md` for the company setup (§5.4). A guide page (four-section template is replaced for this folder by the playbook template below; `WRITING.md` gains a "Connect playbooks" section), ≤ 8 KB, public-safe, listed in `docs/guide/README.md`.
 - Template: **What you get** · **Before you start** (accounts, admin rights) · **Steps** (numbered; each step names the page it happens on, what the customer does, what the agent may do, and the check that it worked) · **If something goes wrong** (per failure: what the customer sees, what to do) · a fenced `connect` block the parser reads: `service`, `domains` (allowed hosts), `tools` (the connect tools of §5.3 this playbook may call), `secrets` (kinds it may ask for).
 - `internal/connectplay` parses and validates them (Go, a test over every file: block present, domains non-empty and HTTPS hosts, tools and secret kinds known). The help chat already sees them through the guide index (source `guide`).
 
@@ -78,7 +78,17 @@ A small MCP server `watchtower connect mcp --service <svc>` (stdio, spawned by t
 
 The agent never sees a secret: when a vendor page shows one (Slack's configuration token), the playbook has the agent point at it and call `request_secret`; the customer copies it into the card.
 
-### 5.4 Who clicks what in the browser
+### 5.4 Company setup — the biggest win
+
+The company setup wizard ([company-setup.md](../../features/company-setup.md), #1887) is the longest piece of explanation in the app: a company admin creates its own OAuth apps in Google Cloud, the Atlassian developer console, Microsoft Entra and Slack, guided by `CompanyVendorGuide` text. The agent does these console steps itself.
+
+- **Connect with <harness>** sits beside **Set up for my company** (Connections → Companies zone, the **Connect…** menu, Jira's empty state) and beside **Use my own Google project**. It opens the panel on the `company` playbook set: the agent runs one vendor playbook after another, in the wizard's order.
+- It drives the same `CompanySetupWizardModel` and its draft (`company draft save`), so the wizard sheet and the panel show one state. A customer can leave the panel and finish in the wizard, or the other way round.
+- Extra tools for these playbooks: `company_draft` (read; save the non-secret fields and the loopback OAuth client ids and secrets), `company_check` (`company check <vendor>`; a Google or Atlassian check opens a sign-in the customer approves), `company_publish` (the Slack configuration token comes through `request_secret`).
+- **Secrets here** (decided by the spec author): a Google or Atlassian OAuth client secret for a loopback-only desktop client is not treated as a secret. It already travels in clear in the bundle (company-setup D10), so the agent may read it off the vendor console and save it to the draft. The Slack configuration token stays a real secret: `request_secret` only, never seen by the model.
+- Confirm cards (§5.3) also cover **Publish** (it writes the Slack app's About text to the whole company) and a **Replace** of a stored company.
+
+### 5.5 Who clicks what in the browser
 
 - The agent may navigate, fill non-secret fields and press buttons on the playbook's `domains` (e.g. api.slack.com "Create New App → From a manifest" with the manifest `slack app` prints, Google Cloud console for a bring-your-own client).
 - The customer always does: sign-ins (passwords, 2FA) and the final **Allow** on an OAuth consent page — the agent tells them to and waits with `connect_wait`. (My call: vendor extensions block or warn on these pages anyway, and consent should be the customer's.)
@@ -131,7 +141,7 @@ The agent never sees a secret: when a vendor page shows one (Slack's configurati
 
 - Go: `internal/connectplay` (every playbook parses; domains/tools/secrets valid), connect MCP server (tools forward, secret kinds map to verbs, policy refusal), `ClaudeOptions.Chrome` argv golden, Codex per-run feature override (snapshot of both lists).
 - Swift: `ConnectAssistantPresentation` strings, tower `connect.*` command handlers on fake view models, secret card never enters the transcript, every state shot.
-- Live matrix (manual, recorded in the plan's last task): each of the 9 playbooks × {Claude + extension, Codex + browser, words only}.
+- Live matrix (manual, recorded in the plan's last task): each of the 14 playbooks × {Claude + extension, Codex + browser, words only}.
 
 ## 10. v1 limits and open spikes
 
