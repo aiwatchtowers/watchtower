@@ -207,7 +207,8 @@ Rules (branch "Ref kinds"):
   - `TestRefFacts_MailSenderNewestLink`;
   - `TestRefFacts_WaitingOlderOpenWhileOlder`;
   - `TestRefFacts_TextKeyKindsNeverWait`;
-  - `TestRefsOf_InvalidSenderIgnored`.
+  - `TestRefsOf_InvalidSenderIgnored`;
+  - `TestRefsOf_WaitingDocWithOlderNoteKeepsItemFacts` (the regression the T1 merge exposed: one text ref must not drop the document's other refs).
 - [ ] **Step 2:** Run them. Expected FAIL.
 - [ ] **Step 3:** Implement. Add `inbox_learned_rules` to `changetables.go` (a mute changes the feed).
 - [ ] **Step 4:** Run `go test ./internal/inboxfeed ./internal/automations/blocks`. Expected PASS.
@@ -358,7 +359,7 @@ Rules (branch "Ref kinds"):
   - `testTracksNewsFromLegacyItems`;
   - `testIdeaBatchCandidatesFromFeedCreatedAt`.
 - [ ] **Step 2:** Run `make test-swift FILTER='SlackTodayRowTests|TrackThreadsSummaryTests|IdeaDailyBatchTests|IdeaBatchPaneTests'`. Expected FAIL.
-- [ ] **Step 3:** Implement. Writes: Mark All Seen = `inbox.act read` on the card. Stop Tracking Quiet Ones… and Clear Old Ideas… keep their branch paths (`TracksBulkCLI`, `IdeaQueries.dropMany`): Mac-only, outside the feed's writes, as the branch shipped them. Idea verdicts go through main's `inbox.act ref idea`.
+- [ ] **Step 3:** Implement. Writes: Mark All Seen = `inbox.act read` on the card. Stop Tracking Quiet Ones… and Clear Old Ideas… stay Mac-only (the hub refuses them). They keep their branch paths where main still has them (`TracksBulkCLI`); where main removed the Swift write path (`IdeaQueries.dropMany`), they get a Go writer and a screen command in `internal/inboxfeed/screens.go`, next to main's other ideas writes. Restore the IDEA-04 guard `IdeaQueriesTests::testIdeas04_DropManyClearsNeedsReviewAndTouchesOnlyAwaiting` with the same name and assertions, over the new path. If it would have to move to Go, stop and ask the lead. Idea verdicts go through main's `inbox.act ref idea`.
 - [ ] **Step 4:** Run the same command. Expected PASS.
 - [ ] **Step 5:** Commit.
 
@@ -427,5 +428,6 @@ Out of v1 on the phone (Mac only, from Task 8's `not_permitted`): Mark All Done,
 
 - [ ] **Step 1:** Run `git fetch && git merge origin/main` (if it moved: re-check the migration number per Global Constraints).
 - [ ] **Step 2:** Run the gate, each to a log with `echo "exit=$?"`: `make test`, `make test-swift`, `make lint-all`, `make gen-interface-check`, `make mobile-test`, `go test ./cmd/... -run 'Inbox|Tower'`. Expected every `exit=0`.
+- [ ] **Step 2b:** Guard sweep (lead, 2026-11-20): every guard test named in `docs/inventory/*.md` exists in the tree and passes. Grep each named test, then run them (Go `-run`, Swift `FILTER`). Any one that is missing or failing blocks the PR.
 - [ ] **Step 3:** Run `local-review`. On the final diff into main it runs `debate-review`; triage and fix until the panel converges.
 - [ ] **Step 4:** Hand back to the lead: head sha, gate results, review verdict, the PR plan (new PR from `feature/inbox-feed-port` replacing #899, or #899's branch reset). No push and no PR change without the lead's ok.
