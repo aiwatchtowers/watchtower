@@ -30,9 +30,13 @@ skill uses (read them where a step says so, never copy them here):
   PR, a commit message, the Watchtower board, an ask, a target comment or any synced
   surface. Results live in the engine run dir and the private Artifact only.
 - Nothing from the target is executed — not by the agents, not by this session. The
-  session runs only: read-only `git` (`fetch`, `rev-parse`, `diff`, `log`, `tag`,
-  `describe`, `ls-files`, `worktree add/remove/prune`), `shasum`, the engine's two node
-  validators on run files, `tmutil`, and file operations under the directories below.
+  session runs only: `git` commands that change no working tree and write only under
+  the cache and run dirs (`fetch` updates only remote-tracking refs and tags; `rev-parse`,
+  `diff`, `log`, `tag`, `describe`, `ls-files`, `merge-base`, `worktree list`, and
+  `worktree add/remove/prune` on entries under `CACHE`), `shasum`, the engine's two node
+  validators on run files, `tmutil`, `realpath`, `ps`, `kill -0`, `printenv`, `date`,
+  `comm`/`sed`/`sort`/`find`, and file operations (`mkdir`, `chmod`, `cp`, `mv`, `rm`,
+  `printf >`) under the directories below.
 - Nothing is written into the target worktree or the repository.
 - The Agent tool is never given a `model`.
 
@@ -48,8 +52,8 @@ skill uses (read them where a step says so, never copy them here):
 | run dir | `<run root>/run-<N>/` |
 | aborted | `$OUT/watchtower-aborted/` |
 | archive | `$OUT/watchtower-archive/` |
-| `STATE` | `~/.config/watchtower/security-audit/` (`config.json` = `{"report_url":"…"}`, `lock`) |
-| `CACHE` | `~/Library/Caches/watchtower-security-audit/` (target at `$CACHE/<run-id>/target`) |
+| `STATE` | `~/.config/watchtower/security-audit/` (`config.json` = `{"report_url":"…"}`, `lock` = `<pid> <RFC3339> <process start>`) |
+| `CACHE` | `~/Library/Caches/watchtower-security-audit/` (target at `$CACHE/<root>-run-<N>/target`) |
 
 Each Bash call is a fresh shell: every command that creates or writes anything under
 `OUT`, `STATE` or `CACHE` starts with `umask 077;`. Directories are created 0700 and
@@ -113,7 +117,8 @@ open (the kind, a report to confirm), stop and tell the owner which argument to 
 
 Spec §6.1 step 0 and §3. Run every check in this order; the first failure stops the
 run with its reason, and nothing is created before the lock step (a report chosen in
-step 5 is remembered and written to `config.json` only after step 6 holds the lock).
+step 5 is remembered and written to `config.json` only in step 7, after step 6 holds the
+lock, and never under `--plan-only`).
 
 1. **Agent tool.** The Agent tool is in this session's tools. Missing → stop: "run
    /security-audit from a top-level session". (`import` does not need it — skip.)
@@ -149,31 +154,40 @@ step 5 is remembered and written to `config.json` only after step 6 holds the lo
        explicit yes continues, with no URL yet (Import publishes the page); anything
        else stops. `--plan-only` never creates one.
    - A URL in hand must open: `Artifact` `action: "read"` succeeds and says the owner is
-     a writer, and `ArtifactData list runs` succeeds. Otherwise → stop before the engine
+     a writer, and `ArtifactData list runs` succeeds (every page; keep the run rows —
+     Retention, the Kind question and Pin read them; a new report has none). Otherwise → stop before the engine
      (without the owner's triage the engine would re-report accepted risks). Never fall
      back to a new report when a configured URL fails.
-6. **Lock** `$STATE/lock`, content `<pid> <RFC3339 start>`, where `<pid>` is this
-   session's Claude Code process (`$PPID` of the Bash tool's shell; confirm with
-   `ps -p "$PPID" -o comm=` that it is the claude process, else walk up with
-   `ps -o ppid= -p …`).
+6. **Lock** `$STATE/lock`, one line `<pid> <RFC3339 lock time> <process start>`, where
+   `<pid>` is this session's Claude Code process (`$PPID` of the Bash tool's shell;
+   confirm with `ps -p "$PPID" -o comm=` that it is the claude process, else walk up with
+   `ps -o ppid= -p …`) and `<process start>` is `LC_ALL=C ps -o lstart= -p <pid>` (the
+   rest of the line; it has spaces). A pid is *the same process* only when it is alive
+   (`kill -0 <pid>`) and its `lstart` equals the stored one — a reused pid is not.
    - No lock → create it atomically: `umask 077; mkdir -p "$STATE" && chmod 700 "$STATE"
-     && (set -o noclobber; printf '%s %s\n' "$pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE/lock")`.
+     && (set -o noclobber; printf '%s %s %s\n' "$pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(LC_ALL=C ps -o lstart= -p "$pid")" > "$STATE/lock")`.
    An existing lock is checked in this order:
-   - held by this same session's pid (an interrupted earlier run) → replace it and say
+   - the same process as this session (an interrupted earlier run) → replace it and say
      so: "Replaced a stale lock left by this session's interrupted run (started …).";
-   - held by another live process (`kill -0 <pid>` succeeds and `ps -p <pid> -o comm=`
-     is a claude process) → refuse: "another security audit is running (pid …, since …)";
-   - held by a dead pid or a pid now running something else → replace it and say so:
-     "Replaced a stale lock left by pid … (started …)."
-   - Then, if step 5 chose a report from the listing (not with `--test`), write
-     `config.json` = `{"report_url":"<url>"}` under `umask 077`.
+   - another live claude process that is the same process as the stored one
+     (`ps -p <pid> -o comm=` is claude) → refuse: "another security audit is running
+     (pid …, since …)";
+   - otherwise (dead pid, a reused pid, a pid now running something else) → replace it
+     and say so: "Replaced a stale lock left by pid … (started …)."
+   - A replace is atomic: `umask 077; printf … > "$STATE/lock.$pid.tmp" && mv -f
+     "$STATE/lock.$pid.tmp" "$STATE/lock"`; then read the lock back — another pid in it
+     means a concurrent session won the race → refuse as above.
    From here on, every stop runs Cleanup.
-7. **Directories.** `umask 077; mkdir -p ~/security-audit-skill/{watchtower,watchtower-test,watchtower-aborted,watchtower-archive} "$CACHE"`
+7. **Remember the report.** Skipped under `--plan-only` and `--test`. If step 5 chose a
+   report from the listing, write `config.json` = `{"report_url":"<url>"}` under
+   `umask 077`. A failed write → tell the owner the URL and continue (the next run finds
+   it again by title).
+8. **Directories.** `umask 077; mkdir -p ~/security-audit-skill/{watchtower,watchtower-test,watchtower-aborted,watchtower-archive} "$CACHE"`
    then `chmod 700` each of them, `$OUT` and `$CACHE`. Time Machine: if
    `tmutil isexcluded ~/security-audit-skill` does not say `[Excluded]`, run
    `tmutil addexclusion ~/security-audit-skill` (an "already excluded" answer is fine;
    any other failure → tell the owner and continue).
-8. **Aborted runs.** For every run dir under `watchtower/` and `watchtower-test/`
+9. **Aborted runs.** For every run dir under `watchtower/` and `watchtower-test/`
    (`find <root> -mindepth 1 -maxdepth 1 -type d -name 'run-*'`): it
    is valid only if `findings.json` and `coverage-ledger.json` exist, `"$NODE"
    "$ENGINE/validate-findings.cjs" <dir>/findings.json` and `"$NODE"
@@ -182,13 +196,20 @@ step 5 is remembered and written to `config.json` only after step 6 holds the lo
    to `watchtower-aborted/<root>-run-<N>-<UTC timestamp>` (`<root>` = `watchtower` or
    `watchtower-test`) and named to the owner. A validated `incomplete` run stays: it is
    engine history.
-9. **Retention.**
+10. **Retention.**
    Enumerate every directory below with `find <dir> -mindepth 1 -maxdepth 1 -type d`.
-   - In `watchtower/`, the newest Full is the highest `<N>` whose `run-metadata.json` has
-     `watchtower_kind: "full"`. Every run dir with a lower `<N>` is archived: create
+   - In `watchtower/` (skipped with `--test`: the report in hand is the fixture, not the
+     one that holds these runs' rows), the anchor is the newest **complete** Full: the
+     highest `<N>` whose `run-metadata.json` has `watchtower_kind: "full"` and
+     `run_status: "complete"`. Every run dir with a lower `<N>` is archived — unless the
+     report's `runs` collection (step 5) has no `run-<N>` row: such a dir was never
+     imported, so it is not archived; name it and tell the owner to run
+     `/security-audit import <run dir>` first. Archiving: create
      `watchtower-archive/run-<N>/`, copy into it whichever of `REPORT.md`,
-     `FINDINGS-DETAIL.md`, `NEEDS-VALIDATION.md`, `findings.json`, `run-metadata.json`
-     exist, then delete the run dir. No Full yet → nothing is archived.
+     `FINDINGS-DETAIL.md`, `NEEDS-VALIDATION.md`, `findings.json`, `run-metadata.json`,
+     `coverage-ledger.json` exist (import rule 4 reads the ledger of a finding's
+     `last_seen_run` from here), then delete the run dir. No complete Full yet → nothing
+     is archived.
    - Delete `watchtower-archive/` entries whose run started more than 180 days ago
      (`watchtower_started_at` in their `run-metadata.json`; the dir's mtime when absent).
    - Delete `watchtower-aborted/` and `watchtower-test/` entries whose mtime is more than
@@ -210,7 +231,8 @@ First refresh the refs: `git -C "$REPO" fetch origin main --tags` (Watchtower; w
   new report) → the tag before the newest (`describe --tags --abbrev=0 <newest>^`). When
   the last audited tag already is the newest tag, say there is nothing new since the
   last audit and propose Full.
-- **Last Full**: `started_at` date of the newest `kind: "full"` row, else "never".
+- **Last Full**: `started_at` date of the newest `kind: "full"` row with
+  `run_status: "complete"` (the page uses the same rule), else "never".
 - **Surfaces the Range touches** (the Range mapping below), each with its changed-file
   count.
 - **The estimate** (below) for each option.
@@ -224,7 +246,10 @@ Full = profile `deep` over the whole target. Range = a scoped `standard` run ove
 - Each tag must match `^[A-Za-z0-9._/+-]+$` and resolve with
   `git -C "$REPO" rev-parse --verify --quiet "refs/tags/<tag>^{commit}"`; `<from>` must
   be an ancestor of `<to>` (`git merge-base --is-ancestor`). Otherwise stop and ask for a
-  valid pair. An empty `git diff --name-only <from>..<to>` → stop: nothing changed.
+  valid pair. An empty `git diff --name-only <from>..<to>` → stop: nothing changed. An
+  empty `git diff --name-only --diff-filter=d <from>..<to>` (the range only deletes
+  files) → stop: "this range only deletes files; nothing to audit" — an empty
+  `scope_paths` would mean the whole target.
 - **Mapping** (Watchtower only; with `--target` say "no surfaces map for this repo"):
   read `docs/security/surfaces.md` from the session's checkout. For each `## <surface>`
   section, its pathspecs are the lines of the fenced block after `Paths:`. Pass them
@@ -255,8 +280,10 @@ that cannot makes the engine end `incomplete` with no audit pass.
 2. The commit: Full → `git rev-parse origin/main` (`--target`: `HEAD`); Range → the
    `<to>` tag's commit. Keep it as `SHA`.
 3. Run id: `run-<N>`, `<N>` = 1 + the highest `<N>` found under the mode's run root,
-   under `watchtower-archive/` (real runs) and among `watchtower-aborted/<root>-run-<N>-*`
-   (1 when none; enumerate with `find`, never a glob). The cache entry is `$CACHE/<root>-run-<N>/`.
+   under `watchtower-archive/` (real runs), among `watchtower-aborted/<root>-run-<N>-*`,
+   and among the `run-<N>` ids of the report's `runs` collection read in Preflight step 5
+   (so a lost local dir never reuses a run row's id; 1 when none; enumerate with `find`,
+   never a glob). The cache entry is `$CACHE/<root>-run-<N>/`.
 4. Leftovers: for every entry `find "$CACHE" -mindepth 1 -maxdepth 1` prints (no other run is alive — the lock is
    held): `git -C "$REPO" worktree remove --force <entry>/target` when git still lists
    it, then `rm -rf <entry>`. Then `git -C "$REPO" worktree prune`.
@@ -267,7 +294,8 @@ that cannot makes the engine end `incomplete` with no audit pass.
 `--plan-only` stops here: print the kind, profile, `SHA`, the Range pair and mapping (or
 "Full"), the number of in-scope files, the budget, the prior runs the engine would read,
 the number of disputed rejections (a read-only `ArtifactData list findings` counting docs
-with `verdict: "rejected"` and `status` `open`/`in_progress`; none for a new report), and
+with `verdict: "rejected"`, `disputed: true` and `status` `open`/`in_progress`; none for
+a new report), and
 the estimate; then run Cleanup. Nothing is
 written to the Artifact and no run dir is created.
 
@@ -280,8 +308,11 @@ written to the Artifact and no run dir is created.
    - **Suppress unless the code changed**: docs with a `fingerprint` and owner `status`
      `accepted` or `false_positive`.
    - **Re-check**: docs with a `fingerprint` and `status: "fixed"`.
-   - **Disputed rejections**: docs with `verdict: "rejected"` and `status` `open` or
-     `in_progress`.
+   - **Disputed rejections**: docs with `verdict: "rejected"`, the owner field
+     `disputed: true` (set only by the page's Dispute button or the owner reopening a
+     rejected finding), and `status` `open` or `in_progress`. A `rejected` doc that is
+     open without `disputed` is the engine newly rejecting an open finding — not a
+     dispute, and on no list.
    - **Legacy items**: `legacy-*` docs without `merged_into` (or the baseline rows).
 3. Create the run dir `<run root>/run-<N>/` (`umask 077; mkdir`, then `chmod 700`) and
    write in it:
@@ -383,25 +414,38 @@ Follow `import-rules.md` rules 1–8 for the run dir, with the report URL from P
 
 - Kind, `from`, `to` and `started_at` come from the `watchtower_*` fields of
   `run-metadata.json`; the disputed list from `watchtower-disputed.json`.
-- Rule 4's `git diff` runs in `watchtower_source_repo` (the target worktree may be gone).
+- Rule 4's `git diff` runs in `watchtower_source_repo` (`REPO`; the target worktree may be
+  gone); for a `last_seen_run` already archived, rule 4 reads
+  `$OUT/watchtower-archive/<last_seen_run>/coverage-ledger.json`. Count rule 4's skips by
+  reason (no ledger, not covered, no trace files, could not compare) for the Summary.
 - Batches of at most 50 writes; updates carry `if_version`; a version conflict →
-  re-read, recompute, resend (rule 8). New engine-`rejected` records are created
+  re-read, recompute, resend, at most 3 times per batch, then stop (rule 8). New engine-`rejected` records are created
   `status: "false_positive"` (rule 2).
 - **No report yet** (the owner said yes to a new one; never with `--test`): load the
   `artifact-capabilities` skill, then publish `$SKILL_DIR/report-page.html` with
   `icon: "shield"` and
   `capabilities: {"db": {"rules": [{"path": "runs", "read": "view", "write": "owner"}, {"path": "findings", "read": "view", "write": "owner"}]}, "user": {}}`.
   Write the returned URL to `config.json` (`umask 077`) before the first data write.
-  Later runs never republish the page.
+  That write failing → stop before any data write, print the URL, and say: "The report
+  page is at <url> but config.json could not be written (<error>); write
+  `{"report_url":"<url>"}` there, then `/security-audit import <run dir>`." — the
+  Summary says it too, so a re-run never publishes a second page. Later runs never
+  republish the page.
 - An import or publish that fails or is denied leaves the run dir intact; say:
   "`/security-audit import <run dir>` re-runs the import." Then Cleanup.
 
 ## Summary
 
 In the terminal only (nothing to the board): counts by verdict and severity (rule 7's
-`counts`), regressed, new, `disputed_not_revalidated` (the fingerprints, with "your
+`counts`), regressed, new, resurfaced (the fingerprints, with "you had accepted or
+dismissed these; the code changed and the run found them again — decide again on the
+page"), `disputed_not_revalidated` (the fingerprints, with "your
 dispute was not re-checked; it stays on the next run's list" — and why, when the ledger
-had no role-prefixed ids), coverage status (complete; or partial with the reasons:
+had no role-prefixed ids), `disputed_rejected_again` (the fingerprints, with "re-checked
+and rejected again; set False positive to stop re-checking"), rule 4's skips by reason
+(no ledger, not covered, no trace files, could not compare — counts only), a
+`config.json` write that failed after a publish (with the URL), run dirs Retention
+left unarchived because they were never imported, coverage status (complete; or partial with the reasons:
 Range scope, `run_status: "incomplete"` and its `incomplete_reason`, the
 `coverage` counts of deferred / out_of_scope / blocked units), the report link, and the
 engine run dir. No finding titles or text.
