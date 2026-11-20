@@ -493,7 +493,9 @@ func (r *liveReader) codexToolResult(a LiveAction, raw json.RawMessage, at time.
 }
 func (r *liveReader) agentPath(ref SubagentRef) (string, bool) {
 	if r.codex {
-		return codexChildPath(r.path, r.live.Conversation, ref.AgentID)
+		path, ok, examined := codexChildPath(r.path, r.live.Conversation, ref.AgentID)
+		r.live.paths = append(r.live.paths, examined...)
+		return path, ok
 	}
 	if ref.AgentID == "" || strings.ContainsAny(ref.AgentID, "/\\.") {
 		return "", false
@@ -509,35 +511,39 @@ func (r *liveReader) agentPath(ref SubagentRef) (string, bool) {
 // A child is discovered only under the rollout's sessions root, by UUID,
 // and must declare this exact parent in session_meta. A transcript-provided
 // path is never accepted. Symlinked files and escaped directories are refused.
-func codexChildPath(parentPath, parentID, childID string) (string, bool) {
+// examined lists every candidate whose metadata was read, the accepted one
+// and the rejected ones alike: a candidate whose first line is still
+// incomplete may qualify once it is written, and only a watch on it sees that.
+func codexChildPath(parentPath, parentID, childID string) (path string, ok bool, examined []string) {
 	if !codexIDRe.MatchString(childID) {
-		return "", false
+		return "", false, nil
 	}
 	root := filepath.Dir(parentPath)
 	for range 3 {
 		root = filepath.Dir(root)
 	}
 	if filepath.Base(root) != "sessions" {
-		return "", false
+		return "", false, nil
 	}
 	matches, _ := filepath.Glob(filepath.Join(root, "*", "*", "*", "rollout-*-"+childID+".jsonl"))
 	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return "", false
+		return "", false, nil
 	}
-	for _, path := range matches {
-		st, e := os.Lstat(path)
+	for _, cand := range matches {
+		st, e := os.Lstat(cand)
 		if e != nil || !st.Mode().IsRegular() {
 			continue
 		}
-		resolved, e := filepath.EvalSymlinks(path)
+		resolved, e := filepath.EvalSymlinks(cand)
 		if e != nil || !strings.HasPrefix(resolved, resolvedRoot+string(filepath.Separator)) {
 			continue
 		}
-		f, _, e := rollout.Open(path)
+		f, _, e := rollout.Open(cand)
 		if e != nil {
 			continue
 		}
+		examined = append(examined, cand)
 		// Metadata is first; read only a small fixed prefix, never arbitrary
 		// file data (of a compressed child, only its first decompressed bytes).
 		buf := make([]byte, 64<<10)
@@ -548,10 +554,10 @@ func codexChildPath(parentPath, parentID, childID string) (string, bool) {
 			continue
 		}
 		if id, parent, ok := CodexChildMeta(first); ok && id == childID && parent == parentID {
-			return path, true
+			return cand, true, examined
 		}
 	}
-	return "", false
+	return "", false, examined
 }
 
 // CodexChildMeta reads a rollout's first line: the thread id of its
@@ -688,7 +694,6 @@ func (r *liveReader) reconcileAgents() {
 			if !r.codex {
 				claudePaths[id] = path
 			} else {
-				r.live.paths = append(r.live.paths, path)
 				action, status, at, err := codexChildHint(path)
 				if err != nil {
 					a.Ref.Status = StatusUnknown

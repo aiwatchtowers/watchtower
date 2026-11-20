@@ -134,7 +134,8 @@ func findCodexSubagent(c Conversation, selector string, depth int, reads *readSe
 		if a.Ref.ToolUseID != selector {
 			continue
 		}
-		path, ok := codexChildPath(c.Path, c.AgentSessionID, a.Ref.AgentID)
+		path, ok, examined := codexChildPath(c.Path, c.AgentSessionID, a.Ref.AgentID)
+		reads.add(examined...)
 		if !ok {
 			return nil, "", &selectedCodexSubagentError{fmt.Errorf("subagent transcript unavailable")}
 		}
@@ -157,7 +158,8 @@ func findCodexSubagent(c Conversation, selector string, depth int, reads *readSe
 		return res, path, nil
 	}
 	for _, a := range live.Agents {
-		path, ok := codexChildPath(c.Path, c.AgentSessionID, a.Ref.AgentID)
+		path, ok, examined := codexChildPath(c.Path, c.AgentSessionID, a.Ref.AgentID)
+		reads.add(examined...)
 		if !ok {
 			continue
 		}

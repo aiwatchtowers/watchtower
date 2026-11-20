@@ -88,3 +88,22 @@ func TestPaths_LiveListsMetaSidecars(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{conv, dir, meta}, live.Paths())
 }
+
+// A candidate rollout whose first line is still being written is rejected
+// but listed: once the line completes it may be the child, and only a watch
+// on the file sees that.
+func TestPaths_CodexIncompleteCandidateListed(t *testing.T) {
+	spawn := liveRec("event_msg", map[string]any{"type": "collab_agent_spawn_end", "new_thread_id": liveChild, "status": "running", "prompt": "check files"})
+	c := codexLiveFixture(t, spawn, liveRec("event_msg", map[string]any{"type": "task_started"}))
+	partial := filepath.Join(filepath.Dir(c.Path), "rollout-2026-11-02-"+liveChild+".jsonl")
+	require.NoError(t, os.WriteFile(partial, []byte(`{"timestamp":"2026-11-02T12:00:00Z","type":"session_meta"`), 0600))
+	live, err := LiveOf(c, false, liveNow)
+	require.NoError(t, err)
+	require.Len(t, live.Agents, 1)
+	assert.False(t, live.Agents[0].CanOpen, "an incomplete first line is not a child yet")
+	assert.Equal(t, []string{c.Path, partial}, live.Paths())
+
+	_, _, reads, err := FindSubagentReads([]Conversation{c}, "codex:"+liveChild)
+	require.Error(t, err)
+	assert.Contains(t, reads, partial)
+}
