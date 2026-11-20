@@ -183,8 +183,8 @@ struct AskFormModel {
     let canDismiss: Bool
     /// Close without answering's confirmation line; names the note only when one goes with it.
     let dismissConfirmMessage: String
-    /// Why Close without answering is off when it is the note's length, under the button on every page (the note
-    /// field, and its own hint, sit on the last question page only).
+    /// Why Close without answering is off when it is the note's length, under the button on a question page before
+    /// the last: where the note field is on screen (the last page, a check, a review's bar) its own hint says it.
     let dismissHint: String?
     /// The bottom bar; nil when there is none (a closed ask, a too-large one with nothing to send).
     let bar: Bar?
@@ -237,7 +237,6 @@ struct AskFormModel {
         let dismissal = draft.dismissal(for: ask)
         canDismiss = dismissal != nil && !isSending && applied == nil && !Self.isPending(status) && !Self.isNotOpen(status)
         // A too-large ask's dismissal goes without the note (its screen has no note field).
-        dismissHint = showsDismiss && dismissal == nil ? AskText.noteTooLong : nil
         dismissConfirmMessage = AskText.dismissConfirmMessage(hasNote: !clipped && !AskDraft.trimmed(draft.note).isEmpty)
         requestChangesHint = canSendVerdict && !saidSomething ? AskText.requestChangesNeedsWords : nil
 
@@ -248,6 +247,8 @@ struct AskFormModel {
         pageText = questions.count > 1 ? "\(shown + 1) of \(questions.count)" : nil
         let isReview = open && !clipped && ask.kind == .review
         review = isReview ? Self.review(ask, draft: draft, render: render, split: paragraphs) : nil
+        let noteOnScreen = isReview || (question?.isLast ?? true)
+        dismissHint = showsDismiss && dismissal == nil && !noteOnScreen ? AskText.noteTooLong : nil
         checks = open && !clipped ? (payload?.checklist ?? []).map { Self.checkRow($0, draft: draft) } : []
         note = draft.note
         noteHint = AskDraft.trimmed(draft.note).unicodeScalars.count > AskDraft.noteLimit ? AskText.noteTooLong : nil

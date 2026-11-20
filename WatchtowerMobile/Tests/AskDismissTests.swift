@@ -333,8 +333,8 @@ final class AskDismissTests: XCTestCase {
         XCTAssertTrue(try sentAnswer(fixture.store).dismissed)
     }
 
-    /// A note over the bound written on the last question page turns Close off on every page, and the reason shows
-    /// under the button there too; a too-large ask's dismissal has no note, so nothing there.
+    /// A note over the bound written on the last question page turns Close off on every page. The reason shows once:
+    /// the note's own hint on its page, under Close on an earlier page; a too-large ask's dismissal has no note.
     func testANoteOverTheBoundSaysWhyCloseIsOffOnEveryPage() async throws {
         let fixture = try await makeFixture()
         let twoQuestions: [String: Any] = ["kind": "question", "payload": ["questions": [
@@ -349,18 +349,25 @@ final class AskDismissTests: XCTestCase {
         model.setNote(String(repeating: "a", count: AskDraft.noteLimit + 1))
         let last = try form(model, snapshot)
         XCTAssertFalse(last.canDismiss)
-        XCTAssertEqual(last.dismissHint, "The note is over 4000 characters — shorten it to send")
+        XCTAssertEqual(last.noteHint, "The note is over 4000 characters — shorten it to send")
+        XCTAssertNil(last.dismissHint, "the note's own hint is on screen")
         model.previous()
         let first = try form(model, snapshot)
         XCTAssertEqual(first.question?.isLast, false, "back on the first page, where the note field is not")
         XCTAssertFalse(first.canDismiss)
-        XCTAssertEqual(first.dismissHint, AskText.noteTooLong)
+        XCTAssertEqual(first.dismissHint, "The note is over 4000 characters — shorten it to send")
 
         model.setNote("Short")
         XCTAssertNil(try form(model, snapshot).dismissHint)
         XCTAssertTrue(try form(model, snapshot).canDismiss)
 
         fixture.drafts.update(171) { $0.note = String(repeating: "a", count: AskDraft.noteLimit + 1) }
+        fixture.drafts.update(172) { $0.note = String(repeating: "a", count: AskDraft.noteLimit + 1) }
+        let review = try form(AskViewModel(askID: 172, drafts: fixture.drafts, answerer: fixture.answerer),
+                              try replica([try makeAsk(172, ["kind": "review", "doc_snapshot": "# Plan\n", "payload": [String: Any]()])], fixture))
+        XCTAssertFalse(review.canDismiss)
+        XCTAssertNil(review.dismissHint, "a review's note, and its hint, sit in the bar")
+
         let tooLarge = try form(AskViewModel(askID: 171, drafts: fixture.drafts, answerer: fixture.answerer),
                                 try replica([try makeAsk(171, ["kind": "question", "payload_clipped": true])], fixture))
         XCTAssertNil(tooLarge.dismissHint)
