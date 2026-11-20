@@ -254,6 +254,7 @@ SHOTS_DIR ?= build/mobile-shots
 # SHOTS_ONLY=spec-review only the Sessions tab with a session in Spec review (board #1945).
 # SHOTS_ONLY=inbox-approval only the Inbox approval card's mockups (inbox-approval-*, mobile Inbox spec §12).
 # SHOTS_ONLY=workchat-agents only the session chat's agents sheet mockups (#2065, P1–P4).
+# SHOTS_ONLY=workchat-live only the session chat's live line mockups (#2112, L1–L10).
 SHOTS_ONLY ?=
 mobile-shots:
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
@@ -261,7 +262,7 @@ mobile-shots:
 	mkdir -p "$(SHOTS_DIR)"
 	TEST_RUNNER_WATCHTOWER_SHOTS_ONLY="$(SHOTS_ONLY)" TEST_RUNNER_WATCHTOWER_SHOTS_DIR="$(abspath $(SHOTS_DIR))" xcodebuild test -project $(MOBILE_PROJ) \
 		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_XCB) \
-		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(filter relay-phase5,$(SHOTS_ONLY)),/testTheRelayPhase5Shots,$(if $(filter chat,$(SHOTS_ONLY)),/testTheChatShots,$(if $(filter inbox,$(SHOTS_ONLY)),/testTheInboxShots,$(if $(filter inbox-approval,$(SHOTS_ONLY)),/testTheInboxApprovalMockShots,$(if $(filter spec-review,$(SHOTS_ONLY)),/testTheSpecReviewShots,$(if $(filter workchat-agents,$(SHOTS_ONLY)),/testTheWorkchatAgentsShots,$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots)))))))
+		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(filter relay-phase5,$(SHOTS_ONLY)),/testTheRelayPhase5Shots,$(if $(filter chat,$(SHOTS_ONLY)),/testTheChatShots,$(if $(filter inbox,$(SHOTS_ONLY)),/testTheInboxShots,$(if $(filter inbox-approval,$(SHOTS_ONLY)),/testTheInboxApprovalMockShots,$(if $(filter spec-review,$(SHOTS_ONLY)),/testTheSpecReviewShots,$(if $(filter workchat-agents,$(SHOTS_ONLY)),/testTheWorkchatAgentsShots,$(if $(filter workchat-live,$(SHOTS_ONLY)),/testTheWorkchatLiveShots,$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots))))))))
 
 # The Desktop style guide's shots (WatchtowerDesktop/Tests/DesignShots, #719):
 # every DesignShotCatalog entry in light and dark mode as PNGs, written to
