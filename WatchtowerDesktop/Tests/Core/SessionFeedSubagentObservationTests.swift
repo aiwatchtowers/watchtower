@@ -323,7 +323,7 @@ final class SessionFeedSubagentObservationTests: XCTestCase {
                                    parentToolUseID: runner.parentID,
                                    isSessionActive: { hiddenTicks += 1; return hiddenTicks <= 3 },
                                    isRunning: { true }, isOnScreen: { false }, onEntries: { _ in })
-        XCTAssertGreaterThan(hiddenTicks, 3)
+        XCTAssertEqual(hiddenTicks, 0, "off screen the follow returns at once; the pane's task key restarts it")
         XCTAssertTrue(runner.recorded.isEmpty)
         let parentSeen = expectation(description: "parent-only observer started")
         runner.observeFirstParent { parentSeen.fulfill() }

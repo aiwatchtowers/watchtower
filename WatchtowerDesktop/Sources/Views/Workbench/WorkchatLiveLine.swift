@@ -33,6 +33,9 @@ struct WorkchatLiveLine: View {
     /// An optional clock anchor also lets the registered visual fixtures
     /// compare current/last/stale at the same deterministic instant.
     var referenceDate: Date?
+    /// The watch behind `snapshot` sees every change (`SessionFeedStore.isLiveWatched`):
+    /// a quiet transcript is then current, whatever its read's age (spec C4).
+    var isWatched: () -> Bool = { false }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var agentsOpen = false
     /// The last conversation a snapshot named: the popover closes only when
@@ -43,11 +46,12 @@ struct WorkchatLiveLine: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let now = referenceDate ?? context.date
             let stepsOpen = memory.stepsOpen(paneKey)
-            let row = WorkchatLivePresentation.row(snapshot: snapshot, error: error, loaded: loaded, working: working,
+            let shown = shown(at: now)
+            let row = WorkchatLivePresentation.row(snapshot: shown, error: error, loaded: loaded, working: working,
                                                    stateAt: stateAt, now: now, done: done, activityHidden: activityHidden,
                                                    stepsOpen: stepsOpen)
             // A permission card hides the steps: the slot gets no snapshot then.
-            let steps = WorkchatLivePresentation.stepsSlot(snapshot: activityHidden ? nil : snapshot, error: error,
+            let steps = WorkchatLivePresentation.stepsSlot(snapshot: activityHidden ? nil : shown, error: error,
                                                            working: working, now: now)
             VStack(spacing: 0) {
                 if stepsOpen, let steps {
@@ -63,6 +67,10 @@ struct WorkchatLiveLine: View {
             lastConversation = conversation
         }
         .onChange(of: paneKey) { _, _ in agentsOpen = false; lastConversation = nil }
+    }
+
+    private func shown(at now: Date) -> SessionFeedLive? {
+        WorkchatLiveFreshness.effective(snapshot, watched: isWatched(), now: now)
     }
 
     private func line(row: WorkchatLivePresentation.Row?, now: Date) -> some View {
@@ -139,7 +147,7 @@ struct WorkchatLiveLine: View {
         .accessibilityLabel(label)
         .popover(isPresented: $agentsOpen, arrowEdge: .bottom) {
             WorkchatAgentsPopover(
-                list: WorkchatLivePresentation.agentsList(snapshot: snapshot, error: error, feedLoaded: feedLoaded,
+                list: WorkchatLivePresentation.agentsList(snapshot: shown(at: now), error: error, feedLoaded: feedLoaded,
                                                           feedError: feedError, done: done, idle: !working, now: now),
                 agentsMore: snapshot?.agentsMore ?? 0,
                 paneKey: paneKey,

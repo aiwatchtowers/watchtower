@@ -38,7 +38,9 @@ extension ScreenshotTourTests {
     /// agents as subagent markers (2 running and 9 finished; 9 finished; none), the real `WorkchatView` for the
     /// toolbar button, and the real `WorkchatAgentsSheet` presented as a sheet over it (P2, P3-sheet; the view's own
     /// `showsAgents` is private state, so the sheet is presented by the capture's container, with the same detents).
-    /// P3 publishes the session as idle (its turn over); P4 puts the seeded working state back. Returns the frames.
+    /// P3 publishes the session as idle (its turn over); P4 puts the seeded working state back. L9 (#2112 spec §6)
+    /// adds the hub's live block to the P2 chat, so the sheet's Working rows carry each agent's step and timer.
+    /// Returns the frames.
     private func captureWorkchatAgentsReal(_ env: AppEnvironment, demo: DemoHub, host: ScreenshotHost) async throws -> Int {
         try await poll({ Self.isHydrated(env) }, "the demo seed hydrated")
         let now = Date()
@@ -55,27 +57,33 @@ extension ScreenshotTourTests {
             _ name: String,
             markers: [[String: Any]],
             session: CloudRecord? = nil,
-            state: TerminalSessionState.Kind = .working
-        ) async throws -> [SessionChat.Entry] {
+            state: TerminalSessionState.Kind = .working,
+            live: [String: Any]? = nil
+        ) async throws -> SessionChat? {
             var json = DemoSeed.workingChatPayload(now: now)
             let dialog = (json["entries"] as? [[String: Any]] ?? []).filter { $0["kind"] as? String != "subagent" }
             json["entries"] = dialog + markers
+            if let live {
+                json["activity_live"] = live
+                json["live_version"] = 1
+            }
             let chat = try DemoSeed.record(kind: .sessionChat, id: 10, json: json, modifiedAt: Date())
             try await sealing.save([chat] + (session.map { [$0] } ?? []))
             _ = await env.refresh(.pull)
             try await poll({
                 probe.chat?.entries.filter { $0.subagent != nil }.count == markers.count
+                    && (probe.chat?.activityLive != nil) == (live != nil)
                     && env.workbenchReplica.snapshot.session(10)?.stateKind == state
             }, name)
-            return probe.chat?.entries ?? []
+            return probe.chat
         }
-        func workchat(_ name: String, sheet entries: [SessionChat.Entry]? = nil) async throws {
+        func workchat(_ name: String, sheet chat: SessionChat? = nil) async throws {
             try await host.capture(name, NavigationStack {
                 WorkchatView(replica: env.workbenchReplica, sessionID: 10, store: env.store, requester: env.chatRequests)
             }
-            .sheet(isPresented: .constant(entries != nil)) {
-                if let entries {
-                    WorkchatAgentsSheet(agents: WorkchatAgents(entries: entries, sessionID: 10),
+            .sheet(isPresented: .constant(chat != nil)) {
+                if let chat {
+                    WorkchatAgentsSheet(agents: Self.sheetAgents(chat),
                                         disclosure: .constant(.automatic), onOpen: { _ in }, onClose: {})
                         // Shot only, as in the mockups: drawHierarchy draws no blur, so glass shows the chat.
                         .presentationBackground(Color(.systemBackground))
@@ -87,6 +95,8 @@ extension ScreenshotTourTests {
         let working = try await publish("P1/P2 markers", markers: running + finished)
         try await workchat("workchat-phone-real-P1")
         try await workchat("workchat-phone-real-P2", sheet: working)
+        let withLive = try await publish("L9 live block", markers: running + finished, live: Self.l9Live(now: now))
+        try await workchat("workchat-phone-real-L9", sheet: withLive)
         let idle = try DemoSeed.record(kind: .terminalSession, id: 10, json: DemoSeed.JSON.session(10, workbench: DemoSeed.acmeID, [
             "title": "Session report", "state_kind": "stopped", "state_caption": "Idle", "state_tone": "secondary",
             "state_glyph": "pause.fill", "target_id": 430, "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-60)),
@@ -104,6 +114,32 @@ extension ScreenshotTourTests {
         ]), modifiedAt: Date())
         _ = try await publish("P4 markers", markers: [], session: working10)
         try await workchat("workchat-phone-real-P4")
-        return 5
+        return 6
+    }
+
+    /// L9's live block: the mockup's two working agents, each with its step, started 0:04 and 2:05 ago. Summaries are
+    /// what `sessionfeed.toolSummary` sends: Grep's bare pattern, Bash's command when it has no description.
+    private static func l9Live(now: Date) -> [String: Any] {
+        // The live block's dates are RFC 3339 strings (Go `sessionfeed.Live`), not the record's Unix seconds.
+        func stamp(_ date: Date) -> String { date.ISO8601Format() }
+        func agent(_ index: Int, started: TimeInterval, tool: String, summary: String) -> [String: Any] {
+            let agent = WorkchatAgentsMockups.working[index]
+            return ["ref": ["tool_use_id": "toolu_\(index)", "agent_id": "a\(index)", "type": agent.type,
+                            "description": agent.description, "status": "running"],
+                    "started_at": stamp(now.addingTimeInterval(-started)), "can_open": true,
+                    "action": ["id": "s\(index)", "tool": tool, "summary": summary, "started_at": stamp(now.addingTimeInterval(-2))]]
+        }
+        return [
+            "observed_at": stamp(now), "turn_at": stamp(now.addingTimeInterval(-194)), "turn_active": true,
+            "agents_state": "known",
+            "agents": [agent(0, started: 4, tool: "Grep", summary: "func LiveOf"),
+                       agent(1, started: 125, tool: "Bash", summary: "codex review --base main")]
+        ]
+    }
+
+    /// The sheet's model as `WorkchatModel` builds it for the demo's working session 10, the tower sending.
+    private static func sheetAgents(_ chat: SessionChat) -> WorkchatAgents {
+        WorkchatAgents(entries: chat.entries, sessionID: 10, live: chat.activityLive, liveError: chat.liveError,
+                       sessionWorking: true, now: .now)
     }
 }

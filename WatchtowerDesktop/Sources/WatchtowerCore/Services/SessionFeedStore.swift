@@ -69,12 +69,35 @@ package final class SessionFeedStore: ObservableObject {
     /// The last CLI read started; the next one waits for it, so the pane
     /// never runs two CLI processes at once (main feed and subagent alike).
     private var lastRead: Task<Void, Never>?
+    private let fileEvents: FileEventSource
+    private let watchClock: TranscriptWatchClock
+    /// The main feed's watch, shared by every pane following this store
+    /// (the workspace pane and the review panel may both show it): it runs
+    /// while at least one follows and the app is on screen.
+    private lazy var mainWatch = TranscriptWatch(fileEvents: fileEvents, clock: watchClock) { [weak self] in
+        self?.mainWatchFired()
+    }
+    private var followers: [Int: MainFollower] = [:]
+    private var nextFollower = 0
+    /// `paths` of the last good main read.
+    private var readPaths: [String] = []
+    /// The last good main read carried its live hint (`live_ok`).
+    private var mainLiveOK = false
+    /// The running subagent follows' watches, by tool-use id.
+    private var subagentWatches: [String: SubagentWatch] = [:]
 
     /// `runner` nil: the CLI binary is missing (`runnerMissing`).
-    package init(sessionID: Int64, runner: CLIRunnerProtocol?) {
+    package init(
+        sessionID: Int64,
+        runner: CLIRunnerProtocol?,
+        fileEvents: FileEventSource = DispatchFileEventSource(),
+        watchClock: TranscriptWatchClock = MainQueueWatchClock()
+    ) {
         self.sessionID = sessionID
         self.runner = runner ?? UnavailableRunner()
         runnerMissing = runner == nil
+        self.fileEvents = fileEvents
+        self.watchClock = watchClock
         beginOpenTrace(reopen: false)
     }
 
@@ -90,29 +113,73 @@ package final class SessionFeedStore: ObservableObject {
         trace.mark(.appear)
     }
 
-    /// The pane's poll: one read now, then while `isActive` one more every
-    /// `interval`. A read due while `isOnScreen` is false (the main window
-    /// hidden, minimised or covered) is skipped, and `screenChanged` reads at
-    /// once on the way back. Returns when inactive or cancelled.
-    package func follow(
-        interval: Duration = .seconds(3),
-        isActive: () -> Bool,
-        isOnScreen: () -> Bool
-    ) async {
+    /// The pane's reads: one now, then while `isActive` one on each change
+    /// of a followed file (`TranscriptWatch`: 250 ms debounce, at most one a
+    /// second, a 3 s tick only while it cannot watch). The session's state
+    /// change re-enters `follow` (the pane's task key), which is its one
+    /// read: the watch reopens the last read's files before it. No liveness
+    /// timer. Off screen (the main window hidden, minimised or covered) no
+    /// file is watched and no read runs; `screenChanged` reads at once on the
+    /// way back. Returns when inactive or cancelled; the last follower to
+    /// leave closes the watch.
+    package func follow(isActive: @escaping () -> Bool, isOnScreen: @escaping () -> Bool) async {
         guard !runnerMissing else { return }
-        if gatedTick(isOnScreen()) { await poller.refresh() }
-        while isActive() {
-            try? await Task.sleep(for: interval)
-            if Task.isCancelled { return }
-            if gatedTick(isOnScreen()) { await poller.refresh() }
+        let onScreen = isOnScreen()
+        let readNow = gatedTick(onScreen)
+        guard isActive(), !Task.isCancelled else {
+            if readNow { await poller.refresh() }
+            return
         }
+        let id = nextFollower
+        nextFollower += 1
+        followers[id] = MainFollower(isActive: isActive, isOnScreen: isOnScreen)
+        if onScreen { mainWatch.start() }
+        if readNow { await poller.refresh() }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (wake: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled || followers[id] == nil {
+                    wake.resume()
+                } else {
+                    followers[id]?.wake = wake
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.endFollower(id) }
+        }
+        endFollower(id)
     }
 
-    /// The app's windows went on or off screen (`UIVisibilityCenter`): back
-    /// on screen after a skipped read, the feed is read now.
+    private func endFollower(_ id: Int) {
+        guard let follower = followers.removeValue(forKey: id) else { return }
+        follower.wake?.resume()
+        if followers.isEmpty { mainWatch.stop() }
+    }
+
+    /// A followed file changed (or the fallback tick): one read, unless no
+    /// follower is active any more or none is on screen.
+    private func mainWatchFired() {
+        for (id, follower) in Array(followers) where !follower.isActive() { endFollower(id) }
+        guard !followers.isEmpty else { return }
+        guard gatedTick(followers.values.contains { $0.isOnScreen() }) else { return }
+        Task { await poller.refresh() }
+    }
+
+    /// The app's windows went on or off screen (`UIVisibilityCenter`). Off
+    /// screen the watch closes; back on screen it reopens and the feed is
+    /// read at once (also after a skipped read with no follower).
     package func screenChanged(_ onScreen: Bool) async {
-        guard !runnerMissing, screenGate.setOnScreen(onScreen) else { return }
-        await poller.refresh()
+        guard !runnerMissing else { return }
+        let missed = screenGate.setOnScreen(onScreen)
+        guard onScreen else {
+            mainWatch.stop()
+            return
+        }
+        var catchUp = missed
+        if !followers.isEmpty, !mainWatch.isRunning {
+            mainWatch.start()
+            catchUp = true
+        }
+        if catchUp { await poller.refresh() }
     }
 
     private func gatedTick(_ onScreen: Bool) -> Bool {
@@ -131,6 +198,7 @@ package final class SessionFeedStore: ObservableObject {
         // The open this read started for: a newer pane's trace begun while it
         // runs is not marked by it.
         let trace = openTrace
+        mainWatch.readStarted()
         do {
             trace?.mark(.spawn)
             let data = try await read(args)
@@ -154,13 +222,70 @@ package final class SessionFeedStore: ObservableObject {
                 }
             }
             error = nil
+            readPaths = payload.paths
+            // A read without its live hint shows "unavailable": the tick
+            // runs until one with the hint succeeds.
+            mainLiveOK = payload.liveOK
+            mainWatch.update(mainTargets(), readFailed: !payload.liveOK)
         } catch {
+            mainWatch.markReadFailed()
             self.error = error.localizedDescription
             if generation == liveGeneration {
                 liveLoaded = true
                 liveError = WorkchatLivePresentation.unavailable
             }
         }
+    }
+
+    /// The main watch's targets: the current conversation (the live
+    /// snapshot's, else the last conversation file listed) and the running
+    /// agents, the live snapshot's word over the markers'.
+    private func mainTargets() -> TranscriptWatchTargets {
+        var status: [String: String] = [:]
+        for marker in subagents {
+            if let ref = marker.subagent, !ref.agentID.isEmpty { status[ref.agentID] = ref.status }
+        }
+        for agent in live?.agents ?? [] where !agent.ref.agentID.isEmpty {
+            status[agent.ref.agentID] = agent.ref.status
+        }
+        let running = Set(status.filter { $0.value == "running" }.keys)
+        return TranscriptWatchTargets(paths: readPaths, current: mainConversation(knownAgents: Set(status.keys)).map { [$0] } ?? [],
+                                      running: running, mustCover: Self.liveRunning(live))
+    }
+
+    /// The running agents of a live snapshot, by agent id.
+    private static func liveRunning(_ live: SessionFeedLive?) -> Set<String> {
+        Set((live?.agents ?? []).filter { $0.ref.status == "running" && !$0.ref.agentID.isEmpty }.map(\.ref.agentID))
+    }
+
+    /// The main feed's live snapshot as the line shows it at `now`: while
+    /// the watch is healthy (`isLiveWatched`) a quiet transcript is not out
+    /// of date, so its age does not count (spec C4); otherwise the read's own
+    /// `observedAt` does.
+    package func presentedLive(now: Date) -> SessionFeedLive? {
+        WorkchatLiveFreshness.effective(live, watched: isLiveWatched, now: now)
+    }
+
+    /// The main feed's watch sees every change: it runs, every followed
+    /// file is open and the last read succeeded.
+    package var isLiveWatched: Bool { mainWatch.isHealthy }
+
+    /// The same for an open subagent's follow.
+    package func isSubagentWatched(_ toolUseID: String) -> Bool {
+        subagentWatches[toolUseID]?.watch.isHealthy ?? false
+    }
+
+    private func mainConversation(knownAgents: Set<String>) -> String? {
+        func isConversation(_ path: String) -> Bool {
+            let name = (path as NSString).lastPathComponent
+            guard name.hasSuffix(".jsonl"), !name.hasPrefix("agent-"), let id = TranscriptWatch.fileID(path) else { return false }
+            return !knownAgents.contains(id)
+        }
+        if let conversation = live?.conversation, !conversation.isEmpty,
+           let path = readPaths.first(where: { isConversation($0) && TranscriptWatch.fileID($0) == conversation }) {
+            return path
+        }
+        return readPaths.last(where: isConversation)
     }
 
     /// Reads the page of `tailSize` entries before the first one held and
@@ -239,10 +364,15 @@ package final class SessionFeedStore: ObservableObject {
 
     /// One serial loop for the open pane. While the root stays active,
     /// completed child history pauses but its immediate parent is observed
-    /// for resume. No per-agent timer or tree walk is started.
+    /// for resume. No per-agent timer or tree walk is started: the loop reads
+    /// on a change of the child's transcript, its parent's conversation or a
+    /// running nested agent's file (`TranscriptWatch` over the reads'
+    /// `paths`), the 3 s tick only while it cannot watch. Off screen it
+    /// returns at once (the pane's task key restarts it on the way back).
+    /// `interval`, for tests, sets every watch bound to one cadence.
     package func followSubagent(
         _ toolUseID: String,
-        interval: Duration = .seconds(3),
+        interval: Duration? = nil,
         readsMainFeed: Bool = false,
         parentToolUseID: String? = nil,
         isSessionActive: (() -> Bool)? = nil,
@@ -254,7 +384,7 @@ package final class SessionFeedStore: ObservableObject {
         onStatus: (String) -> Void = { _ in },
         onError: (String?) -> Void = { _ in }
     ) async {
-        guard !runnerMissing else { return }
+        guard !runnerMissing, isOnScreen() else { return }
         if isSessionActive != nil { subagentObservationGeneration += 1 }
         let generation = subagentObservationGeneration
         func isCurrentObservation() -> Bool { isSessionActive == nil || generation == subagentObservationGeneration }
@@ -268,9 +398,11 @@ package final class SessionFeedStore: ObservableObject {
                 subagentObservation = (observationKey, observation)
             }
         }
+        let watch = SubagentWatch(fileEvents: fileEvents, clock: watchClock, interval: interval)
         func readChild() async {
             do {
                 let result = try await subagentFeed(toolUseID)
+                watch.childRead(Self.childTargets(result.paths, live: result.live), ok: result.liveError == nil)
                 guard !Task.isCancelled, isCurrentObservation() else { return }
                 if isSessionActive != nil {
                     let status = observation.receiveOwn(snapshot: result.live, entries: result.entries,
@@ -284,6 +416,7 @@ package final class SessionFeedStore: ObservableObject {
                 onEntries(result.entries); onActivity(result.activity)
                 onLive(result.live, result.liveError); onError(nil)
             } catch {
+                watch.childFailed()
                 guard !Task.isCancelled, isCurrentObservation() else { return }
                 if isSessionActive != nil {
                     let status = observation.receiveOwn(snapshot: nil, entries: [], error: error.localizedDescription, now: .now)
@@ -298,15 +431,18 @@ package final class SessionFeedStore: ObservableObject {
                 // Only the immediate parent, never a tree-wide fan-out.
                 do {
                     let result = try await subagentFeed(parentToolUseID)
+                    watch.parentRead(Self.subagentTargets(result.paths, live: result.live), ok: result.liveError == nil)
                     guard !Task.isCancelled, isCurrentObservation() else { return nil }
                     onError(result.liveError)
                     return result.liveError == nil ? result.live : nil
                 } catch {
+                    watch.parentFailed()
                     guard !Task.isCancelled, isCurrentObservation() else { return nil }
                     onError(error.localizedDescription)
                 }
             } else if readsMainFeed || isSessionActive != nil {
                 await poller.refresh()
+                if error == nil { watch.parentRead(mainTargets(), ok: mainLiveOK) } else { watch.parentFailed() }
                 return liveError == nil ? live : nil
             }
             return nil
@@ -329,26 +465,57 @@ package final class SessionFeedStore: ObservableObject {
                 if resumed { await readChild() }
             }
         }
-        await tick()
-        while isCurrentObservation() && (isSessionActive?() ?? isRunning()) {
-            try? await Task.sleep(for: interval)
-            if Task.isCancelled { return }
-            await tick()
+        await watchSubagent(toolUseID, watch, isOnScreen: isOnScreen, tick: tick) { isCurrentObservation() && (isSessionActive?() ?? isRunning()) }
+    }
+
+    /// Runs one subagent follow's watch, listed for `isSubagentWatched` meanwhile.
+    private func watchSubagent(
+        _ toolUseID: String,
+        _ watch: SubagentWatch,
+        isOnScreen: () -> Bool,
+        tick: () async -> Void,
+        following: () -> Bool
+    ) async {
+        subagentWatches[toolUseID] = watch
+        defer { if subagentWatches[toolUseID] === watch { subagentWatches[toolUseID] = nil } }
+        await watch.run(isOnScreen: isOnScreen, following: following, tick: tick)
+    }
+
+    /// What one subagent read says to watch: its own transcript (the read's
+    /// first path) and the nested agents it lists as running.
+    /// The open child's targets: also its sidecar (`agent-<id>.meta.json`)
+    /// when the read listed it, finished or not, so a resume written there
+    /// is seen.
+    private static func childTargets(_ paths: [String], live: SessionFeedLive?) -> TranscriptWatchTargets {
+        var targets = subagentTargets(paths, live: live)
+        if let transcript = paths.first, (transcript as NSString).lastPathComponent.hasPrefix("agent-"),
+           let id = TranscriptWatch.fileID(transcript) {
+            let sidecar = ((transcript as NSString).deletingLastPathComponent as NSString).appendingPathComponent("agent-\(id).meta.json")
+            if paths.contains(sidecar) { targets.current.append(sidecar) }
         }
+        return targets
+    }
+
+    private static func subagentTargets(_ paths: [String], live: SessionFeedLive?) -> TranscriptWatchTargets {
+        let running = liveRunning(live)
+        return TranscriptWatchTargets(paths: paths, current: paths.first.map { [$0] } ?? [], running: running, mustCover: running)
     }
 
     /// The feed of one subagent run with its own open tool call; not merged
     /// into the main feed.
     package func subagentFeed(
         _ toolUseID: String
-    ) async throws -> (entries: [SessionFeedEntry], activity: SessionFeedActivity?, live: SessionFeedLive?, liveError: String?) {
+    ) async throws -> SubagentRead {
         let data = try await read([
             "workbench", "session-feed", "--session", String(sessionID), "--subagent", toolUseID, "--json"
         ])
         let payload = try Self.decode(data)
-        return (payload.entries.filter { SessionFeedEntry.knownKinds.contains($0.kind) }, payload.activity,
-                payload.liveOK == true ? payload.live : nil,
-                payload.liveOK == true ? nil : (payload.liveError ?? WorkchatLivePresentation.unavailable))
+        return SubagentRead(
+            entries: payload.entries.filter { SessionFeedEntry.knownKinds.contains($0.kind) }, activity: payload.activity,
+            live: payload.liveOK == true ? payload.live : nil,
+            liveError: payload.liveOK == true ? nil : (payload.liveError ?? WorkchatLivePresentation.unavailable),
+            paths: payload.paths
+        )
     }
 
     /// Runs one CLI read after the one before it has finished. The read
@@ -414,6 +581,77 @@ package final class SessionFeedStore: ObservableObject {
 private struct UnavailableRunner: CLIRunnerProtocol {
     func run(args: [String]) async throws -> Data { Data() }
     func runModel(args: [String], origin: CLIOrigin, timeout: TimeInterval?, stdin: Data?) async throws -> Data { Data() }
+}
+
+/// One `--subagent` read.
+package struct SubagentRead {
+    package var entries: [SessionFeedEntry]
+    package var activity: SessionFeedActivity?
+    package var live: SessionFeedLive?
+    package var liveError: String?
+    /// The files the read went through (`TranscriptWatch`).
+    package var paths: [String]
+}
+
+/// One subagent follow's watch: its own transcript's targets and its
+/// parent's (the main feed or the immediate parent agent), merged.
+@MainActor
+private final class SubagentWatch {
+    let watch: TranscriptWatch
+    private let events: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+    private var child = TranscriptWatchTargets()
+    private var parent = TranscriptWatchTargets()
+    /// Each read's last outcome: the fallback tick runs until both have
+    /// succeeded since their last failure, so one never masks the other.
+    private var childFailing = false
+    private var parentFailing = false
+
+    init(fileEvents: FileEventSource, clock: TranscriptWatchClock, interval: Duration?) {
+        let (events, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        self.events = events
+        self.continuation = continuation
+        watch = TranscriptWatch(fileEvents: fileEvents, clock: clock,
+                                timing: interval.map(TranscriptWatchTiming.uniform) ?? .standard) { continuation.yield() }
+    }
+
+    /// One tick now, then one per change while `following`; returns off
+    /// screen or cancelled, closing the watch.
+    func run(isOnScreen: () -> Bool, following: () -> Bool, tick: () async -> Void) async {
+        watch.start()
+        defer {
+            watch.stop()
+            continuation.finish()
+        }
+        watch.readStarted()
+        await tick()
+        guard following() else { return }
+        for await _ in events {
+            if Task.isCancelled || !isOnScreen() { return }
+            watch.readStarted()
+            await tick()
+            guard following() else { return }
+        }
+    }
+
+    /// A read came back; `ok` false: without its live hint, which keeps the tick.
+    func childRead(_ targets: TranscriptWatchTargets, ok: Bool) { child = targets; childFailing = !ok; push() }
+    func childFailed() { childFailing = true; push() }
+    func parentRead(_ targets: TranscriptWatchTargets, ok: Bool) { parent = targets; parentFailing = !ok; push() }
+    func parentFailed() { parentFailing = true; push() }
+
+    private func push() {
+        watch.update(TranscriptWatchTargets(paths: child.paths + parent.paths, current: child.current + parent.current,
+                                            running: child.running.union(parent.running),
+                                            mustCover: child.mustCover.union(parent.mustCover)),
+                     readFailed: childFailing || parentFailing)
+    }
+}
+
+private struct MainFollower {
+    let isActive: () -> Bool
+    let isOnScreen: () -> Bool
+    var wake: CheckedContinuation<Void, Never>?
 }
 
 private struct SubagentObservationKey: Equatable {

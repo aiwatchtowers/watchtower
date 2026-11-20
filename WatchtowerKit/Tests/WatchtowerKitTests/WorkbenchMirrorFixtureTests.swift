@@ -431,6 +431,11 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             wire("session_chat_request", entity: "7", params: #"{"session_id":7,"subagent_id":"a1b2","tool_use_id":"toolu_01a"}"#)
         )
         try assertParams(
+            SessionChatRequestParams(sessionID: 7, openID: "open-1"),
+            entityID: "7",
+            wire("session_chat_request", entity: "7", params: #"{"open_id":"open-1","session_id":7}"#)
+        )
+        try assertParams(
             AutomationRunParams(workbenchID: 7, confirmed: false),
             entityID: "3",
             wire("automation_run", entity: "3", params: #"{"confirmed":false,"workbench_id":7}"#)
@@ -637,8 +642,10 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             .init(agentID: "a1b2", toolUseID: "toolu_01a", type: "Explore", description: "Check the fixtures", status: "running")
         )
         XCTAssertNil(chat.entries[6].at)
+        XCTAssertEqual(chat.openID, "open-1")
 
         let sub = try SessionChat.decode(payload: try fixture("session_chat_subagent"))
+        XCTAssertNil(sub.openID)
         XCTAssertEqual(sub.agentID, "a1b2")
         XCTAssertTrue(sub.live)
         XCTAssertEqual(sub.entries.count, 2)
@@ -681,7 +688,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(agent.ref.type, "Explore")
         XCTAssertEqual(agent.ref.description, "Check the fixtures")
         XCTAssertEqual(agent.ref.status, "running")
-        XCTAssertEqual(agent.action?.summary, "internal/db/db.go")
+        XCTAssertEqual(agent.action?.summary, "store/example.go")
 
         let sub = try SessionChat.decode(payload: try fixture("session_chat_subagent"))
         XCTAssertEqual(sub.liveVersion, 1)

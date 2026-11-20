@@ -56,6 +56,9 @@ type Config struct {
 	// ReportFetch and GitFetch (nil = the in-process reads) are test seams.
 	ReportFetch ReportFetch
 	GitFetch    GitFetch
+	// ChatWatcher (nil = fsnotify) is the session chat's file watcher, a
+	// test seam.
+	ChatWatcher func() (FileWatcher, error)
 	// RunnerGap (0 = the standard 5 s) is a test seam: the report runner's
 	// and the git refresher's minimum gap between two passes.
 	RunnerGap time.Duration
@@ -212,7 +215,7 @@ func All(c Config) (*Set, error) {
 	if err != nil {
 		return nil, err
 	}
-	chat := SessionChat(c.Watches, c.DB, SessionChatOptions{Liveness: c.Live, Active: c.Active, OnChange: c.OnChatChange, Now: now})
+	chat := SessionChat(c.Watches, c.DB, SessionChatOptions{Liveness: c.Live, Active: c.Active, OnChange: c.OnChatChange, Now: now, NewWatcher: c.ChatWatcher})
 
 	set.Report, set.Git, set.Chat, set.Timeline, set.Sessions = report, git, chat, timeline, sessions
 	set.Runners = []Runner{chat, report, git}

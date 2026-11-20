@@ -241,6 +241,7 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		OnGitChange:    func() { h.publishSoon("workbench") },
 		ReportFetch:    o.reportFetch,
 		GitFetch:       o.gitFetch,
+		ChatWatcher:    o.chatWatcher,
 		RunnerGap:      o.runnerGap,
 		Now:            o.Clock,
 		ChatEngine:     chatReader,

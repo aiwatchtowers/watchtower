@@ -58,7 +58,8 @@ struct SessionChatView: View {
         _store = StateObject(wrappedValue: vm.feedStore(sessionID: sessionID))
     }
 
-    /// The agent works or has background subagents running: poll every 3 s.
+    /// The agent works or has background subagents running: the feed is read
+    /// on each change of its transcript files (`TranscriptWatch`).
     private var isActive: Bool {
         guard let session = vm.session(sessionID, projectID: projectID) else { return false }
         return WorkchatLivePresentation.busy(vm.sessionState(session))
@@ -193,8 +194,9 @@ struct SessionChatView: View {
         }
         // The feed shows a sent line: its bubble leaves.
         .onChange(of: store.entries) { _, entries in workchat?.reconcile(with: entries) }
-        // The main feed is polled only while it is on screen: an open
-        // subagent stops it, and back at the root it is read once.
+        // The main feed is followed only while it is on screen: an open
+        // subagent stops it, and back at the root it is read once. A state
+        // change re-enters `follow`, which is its one read.
         .task(id: MainFollowKey(state: stateKind, root: path.isRoot)) {
             guard path.isRoot else { return }
             await store.follow(isActive: { isActive }, isOnScreen: { vm.isTabOnScreen() })
@@ -255,7 +257,7 @@ struct SessionChatView: View {
         let view = self, store = store, memory = vm.paneMemory, pane = paneKey
         return {
             Self.toggleSteps(memory: memory, pane: pane) {
-                WorkchatLivePresentation.stepsSlot(snapshot: view.activityHidden ? nil : store.live, error: store.liveError,
+                WorkchatLivePresentation.stepsSlot(snapshot: view.activityHidden ? nil : store.presentedLive(now: .now), error: store.liveError,
                                                    working: view.busy, now: .now)
             }
         }
@@ -285,7 +287,8 @@ struct SessionChatView: View {
                          feedLoaded: store.feedLoaded, feedError: store.error,
                          onRetry: { Task { await store.poller.refresh() } },
                          onRetryList: { Task { await store.poller.refresh() } },
-                         onOpenAgent: { path.push($0) })
+                         onOpenAgent: { path.push($0) },
+                         isWatched: { store.isLiveWatched })
     }
 
     /// One subagent in place of the feed: the path bar, its run, and the

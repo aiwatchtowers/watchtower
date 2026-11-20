@@ -71,6 +71,9 @@ func feedEntry(i int, text string) sessionfeed.Entry {
 func itoa(i int) string { return strconv.Itoa(i) }
 
 // source builds the session_chat source; fetch nil returns one owner entry.
+// Its chats cannot be watched (NewWatcher fails), so a live one reads on the
+// Every tick (the fallback): these tests drive reads by the clock; the
+// file-event reads are chat_files_test.go's.
 func (r *chatRig) source(fetch ChatFetch, timing ChatTiming) *SessionChatSource {
 	if fetch == nil {
 		fetch = func(_ context.Context, id int64, toolUseID string) (ChatRead, error) {
@@ -100,7 +103,11 @@ func (r *chatRig) source(fetch ChatFetch, timing ChatTiming) *SessionChatSource 
 			r.nudges++
 			r.mu.Unlock()
 		},
-		Now: r.clock.Now,
+		Conversations: func(context.Context, int64) ([]sessionfeed.Conversation, error) {
+			return []sessionfeed.Conversation{{Path: "/conversation.jsonl"}}, nil
+		},
+		NewWatcher: func() (FileWatcher, error) { return nil, errors.New("no watcher in this test") },
+		Now:        r.clock.Now,
 	})
 }
 
@@ -150,7 +157,11 @@ func encodeChatJSON(t *testing.T, entries []sessionfeed.Entry, agent string) ([]
 	if agent == "" {
 		liveErr = liveErrUnavailable
 	}
-	b, err := encodeChat(entries, 7, agent, true, phoneLive(sampleLive()), liveErr)
+	var openID string
+	if agent == "" {
+		openID = "open-1"
+	}
+	b, err := encodeChat(entries, 7, agent, true, phoneLive(sampleLive()), liveErr, openID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,6 +563,7 @@ func TestSessionChatNeverWritesTheSidecarOrDB(t *testing.T) {
 	before := rowCounts(t, fx.d)
 	r := newChatRig(t)
 	s := SessionChat(r.watches, fx.d, SessionChatOptions{Dirs: fx.dirs, Now: r.clock.Now})
+	t.Cleanup(s.dropAll) // closes its file watcher
 	r.watch(fx.session, "", "")
 	s.RunDue(context.Background())
 	got := chatItems(t, s)
@@ -1156,6 +1168,7 @@ func TestSessionChat_SubagentRecordUsesSidechainLive(t *testing.T) {
 	r := newChatRig(t)
 	r.live[fx.session] = time.Now()
 	s := SessionChat(r.watches, fx.d, SessionChatOptions{Dirs: fx.dirs, Now: r.clock.Now, Liveness: func() Liveness { return Liveness{Runs: r.live} }})
+	t.Cleanup(s.dropAll) // closes its file watcher
 	r.watch(fx.session, "", "")
 	r.watch(fx.session, "a1b2", "toolu_sub")
 	s.RunDue(context.Background())
@@ -1267,7 +1280,7 @@ func TestSessionChat_LiveStringsBoundedAndOversizeDropped(t *testing.T) {
 		}
 	}
 	huge := &sessionfeed.Live{Conversation: strings.Repeat("x", MaxChatBytes)}
-	b, err := encodeChat([]sessionfeed.Entry{feedEntry(0, "hi")}, 7, "", true, huge, "")
+	b, err := encodeChat([]sessionfeed.Entry{feedEntry(0, "hi")}, 7, "", true, huge, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
