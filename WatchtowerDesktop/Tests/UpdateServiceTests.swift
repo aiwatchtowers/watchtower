@@ -11,6 +11,18 @@ private final class LockedReports: @unchecked Sendable {
     func append(_ line: String) { lock.withLock { stored.append(line) } }
 }
 
+/// How many fake bridge steps run at once, and the most that ever did.
+private final class BridgeConcurrency: @unchecked Sendable {
+    private let lock = NSLock()
+    private var now = 0
+    private var maxSeen = 0
+    private var count = 0
+    var maxInFlight: Int { lock.withLock { maxSeen } }
+    var total: Int { lock.withLock { count } }
+    func enter() { lock.withLock { now += 1; count += 1; maxSeen = max(maxSeen, now) } }
+    func leave() { lock.withLock { now -= 1 } }
+}
+
 /// The channel of an install the company bridge has not migrated.
 private func unmigrated(
     flavor: String, feedURL: String?, clientID: String?, clientSecret: String?
@@ -235,28 +247,131 @@ struct UpdateChannelTests {
     }
 
     @Test("the bridge runs only on a flavored build other than dev")
-    func bridgeAppliesToCorpOnly() {
+    func bridgeAppliesToCorpOnly() throws {
         #expect(!CompanyBridgeLaunch.applies(flavor: ""))
         #expect(!CompanyBridgeLaunch.applies(flavor: "dev"))
         #expect(CompanyBridgeLaunch.applies(flavor: "corp"))
         var ran = false
-        CompanyBridgeLaunch.run(flavor: "", cliPath: { ran = true; return nil }()) { _ in }
-        #expect(!ran, "the public build never resolves the CLI")
+        let tracked = CompanyBridgeLaunch.launchStep(cliPath: { ran = true; return nil }()) { _ in }
+        #expect(CompanyBridgeLaunch.runActive(flavor: "", step: tracked))
+        #expect(CompanyBridgeLaunch.runAll(flavor: "dev", step: tracked))
+        #expect(!ran, "the public and dev builds never resolve the CLI")
 
         let reports = LockedReports()
-        CompanyBridgeLaunch.run(flavor: "corp", cliPath: nil) { reports.append($0) }
+        let missing = CompanyBridgeLaunch.launchStep(cliPath: nil) { reports.append($0) }
+        #expect(!CompanyBridgeLaunch.runActive(flavor: "corp", step: missing))
         #expect(reports.items == ["Company bridge skipped: the watchtower CLI was not found"])
+    }
+
+    @Test("the launch bridges the active workspace in 30 s, the others after it in 300 s, the install all of them")
+    func bridgeRunsForEveryWorkspace() throws {
+        let base = try makeWorkspaces(["alpha", "beta", "gamma"])
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        // A directory without a database is not a workspace to bridge.
+        try FileManager.default.createDirectory(atPath: "\(base)/empty", withIntermediateDirectories: true)
+        var calls: [[String]] = []
+        var timeouts: [Int] = []
+        var alphaFails = true
+        // The fake writes the marker the way `company bridge` does on success;
+        // the flag-less run is the active workspace, beta here.
+        let step: CompanyBridgeLaunch.LaunchStep = { args, _, timeout in
+            calls.append(args)
+            timeouts.append(timeout)
+            let name = args.contains("--workspace") ? args.last ?? "" : "beta"
+            if name == "alpha" && alphaFails { return false }
+            FileManager.default.createFile(atPath: "\(base)/\(name)/\(CompanyBridgeLaunch.markerName)", contents: Data())
+            return true
+        }
+
+        // Launch: the active one inside the launch steps, untouched by the others' failure.
+        CompanyBridgeLaunch.migrateThenBridge(migrate: {}, bridge: {
+            #expect(CompanyBridgeLaunch.runActive(flavor: "corp", step: step))
+        })
+        #expect(calls == [["company", "bridge", "--json"]])
+        #expect(timeouts == [30])
+
+        // After the open: every other workspace, alpha failing.
+        calls = []
+        timeouts = []
+        #expect(!CompanyBridgeLaunch.runOthers(than: "beta", flavor: "corp", basePath: base, step: step))
+        #expect(calls == [["company", "bridge", "--json", "--workspace", "alpha"],
+                          ["company", "bridge", "--json", "--workspace", "gamma"]])
+        #expect(timeouts == [300, 300])
+        #expect(FileManager.default.fileExists(atPath: "\(base)/gamma/\(CompanyBridgeLaunch.markerName)"))
+        #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: base), "alpha's failure keeps the feed gated")
+
+        // Before an install: all of them; alpha now succeeds.
+        alphaFails = false
+        calls = []
+        #expect(CompanyBridgeLaunch.runAll(flavor: "corp", basePath: base, step: step))
+        #expect(calls.map { $0.last } == ["alpha", "beta", "gamma"], "every rerun is idempotent")
+        #expect(CompanyBridgeLaunch.workspacesMigrated(basePath: base))
+
+        calls = []
+        #expect(CompanyBridgeLaunch.runOthers(than: "beta", flavor: "", basePath: base, step: step))
+        #expect(CompanyBridgeLaunch.runAll(flavor: "", basePath: base, step: step))
+        #expect(calls.isEmpty, "the public build bridges no workspace")
+    }
+
+    @Test("an install's bridge waits for the launch's background bridge instead of overlapping it")
+    func bridgeRunsNeverOverlap() throws {
+        let base = try makeWorkspaces(["alpha", "beta"])
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let runs = BridgeConcurrency()
+        let othersStep: CompanyBridgeLaunch.LaunchStep = { _, _, _ in
+            runs.enter()
+            entered.signal()
+            release.wait()
+            runs.leave()
+            return true
+        }
+        let allStep: CompanyBridgeLaunch.LaunchStep = { _, _, _ in
+            runs.enter()
+            runs.leave()
+            return true
+        }
+        // Two threads of their own, as `ProcessPipes.offPool` gives the real runs.
+        let done = DispatchGroup()
+        let results = LockedReports()
+        done.enter()
+        Thread.detachNewThread {
+            let bridged = CompanyBridgeLaunch.runOthers(than: "alpha", flavor: "corp", basePath: base, step: othersStep)
+            results.append("others \(bridged)")
+            done.leave()
+        }
+        entered.wait()
+        #expect(!CompanyBridgeLaunch.runLock.try(), "the background bridge holds the run lock")
+        done.enter()
+        Thread.detachNewThread {
+            let bridged = CompanyBridgeLaunch.runAll(flavor: "corp", basePath: base, step: allStep)
+            results.append("all \(bridged)")
+            done.leave()
+        }
+        release.signal()
+        done.wait()
+        #expect(Set(results.items) == ["others true", "all true"])
+        #expect(runs.maxInFlight == 1)
+        #expect(runs.total == 3, "beta in the background, then alpha and beta for the install")
+    }
+
+    /// A temporary data root holding `names`, each with a `watchtower.db`.
+    private func makeWorkspaces(_ names: [String]) throws -> String {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("wt-bridge-\(UUID().uuidString)").path
+        for name in names {
+            try FileManager.default.createDirectory(atPath: "\(base)/\(name)", withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: "\(base)/\(name)/watchtower.db", contents: Data())
+        }
+        return base
     }
 
     @Test("migrated means every workspace with a database carries the marker")
     func everyWorkspaceMigrated() throws {
-        let base = FileManager.default.temporaryDirectory.appendingPathComponent("wt-bridge-\(UUID().uuidString)").path
+        let empty = FileManager.default.temporaryDirectory.appendingPathComponent("wt-bridge-\(UUID().uuidString)").path
+        #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: empty), "no workspace is not migrated")
+        let base = try makeWorkspaces(["alpha", "beta"])
         defer { try? FileManager.default.removeItem(atPath: base) }
-        #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: base), "no workspace is not migrated")
-        for name in ["alpha", "beta"] {
-            try FileManager.default.createDirectory(atPath: "\(base)/\(name)", withIntermediateDirectories: true)
-            FileManager.default.createFile(atPath: "\(base)/\(name)/watchtower.db", contents: Data())
-        }
         FileManager.default.createFile(atPath: "\(base)/alpha/\(CompanyBridgeLaunch.markerName)", contents: Data())
         #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: base))
         FileManager.default.createFile(atPath: "\(base)/beta/\(CompanyBridgeLaunch.markerName)", contents: Data())

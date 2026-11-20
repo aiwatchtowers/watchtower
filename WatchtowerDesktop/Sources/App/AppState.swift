@@ -494,6 +494,7 @@ final class AppState {
     @ObservationIgnored let migrateDatabase: @Sendable () -> Void
     /// Opens the workspace database; `migrateDatabase` runs first.
     @ObservationIgnored let openDatabase: @Sendable () throws -> DatabaseManager
+    @ObservationIgnored let otherWorkspacesBridge = OtherWorkspacesBridge() // the corp bridge, #1887
 
     /// The launch's compaction step between the migration and the open (#850).
     let databaseCompaction: DatabaseCompactionStep

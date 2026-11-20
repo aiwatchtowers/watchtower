@@ -74,6 +74,23 @@ final class DaemonLaunchSequenceTests: XCTestCase {
         XCTAssertEqual(daemon.startNoSync, [false])
     }
 
+    /// The corp bridge of the other workspaces starts after the daemon, in
+    /// the background, named by the opened database's workspace (#1887 §5).
+    func testLaunchBridgesTheOtherWorkspacesAfterTheDaemon() async throws {
+        let (appState, daemon) = makeAppState(open: try opensTheTestDatabase())
+        let bridged = OtherWorkspacesBridged()
+        appState.otherWorkspacesBridge.run = { bridged.record($0) }
+
+        await appState.openDatabaseAndStartDaemon()
+        await appState.daemonStartChain?.value
+        await appState.otherWorkspacesBridge.task?.value
+
+        let path = try XCTUnwrap(dbPath)
+        let workspace = ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent
+        XCTAssertEqual(bridged.actives, [workspace])
+        XCTAssertEqual(daemon.startNoSync, [true], "the daemon started regardless")
+    }
+
     /// A fresh install has no workspace, so its launch cannot open the
     /// database and starts nothing (`sync --daemon` needs a workspace);
     /// onboarding's open, once Goals created one, starts the daemon without sync.
@@ -175,4 +192,12 @@ private final class OpenAttempts: @unchecked Sendable {
         guard attempt > 1 else { throw WatchtowerDatabaseError.databaseNotFound }
         return manager
     }
+}
+
+/// What `bridgeOtherWorkspaces` was called with.
+private final class OtherWorkspacesBridged: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+    var actives: [String] { lock.withLock { stored } }
+    func record(_ active: String) { lock.withLock { stored.append(active) } }
 }

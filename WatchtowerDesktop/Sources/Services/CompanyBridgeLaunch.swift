@@ -5,12 +5,15 @@ import WatchtowerCore
 /// runs `watchtower company bridge --json`, which stores the build's baked
 /// clients as the company's bundle, gives every account on them its client
 /// record, ties the ones the bundle covers and writes
-/// `<workspace>/company_migrated` last. It runs at launch (after the
-/// migration, before the daemon starts) and again right before a public
-/// update is installed, so an account signed in since the launch is covered.
-/// Only once every workspace carries the marker does UpdateService let the
-/// flavored build take the public feed. Go owns every write; a failure is
-/// logged and retried at the next run.
+/// `<workspace>/company_migrated` last. The launch bridges the active
+/// workspace after the migration, before the daemon starts
+/// (`migrateThenBridge`), and every other workspace with a database once the
+/// database is open, in the background (`runOthers`): an update replaces the
+/// app for all of them, so each needs its marker. Right before a public
+/// update is installed it bridges them all again (`runAll`), so an account
+/// signed in since the launch is covered. Only once every workspace carries
+/// the marker does UpdateService let the flavored build take the public feed.
+/// Go owns every write; a failure is logged and retried at the next run.
 enum CompanyBridgeLaunch {
     /// The marker `company bridge` writes into the workspace once it is done.
     nonisolated static let markerName = "company_migrated"
@@ -27,37 +30,102 @@ enum CompanyBridgeLaunch {
         (Bundle.main.object(forInfoDictionaryKey: "WTBuildFlavor") as? String) ?? ""
     }
 
-    /// The launch's migration step: `db migrate`, then the bridge (it needs
-    /// the company columns). Both run inside the launch's daemon-start gate
-    /// (`migrateCompactOpen`), so the launch's daemon starts on the tied
-    /// accounts; a daemon still running from before resolves the same baked
-    /// client either way — a tie never changes an account's client.
+    /// One CLI run: arguments, the label it is logged under, the time limit
+    /// in seconds; true when it exited 0. Tests replace it.
+    typealias LaunchStep = (_ arguments: [String], _ label: String, _ timeout: Int) -> Bool
+
+    /// The active workspace's run sits on the launch path, so it keeps the
+    /// launch steps' 30 s. Another workspace's runs are off it, and its
+    /// database is migrated only by the bridge's own open (`db.Open`), so a
+    /// long migration backlog gets room to finish instead of being killed —
+    /// and rolled back — at every launch.
+    nonisolated static let activeTimeout = 30
+    nonisolated static let otherTimeout = 300
+
+    /// Held for the whole of every run (`runActive`, `runOthers`, `runAll`),
+    /// so they never overlap: the launch's background `runOthers` and the
+    /// installer's `runAll` would otherwise both read the old bundle, and the
+    /// loser's compare-and-save fails the install. Callers are off the
+    /// concurrency pool, so the wait blocks only their own thread.
+    nonisolated static let runLock = NSLock()
+
+    /// The real runner: the installed CLI under `runCLILaunchStep`.
+    nonisolated static func launchStep(
+        cliPath: @escaping @autoclosure () -> String? = Constants.findCLIPath(),
+        report: @escaping @Sendable (String) -> Void = { NSLog("[Watchtower] %@", $0) }
+    ) -> LaunchStep {
+        { DatabaseManager.runCLILaunchStep($0, label: $1, cliPath: cliPath(), timeout: $2, report: report) }
+    }
+
+    /// The launch's migration step: `db migrate`, then the active workspace's
+    /// bridge (it needs the company columns). Both run inside the launch's
+    /// daemon-start gate (`migrateCompactOpen`), so the launch's daemon starts
+    /// on the tied accounts; a daemon still running from before resolves the
+    /// same baked client either way — a tie never changes an account's client.
     nonisolated static func migrateThenBridge(
         migrate: () -> Void = { DatabaseManager.runCLIMigrations() },
-        bridge: () -> Void = { _ = run() }
+        bridge: () -> Void = { _ = runActive() }
     ) {
         migrate()
         bridge()
     }
 
-    /// Runs the bridge on a corp build; blocks for up to 30 s, so call it
-    /// off the main actor and off the concurrency pool. True when the build
-    /// does not bridge or the bridge succeeded.
+    /// Bridges the active workspace (the CLI resolves it, as every launch
+    /// step does) on a corp build; blocks for up to 30 s, so call it off the
+    /// main actor and off the concurrency pool. True when the build does not
+    /// bridge or the bridge succeeded.
     @discardableResult
-    nonisolated static func run(
+    nonisolated static func runActive(flavor: String = bundleFlavor, step: LaunchStep = launchStep()) -> Bool {
+        guard applies(flavor: flavor) else { return true }
+        return runLock.withLock { step(["company", "bridge", "--json"], "Company bridge", activeTimeout) }
+    }
+
+    /// Bridges every workspace under `basePath` with a database except
+    /// `active` (the launch already did it), each up to 300 s; for after the
+    /// launch's database open, off the main actor and the concurrency pool.
+    @discardableResult
+    nonisolated static func runOthers(
+        than active: String,
         flavor: String = bundleFlavor,
-        cliPath: @autoclosure () -> String? = Constants.findCLIPath(),
-        report: @escaping @Sendable (String) -> Void = { NSLog("[Watchtower] %@", $0) }
+        basePath: String = Constants.databasePath,
+        step: LaunchStep = launchStep()
     ) -> Bool {
         guard applies(flavor: flavor) else { return true }
-        return DatabaseManager.runCLILaunchStep(
-            ["company", "bridge", "--json"], label: "Company bridge", cliPath: cliPath(), report: report
-        )
+        return bridge(Constants.workspacesWithDatabase(under: basePath).filter { $0 != active }, step: step)
+    }
+
+    /// Bridges every workspace under `basePath` with a database, each up to
+    /// 300 s: the run before a public update is installed. True when the
+    /// build does not bridge or every run succeeded.
+    @discardableResult
+    nonisolated static func runAll(
+        flavor: String = bundleFlavor,
+        basePath: String = Constants.databasePath,
+        step: LaunchStep = launchStep()
+    ) -> Bool {
+        guard applies(flavor: flavor) else { return true }
+        return bridge(Constants.workspacesWithDatabase(under: basePath), step: step)
+    }
+
+    /// One `company bridge --workspace <name>` per workspace, under
+    /// `runLock`. A workspace
+    /// that fails does not stop the others; its marker stays missing and the
+    /// next run retries it. `--workspace` only picks the database for that
+    /// run; the CLI never writes it back as the active workspace.
+    nonisolated private static func bridge(_ workspaces: [String], step: LaunchStep) -> Bool {
+        runLock.lock()
+        defer { runLock.unlock() }
+        var allBridged = true
+        for name in workspaces {
+            let bridged = step(["company", "bridge", "--json", "--workspace", name],
+                               "Company bridge (\(name))", otherTimeout)
+            allBridged = allBridged && bridged
+        }
+        return allBridged
     }
 
     /// Whether every workspace with a database carries the marker: an update
-    /// replaces the app for all of them, and the bridge only ever runs on the
-    /// active one. No workspace at all is not migrated.
+    /// replaces the app for all of them. No workspace at all is not migrated.
     nonisolated static func workspacesMigrated(basePath: String = Constants.databasePath) -> Bool {
         let workspaces = Constants.workspacesWithDatabase(under: basePath)
         return !workspaces.isEmpty && workspaces.allSatisfy { name in

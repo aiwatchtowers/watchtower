@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -589,4 +592,126 @@ func TestBridge_SlackOnOwnAppStaysUntied(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, e.Bundle.Slack)
 	assert.Equal(t, "T0OTHER", e.Bundle.Slack.TeamID, "the own-app row's team is not taken")
+}
+
+// TestBridge_WorkspaceFlagBridgesThatWorkspaceOnly: the app bridges every
+// workspace with a database (`company bridge --workspace <name>`), so the run
+// for an inactive one opens that workspace's database (migrating it), ties
+// its accounts and writes its marker — and leaves config.yaml's
+// active_workspace and the active workspace untouched.
+func TestBridge_WorkspaceFlagBridgesThatWorkspaceOnly(t *testing.T) {
+	active := newCorpWorkspace(t)
+	prevFlavor, prevName, prevWS := BuildFlavor, BuildCompanyName, flagWorkspace
+	t.Cleanup(func() { BuildFlavor, BuildCompanyName, flagWorkspace = prevFlavor, prevName, prevWS })
+	BuildFlavor, BuildCompanyName = "corp", corpCompany
+
+	otherDir := filepath.Join(filepath.Dir(active.ws), "other")
+	other, err := db.Open(filepath.Join(otherDir, "watchtower.db"))
+	require.NoError(t, err)
+	googleID, err := other.CreateGoogleAccount(db.GoogleAccount{Email: "b@corp.example.com"})
+	require.NoError(t, err)
+	require.NoError(t, other.Close())
+	configBefore, err := os.ReadFile(flagConfig)
+	require.NoError(t, err)
+
+	flagWorkspace = "other"
+	cmd, out := cmdWithFlags(t, companyBridgeCmd, map[string]string{"json": "true"})
+	require.NoError(t, companyBridgeCmd.RunE(cmd, nil))
+	var res companyBridgeResult
+	require.NoError(t, json.Unmarshal(out.Bytes(), &res))
+	assert.Equal(t, bridgeMigrated, res.Result)
+	assert.Contains(t, res.Tied, bridgeAccountJSON{Source: "google", ID: googleID})
+
+	assert.FileExists(t, filepath.Join(otherDir, companyMigratedMarker))
+	assert.NoFileExists(t, filepath.Join(active.ws, companyMigratedMarker), "the active workspace is not bridged")
+	configAfter, err := os.ReadFile(flagConfig)
+	require.NoError(t, err)
+	assert.Equal(t, string(configBefore), string(configAfter), "active_workspace is not rewritten")
+	assert.Empty(t, active.slugs(t), "no active-workspace account is tied")
+
+	other, err = db.Open(filepath.Join(otherDir, "watchtower.db"))
+	require.NoError(t, err)
+	defer other.Close()
+	refs, err := other.AccountsByCompany(corpSlug)
+	require.NoError(t, err)
+	assert.NotEmpty(t, refs, "the inactive workspace's accounts are tied in its own database")
+}
+
+// TestBridge_UnreadableJiraTokenWithholdsOnlyAtlassian: a corrupt token file
+// on the oldest baked-client Jira account (the one the Atlassian block's
+// Confluence flag is read from) leaves only the Atlassian block out — a
+// guessed flag would stick — and bridges everything else, marker included,
+// reporting the account as token_unreadable.
+func TestBridge_UnreadableJiraTokenWithholdsOnlyAtlassian(t *testing.T) {
+	c := newCorpWorkspace(t)
+	require.NoError(t, os.WriteFile(jira.NewTokenStore(c.ws, c.ids["jira"]).Path(), []byte("{not json"), 0o600))
+
+	res, err := c.bridge(t)
+	require.NoError(t, err)
+	assert.Equal(t, bridgeMigrated, res.Result)
+	for _, src := range []string{"slack", "google", "linear"} {
+		assert.Contains(t, res.Tied, bridgeAccountJSON{Source: src, ID: c.ids[src]}, src)
+	}
+	assert.NotContains(t, res.Tied, bridgeAccountJSON{Source: "jira", ID: c.ids["jira"]})
+	assert.Contains(t, res.Skipped, bridgeSkipJSON{Source: "jira", ID: c.ids["jira"], Reason: "token_unreadable"})
+	assert.FileExists(t, filepath.Join(c.ws, companyMigratedMarker))
+	stored, ok, err := company.NewStore(c.ws).Get(corpSlug, "")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Nil(t, stored.Bundle.Atlassian, "no guessed Atlassian block is stored")
+	assert.NotNil(t, stored.Bundle.Google)
+
+	// The token readable again: the next run adds the block and ties Jira.
+	require.NoError(t, os.Remove(jira.NewTokenStore(c.ws, c.ids["jira"]).Path()))
+	res, err = c.bridge(t)
+	require.NoError(t, err)
+	assert.Contains(t, res.Tied, bridgeAccountJSON{Source: "jira", ID: c.ids["jira"]})
+}
+
+// TestBridge_WorkspaceFlagTakesOverLegacySchema: the root's
+// ensureSchemaFormat upgrades only the active database from the pre-goose
+// schema, so `company bridge --workspace <inactive>` (the real Cobra path)
+// runs the takeover on the workspace it bridges: a database at the legacy
+// tip gets its goose baseline, one stranded below it gets the takeover's
+// "run the previous release" refusal rather than a migration failure.
+func TestBridge_WorkspaceFlagTakesOverLegacySchema(t *testing.T) {
+	active := newCorpWorkspace(t)
+	prevFlavor, prevName, prevWS := BuildFlavor, BuildCompanyName, flagWorkspace
+	t.Cleanup(func() { BuildFlavor, BuildCompanyName, flagWorkspace = prevFlavor, prevName, prevWS })
+	BuildFlavor, BuildCompanyName = "corp", corpCompany
+
+	legacy := func(name string, userVersion int) string {
+		t.Helper()
+		path := filepath.Join(filepath.Dir(active.ws), name, "watchtower.db")
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		raw, err := sql.Open("sqlite3", path)
+		require.NoError(t, err)
+		defer raw.Close()
+		_, err = raw.Exec(`CREATE TABLE workspace (id TEXT PRIMARY KEY); PRAGMA user_version = ` + strconv.Itoa(userVersion))
+		require.NoError(t, err)
+		return path
+	}
+	run := func(workspace string) error {
+		t.Helper()
+		rootCmd.SetOut(&bytes.Buffer{})
+		rootCmd.SetErr(&bytes.Buffer{})
+		rootCmd.SetArgs([]string{"company", "bridge", "--json", "--workspace", workspace})
+		t.Cleanup(func() { rootCmd.SetArgs(nil); flagWorkspace = prevWS })
+		return rootCmd.Execute()
+	}
+
+	legacy("stranded", 31)
+	err := run("stranded")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "legacy schema version 31")
+
+	tip := legacy("tip", 73)
+	_ = run("tip") // a bare fixture has none of the baseline's tables, so the later migrations fail
+	raw, err := sql.Open("sqlite3", tip)
+	require.NoError(t, err)
+	defer raw.Close()
+	var baseline int
+	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id = 1`).Scan(&baseline))
+	assert.Equal(t, 1, baseline, "the inactive database got its goose baseline")
+	assert.NoFileExists(t, filepath.Join(active.ws, companyMigratedMarker), "the active workspace is not bridged")
 }

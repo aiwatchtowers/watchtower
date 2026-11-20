@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/calendar"
 	"watchtower/internal/company"
 	"watchtower/internal/companybundle"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
 	"watchtower/internal/imap"
@@ -62,7 +63,7 @@ leaves everything as it was and the next launch retries.`,
 		if res, ok := companyBridgeSkip(BuildFlavor, BuildCompanyName, currentCorpBaked()); !ok {
 			return writeCompanyResult(cmd, res, func(w io.Writer) { _, _ = fmt.Fprintf(w, "nothing to do: %s\n", res.Reason) })
 		}
-		cfg, database, err := openJiraCmdDB()
+		cfg, database, err := openBridgeDB()
 		if err != nil {
 			return err
 		}
@@ -78,6 +79,34 @@ leaves everything as it was and the next launch retries.`,
 			}
 		})
 	},
+}
+
+// openBridgeDB is openJiraCmdDB with the pre-goose takeover first: the app
+// bridges every workspace (`--workspace <name>`), and the root's
+// ensureSchemaFormat only ever upgrades the active one, so a legacy
+// inactive database would otherwise fail every run. RunSchemaUpgrade is
+// idempotent and one read on a goose database.
+func openBridgeDB() (*config.Config, *db.DB, error) {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return nil, nil, err
+	}
+	if _, err := os.Stat(cfg.DBPath()); err == nil {
+		if err := db.RunSchemaUpgrade(cfg.DBPath()); err != nil {
+			return nil, nil, fmt.Errorf("schema upgrade: %w", err)
+		}
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening database: %w", err)
+	}
+	return cfg, database, nil
 }
 
 func init() {
@@ -129,7 +158,9 @@ type bridgeSkipJSON struct {
 // Reason (public_build, no_company_name, no_baked_clients); "migrated" the
 // slug, what happened to the company file (created, updated, unchanged), the
 // accounts tied and the baked-client accounts left untied with why
-// (other_team, no_tenant, no_site, company_app_differs, unresolved). An
+// (other_team, no_tenant, no_site, company_app_differs, unresolved,
+// token_unreadable — the Jira account whose token could not be read, so the
+// bundle carries no Atlassian block and every Jira account stays untied). An
 // untied account other than Slack keeps the corp client through its own
 // client record; a Slack token is never refreshed, so it needs none.
 type companyBridgeResult struct {
@@ -297,12 +328,17 @@ func (a bridgeAccount) onBaked(baked corpBaked, slug string) bool {
 // bridgeBundle is the bundle the corp build's clients make: every baked
 // vendor whose block it can fill. Slack's team and Atlassian's site come from
 // the oldest account on the baked client; a vendor without one is left out.
-// Microsoft is always left out: the baked app signs in on the "common"
+// Atlassian is left out too when that oldest Jira account's token cannot be
+// read: its Confluence flag comes from the token's scopes, and a stored
+// block is never replaced, so a guess would stick — without the block a
+// later run (token readable again) still adds it. That account's id comes
+// back as unreadableJira (0 when none). Microsoft is always left out: the
+// baked app signs in on the "common"
 // tenant, and no tenant this Mac knows is provably the company's (a mail
 // domain need not be a verified tenant domain). Outlook accounts keep the
 // corp app through their client records instead.
-func bridgeBundle(companyName string, baked corpBaked, accts []bridgeAccount, slug, workspaceDir string) (companybundle.Bundle, error) {
-	b := companybundle.Bundle{V: companybundle.Version, Company: companyName}
+func bridgeBundle(companyName string, baked corpBaked, accts []bridgeAccount, slug, workspaceDir string) (b companybundle.Bundle, unreadableJira int64, err error) {
+	b = companybundle.Bundle{V: companybundle.Version, Company: companyName}
 	first := func(source string) (bridgeAccount, bool) {
 		for _, a := range accts {
 			if a.source == source && a.onBaked(baked, slug) {
@@ -319,13 +355,11 @@ func bridgeBundle(companyName string, baked corpBaked, accts []bridgeAccount, sl
 	}
 	if a, ok := first("jira"); ok {
 		if site, ok := bridgeSite(a.key); ok {
-			// An unreadable token fails the run (retried next launch): a
-			// stored block is never replaced, so a guess would stick.
-			access, err := readConfluenceAccess(workspaceDir, a.id)
-			if err != nil {
-				return companybundle.Bundle{}, err
+			if access, rerr := readConfluenceAccess(workspaceDir, a.id); rerr != nil {
+				unreadableJira = a.id
+			} else {
+				b.Atlassian = &companybundle.Atlassian{ClientID: baked.ids["jira"], ClientSecret: baked.jiraSecret, Site: site, Confluence: access.Read}
 			}
-			b.Atlassian = &companybundle.Atlassian{ClientID: baked.ids["jira"], ClientSecret: baked.jiraSecret, Site: site, Confluence: access.Read}
 		}
 	}
 	if id := baked.ids["linear"]; id != "" {
@@ -339,7 +373,7 @@ func bridgeBundle(companyName string, baked corpBaked, accts []bridgeAccount, sl
 		for n := range linkrule.NormalizeHostSet([]string{raw}) {
 			h, ok := companybundle.DenyHost(n)
 			if !ok {
-				return companybundle.Bundle{}, fmt.Errorf("build deny host %q cannot go into a company bundle", n)
+				return companybundle.Bundle{}, 0, fmt.Errorf("build deny host %q cannot go into a company bundle", n)
 			}
 			if !slices.Contains(b.LinkDenyHosts, h) {
 				b.LinkDenyHosts = append(b.LinkDenyHosts, h)
@@ -348,9 +382,10 @@ func bridgeBundle(companyName string, baked corpBaked, accts []bridgeAccount, sl
 	}
 	wire, err := companybundle.Encode(b)
 	if err != nil {
-		return companybundle.Bundle{}, fmt.Errorf("building the company bundle: %w", err)
+		return companybundle.Bundle{}, 0, fmt.Errorf("building the company bundle: %w", err)
 	}
-	return companybundle.Parse(wire, companybundle.OriginLink)
+	b, err = companybundle.Parse(wire, companybundle.OriginLink)
+	return b, unreadableJira, err
 }
 
 // bridgeSite is a Jira site URL as a bundle's https://<host>, if it is one.
@@ -456,7 +491,7 @@ func runCompanyBridge(workspaceDir string, database *db.DB, companyName string, 
 	if err != nil {
 		return companyBridgeResult{}, err
 	}
-	ours, err := bridgeBundle(companyName, baked, accts, slug, workspaceDir)
+	ours, unreadableJira, err := bridgeBundle(companyName, baked, accts, slug, workspaceDir)
 	if err != nil {
 		return companyBridgeResult{}, err
 	}
@@ -537,6 +572,9 @@ func runCompanyBridge(workspaceDir string, database *db.DB, companyName string, 
 			}
 		}
 		if ok, why := bridgeTie(a, eff.Bundle, baked); !ok {
+			if why == "no_site" && a.source == "jira" && a.id == unreadableJira {
+				why = "token_unreadable"
+			}
 			res.Skipped = append(res.Skipped, bridgeSkipJSON{Source: a.source, ID: a.id, Reason: why})
 			continue
 		}
