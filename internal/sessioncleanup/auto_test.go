@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -74,6 +75,7 @@ type autoFixture struct {
 	busy    bool
 	locked  []string
 	results *fakeResults
+	logf    func(format string, args ...any)
 }
 
 func newAutoFixture(t *testing.T) *autoFixture {
@@ -105,6 +107,7 @@ func (a *autoFixture) run(now time.Time) (AutoResult, error) {
 			a.locked = append(a.locked, repo)
 			return func() {}, true, nil
 		},
+		Logf: a.logf,
 	}, now)
 }
 
@@ -310,4 +313,47 @@ func TestProj18_AutoCleanupSignalsNoProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantItem(t, saved.Plan, "worktree:"+root, ActionKeep, ReasonProcessRunning)
+}
+
+// TestAutoRun_RecordedFailureCountsAsFailed (review round 2): an apply that
+// returns no error but records a failure — here its result could not be
+// saved — is a failure of the pass, logged with the session and the error,
+// even when it removed something.
+func TestAutoRun_RecordedFailureCountsAsFailed(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root := a.pushedWork("wt", "feat/x")
+	a.record(root, "feat/x")
+	a.endSession()
+	a.results.failWith = errors.New("database is locked")
+	now := time.Now()
+	a.cands = []AutoCandidate{{SessionID: testSession, WorkbenchID: testWorkbench, FinishedAt: now}}
+	var lines []string
+	a.logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+
+	res, err := a.run(now)
+	if err != nil || res.Applied != 1 || res.Changed != 1 || res.Failed != 1 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], fmt.Sprintf("session %d", testSession)) ||
+		!strings.Contains(lines[0], "database is locked") {
+		t.Fatalf("log %q", lines)
+	}
+}
+
+// TestResultFailure names an item's error, a build error and a save error.
+func TestResultFailure(t *testing.T) {
+	t.Parallel()
+	if got := resultFailure(Result{Plan: Plan{Items: []Item{{Key: "worktree:/w", Done: true}}}}); got != "" {
+		t.Fatalf("clean result: %q", got)
+	}
+	got := resultFailure(Result{Plan: Plan{Items: []Item{
+		{Key: "worktree:/w", Action: ActionKeep, BuildError: "moving aside: denied"},
+		{Key: "branch:x", Error: "update-ref failed"},
+	}}, ResultError: "locked"})
+	for _, want := range []string{"worktree:/w build: moving aside: denied", "branch:x: update-ref failed", "saving the result: locked"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q lacks %q", got, want)
+		}
+	}
 }

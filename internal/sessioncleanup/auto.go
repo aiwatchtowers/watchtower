@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -62,7 +63,9 @@ type AutoDeps struct {
 }
 
 // AutoResult is one pass: the sessions applied, how many of those removed
-// something (a worktree, a branch, a build folder), and those that failed.
+// something (a worktree, a branch, a build folder), and the failures — an
+// apply that failed, or one that ran but recorded a failure (counted in
+// Applied too).
 type AutoResult struct {
 	Applied, Changed, Failed int
 }
@@ -119,12 +122,20 @@ func AutoRun(ctx context.Context, ad AutoDeps, now time.Time) (AutoResult, error
 		case applyErr != nil:
 			out.Failed++
 			ad.logf("session cleanup: session %d: %v", c.SessionID, applyErr)
-		default:
-			out.Applied++
-			if removedSomething(res.Items) {
-				out.Changed++
-				ad.logf("session cleanup: session %d: %s", c.SessionID, res.Summary)
-			}
+			continue
+		}
+		out.Applied++
+		if removedSomething(res.Items) {
+			out.Changed++
+		}
+		switch failure := resultFailure(res); {
+		case failure != "":
+			// The apply ran but recorded a failure (a git run, a build
+			// folder, the result's save): a failure of the pass too.
+			out.Failed++
+			ad.logf("session cleanup: session %d: %s; %s", c.SessionID, failure, res.Summary)
+		case removedSomething(res.Items):
+			ad.logf("session cleanup: session %d: %s", c.SessionID, res.Summary)
 		}
 	}
 	return out, nil
@@ -153,6 +164,25 @@ func autoApply(ctx context.Context, ad AutoDeps, c AutoCandidate, live []int64, 
 		return res, fmt.Errorf("applying: %w", err)
 	}
 	return res, nil
+}
+
+// resultFailure names the failures an apply that returned no error still
+// recorded: an item's error, a build folder's, the result's save; "" for
+// none.
+func resultFailure(res Result) string {
+	var parts []string
+	for _, it := range res.Items {
+		if it.Error != "" {
+			parts = append(parts, it.Key+": "+it.Error)
+		}
+		if it.BuildError != "" {
+			parts = append(parts, it.Key+" build: "+it.BuildError)
+		}
+	}
+	if res.ResultError != "" {
+		parts = append(parts, "saving the result: "+res.ResultError)
+	}
+	return strings.Join(parts, "; ")
 }
 
 // removedSomething: an item was removed or a build folder deleted.

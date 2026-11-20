@@ -471,3 +471,56 @@ func TestProj18_PruneRechecksOnFreshFacts(t *testing.T) {
 		})
 	}
 }
+
+// TestProj18_WorktreeInsideABuildFolderKeepsIt (#2131, review round 2): a
+// linked worktree of the repository placed inside a build folder keeps
+// that folder, with its uncommitted work; a git clone in
+// .build/checkouts (SwiftPM's) does not keep its build folder.
+func TestProj18_WorktreeInsideABuildFolderKeepsIt(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root, builds := f.unpushedWithBuild()
+	hidden := filepath.Join(builds[0], "sub", "lane")
+	gitIn(t, f.repo, "worktree", "add", "-q", "-b", "feat/hidden", hidden, "main")
+	writeFile(t, filepath.Join(hidden, "work.txt"), "uncommitted\n")
+	clone := filepath.Join(builds[1], "checkouts", "pkg")
+	gitIn(t, f.base, "clone", "-q", f.repo, clone)
+	f.endSession()
+
+	res := f.apply(Request{PruneBuilds: true}, nil, nil)
+	it := findItem(t, res.Plan, "worktree:"+root)
+	if !slices.Equal(it.BuildsRemoved, []string{builds[1]}) || it.BuildError != "" {
+		t.Fatalf("item %+v", it)
+	}
+	if !exists(filepath.Join(hidden, "work.txt")) || !exists(filepath.Join(builds[0], buildMarker)) {
+		t.Fatal("the worktree inside the build, or its build, went")
+	}
+	if exists(builds[1]) {
+		t.Fatal("the build holding only a clone stayed")
+	}
+}
+
+// TestProj18_TrackedBuildPathIsMatchedLiterally (review round 2): a build
+// folder whose path looks like pathspec magic or a glob still finds its
+// tracked file and stays.
+func TestProj18_TrackedBuildPathIsMatchedLiterally(t *testing.T) {
+	t.Parallel()
+	for _, dir := range []string{":(literal)x", "a*"} {
+		t.Run(dir, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			root, _ := f.unpushedWithBuild()
+			tracked := filepath.Join(root, dir, ".build")
+			writeFile(t, filepath.Join(tracked, buildMarker), "{}\n")
+			gitIn(t, root, "--literal-pathspecs", "add", "-f", filepath.Join(dir, ".build", buildMarker))
+			gitIn(t, root, "commit", "-q", "-m", "tracked build")
+			f.endSession()
+
+			res := f.apply(Request{PruneBuilds: true}, nil, nil)
+			it := findItem(t, res.Plan, "worktree:"+root)
+			if slices.Contains(it.BuildsRemoved, tracked) || !exists(filepath.Join(tracked, buildMarker)) {
+				t.Fatalf("the tracked build went: %+v", it)
+			}
+		})
+	}
+}

@@ -106,8 +106,9 @@ func (a *applier) pruneBuilds(ctx context.Context) {
 }
 
 // pruneWorktreeBuilds finds the worktree's build folders, re-checks the
-// worktree on fresh facts (pruneCatches) right before deleting them, and
-// deletes them; any doubt leaves them. The walk comes first, so the
+// worktree on fresh facts (pruneCatches) right before deleting them, keeps
+// any folder a listed worktree lives in (worktreeInside), and deletes the
+// rest; any doubt leaves them. The walk comes first, so the
 // re-check is as close to the removal as it can be, and a worktree with no
 // build costs no re-check. BuildsChecked is set once nothing is left to
 // delete: no build found, or every one found deleted or tracked.
@@ -148,6 +149,9 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 		}
 	}
 	for _, f := range found {
+		if holder := b.worktreeInside(f.path); holder != "" {
+			continue // a linked worktree lives in it: its work is not build output
+		}
 		removed, err := b.pruneBuildDir(ctx, root, f)
 		if err != nil {
 			it.BuildError = err.Error()
@@ -171,6 +175,22 @@ func (b *builder) listedWorktree(root string) (worktree, bool) {
 	return worktree{}, false
 }
 
+// worktreeInside is a worktree of the repository, as the fresh `git
+// worktree list` gives it, whose root is dir or lies inside it, "" for
+// none. The walk never enters a build folder, so a linked worktree placed
+// inside one (whose files the outer ls-files cannot see) is found only
+// here. A git clone inside (SwiftPM's .build/checkouts/*) is no worktree of
+// the repository and does not count.
+func (b *builder) worktreeInside(dir string) string {
+	dir = resolvePath(dir)
+	for _, w := range b.repo.worktrees {
+		if pathWithin(resolvePath(w.Root), dir) {
+			return w.Root
+		}
+	}
+	return ""
+}
+
 // foundBuild is a build folder, or a marked trash leftover, of a walk.
 type foundBuild struct {
 	path  string
@@ -178,7 +198,7 @@ type foundBuild struct {
 }
 
 // pruneBuildDir deletes one find of root and says whether it did: a folder
-// git tracks a file in stays (it is the repository's, not build output); a
+// git tracks a file in (its path matched literally) stays (it is the repository's, not build output); a
 // build folder is moved aside and deleted (removeBuildDir), a marked trash
 // leftover deleted as it is.
 func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) (bool, error) {
@@ -186,7 +206,9 @@ func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) 
 	if err != nil {
 		return false, fmt.Errorf("locating %s: %w", f.path, err)
 	}
-	out, err := b.repo.git.output(ctx, root, "ls-files", "-z", "--", rel)
+	// ":(literal)": the folder's path is a path, never pathspec magic or a
+	// glob (a folder named ":(literal)x" or "a*" must still match itself).
+	out, err := b.repo.git.output(ctx, root, "ls-files", "-z", "--", ":(literal)"+rel)
 	if err != nil {
 		return false, fmt.Errorf("reading what git tracks in %s: %w", f.path, err)
 	}
