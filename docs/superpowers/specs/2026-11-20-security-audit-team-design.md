@@ -198,15 +198,15 @@ verification.
 6. **Match against the baseline.** An exact fingerprint match is a match. A finding
    without one goes to the verifier together with the baseline rows of its surface, and
    the verifier says whether it is the same issue as one of them (same weakness, the code
-   moved or was renamed, or an imported text-only row). A model-confirmed match takes
-   over the old row's status and note and the row gets the new fingerprint as an alias,
-   so a refactor does not turn an accepted risk into "fixed + new". Because a wrong match
-   would hide a real issue under an old `accepted`/`false_positive`, such a row gets
-   `match: model` and the report shows it at the top with a **Matched by model — check**
-   badge and the old and new text side by side; the owner presses **Same issue** (badge
-   goes) or **Different issue** (the alias is dropped, the finding becomes a new row with
-   status `open`). Until the owner confirms, the finding counts in the severity totals as
-   if open. (Builder's call, see §10.)
+   moved or was renamed, or an imported text-only row). A model-proposed match is attached to
+   the old row as a `candidate` (the new finding's text), leaving the old row's text,
+   status and note as they are, so a refactor does not turn an accepted risk into
+   "fixed + new". Because a wrong match would hide a real issue under an old
+   `accepted`/`false_positive`, any row with a `candidate` is shown at the top with a
+   **Matched by model — check** badge, old and new text side by side; the owner presses
+   **Same issue** (the candidate becomes the row's text, its fingerprint an alias) or
+   **Different issue** (the candidate becomes a new row with status `open`). Until then
+   it counts in the severity totals as if open. (Builder's call, see §10.)
    Then **classify:** `new`, `still open` (fingerprint open in the
    baseline), `regressed` (was `fixed`), `fixed` (was open, not found again, and its file
    changed since; if the file did not change, it stays `still open` and is flagged
@@ -280,7 +280,7 @@ Collections:
   (`new|still_open|regressed|fixed|not_refound`) — written by runs;
   `status` (`open|in_progress|fixed|accepted|false_positive`) and `note` — written by
   the owner from the page, never by a run (a new finding is created with `status: open`
-  once); `match` (`exact|model|owner_confirmed`) and `aliases` (earlier fingerprints) —
+  once); `match` (`exact|owner_confirmed`), `aliases` (earlier fingerprints) and `candidate` (a pending model match) —
   written by runs, except that **Same issue** / **Different issue** (§6.1 step 6) is the
   owner's.
 
@@ -353,7 +353,7 @@ The flow in §6.1 is the same; these steps change:
 | No per-PR gate; a run asks Full or Range between tags | Owner, ask #779 |
 | Agents omit `model` and inherit the session's (Mythos) | Builder (platform constraint) |
 | First run imports the two old audits as text-only baseline rows; mixed items split; old leftovers `open` | Builder |
-| Baseline match after a refactor is proposed by the verifier, marked `match: model`, confirmed by the owner on the page | Builder (owner confirms each match) |
+| Baseline match after a refactor is proposed by the verifier, kept as a `candidate` on the old row, confirmed by the owner on the page | Builder (owner confirms each match) |
 | Range audits changed code and what it reaches, not whole surfaces | Builder (follows from ask #779) |
 | Nothing runs during a run; the verifier only reads; PoCs are run by the owner during triage | Owner, chat 2026-11-20 |
 | Nothing written to the board; run from a non-workbench session | Builder |
