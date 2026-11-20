@@ -20,6 +20,7 @@ Signed in to the console as `<throwaway-gmail>`:
 4. **Audience** (left menu):
    - **Test users → Add users** → the throwaway account.
    - **Publish app → Confirm** — status must read **In production**. In *Testing* a refresh token dies after 7 days by design, which would make the spike meaningless.
+   - If **Publish app** stays greyed out ("complete your configuration on the Branding page"), fill **Branding → App domain**: an application home page, a privacy policy link, and their domain under **Authorized domains** (no logo, so no brand verification), then **Save** and come back.
 5. **Clients → Create client** → type **Desktop app** → **Create**. Copy the client id and secret (the secret never goes into a file or chat; it is typed into stdin in step 6).
 
 On the Mac with Watchtower, in an isolated home so the live database is never touched (repo rule: no dev CLI on the live DB):
@@ -58,6 +59,6 @@ Record only the outcome and the error key — never tokens, ids or the account a
 
 | Field | Value |
 |---|---|
-| Signed in (UTC) | _pending_ |
+| Signed in (UTC) | 2026-11-20 10:10 |
 | Checked (UTC) | _pending_ |
 | Outcome | _pending_ (A: refresh works / B: `invalid_grant`) |
