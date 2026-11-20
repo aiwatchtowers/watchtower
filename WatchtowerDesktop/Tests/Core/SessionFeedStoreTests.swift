@@ -1,6 +1,7 @@
 import XCTest
 @testable import WatchtowerCore
 import WatchtowerTestSupport
+import WatchtowerChatText
 
 @MainActor
 final class SessionFeedStoreTests: XCTestCase {

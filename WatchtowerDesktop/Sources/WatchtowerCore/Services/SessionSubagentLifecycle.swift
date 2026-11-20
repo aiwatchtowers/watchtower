@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// A nested agent may have no marker in the root feed. Its own fresh turn
 /// and background-child state, rather than its originally pushed marker,

@@ -1,5 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
+@testable import WatchtowerChatText
 
 /// The live steps disclosure of the current turn (#2065 spec §3): the fixed
 /// six-row slot above the live line, its rows and timers, when it hides, and

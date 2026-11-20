@@ -1,5 +1,6 @@
 import Foundation
 import os
+import WatchtowerChatText
 
 /// Holds the chat feed of one session and merges each poll of
 /// `watchtower workbench session-feed` into it: upsert by entry id keeping the

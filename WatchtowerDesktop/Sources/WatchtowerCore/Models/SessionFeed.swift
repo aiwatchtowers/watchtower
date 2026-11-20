@@ -1,59 +1,17 @@
 import Foundation
+import WatchtowerChatText
 
 /// `watchtower workbench session-feed --json`: the dialog of one Claude Code
 /// session, built by Go (`internal/sessionfeed`) without AI. The Desktop only
 /// decodes and shows it. An unknown `kind` decodes as-is so a newer CLI never
 /// breaks an older app; the store hides kinds it does not know.
-package struct SessionFeedSubagent: Decodable, Equatable, Sendable {
-    package var toolUseID: String
-    package var agentID: String
-    package var type: String
-    package var description: String
-    /// "running", "finished" or "unknown".
-    package var status: String
-    /// When the Agent call started; only the feed's `subagents` list carries
-    /// it (`started_at`). nil when absent or Go's zero time.
-    package var startedAt: Date?
-
-    package init(
-        toolUseID: String,
-        agentID: String = "",
-        type: String = "",
-        description: String = "",
-        status: String = "unknown",
-        startedAt: Date? = nil
-    ) {
-        self.toolUseID = toolUseID
-        self.agentID = agentID
-        self.type = type
-        self.description = description
-        self.status = status
-        self.startedAt = startedAt
-    }
-
+extension SessionFeedSubagent {
     /// The status of `subagent` in `entries`, the store's subagent list
     /// (`SessionFeedStore.subagents`, which a read updates in place); the copy
     /// itself when the list has no marker for it — a copy kept since it was
     /// opened would never see it finish.
     package static func currentStatus(of subagent: Self, in entries: [SessionFeedEntry]) -> String {
         entries.last { $0.subagent?.toolUseID == subagent.toolUseID }?.subagent?.status ?? subagent.status
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case toolUseID = "tool_use_id"
-        case agentID = "agent_id"
-        case startedAt = "started_at"
-        case type, description, status
-    }
-
-    package init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        toolUseID = try c.decodeIfPresent(String.self, forKey: .toolUseID) ?? ""
-        agentID = try c.decodeIfPresent(String.self, forKey: .agentID) ?? ""
-        type = try c.decodeIfPresent(String.self, forKey: .type) ?? ""
-        description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
-        status = try c.decodeIfPresent(String.self, forKey: .status) ?? "unknown"
-        startedAt = SessionFeedEntry.parseDate(try c.decodeIfPresent(String.self, forKey: .startedAt))
     }
 }
 
@@ -179,19 +137,8 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
     }
 
     /// RFC 3339 with or without fractional seconds; Go's zero time and
-    /// anything unparsable mean "no time". The formatters are made once: a
-    /// formatter per date cost most of a large feed's decode (#2065).
-    package static func parseDate(_ s: String?) -> Date? {
-        guard let s, !s.isEmpty, !s.hasPrefix("0001-01-01") else { return nil }
-        return fractionalDate.date(from: s) ?? plainDate.date(from: s)
-    }
-
-    private static let plainDate = ISO8601DateFormatter()
-    private static let fractionalDate: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
+    /// anything unparsable mean "no time" (`SessionFeedDate`, shared with the phone).
+    package static func parseDate(_ s: String?) -> Date? { SessionFeedDate.parse(s) }
 }
 
 package struct SessionFeedPayload: Decodable, Sendable {

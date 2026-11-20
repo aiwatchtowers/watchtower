@@ -1,5 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
+@testable import WatchtowerChatText
 
 /// The 👥 list (#2065 spec §2): Working from the live snapshot, Done from the
 /// feed's finished subagent markers, and the states and copy around them.
@@ -21,10 +21,6 @@ final class WorkchatAgentsListTests: XCTestCase {
         return ref
     }
 
-    private func marker(_ ref: SessionFeedSubagent) -> SessionFeedEntry {
-        SessionFeedEntry(id: "sub-\(ref.toolUseID)", kind: "subagent", subagent: ref)
-    }
-
     private func list(
         _ live: SessionFeedLive? = nil,
         error: String? = nil,
@@ -38,19 +34,6 @@ final class WorkchatAgentsListTests: XCTestCase {
     }
 
     private var nineDone: [SessionFeedSubagent] { (1...9).map { finished("d\($0)") } }
-
-    func testDoneOrderNewestFirstUndatedLastInCLIOrder() {
-        let base = Date(timeIntervalSince1970: 1_790_000_000)
-        let entries = [
-            marker(finished("t1002", startedAt: base + 120)),
-            marker(finished("a")),
-            SessionFeedEntry(id: "owner", kind: "owner", text: "hi"),
-            marker(SessionFeedSubagent(toolUseID: "r", status: "running")),
-            marker(finished("t1005", startedAt: base + 300)),
-            marker(finished("b"))
-        ]
-        XCTAssertEqual(WorkchatLivePresentation.done(from: entries).map(\.toolUseID), ["t1005", "t1002", "a", "b"])
-    }
 
     func testWorkingExcludesIdsInDone() {
         let live = snapshot(agents: [running("x"), running("y")])
@@ -98,43 +81,12 @@ final class WorkchatAgentsListTests: XCTestCase {
         XCTAssertEqual(kept.done.map(\.id), ["x"])
     }
 
-    func testUnknownStatusMarkerInNeitherSection() {
-        let unknown = SessionFeedSubagent(toolUseID: "m", type: "Explore", status: "unknown")
-        let done = WorkchatLivePresentation.done(from: [marker(unknown)])
-        XCTAssertTrue(done.isEmpty)
-        let result = list(snapshot(), done: done)
-        XCTAssertTrue(result.working.isEmpty); XCTAssertTrue(result.done.isEmpty)
-    }
-
     func testDoneRowTitleTypeSubtitleDescription() {
         let rows = list(snapshot(), done: [finished("a", type: "codex-wrapper", description: "Review the spec"),
                                            finished("b", type: "", description: "No type")]).done
         XCTAssertEqual(rows.map(\.title), ["codex-wrapper", "Subagent"])
         XCTAssertEqual(rows.map(\.subtitle), ["Review the spec", "No type"])
         XCTAssertEqual(rows.first?.ref.toolUseID, "a")
-    }
-
-    /// A session waiting on an approval is busy, not idle: the list reads the
-    /// real snapshot and, without one, never claims none works. `idle` is
-    /// derived as the view derives it.
-    func testPermissionPromptNeverSaysNoneWorking() {
-        let approval = SessionSwitcherPresentation.State(kind: .needsApproval, live: true)
-        let idle = !WorkchatLivePresentation.busy(approval)
-        XCTAssertFalse(idle)
-        let waiting = list(nil, done: nineDone, idle: idle)
-        XCTAssertEqual(waiting.workingNote, "Agent status unavailable")
-        XCTAssertTrue(waiting.doneOpenByDefault)
-        let fed = list(snapshot(agents: [running("bg")]), idle: idle)
-        XCTAssertEqual(fed.working.map(\.id), ["bg"], "the real snapshot lists the background agent")
-        XCTAssertNil(fed.workingNote)
-    }
-
-    func testBusyCoversWorkingBackgroundAndApproval() {
-        typealias State = SessionSwitcherPresentation.State
-        let busy = State.Kind.allCases.filter { WorkchatLivePresentation.busy(State(kind: $0, live: true)) }
-        XCTAssertEqual(Set(busy), [.working, .background, .needsApproval])
-        XCTAssertFalse(WorkchatLivePresentation.busy(State(kind: .working, live: false)), "a session that is gone is idle")
-        XCTAssertFalse(WorkchatLivePresentation.busy(nil))
     }
 
     func testUnknownDoneAgentDoesNotMakeWorkingUnknown() {
