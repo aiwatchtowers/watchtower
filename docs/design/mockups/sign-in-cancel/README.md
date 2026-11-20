@@ -10,6 +10,7 @@ Proposal mockups for [the spec](../../../superpowers/specs/2026-11-21-sign-in-ca
 | `sign-in-wait-row-narrow` | The waiting row at 420 pt: the text wraps and Cancel stays visible. |
 | `sign-in-wait-section-waiting` | A section-level sign-in (Confluence access, Connect Google Calendar, own Google project). |
 | `sign-in-wait-banner-waiting` | The Calendar health banner's Reconnect. |
+| `sign-in-wait-calendar-top-waiting` | The revoked-calendar alert's legacy sign-in (no single account): the line at the top of Calendar; the empty state's Connect is disabled. |
 | `sign-in-wait-company-card-waiting` | A company chain running after its sheet was closed. |
 | `sign-in-wait-chat-card-waiting` | An agent card's **Reconnect Slack**. |
 | `sign-in-wait-wizard-check-waiting` | The company setup wizard's sign-in check. |

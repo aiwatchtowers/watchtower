@@ -16,6 +16,7 @@ enum SignInWaitShotFixtures {
         case rowNarrow = "row-narrow"
         case section = "section-waiting"
         case banner = "banner-waiting"
+        case calendarTop = "calendar-top-waiting"
         case companyCard = "company-card-waiting"
         case chatCard = "chat-card-waiting"
         case wizardCheck = "wizard-check-waiting"
@@ -48,6 +49,7 @@ enum SignInWaitShotFixtures {
         case .rowTimedOut: googleRows(state: .timedOut)
         case .section: confluenceSection
         case .banner: calendarBanner
+        case .calendarTop: calendarTop
         case .companyCard: companyCard
         case .chatCard: chatCard
         case .wizardCheck: wizardCheck
@@ -116,6 +118,19 @@ enum SignInWaitShotFixtures {
         }
         .padding(Spacing.cozy)
         .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.row))
+    }
+
+    /// G4 with no single account to point at: the line on its own at the
+    /// top of Calendar, above the day it shows; the empty state's Connect
+    /// is disabled meanwhile.
+    private static var calendarTop: some View {
+        VStack(alignment: .leading, spacing: Spacing.medium) {
+            SignInWaitLine(line: copy.line, hint: copy.hint, cancelTitle: copy.cancelTitle) {}
+                .padding(Spacing.cozy)
+                .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.row))
+            Text("Friday, 21 November").font(.headline)
+            Text("No events loaded yet.").font(.callout).foregroundStyle(.secondary)
+        }
     }
 
     private static var companyCard: some View {

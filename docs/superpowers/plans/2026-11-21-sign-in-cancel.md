@@ -19,6 +19,10 @@ The place ids (G1…C3, O1) are the spec's "Where it goes" table.
   - the busy flag resets at once;
   - no error is set;
   - the run's completion checks that its process (or task) is still the current one before it writes anything.
+- Every place gets the same three model tests, named in its task as "the cancel trio":
+  - start → busy, then Cancel → idle with no error;
+  - Cancel after the stub has already exited → idle, no error;
+  - Cancel, start again, the first stub exits → the second run is still busy (a stale completion is ignored).
 - Every test with a stub CLI reaps it (process group) in `tearDown`. No test waits on wall-clock time: drive the stub with a pipe or a semaphore.
 - New `AppState` methods go into a new `AppState+<Area>.swift` file. Tasks run in parallel and must not all edit `AppState.swift`.
 - Self-review against `docs/review/review-rules.md` "Swift / Desktop conventions" before hand-back.
@@ -42,11 +46,12 @@ The place ids (G1…C3, O1) are the spec's "Where it goes" table.
   - otherwise it calls `reloginLegacyCalendar`;
   - either way it selects `.calendar`.
 
-  Calendar shows `SignInWaitLine` at the top while `isConnecting` and no account banner carries it. `GoogleAuthService.connect` and `cancelConnect` lose their last caller; remove them if nothing else uses them.
+  Calendar shows `SignInWaitLine` at the top while `isConnecting` and no account banner carries it (mockup `calendar-top-waiting`). Calendar's empty-state Connect (`GoogleConnectFlow`) is disabled while `GoogleAccountsViewModel.isConnecting`. `GoogleAuthService` stays as it is: `GoogleConnectFlow` still uses it.
 - Tests:
-  - VM: start → busy; Cancel → idle, no error; a stale completion after a restart keeps the new run busy;
+  - the cancel trio on `addAccount`, `relogin` and `reloginLegacyCalendar`;
   - the legacy arguments;
   - G4 routing (account present, absent, stale id);
+  - the empty-state Connect is disabled while the VM connects;
   - presentation of the row, banner and section.
 
 ## Task 3: Use my own Google project (G5)
@@ -56,7 +61,7 @@ The place ids (G1…C3, O1) are the spec's "Where it goes" table.
   - `cancel()` cancels it (`CLILineStream` kills the group) and returns to the page's form state without an error;
   - a stale stream result is ignored.
 - `OwnGoogleProjectPage`: `SignInWaitLine` while `phase == .checking`.
-- Tests: Cancel → form, no error; stale result ignored; the page shows the line while checking.
+- Tests: the cancel trio (Cancel → the form, with no error); the page shows the line while checking.
 
 ## Task 4: Slack — Re-login and the agent card (S1, S2)
 **Depends on:** none
@@ -68,7 +73,7 @@ The place ids (G1…C3, O1) are the spec's "Where it goes" table.
   - `AppState.cancelCardSlackSignIn` (new file `AppState+SlackCardSignIn.swift`) calls `cancelConnect`;
   - `AppState.reconnectOutcome` returns `.cancelled` for a cancelled run.
 - Tests:
-  - VM cancel/stale completion;
+  - the cancel trio on `SlackAccountsViewModel.relogin` (built-in route);
   - `reconnectOutcome` gives `.cancelled`;
   - `reconnectNote(.cancelled)` (`make chattext-test`/`chat-test` as the package needs);
   - the card shows the line while reconnecting.
@@ -81,25 +86,24 @@ The place ids (G1…C3, O1) are the spec's "Where it goes" table.
   - a cancelled reconsent sets no `reconsentError`.
 
   `ConfluenceSpacesSection` shows `SignInWaitLine` (Atlassian) while `isReconsenting`, for Grant access and Allow editing.
-- Tests: VM cancel → no error and not reconsenting; the section shows the line; the Jira row's waiting state.
+- Tests: the cancel trio on `JiraAccountsViewModel.relogin` (A1) and on `ConfluenceSpacesViewModel` reconsent and allow-editing (A2: no `reconsentError`, not reconsenting); the section shows the line; the Jira row's waiting state.
 
 ## Task 6: Quick Connections and Outlook (Q1, O1)
 **Depends on:** none
 - Q1: in `QuickConnectionsDetail`, "Sign in again" shows `SignInWaitCancel` + `SignInWaitText` (service = the connection's name) on the connection being signed in, and Cancel calls `cancelSignIn`. The VM reports which connection is waiting.
 - O1: `EmailAccountsViewModel.connectOutlook`'s completion checks `authProcess === process`.
-- Tests: Q1 cancel → idle, no error; the row shows the line; O1: Cancel, connect again, the first stub exits → still busy.
+- Tests: the cancel trio on `ExternalConnectionsViewModel.signIn` (Q1) and on `connectOutlook` (O1); the row shows the line.
 
 ## Task 7: Company — chain card, wizard check, wizard Slack step (C1–C3)
 **Depends on:** none
 - C1: in `CompaniesZone`, a company card whose chain runs with the sheet closed shows `SignInWaitLine` (service = the running vendor's name). Its Cancel calls `CompanyConnectFlowModel.stop()`.
 - C2: `CompanySetupWizardModel`:
   - keep each `check(v)`'s `Task`;
-  - `cancelCheck(v)` cancels it (the `CLILineStream` group kill) and puts the check back to not-run, with no failed line;
-  - `discard()` cancels a running check too.
+  - `cancelCheck(v)` cancels it (the `CLILineStream` group kill) and puts the check back to not-run, with no failed line.
 
   `CompanySetupVendorStep` shows `SignInWaitLine` on the running check.
 - C3: the wizard's Slack step shows `SignInWaitLine` while its `SlackAppSetupModel` connects, and Cancel calls `cancelConnect`.
-- Tests: `stop` from the card; `cancelCheck` → not-run with no failed line, and its stale result is ignored; discard kills the check; the step's line.
+- Tests: `stop` from the card (the chain ends, no error); the cancel trio on `cancelCheck` (→ not-run, no failed line) and on the wizard's `SlackAppSetupModel.cancelConnect` (C3); the check's and the Slack step's lines.
 
 ## Task 8: Built views vs mockups, docs
 **Depends on:** Tasks 2–7
