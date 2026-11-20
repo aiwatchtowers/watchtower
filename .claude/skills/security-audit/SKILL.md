@@ -56,6 +56,11 @@ Each Bash call is a fresh shell: every command that creates or writes anything u
 files land 0600. The Write tool does not follow the shell umask, but its files land
 inside 0700 directories, and the modes are re-applied at Cleanup.
 
+The Bash tool's shell may be zsh, where an unmatched glob aborts the command ("no
+matches found") — an empty `$CACHE` or run root is the normal case. Never iterate or
+list with a shell glob: enumerate with `find <dir> -mindepth 1 -maxdepth 1 …` (add
+`-type d -name 'run-*'` and the like), or run the snippet as `bash -c 'shopt -s nullglob; …'`.
+
 ## Start
 
 1. **Say which model the agents use.** Read `printenv CLAUDE_CODE_SUBAGENT_MODEL`. Set →
@@ -89,7 +94,7 @@ inside 0700 directories, and the modes are re-applied at Cleanup.
 | `/security-audit` | full flow; asks Full or Range |
 | `/security-audit full` | Full over `origin/main`, no question |
 | `/security-audit range <from>..<to>` | Range over the two tags, no question |
-| `/security-audit import <engine-run-dir>` | import only (Preflight, then Import, Summary, Cleanup); for a run whose import failed or was denied |
+| `/security-audit import <engine-run-dir>` | import only (Preflight, then Import, Summary, Cleanup; no fetch, no Pin); for a run whose import failed or was denied |
 | `--test --report <url>` | test mode: the fixture Artifact at `<url>`, run root `watchtower-test/`, `config.json` never read or written, the report page never published. `--test` without `--report` → refuse |
 | `--target <repo path>` | audit that git repo instead of Watchtower (no fetch, its local tags and `HEAD`). Refused without `--test` |
 | `--plan-only` | Preflight, the kind question, Pin and the Range mapping; print the plan and the estimate; then Cleanup. Stops before the engine — no run dir, no findings, no Artifact write |
@@ -107,14 +112,16 @@ open (the kind, a report to confirm), stop and tell the owner which argument to 
 ## Preflight
 
 Spec §6.1 step 0 and §3. Run every check in this order; the first failure stops the
-run with its reason, and nothing is created before the lock step.
+run with its reason, and nothing is created before the lock step (a report chosen in
+step 5 is remembered and written to `config.json` only after step 6 holds the lock).
 
 1. **Agent tool.** The Agent tool is in this session's tools. Missing → stop: "run
    /security-audit from a top-level session". (`import` does not need it — skip.)
 2. **Artifact tools.** ToolSearch `select:Artifact,ArtifactData`. Either missing → stop:
    "the claude.ai artifact tools are not available in this session".
 3. **Node.** `command -v node`; else the newest
-   `ls -d ~/.nvm/versions/node/v*/bin/node | sort -V | tail -1`. None → stop. Keep the
+   `find ~/.nvm/versions/node -mindepth 3 -maxdepth 3 -path '*/bin/node' \( -type f -o -type l \) 2>/dev/null | sort -V | tail -1`
+   (no glob; a missing nvm dir prints nothing). None → stop. Keep the
    absolute path as `NODE`; every validator call uses `"$NODE"`.
 4. **Engine integrity** (the check from the plan's Task 1, verbatim; both sides sorted in
    the C locale):
@@ -134,10 +141,10 @@ run with its reason, and nothing is created before the lock step.
    - Otherwise read `$STATE/config.json`. Present → its `report_url`.
    - Absent → `Artifact` `action: "list"` (`scope: "mine"`, `limit: 200`, follow
      `page_token`) and keep the artifacts whose title is exactly `Security audit`:
-     - exactly one → ask the owner to confirm it is the audit report; on yes write
-       `config.json` (`umask 077`); on no, treat as none;
+     - exactly one → ask the owner to confirm it is the audit report; on yes it is the
+       report (written to `config.json` after the lock); on no, treat as none;
      - several → for each, `ArtifactData list runs` and show its newest run row
-       (`started_at` date, `kind`); the owner picks one; write `config.json`;
+       (`started_at` date, `kind`); the owner picks one (written to `config.json` after the lock);
      - none → ask "No previous audit report found — start a new report?"; only an
        explicit yes continues, with no URL yet (Import publishes the page); anything
        else stops. `--plan-only` never creates one.
@@ -151,18 +158,23 @@ run with its reason, and nothing is created before the lock step.
    `ps -o ppid= -p …`).
    - No lock → create it atomically: `umask 077; mkdir -p "$STATE" && chmod 700 "$STATE"
      && (set -o noclobber; printf '%s %s\n' "$pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE/lock")`.
-   - Lock held by another live process (`kill -0 <pid>` succeeds and `ps -p <pid> -o comm=`
-     is a claude process) → refuse: "another security audit is running (pid …, since …)".
-   - Lock held by a dead pid, by a pid now running something else, or by this same
-     session (an interrupted earlier run) → replace it and say so: "Replaced a stale lock
-     left by pid … (started …)."
+   An existing lock is checked in this order:
+   - held by this same session's pid (an interrupted earlier run) → replace it and say
+     so: "Replaced a stale lock left by this session's interrupted run (started …).";
+   - held by another live process (`kill -0 <pid>` succeeds and `ps -p <pid> -o comm=`
+     is a claude process) → refuse: "another security audit is running (pid …, since …)";
+   - held by a dead pid or a pid now running something else → replace it and say so:
+     "Replaced a stale lock left by pid … (started …)."
+   - Then, if step 5 chose a report from the listing (not with `--test`), write
+     `config.json` = `{"report_url":"<url>"}` under `umask 077`.
    From here on, every stop runs Cleanup.
 7. **Directories.** `umask 077; mkdir -p ~/security-audit-skill/{watchtower,watchtower-test,watchtower-aborted,watchtower-archive} "$CACHE"`
    then `chmod 700` each of them, `$OUT` and `$CACHE`. Time Machine: if
    `tmutil isexcluded ~/security-audit-skill` does not say `[Excluded]`, run
    `tmutil addexclusion ~/security-audit-skill` (an "already excluded" answer is fine;
    any other failure → tell the owner and continue).
-8. **Aborted runs.** For every `run-*` dir under `watchtower/` and `watchtower-test/`: it
+8. **Aborted runs.** For every run dir under `watchtower/` and `watchtower-test/`
+   (`find <root> -mindepth 1 -maxdepth 1 -type d -name 'run-*'`): it
    is valid only if `findings.json` and `coverage-ledger.json` exist, `"$NODE"
    "$ENGINE/validate-findings.cjs" <dir>/findings.json` and `"$NODE"
    "$ENGINE/validate-coverage-ledger.cjs" <dir>/coverage-ledger.json` both exit 0, and
@@ -171,6 +183,7 @@ run with its reason, and nothing is created before the lock step.
    `watchtower-test`) and named to the owner. A validated `incomplete` run stays: it is
    engine history.
 9. **Retention.**
+   Enumerate every directory below with `find <dir> -mindepth 1 -maxdepth 1 -type d`.
    - In `watchtower/`, the newest Full is the highest `<N>` whose `run-metadata.json` has
      `watchtower_kind: "full"`. Every run dir with a lower `<N>` is archived: create
      `watchtower-archive/run-<N>/`, copy into it whichever of `REPORT.md`,
@@ -187,7 +200,7 @@ run with its reason, and nothing is created before the lock step.
 
 First refresh the refs: `git -C "$REPO" fetch origin main --tags` (Watchtower; with
 `--target`, no fetch — its local tags and `HEAD` only). Then, unless the invocation is
-`full`, `range <from>..<to>` or `import` (`import` skips this section and Pin), one
+`full`, `range <from>..<to>` or `import` (`import` skips this section and Pin, and never fetches), one
 `AskUserQuestion` with the options **Full** and **Range**, showing:
 
 - **Last audited tag → newest tag** (the proposed Range). Newest tag:
@@ -243,8 +256,8 @@ that cannot makes the engine end `incomplete` with no audit pass.
    `<to>` tag's commit. Keep it as `SHA`.
 3. Run id: `run-<N>`, `<N>` = 1 + the highest `<N>` found under the mode's run root,
    under `watchtower-archive/` (real runs) and among `watchtower-aborted/<root>-run-<N>-*`
-   (1 when none). The cache entry is `$CACHE/<root>-run-<N>/`.
-4. Leftovers: for every entry under `$CACHE` (no other run is alive — the lock is
+   (1 when none; enumerate with `find`, never a glob). The cache entry is `$CACHE/<root>-run-<N>/`.
+4. Leftovers: for every entry `find "$CACHE" -mindepth 1 -maxdepth 1` prints (no other run is alive — the lock is
    held): `git -C "$REPO" worktree remove --force <entry>/target` when git still lists
    it, then `rm -rf <entry>`. Then `git -C "$REPO" worktree prune`.
 5. `umask 077; mkdir -p "$CACHE/<root>-run-<N>"` and
@@ -253,7 +266,9 @@ that cannot makes the engine end `incomplete` with no audit pass.
 
 `--plan-only` stops here: print the kind, profile, `SHA`, the Range pair and mapping (or
 "Full"), the number of in-scope files, the budget, the prior runs the engine would read,
-the number of disputed rejections, and the estimate; then run Cleanup. Nothing is
+the number of disputed rejections (a read-only `ArtifactData list findings` counting docs
+with `verdict: "rejected"` and `status` `open`/`in_progress`; none for a new report), and
+the estimate; then run Cleanup. Nothing is
 written to the Artifact and no run dir is created.
 
 ## Owner triage in
@@ -312,8 +327,29 @@ and overrides:
   `recon-<n>` (reconnaissance), `hunter-<wave>-<n>`, `critic-<wave>` /
   `critic-final`, `verifier-<n>` (candidate validation and record verification alike;
   every one fresh). Import rule 6 recognises a verifier check only by `verifier-`.
-- **Every delegated prompt starts with the full text of the run dir's
-  `watchtower-context.md`**, then a `---` line, then the engine's role prompt.
+- **Delegated prompts reference, they do not paste** (pasting the context and the
+  engine blocks into every prompt floods this session's context). Each prompt, in order:
+  1. "First read `<absolute path of the run dir>/watchtower-context.md` and obey it; its
+     run policy overrides anything below that would execute or write."
+  2. The engine material the role needs, named by absolute path and heading for the
+     agent to read itself: `<run dir>/architecture.md` (after reconnaissance); the
+     unit's ordinary block `$ENGINE/ATTACK-CLASSES.md#<class>` and its selected
+     companion blocks (`$ENGINE/<FILE>.md`, heading); the role's section of
+     `$ENGINE/HUNTING.md` or `$ENGINE/VALIDATION-AND-REPORTING.md` (its prompt block,
+     the structured-result block, the promotion block); the `report-schema.json`
+     branches it must return (`$ENGINE/report-schema.json`, the `confirmed` /
+     `needs_validation` / `rejected` branch). The engine's "copied verbatim"
+     requirement is met by the agent reading exactly those sections.
+  3. Only then the role-specific facts: agent id, coverage unit ids and their starting
+     paths, the candidate summary or record to verify, the owner's note for a disputed
+     one, the target path.
+  4. The hand-back rule: "Send your structured result to the parent with the
+     SendMessage tool, as one short label line (e.g. `result hunter-1-03`) followed by
+     the compact JSON — the message tool rejects a bare JSON object. Then make your
+     final reply the single word `sent`." Long final replies are truncated in the
+     hand-back notification, so the parent takes the result from the message, never
+     from the final reply; a missing or malformed message → the parent asks that agent
+     to resend before treating the unit as failed.
 - **Nothing is executed.** No agent and not this session runs a build, test, script,
   process, fixture or package install from the target. Every check is a source check
   (`method: "source"`, `artifact: null`); a check that would need execution leaves the
@@ -329,6 +365,10 @@ and overrides:
   even when its source is unchanged and the engine's own history says rejected — and
   goes with the owner's note to a fresh `verifier-` agent, which becomes the unit's
   owner and moves it to `candidate`. It ends in `findings.json` with a fresh verdict.
+  A disputed fingerprint whose trace files are absent from the target (other repo,
+  renamed or deleted paths) cannot be seeded as a unit: it is not seeded, and the
+  import's rule 6 lists it in `disputed_not_revalidated` — that is the intended
+  outcome, not an error.
 - **Validators** run as `"$NODE" "$ENGINE/validate-findings.cjs" <run dir>/findings.json`
   and `"$NODE" "$ENGINE/validate-coverage-ledger.cjs" <run dir>/coverage-ledger.json`,
   whenever the engine says to.
