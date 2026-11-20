@@ -159,7 +159,8 @@ func autoApply(ctx context.Context, ad AutoDeps, c AutoCandidate, live []int64, 
 		return unlock, nil
 	}
 	res, err := Apply(ctx, d, Request{SessionID: c.SessionID, WorkbenchID: c.WorkbenchID, LiveSessions: live,
-		NoSize: true, PruneBuilds: true, NoTerminate: true, Now: now}, nil)
+		NoSize: true, PruneBuilds: true, NoTerminate: true, RequireEnded: true, BuildsChecked: checkedRoots(c),
+		Now: now}, nil)
 	if err != nil {
 		return res, fmt.Errorf("applying: %w", err)
 	}
@@ -183,6 +184,28 @@ func resultFailure(res Result) string {
 		parts = append(parts, "saving the result: "+res.ResultError)
 	}
 	return strings.Join(parts, "; ")
+}
+
+// checkedRoots are the worktree roots whose builds the session's last
+// cleanup, when it ran after the session's latest finish, found nothing
+// left to delete in (builds_checked): a retry does not walk them again. A
+// result from before the finish (the session worked, and may have built,
+// since) names none.
+func checkedRoots(c AutoCandidate) []string {
+	if c.CleanupAt.IsZero() || c.CleanupAt.Before(c.FinishedAt) {
+		return nil
+	}
+	var r Result
+	if json.Unmarshal([]byte(c.CleanupResult), &r) != nil {
+		return nil
+	}
+	var roots []string
+	for _, it := range r.Items {
+		if it.Kind == KindWorktree && it.BuildsChecked {
+			roots = append(roots, strings.TrimPrefix(it.Key, "worktree:"))
+		}
+	}
+	return roots
 }
 
 // removedSomething: an item was removed or a build folder deleted.
@@ -220,11 +243,12 @@ var settledReasons = map[string]bool{
 
 // leftWork: the stored result keeps a worktree or branch for a reason that
 // may change (unpushed, in use, a failed check…) or carries an error; a
-// result that does not decode counts as work left. Two keeps do not count:
-// a worktree kept only for uncommitted changes whose builds the prune
-// already checked (no commit, so no merge or push, can free it by itself),
-// and a branch kept because it is checked out (its worktree's own item
-// decides).
+// result that does not decode counts as work left. One keep does not
+// count: a worktree kept only for uncommitted changes whose builds the
+// prune already checked (no commit, so no merge or push, can free it by
+// itself). A branch kept because it is checked out does count (the owner
+// may switch the folder off it); its retry does not walk builds already
+// checked (checkedRoots).
 func leftWork(resultJSON string) bool {
 	var r Result
 	if json.Unmarshal([]byte(resultJSON), &r) != nil {
@@ -238,9 +262,6 @@ func leftWork(resultJSON string) bool {
 			continue
 		}
 		if it.Kind == KindWorktree && it.Reason == ReasonUncommittedChanges && it.BuildsChecked {
-			continue
-		}
-		if it.Kind == KindBranch && it.Reason == ReasonCheckedOut {
 			continue
 		}
 		return true

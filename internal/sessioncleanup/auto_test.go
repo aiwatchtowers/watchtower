@@ -59,8 +59,12 @@ func TestApply_TakesTheRepositoryLockFirst(t *testing.T) {
 	f.store.folders[testWorkbench+1] = f.repo
 	f.store.session.WorkbenchID = testWorkbench + 1
 	for _, r := range []Request{{SessionID: testSession}, {Sweep: true, WorkbenchID: testWorkbench}} {
-		keys, err := lockKeys(context.Background(), f.deps(), r)
-		if err != nil || len(keys) != 1 || keys[0] != repo {
+		sc, err := readScope(context.Background(), f.deps(), r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys := lockKeys(context.Background(), f.deps(), sc.folders(r.Sweep))
+		if len(keys) != 1 || keys[0] != repo {
 			t.Fatalf("%+v: keys %v, err %v", r, keys, err)
 		}
 	}
@@ -195,8 +199,8 @@ func TestAutoRun_SkipsBusyAndFailsClosedOnLive(t *testing.T) {
 // TestAutoDue: never cleaned, or cleaned before the finish → due; cleaned
 // after the finish → due only autoRetry later and only while the result
 // left work that may still go — a worktree kept only for uncommitted
-// changes whose builds were checked, and a branch only checked out, are
-// not (review F6).
+// changes whose builds were checked is not (review F6); a branch kept
+// checked out is (review round 3).
 func TestAutoDue(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
@@ -226,6 +230,8 @@ func TestAutoDue(t *testing.T) {
 		"old, unreadable result":     {cleaned: now.Add(-autoRetry), result: "{", want: true},
 		"old, in use (may go later)": {cleaned: now.Add(-autoRetry), result: result(Item{Kind: KindWorktree, Action: ActionKeep, Reason: ReasonSessionInIt}), want: true},
 		"old, uncommitted, builds checked": {cleaned: now.Add(-autoRetry), result: result(
+			Item{Kind: KindWorktree, Action: ActionKeep, Reason: ReasonUncommittedChanges, BuildsChecked: true})},
+		"old, a branch checked out": {cleaned: now.Add(-autoRetry), want: true, result: result(
 			Item{Kind: KindWorktree, Action: ActionKeep, Reason: ReasonUncommittedChanges, BuildsChecked: true},
 			Item{Kind: KindBranch, Action: ActionKeep, Reason: ReasonCheckedOut})},
 		"old, uncommitted, builds not checked": {cleaned: now.Add(-autoRetry), want: true, result: result(
@@ -355,5 +361,75 @@ func TestResultFailure(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q lacks %q", got, want)
 		}
+	}
+}
+
+// TestProj18_AutoCleanupOfAResumedSessionRemovesNothing (review round 3):
+// a session listed as finished that resumed before its apply — or between
+// the apply's evaluation and its removals — loses nothing.
+func TestProj18_AutoCleanupOfAResumedSessionRemovesNothing(t *testing.T) {
+	t.Parallel()
+	for name, resumeLate := range map[string]bool{"before the apply": false, "during the apply": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a := newAutoFixture(t)
+			root := a.pushedWork("wt", "feat/x")
+			a.commit(root, ".gitignore", ".build/\n")
+			gitIn(t, root, "push", "-q", "origin", "feat/x") // removable, but for the resume
+			a.record(root, "feat/x")
+			build := swiftBuild(t, filepath.Join(root, ".build"))
+			a.endSession()
+			now := time.Now()
+			a.cands = []AutoCandidate{{SessionID: testSession, WorkbenchID: testWorkbench, FinishedAt: now}}
+			resume := func() { a.store.activity[0].Finished = false }
+			if resumeLate {
+				g := &flipGit{flip: resume}
+				a.git = g
+			} else {
+				resume()
+			}
+			res, err := a.run(now)
+			if err != nil || res.Changed != 0 || (!resumeLate && res.Failed != 1) {
+				t.Fatalf("res %+v, err %v", res, err)
+			}
+			if !a.listsWorktree(root) || !a.branchExists("feat/x") || !exists(filepath.Join(build, buildMarker)) {
+				t.Fatal("something of the resumed session went")
+			}
+		})
+	}
+}
+
+// TestAutoRun_RetryDoesNotWalkCheckedBuilds (review round 3): a retry after
+// a cleanup that, since the finish, checked a kept worktree's builds does
+// not walk them again; after a new finish it does.
+func TestAutoRun_RetryDoesNotWalkCheckedBuilds(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		cleanedAfterFinish, wantPruned bool
+	}{"checked since the finish": {cleanedAfterFinish: true}, "checked before a new finish": {wantPruned: true}} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a := newAutoFixture(t)
+			root, builds := a.unpushedWithBuild()
+			a.endSession()
+			now := time.Now()
+			prev, err := json.Marshal(Result{Plan: Plan{Items: []Item{{Key: "worktree:" + root, Kind: KindWorktree,
+				Action: ActionKeep, Reason: ReasonUnpushedCommits, BuildsChecked: true}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			finished, cleaned := now.Add(-3*time.Hour), now.Add(-2*time.Hour)
+			if !tc.cleanedAfterFinish {
+				finished = now.Add(-time.Hour)
+			}
+			a.cands = []AutoCandidate{{SessionID: testSession, WorkbenchID: testWorkbench, FinishedAt: finished,
+				CleanupAt: cleaned, CleanupResult: string(prev)}}
+			if _, err := a.run(now); err != nil {
+				t.Fatal(err)
+			}
+			if pruned := !exists(builds[0]); pruned != tc.wantPruned {
+				t.Fatalf("pruned %v, want %v", pruned, tc.wantPruned)
+			}
+		})
 	}
 }

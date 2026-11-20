@@ -524,3 +524,69 @@ func TestProj18_TrackedBuildPathIsMatchedLiterally(t *testing.T) {
 		})
 	}
 }
+
+// TestProj18_CheckoutOfAnyRepoInABuildKeepsIt (review round 3): a gitfile
+// `.git` deep inside a build folder — a linked worktree or submodule
+// checkout of any repository, not only this one's — keeps the folder; a
+// clone's `.git` directory (SwiftPM's checkouts) does not.
+func TestProj18_CheckoutOfAnyRepoInABuildKeepsIt(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root, builds := f.unpushedWithBuild()
+	writeFile(t, filepath.Join(builds[0], "x", "y", ".git"), "gitdir: /elsewhere/.git/worktrees/y\n")
+	writeFile(t, filepath.Join(builds[0], "x", "y", "work.txt"), "uncommitted\n")
+	clone := filepath.Join(builds[1], "checkouts", "pkg")
+	gitIn(t, f.base, "clone", "-q", f.repo, clone)
+	f.endSession()
+
+	res := f.apply(Request{PruneBuilds: true}, nil, nil)
+	it := findItem(t, res.Plan, "worktree:"+root)
+	if !slices.Equal(it.BuildsRemoved, []string{builds[1]}) || it.BuildError != "" {
+		t.Fatalf("item %+v", it)
+	}
+	if !exists(filepath.Join(builds[0], "x", "y", "work.txt")) {
+		t.Fatal("the checkout inside the build went")
+	}
+}
+
+// TestHoldsGitfile_FailsClosed: over budget the walk fails (the folder is
+// kept by its caller).
+func TestHoldsGitfile_FailsClosed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for i := range nestedClockEvery + 1 {
+		writeFile(t, filepath.Join(dir, "d"+strconv.Itoa(i)), "x")
+	}
+	if _, err := holdsGitfile(context.Background(), dir, -time.Second); err == nil {
+		t.Fatal("no error over budget")
+	}
+	if holds, err := holdsGitfile(context.Background(), dir, time.Minute); holds || err != nil {
+		t.Fatalf("holds %v, err %v", holds, err)
+	}
+}
+
+// TestApply_EvaluatesTheFolderItLocked (review round 3): the folder set is
+// read once, before the locks; a session folder that changes in the
+// database after that read is not the one evaluated.
+func TestApply_EvaluatesTheFolderItLocked(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	other := filepath.Join(f.base, "other")
+	gitIn(t, f.base, "init", "-q", "-b", "main", "other")
+	f.commit(other, "o.txt", "o\n")
+	f.store.session.Folder = f.repo
+	f.store.afterSessionRead = func(s *fakeStore) { s.session.Folder = other }
+	var locked []string
+	res := f.apply(Request{}, nil, func(d *Deps) {
+		d.Lock = func(_ context.Context, repo string) (func(), error) {
+			locked = append(locked, repo)
+			return func() {}, nil
+		}
+	})
+	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
+	if !slices.Equal(locked, []string{filepath.Join(f.repo, ".git")}) {
+		t.Fatalf("locked %v", locked)
+	}
+}

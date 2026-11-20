@@ -46,9 +46,14 @@ func sweepBuilders(ctx context.Context, d Deps, r Request) ([]*builder, error) {
 	if r.WorkbenchID == 0 {
 		return nil, errors.New("session cleanup: a sweep needs a workbench")
 	}
-	folders, err := d.DB.BenchFolders(ctx, r.WorkbenchID)
-	if err != nil {
-		return nil, fmt.Errorf("reading workbench %d folders: %w", r.WorkbenchID, err)
+	var folders []string
+	if r.scope != nil {
+		folders = r.scope.bench // the set Apply locked
+	} else {
+		var err error
+		if folders, err = d.DB.BenchFolders(ctx, r.WorkbenchID); err != nil {
+			return nil, fmt.Errorf("reading workbench %d folders: %w", r.WorkbenchID, err)
+		}
 	}
 	if len(folders) <= 1 {
 		// The home folder is pinned, so the apply's re-checks read the

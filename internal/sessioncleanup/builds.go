@@ -82,6 +82,15 @@ func catchAnyProcess(_ context.Context, b *builder, w worktree) (string, string,
 	return ReasonProcessRunning, "process in use: " + procText(all[0]), nil
 }
 
+// sessionFinished: the planned session's finish still stands (finished_at
+// set, not cleared by a resume) and it is not being deleted (the Desktop's
+// background cleanup owns it then): what an automatic apply needs
+// (Request.RequireEnded).
+func (b *builder) sessionFinished() bool {
+	a, ok := b.activity[b.req.SessionID]
+	return ok && a.Finished && !a.DeleteRequested
+}
+
 // sessionEnded: the planned session finished (finish_session) or is being
 // deleted — the end of the session the prune waits for.
 func (b *builder) sessionEnded() bool {
@@ -105,25 +114,42 @@ func (a *applier) pruneBuilds(ctx context.Context) {
 	}
 }
 
-// pruneWorktreeBuilds finds the worktree's build folders, re-checks the
-// worktree on fresh facts (pruneCatches) right before deleting them, keeps
-// any folder a listed worktree lives in (worktreeInside), and deletes the
-// rest; any doubt leaves them. The walk comes first, so the
-// re-check is as close to the removal as it can be, and a worktree with no
-// build costs no re-check. BuildsChecked is set once nothing is left to
-// delete: no build found, or every one found deleted or tracked.
+// pruneWorktreeBuilds finds the worktree's build folders, drops those a
+// git checkout lives in (holdsGitfile), re-checks the worktree on fresh
+// facts (pruneCatches) right before deleting the rest, keeps any folder a
+// listed worktree lives in (worktreeInside), and deletes the rest; any
+// doubt leaves them. The walks come first, so the re-check is as close to
+// the removal as it can be, and a worktree with no build costs no
+// re-check. A root the request names in BuildsChecked (an earlier
+// automatic apply checked it since the session's finish) is not walked
+// again. BuildsChecked is set once nothing is left to delete: no build
+// found, or every one found deleted or kept for certain.
 func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 	root := strings.TrimPrefix(it.Key, "worktree:")
+	if slices.Contains(a.req.BuildsChecked, root) {
+		it.BuildsChecked = true
+		return
+	}
 	if fi, err := os.Lstat(root); err != nil || !fi.IsDir() {
 		return // a prunable worktree: its directory, and any build, is gone
 	}
-	found, err := findBuildDirs(ctx, root, nestedScanBudget)
+	all, err := findBuildDirs(ctx, root, nestedScanBudget)
 	if err != nil {
 		it.BuildError = err.Error()
 		return
 	}
+	doubt := false
+	var found []foundBuild
+	for _, f := range all {
+		switch holds, err := holdsGitfile(ctx, f.path, nestedScanBudget); {
+		case err != nil:
+			doubt = true // unreadable or over budget: kept, quietly
+		case !holds:
+			found = append(found, f)
+		}
+	}
 	if len(found) == 0 {
-		it.BuildsChecked = true
+		it.BuildsChecked = !doubt
 		return
 	}
 	b, err := a.fresh(ctx)
@@ -131,7 +157,7 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 		it.BuildError = err.Error()
 		return
 	}
-	if !b.sessionEnded() {
+	if !b.sessionEnded() || (a.req.RequireEnded && !b.sessionFinished()) {
 		return
 	}
 	w, ok := b.listedWorktree(root)
@@ -161,7 +187,46 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 			it.BuildsRemoved = append(it.BuildsRemoved, f.path)
 		}
 	}
-	it.BuildsChecked = true
+	it.BuildsChecked = !doubt
+}
+
+// holdsGitfile walks dir without following symlinks for a `.git` entry
+// that is not a directory — a gitfile (`gitdir: …`) of a linked worktree
+// or submodule checkout, of any repository, or anything else of that name:
+// true keeps dir. A `.git` directory (a clone, such as SwiftPM's
+// .build/checkouts/*) does not count and is not entered. Over budget, or
+// on an unreadable entry, it fails, and dir is kept.
+func holdsGitfile(ctx context.Context, dir string, budget time.Duration) (bool, error) {
+	deadline := time.Now().Add(budget)
+	n := 0
+	errFound := errors.New("found")
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if n++; n%nestedClockEvery == 0 {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if time.Now().After(deadline) {
+				return errBuildScanBudget
+			}
+		}
+		if d.Name() != ".git" || path == dir {
+			return nil
+		}
+		if d.IsDir() {
+			return filepath.SkipDir // a clone's own repository
+		}
+		return errFound
+	})
+	switch {
+	case errors.Is(err, errFound):
+		return true, nil
+	case err != nil:
+		return false, fmt.Errorf("looking for checkouts in %s: %w", dir, err)
+	}
+	return false, nil
 }
 
 // listedWorktree is root as git lists it now, when it is a linked worktree

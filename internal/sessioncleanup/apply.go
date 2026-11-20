@@ -98,6 +98,13 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 	if r.Sweep && len(only) == 0 {
 		return res, ErrSweepNeedsItems
 	}
+	if d.DB != nil && d.Git != nil && (r.Sweep && r.WorkbenchID != 0 || !r.Sweep && r.SessionID != 0) {
+		sc, err := readScope(ctx, d, r)
+		if err != nil {
+			return res, fmt.Errorf("session cleanup: %w", err)
+		}
+		r.scope = sc
+	}
 	unlock, err := lockRepositories(ctx, d, r)
 	if err != nil {
 		return res, fmt.Errorf("session cleanup: %w", err)
@@ -106,6 +113,9 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 	parts, err := evaluationBuilders(ctx, d, r)
 	if err != nil {
 		return res, err
+	}
+	if r.RequireEnded && !r.Sweep && !parts[0].sessionFinished() {
+		return res, fmt.Errorf("session %d: %w", r.SessionID, ErrSessionNotEnded)
 	}
 	reportListing(parts)
 	plans := make([]Plan, 0, len(parts))
@@ -134,8 +144,64 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 	return res, nil
 }
 
-// lockRepositories takes Deps.Lock for every repository the request acts
-// on (lockKeys), in sorted order, before anything is evaluated, so two
+// repoScope is the folder set an apply reads once, before it locks
+// anything (readScope): it locks the repositories of exactly these folders
+// and evaluates exactly these, so a folder added to or moved in the bench
+// meanwhile is never acted on unlocked. The re-checks reuse it.
+type repoScope struct {
+	// bench is a sweep's live bench folders as read.
+	bench []string
+	// sessionFolder is a session's own folder ("" = its workbench's home).
+	sessionFolder string
+	// home is the workbench's home folder, read when the folders above
+	// leave the evaluation to it.
+	home string
+}
+
+// folders are the folders the scope evaluates.
+func (s *repoScope) folders(sweep bool) []string {
+	switch {
+	case sweep && len(s.bench) > 0:
+		return s.bench
+	case !sweep && s.sessionFolder != "":
+		return []string{s.sessionFolder}
+	case s.home != "":
+		return []string{s.home}
+	}
+	return nil
+}
+
+// readScope reads the request's folder set once: a sweep's live bench
+// folders, a session's own folder, and the workbench's home when those
+// leave the evaluation to it.
+func readScope(ctx context.Context, d Deps, r Request) (*repoScope, error) {
+	sc := &repoScope{}
+	wb := r.WorkbenchID
+	if r.Sweep {
+		bench, err := d.DB.BenchFolders(ctx, r.WorkbenchID)
+		if err != nil {
+			return nil, fmt.Errorf("reading workbench %d folders: %w", r.WorkbenchID, err)
+		}
+		sc.bench = bench
+	} else {
+		s, err := d.DB.CleanupSession(ctx, r.SessionID)
+		if err != nil {
+			return nil, err //nolint:wrapcheck // names the session already
+		}
+		sc.sessionFolder, wb = s.Folder, s.WorkbenchID
+	}
+	if len(sc.folders(r.Sweep)) == 0 && wb != 0 {
+		home, err := d.DB.WorkbenchFolder(ctx, wb)
+		if err != nil {
+			return nil, fmt.Errorf("reading workbench %d: %w", wb, err)
+		}
+		sc.home = home
+	}
+	return sc, nil
+}
+
+// lockRepositories takes Deps.Lock for every repository of the request's
+// scope (lockKeys), in sorted order, before anything is evaluated, so two
 // applies over one repository — the Desktop's, the agent's, the daemon's
 // automatic one, of one workbench or of two over the same repository —
 // never act on the same facts at once. No Lock (tests, a caller that holds
@@ -144,17 +210,13 @@ func lockRepositories(ctx context.Context, d Deps, r Request) (func(), error) {
 	if d.Lock == nil {
 		return func() {}, nil
 	}
-	keys, err := lockKeys(ctx, d, r)
-	if err != nil {
-		return nil, err
-	}
 	var unlocks []func()
 	unlockAll := func() {
 		for i := len(unlocks) - 1; i >= 0; i-- {
 			unlocks[i]()
 		}
 	}
-	for _, k := range keys {
+	for _, k := range lockKeys(ctx, d, r.scope.folders(r.Sweep)) {
 		unlock, err := d.Lock(ctx, k)
 		if err != nil {
 			unlockAll()
@@ -166,40 +228,13 @@ func lockRepositories(ctx context.Context, d Deps, r Request) (func(), error) {
 }
 
 // lockKeys are the git common dirs (symlink-resolved, sorted, distinct) of
-// the folders the request evaluates: a session's own folder (else its
-// workbench's home), a sweep's live bench folders. A folder in no
-// repository, or whose common dir git cannot tell, gives no key: the
-// evaluation fails on it, or a sweep skips it, as it does today.
-func lockKeys(ctx context.Context, d Deps, r Request) ([]string, error) {
-	var folders []string
-	switch {
-	case r.Sweep:
-		bench, err := d.DB.BenchFolders(ctx, r.WorkbenchID)
-		if err != nil {
-			return nil, fmt.Errorf("reading workbench %d folders: %w", r.WorkbenchID, err)
-		}
-		folders = bench
-	default:
-		s, err := d.DB.CleanupSession(ctx, r.SessionID)
-		if err != nil {
-			return nil, err // names the session already
-		}
-		folders = []string{s.Folder}
-		if s.Folder == "" {
-			r.WorkbenchID = s.WorkbenchID
-			folders = nil
-		}
-	}
-	if len(folders) == 0 && r.WorkbenchID != 0 {
-		home, err := d.DB.WorkbenchFolder(ctx, r.WorkbenchID)
-		if err != nil {
-			return nil, fmt.Errorf("reading workbench %d: %w", r.WorkbenchID, err)
-		}
-		folders = []string{home}
-	}
+// folders. A folder in no repository, or whose common dir git cannot tell,
+// gives no key: the evaluation fails on it, or a sweep skips it, as it
+// does today.
+func lockKeys(ctx context.Context, d Deps, folders []string) []string {
 	bin, ok := d.Git.GitBinary()
 	if !ok {
-		return nil, nil
+		return nil
 	}
 	g := gitCmd{run: d.Git, bin: bin}
 	seen := map[string]bool{}
@@ -220,7 +255,7 @@ func lockKeys(ctx context.Context, d Deps, r Request) ([]string, error) {
 		}
 	}
 	slices.Sort(keys)
-	return keys, nil
+	return keys
 }
 
 // applier carries one apply: the evaluated items it updates in place and
@@ -352,6 +387,21 @@ func (a *applier) fresh(ctx context.Context) (*builder, error) {
 	return b, nil
 }
 
+// ErrSessionNotEnded is returned when a RequireEnded apply finds the session's finish gone
+// (resumed) or the session being deleted; nothing more is removed.
+var ErrSessionNotEnded = errors.New("the session is no longer finished")
+
+// stillEnded is RequireEnded's check on fresh facts b before a removal: a
+// session no longer finished stops the apply (check_failed, the rest
+// not_attempted).
+func (a *applier) stillEnded(it *Item, b *builder) bool {
+	if !a.req.RequireEnded || b.sessionFinished() {
+		return true
+	}
+	a.fail(it, ErrSessionNotEnded)
+	return false
+}
+
 // fail keeps it as check_failed and stops the apply.
 func (a *applier) fail(it *Item, err error) {
 	keepItem(it, ReasonCheckFailed, err.Error())
@@ -399,6 +449,9 @@ func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string, wa
 	b, err := a.fresh(ctx)
 	if err != nil {
 		a.fail(it, err)
+		return nil, false
+	}
+	if !a.stillEnded(it, b) {
 		return nil, false
 	}
 	if !walk {
@@ -643,6 +696,9 @@ func (a *applier) recheckBranch(ctx context.Context, it *Item) (string, bool) {
 	b, err := a.fresh(ctx)
 	if err != nil {
 		a.fail(it, err)
+		return "", false
+	}
+	if !a.stillEnded(it, b) {
 		return "", false
 	}
 	tip, ok := b.repo.branchTip(it.Name)
