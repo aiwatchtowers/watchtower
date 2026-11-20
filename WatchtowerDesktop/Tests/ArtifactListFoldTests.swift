@@ -31,7 +31,7 @@ final class ArtifactListFoldTests: XCTestCase {
         XCTAssertThrowsError(try list.find(text: "Colleague A in #acme-release"))
         XCTAssertThrowsError(try list.find(text: "ACME-12 assigned to you"))
         XCTAssertNoThrow(try list.find(button: "Show 2 older"))
-        XCTAssertThrowsError(try list.find(button: "Hide"))
+        XCTAssertThrowsError(try list.find(button: "Hide Older"))
     }
 
     func testOtherListsNeverFold() throws {
@@ -55,7 +55,7 @@ final class ArtifactListFoldTests: XCTestCase {
         XCTAssertThrowsError(try plain.find(button: "Show 2 older"))
     }
 
-    /// **Show N older** unfolds every shown row and **Hide** folds them
+    /// **Show N older** unfolds every shown row and **Hide Older** folds them
     /// again; only the drawn rows are published, so J/K never reach a
     /// folded one. A list with the note row alone folds nothing.
     func testOlderFoldOpensAndCloses() {
@@ -65,7 +65,10 @@ final class ArtifactListFoldTests: XCTestCase {
         XCTAssertEqual(folded.older, 2)
         let open = ArtifactListView.fold(shown: shown, foldsOlder: true, olderOpen: true)
         XCTAssertEqual(open.drawn, shown)
-        XCTAssertEqual(open.older, 2, "the toggle stays, reading Hide")
+        XCTAssertEqual(open.older, 2, "the toggle stays, reading Hide Older")
+        XCTAssertEqual(ArtifactListView.foldLabel(older: 2, open: false), "Show 2 older")
+        XCTAssertEqual(ArtifactListView.foldLabel(older: 2, open: true), "Hide Older",
+                       "not a bare Hide: the rows carry their own")
 
         XCTAssertEqual(ArtifactListView.fold(shown: [0], foldsOlder: true, olderOpen: false).older, 0)
         XCTAssertEqual(ArtifactListView.fold(shown: [1, 2], foldsOlder: true, olderOpen: false).drawn, [1, 2],

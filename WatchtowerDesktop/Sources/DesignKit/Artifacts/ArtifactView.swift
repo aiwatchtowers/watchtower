@@ -186,7 +186,7 @@ struct ArtifactListView: View {
             ForEach(drawn, id: \.self) { index in
                 ArtifactListRowView(row: list.rows[index], firstIndex: offsets[index], mode: mode)
                 if folds, index == 0 {
-                    Button(olderOpen ? "Hide" : "Show \(older) older") { olderOpen.toggle() }
+                    Button(Self.foldLabel(older: older, open: olderOpen)) { olderOpen.toggle() }
                         .buttonStyle(.kitQuiet)
                         .controlSize(.small)
                         .padding(.horizontal, Spacing.regular)
@@ -206,6 +206,12 @@ struct ArtifactListView: View {
     static func fold(shown: [Int], foldsOlder: Bool, olderOpen: Bool) -> (drawn: [Int], older: Int) {
         guard foldsOlder, shown.first == 0, shown.count > 1 else { return (shown, 0) }
         return (olderOpen ? shown : [0], shown.count - 1)
+    }
+
+    /// The fold toggle's title. Open, it reads **Hide Older**, not a bare
+    /// **Hide**: the rows beside it carry their own **Hide**.
+    static func foldLabel(older: Int, open: Bool) -> String {
+        open ? "Hide Older" : "Show \(older) older"
     }
 
     /// In the Inbox, a list whose first row the host folds after
