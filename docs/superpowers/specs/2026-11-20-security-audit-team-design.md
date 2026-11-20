@@ -78,7 +78,8 @@ Anti-goals
   No model id is written into the repo. The skill states at start which model the agents
   will use. (Owner rule: never below Opus.)
 - **Engine pinning.** The engine is vendored at
-  `.claude/skills/security-audit-engine/` from commit
+  `.claude/skills/security-audit/engine/` (nested, so Claude Code does not register the
+  engine's own `name: security-audit` as a second skill clashing with the wrapper) from commit
   `c1c8a8c1471069fb0e188eeaff69b8e8db6564a8`, with its `LICENSE` and a `VERSION` file:
   upstream URL, commit, date, and a SHA-256 manifest line per vendored file
   (`<sha256>  <path>`, `shasum -a 256` format). Preflight runs `shasum -a 256 -c` on that
@@ -133,9 +134,9 @@ The owner picked B on 2026-11-20 (option 1 in the session).
 .claude/
   agents/sec-audit-agent.md            read-only agent for both engine roles
   skills/
-    security-audit-engine/             vendored engine, untouched + VERSION
     security-audit/
       SKILL.md                         wrapper: preflight, Full/Range, run, import
+      engine/                          vendored engine, untouched + VERSION
       watchtower-context.md            context + run policy handed to the engine
       import-rules.md                  findings.json → triage rows (rules + examples)
       baseline-import.json             first-run baseline from the two old audits
