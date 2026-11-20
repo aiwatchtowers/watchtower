@@ -147,7 +147,7 @@ extension AskFormModel {
         guard let answer = ask.answer else { return [] }
         var lines: [ClosedLine] = []
         if answer.dismissed {
-            lines.append(ClosedLine(label: "Dismissed", value: "Closed on the tower without an answer"))
+            lines.append(ClosedLine(label: "Dismissed", value: AskText.dismissedLabel))
         }
         if let verdict = answer.verdict {
             lines.append(ClosedLine(label: "Verdict", value: AskText.verdictLabel(verdict)))

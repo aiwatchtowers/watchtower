@@ -65,7 +65,9 @@ enum ActionSummary {
         switch item.kind {
         case .askAnswer:
             let title = quoted(entity.flatMap { id in snapshot.asks.first { $0.id == id }?.title }, or: "an ask")
-            let answer = (try? AskAnswerParams(wireParams: item.params)).flatMap { verdict($0.answer) }
+            let params = try? AskAnswerParams(wireParams: item.params)
+            if params?.answer.dismissed == true { return "Close \(title) without answering" }
+            let answer = params.flatMap { verdict($0.answer) }
             return ["Answer \(title)", answer].compactMap { $0 }.joined(separator: " — ")
         case .boardTargetStatus:
             let column = (try? BoardTargetStatusParams(wireParams: item.params)).map { BoardRowModel.statusLabel($0.status) }

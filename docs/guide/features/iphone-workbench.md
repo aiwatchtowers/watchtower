@@ -1,6 +1,6 @@
 # iPhone: the workchat
 
-On the Watchtower iPhone app, a Workbench session opens as its chat: what you and the agent said, the prompts and asks waiting on you, and a field to write to the session. It is for anyone who already linked a phone (see [iPhone](iphone.md)).
+On the Watchtower iPhone app, a Workbench session opens as its chat: what you and the agent said, the prompts and asks for you, and a field to write to it. It's for anyone who linked a phone (see [iPhone](iphone.md)).
 
 ## Why use it
 
@@ -27,9 +27,9 @@ since: 0.28.3
 
 **Now** starts with your tower: **MacBook Pro · online**, or **asleep · last seen 40 min ago** once its heartbeat is over 35 minutes old. Then:
 
-- **Waiting for you**, newest first across workbenches: asks, permission prompts, failed runs you can **Continue**. A question's suggested answers are chips, one tap each; with many or long answers, **Answer…** opens the ask. Once answered, the row shows **Sending answer…**, **Answer waiting to send**, or **Answer not delivered** with **Retry**. The first 20 show; the rest are **N more on your tower**.
-- **Working**: sessions whose agent is working, each with its timer (**as of 40 min ago** while the Mac is asleep).
-- **Ended**: sessions that stopped, finished or failed in the last 24 hours. A session with an open ask shows only as that ask. **Clear** hides them all on this phone; touch and hold a row for **Seen** to hide one.
+- **Waiting for you**, newest first across workbenches: asks, permission prompts, failed runs you can **Continue**. Suggested answers are one-tap chips; with many or long ones, **Answer…** opens the ask. Once answered, the row shows **Sending answer…**, **Answer waiting to send**, or **Answer not delivered** with **Retry**. The first 20 show, then **N more on your tower**.
+- **Working**: sessions whose agent is working, with a timer (**as of 40 min ago** while the Mac is asleep).
+- **Ended**: sessions that stopped, finished or failed in the last 24 hours. A session with an open ask shows only as that ask. **Clear** hides them all on this phone; hold a row for **Seen** to hide one.
 - **Next meeting**, with **Record** from 10 minutes before it starts to 10 minutes after.
 
 The **Now** tab's badge counts what waits for you on the tower on screen; the app icon's, on all your towers.
@@ -63,10 +63,19 @@ Tap a session in **Now** or a workbench. The top shows the workbench, the title 
 Under it, once the turn is over, a card says what's next, even before the chat loads: a finished session's summary, PR and **Report**; after an error, **Continue** (sends "Continue") and **New session** on its target; a session no longer running, **New session**. The phone can't restart a session.
 
 ### Answer what waits at the bottom
+<!-- learn
+id: iphone-close-ask
+title: Close an ask without answering
+text: Tap **Close without answering** under an open ask on your phone; the agent goes on without it.
+area: iphone
+level: next
+kind: tip
+since: next
+-->
 
 A permission prompt and the session's open asks sit at the end of the chat. **Allow once** and **Deny** answer the prompt (see [iPhone: permission prompts and interrupts](iphone-agent-prompts.md)). A question with suggested answers takes one tap; other asks have **Open** for the full form.
 
-Under its title the full form has **Open session**, which goes to the chat that asked, and **Task #N** for its board target; each shows only when the phone has it. If you had that chat open in the last few minutes, the agent's last message before the ask shows above the question.
+Under its title the form links **Open session** (the asking chat) and **Task #N** (its target) if the phone has them. If you opened that chat in the last few minutes, the agent's last message before the ask shows above the question. **Close without answering** (the Mac's **Dismiss**) confirms, then ends the ask with your note (none if too large).
 
 ### Write to the session
 <!-- learn

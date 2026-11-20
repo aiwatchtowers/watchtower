@@ -696,7 +696,7 @@ final class AskFormTests: XCTestCase {
         let form = try formOf(AskViewModel(askID: 162, drafts: fixture.drafts, answerer: fixture.answerer), snapshot)
         XCTAssertEqual(form.closedStatus, "Dismissed")
         XCTAssertEqual(form.closedLines, [
-            AskFormModel.ClosedLine(label: "Dismissed", value: "Closed on the tower without an answer"),
+            AskFormModel.ClosedLine(label: "Dismissed", value: "Closed without answering"),
             AskFormModel.ClosedLine(label: "Note", value: "Not now")
         ])
     }

@@ -53,8 +53,8 @@ final class AskAnswerer {
 
     @ObservationIgnored private let enqueue: Enqueue
     @ObservationIgnored private let remove: (String) throws -> Void
-    /// The ids of an ask's failed `ask_answer` rows (its record name).
-    @ObservationIgnored private let failedRows: (String) throws -> [String]
+    /// An ask's `ask_answer` outbox rows (its record name).
+    @ObservationIgnored private let answerRows: (String) throws -> [PendingAction]
     @ObservationIgnored private let drafts: AskDraftStore
     @ObservationIgnored private let sendGuard = SendGuard()
     /// The hub's optimistic overlays; nil: none (tests of other parts).
@@ -65,14 +65,14 @@ final class AskAnswerer {
         drafts: AskDraftStore,
         enqueue: @escaping Enqueue,
         remove: @escaping (String) throws -> Void,
-        failedRows: @escaping (String) throws -> [String] = { _ in [] },
+        answerRows: @escaping (String) throws -> [PendingAction] = { _ in [] },
         overlays: OverlayBook? = nil,
         now: @escaping () -> Date = { Date() }
     ) {
         self.drafts = drafts
         self.enqueue = enqueue
         self.remove = remove
-        self.failedRows = failedRows
+        self.answerRows = answerRows
         self.overlays = overlays
         self.now = now
     }
@@ -88,10 +88,8 @@ final class AskAnswerer {
                 try await outbox.enqueue(kind: .askAnswer, entityRecordName: entity, params: params, id: id)
             },
             remove: { try store.dismissAction(id: $0) },
-            failedRows: { entity in
-                try store.pendingActions(forEntity: entity)
-                    .filter { $0.state == .failed && $0.action.kind == .askAnswer }
-                    .map(\.id)
+            answerRows: { entity in
+                try store.pendingActions(forEntity: entity).filter { $0.action.kind == .askAnswer }
             },
             overlays: overlays
         )
@@ -107,17 +105,35 @@ final class AskAnswerer {
     }
 
     /// Sends the draft's answer; nothing (false) while the draft is not one
-    /// the Mac would take, or an answer to the ask is already on its way.
-    /// Once it is queued, the ask's older refused answers go (as
-    /// `BoardWriter` drops a field's), so a later `applied` is never hidden
-    /// behind a stale refusal.
+    /// the Mac would take, or an answer to the ask is already on its way
+    /// (being saved, or queued in the outbox).
     @discardableResult
     func send(_ ask: OwnerAsk) async throws -> Bool {
         let draft = drafts.draft(for: ask.id)
         guard draft.isAnswerable(for: ask), let answer = draft.answer(for: ask) else { return false }
+        return try await submit(answer, to: ask)
+    }
+
+    /// Closes the ask without answering it (#2114, the Mac's Dismiss): the draft's note with `dismissed`, down the
+    /// same `ask_answer` path, overlay and refusal handling as an answer. Nothing (false) for an ask the Mac would
+    /// not take it for, a note over its bound, or while an answer to the ask is already on its way.
+    @discardableResult
+    func sendDismissal(_ ask: OwnerAsk) async throws -> Bool {
+        guard let answer = drafts.draft(for: ask.id).dismissal(for: ask) else { return false }
+        return try await submit(answer, to: ask)
+    }
+
+    /// Queues `answer` under one id per tap, its overlay shown first; nothing
+    /// (false) while an earlier answer to the ask waits in the outbox, so a
+    /// dismissal never chases an answer (or the reverse). Once it is queued,
+    /// the ask's older refused answers go (as `BoardWriter` drops a field's),
+    /// so a later `applied` is never hidden behind a stale refusal.
+    private func submit(_ answer: OwnerAskAnswer, to ask: OwnerAsk) async throws -> Bool {
         let params = try AskAnswerParams(workbenchID: ask.workbenchID, answer: answer).wireParams()
         let entity = Self.recordName(ask.id)
-        let stale = try failedRows(entity)
+        let rows = try answerRows(entity)
+        guard !rows.contains(where: { $0.state == .pending }) else { return false }
+        let stale = rows.filter { $0.state == .failed }.map(\.id)
         let tappedAt = now()
         let sent = try await sendGuard.run(entity) {
             // The answer shows as sent at the tap; a save that throws takes it back.
@@ -140,8 +156,10 @@ final class AskAnswerer {
     }
 
     /// What an answer says in one line, for its caption while on its way (live link R5): the verdict, else the
-    /// picked options (and "Other: …") as the closed ask lists them; nil for a checklist or a note alone.
+    /// picked options (and "Other: …") as the closed ask lists them, or that it closes the ask unanswered; nil for a
+    /// checklist or a note alone.
     nonisolated static func answerLabel(_ answer: OwnerAskAnswer) -> String? {
+        if answer.dismissed { return AskText.dismissedLabel }
         if let verdict = answer.verdict { return AskText.verdictLabel(verdict) }
         let picked = answer.answers.flatMap { $0.labels + ($0.other.isEmpty ? [] : [AskText.otherLabel($0.other)]) }
         return picked.isEmpty ? nil : picked.joined(separator: ", ")
