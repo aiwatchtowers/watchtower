@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 import WatchtowerSync
 
 /// The `session_chat` slice, record name `session_chat-<session id>` for the
@@ -126,19 +127,34 @@ public struct SessionChat: SliceMirror, Equatable {
     public let entriesMore: Int
     /// Oldest first.
     public let entries: [Entry]
+    /// The session's live activity (step, timer, turn steps, running agents)
+    /// as the hub last read it (#2112); nil from an older hub, on a subagent
+    /// record, or when the read failed. Its `observedAt` is the time of the
+    /// read that last changed the block, not a freshness tick.
+    public let activityLive: SessionFeedLive?
+    /// 1 from a hub that knows the live block; nil from an older one.
+    public let liveVersion: Int?
+    /// Set when the hub could not read the live activity.
+    public let liveError: String?
 
     public init(
         sessionID: Int64,
         agentID: String? = nil,
         live: Bool,
         entriesMore: Int = 0,
-        entries: [Entry]
+        entries: [Entry],
+        activityLive: SessionFeedLive? = nil,
+        liveVersion: Int? = nil,
+        liveError: String? = nil
     ) {
         self.sessionID = sessionID
         self.agentID = agentID
         self.live = live
         self.entriesMore = entriesMore
         self.entries = entries
+        self.activityLive = activityLive
+        self.liveVersion = liveVersion
+        self.liveError = liveError
     }
 
     public init(from decoder: Decoder) throws {
@@ -148,6 +164,9 @@ public struct SessionChat: SliceMirror, Equatable {
         live = try c.decodeIfPresent(Bool.self, forKey: .live) ?? false
         entriesMore = try c.decodeIfPresent(Int.self, forKey: .entriesMore) ?? 0
         entries = try c.decodeIfPresent([Entry].self, forKey: .entries) ?? []
+        activityLive = try c.decodeIfPresent(SessionFeedLive.self, forKey: .activityLive)
+        liveVersion = try c.decodeIfPresent(Int.self, forKey: .liveVersion)
+        liveError = try c.decodeIfPresent(String.self, forKey: .liveError)
     }
 
     // convertFromSnakeCase maps "session_id" -> "sessionId" (lowercase d).
@@ -155,6 +174,7 @@ public struct SessionChat: SliceMirror, Equatable {
         case sessionID = "sessionId"
         case agentID = "agentId"
         case live, entriesMore, entries
+        case activityLive, liveVersion, liveError
     }
 
     /// `session_chat-<session id>` or `session_chat-<session id>-<agent id>`.
