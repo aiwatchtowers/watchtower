@@ -146,40 +146,51 @@ struct CLIRunnerTests {
         let pidFile = directory.appendingPathComponent("pid").path
         let releaseFile = directory.appendingPathComponent("release").path
         try #require(mkfifo(releaseFile, 0o600) == 0)
-        // Only shell builtins: hold the child until the parent checks the real
-        // grant. Closing the FIFO writer releases read through EOF, with no
-        // timer or descendant that can outlive cancellation of the runner.
-        let args = ["-c", #"echo $$ > "$1"; read -r release < "$2" || :"#, "sh", pidFile, releaseFile]
+        // Each step waits for an event, never for a clock, and only shell
+        // builtins run, so nothing outlives a cancelled runner. The child
+        // records its pid, then writes 256 KiB to stdout — more than a pipe
+        // holds — so it gets past that only once the runner drains stdout,
+        // which starts after the runner registered the grant. Then it opens
+        // the release FIFO (what the test's open waits for) and reads a line.
+        let script = #"echo $$ > "$1"; i=0; while [ $i -lt 4096 ]; do printf '%064d' 0; i=$((i+1)); done; "#
+            + #"read -r release < "$2" || :"#
+        let args = ["-c", script, "sh", pidFile, releaseFile]
         let run = Task {
             let runner = ProcessCLIRunner(binaryPath: "/bin/sh")
             return withStdin ? try await runner.run(args: args, stdin: Data("RECIPE".utf8))
                              : try await runner.run(args: args)
         }
-        var releaseFD: Int32?
+        // A run that ends before its child opens the FIFO (a launch failure)
+        // must not leave the open below blocked: a reader of our own lets it
+        // return, and the missing pid fails the test.
+        let unblock = Task {
+            _ = await run.result
+            let reader = open(releaseFile, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+            if reader >= 0 { close(reader) }
+        }
+        var releaseFD = await ProcessPipes.offPool { open(releaseFile, O_WRONLY | O_CLOEXEC) }
         do {
-            var pid: Int32?
-            for _ in 0..<100 where releaseFD == nil {
-                try await Task.sleep(for: .milliseconds(20))
-                pid = (try? String(contentsOfFile: pidFile, encoding: .utf8))
-                    .flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-                // PID publication can precede ProcessCLIRunner's registration.
-                if let pid, OwnerConfirmGrants.shared.hasLive(pid: pid) {
-                    let descriptor = open(releaseFile, O_WRONLY | O_NONBLOCK | O_CLOEXEC)
-                    if descriptor >= 0 { releaseFD = descriptor }
-                }
-            }
-            let child = try #require(pid)
-            let descriptor = try #require(releaseFD, "child did not become registered and ready")
+            try #require(releaseFD >= 0, "the release FIFO did not open")
+            _ = fcntl(releaseFD, F_SETNOSIGPIPE, 1)
+            let pid = (try? String(contentsOfFile: pidFile, encoding: .utf8))
+                .flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            let child = try #require(pid, "the child did not run")
             #expect(OwnerConfirmGrants.shared.hasLive(pid: child))
-            close(descriptor)
-            releaseFD = nil
+            // A line, not only the writer's close: a FIFO reader on macOS can
+            // miss the EOF of a writer that opens and closes at once, and then
+            // waits forever (this test's hang under load).
+            try #require(write(releaseFD, "go\n", 3) == 3)
+            close(releaseFD)
+            releaseFD = -1
             _ = try await run.value
+            await unblock.value
             #expect(!OwnerConfirmGrants.shared.hasLive(pid: child))
             #expect(!OwnerConfirmGrants.shared.consume(args, pid: child))
         } catch {
-            if let releaseFD { close(releaseFD) }
+            if releaseFD >= 0 { close(releaseFD) }
             run.cancel()
             _ = await run.result // ProcessCLIRunner terminates and waits before returning.
+            await unblock.value
             throw error
         }
     }
