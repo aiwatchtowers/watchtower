@@ -163,12 +163,18 @@ draining the battery.
 
 ### 8. The Mac's Workchat on events too (C6)
 
-- `workbench session-feed --json` (and `--live`) prints the resolved transcript paths it read (`paths`: conversation
-  files and the `subagents/` directory). The Desktop's Workchat store watches them with
-  `DispatchSource.makeFileSystemObjectSource` (`.write`, `.extend`, `.rename`, `.delete`) plus the conversation
-  directory, debounced 250 ms and at most one refresh per second while events keep coming — the same bounds as the hub.
-- The 3 s timer stays only as the fallback when a source cannot be opened, and keeps its role of noticing a session
-  that stopped being live (a state change, not a file event) — at 10 s instead of 3 s once events work.
+- `workbench session-feed --json` (and `--live`) prints the resolved transcript paths it read (`paths`: the
+  conversation files and each subagent's `.jsonl` under `subagents/`). The Desktop's Workchat store opens one
+  `DispatchSource.makeFileSystemObjectSource` (`.write`, `.extend`, `.rename`, `.delete`) **per file** — a vnode
+  source on a directory reports only entries added or removed, never writes into a file — and one on the conversation
+  directory and on `subagents/` for new files; a new file gets its own source on the next read. Per-file sources are
+  kept for the conversation files and the subagents the live snapshot lists as running, at most 32; a finished agent's
+  source is closed. Debounced 250 ms, at most one refresh per second while events keep coming — the hub's bounds.
+- The end of a session is a state change, not a file event: the Desktop already observes `terminal_sessions` (the
+  session's state row); its change triggers one refresh at once, so the pane sees the end no later than today. No
+  liveness timer.
+- The 3 s timer stays only as the fallback for a session whose sources cannot be opened (descriptor limit, missing
+  path), as on the hub.
 - The watch exists only while the Workchat pane is on screen (as the poll today); rename/delete re-resolves the paths.
 
 ### 9. Battery (D5)
@@ -179,7 +185,7 @@ draining the battery.
 | Phone, chat closed / app in background | nothing for the chat | nothing |
 | Phone radio | a record per changed 3 s read | a record per change, ≤ 1/s per chat — the same records, sooner; fewer when nothing changes |
 | Mac/hub | reads every watched live transcript every 3 s | reads on change only, kqueue/inotify wakes |
-| Mac Workchat pane | CLI read every 3 s while on screen | CLI read on change; 10 s liveness tick |
+| Mac Workchat pane | CLI read every 3 s while on screen | CLI read on change or on the session's state change; no tick |
 
 No new background modes, push types or wakes. Measured in the plan: phone CPU and wakeups with the chat open for 10
 minutes of a busy turn (Instruments energy log), before/after.
@@ -236,7 +242,7 @@ a `PASSWORD=` env and a `user:pass@` URL reaches the payload as `[secret]`); the
 | Secrets redacted in every summary and description | `TestFeed05_LiveBlockRedactsSecrets` (new guard) + `secretredact` tests (moved watchman cases + `user:pass@`) |
 | `live_version` on every new payload; hung read → `live_error` | Go `session_chat_test` with a fake fetch that blocks past the timeout |
 | Loading only until the first record; old hub → no line; table of §4 | phone model test, one case per table row |
-| Mac Workchat refreshes on a file event, 250 ms / ≤ 1 s, fallback timer, re-resolve on rename | Desktop store test with a fake file-event source (no wall time) |
+| Mac Workchat refreshes on a file event (per-file sources incl. each running subagent file), 250 ms / ≤ 1 s, fallback timer, re-resolve on rename; state change → one refresh | Desktop store test with a fake file-event source (no wall time) |
 | CLI prints `paths` | Go `cmd` test on `session-feed --json` |
 | Finished session: no `live`; failed live read: last `live` + `live_error` | Go `session_chat_test` |
 | Read on file event, 250 ms debounce, ≤ 1/s | Go test with a fake watcher and the test clock (no wall time) |
