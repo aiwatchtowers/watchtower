@@ -313,7 +313,8 @@ final class ChatSendCoordinator {
         switch await run(turn, record: &record, \.turnActionID) {
         case let .applied(result):
             forget(record)
-            drafts.clearAttachments(conversation: conversation)
+            // A turn that took no staged files (a question card's answer) leaves the composer's pills alone.
+            if !request.attachments.isEmpty { drafts.clearAttachments(conversation: conversation) }
             if case let .integer(id)? = result?["user_message_id"] {
                 pending[conversation]?.userMessageID = id
             } else {

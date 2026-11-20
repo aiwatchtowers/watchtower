@@ -175,6 +175,39 @@ final class ChatSendTests: XCTestCase {
         XCTAssertTrue(center.drafts.draft(7).attachments.isEmpty, "sent: the pills go")
     }
 
+    /// A question card's answer (`sendFixed`) is its own message: it neither uploads the staged files nor clears them;
+    /// the composer's next send still takes them.
+    func testACardAnswerLeavesTheStagedFilesInTheDraft() async throws {
+        var uploaded: [ChatAttachmentUploadPayload] = []
+        let center = ChatFixture.center(recorder, sleeper: sleeper, uploads: ChatUploads { payload, _ in uploaded.append(payload) })
+        let (_, composer) = screen(center, ChatRoute(id: 7))
+        XCTAssertNil(center.attach(data: Data("notes".utf8), fileName: "notes.md", conversation: 7))
+        let staged = try XCTUnwrap(center.drafts.draft(7).attachments.first)
+
+        let answer = Task { await composer.sendFixed("Option B") }
+        try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 1 }, "answer sent")
+        let fixed = try XCTUnwrap(try recorder.params(ChatTurnParams.self).first)
+        XCTAssertEqual(fixed.text, "Option B")
+        XCTAssertEqual(fixed.attachmentIDs, [], "the answer carries no staged file")
+        XCTAssertTrue(uploaded.isEmpty, "nothing uploaded for the answer")
+        center.receiveApplied(applied(1, kind: .chatTurn, result: ["user_message_id": .integer(5)]))
+        await answer.value
+        XCTAssertEqual(center.drafts.draft(7).attachments.map(\.id), [staged.id], "the pill stays staged")
+
+        composer.draft = "Read this"
+        let send = Task { await composer.send() }
+        try await poll({ uploaded.count == 1 }, "upload sent")
+        var echo = try XCTUnwrap(uploaded.first)
+        echo.status = .applied
+        echo.attachmentID = 77
+        center.sending.receiveUpload(echo)
+        try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 2 }, "composer turn sent")
+        XCTAssertEqual(try recorder.params(ChatTurnParams.self).last?.attachmentIDs, [77], "the composer's send takes them")
+        center.receiveApplied(applied(2, kind: .chatTurn, result: ["user_message_id": .integer(6)]))
+        await send.value
+        XCTAssertTrue(center.drafts.draft(7).attachments.isEmpty, "sent: the pills go")
+    }
+
     func testARefusedUploadBringsTheDraftBackWithRetry() async throws {
         var uploaded: [ChatAttachmentUploadPayload] = []
         let center = ChatFixture.center(recorder, sleeper: sleeper, uploads: ChatUploads { payload, _ in uploaded.append(payload) })
