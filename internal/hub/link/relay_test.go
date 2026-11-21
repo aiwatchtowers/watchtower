@@ -627,11 +627,13 @@ type closedSlots struct {
 	mu            sync.Mutex
 	closed        map[string]bool
 	reads, writes map[string]int
+	// refusal is what a closed slot answers: the zone's FORBIDDEN by default.
+	refusal error
 }
 
 func newClosedSlots(clock func() time.Time) *closedSlots {
 	return &closedSlots{Fake: memfake.New(transport.KindRelay, clock), closed: map[string]bool{},
-		reads: map[string]int{}, writes: map[string]int{}}
+		reads: map[string]int{}, writes: map[string]int{}, refusal: transport.ErrZoneForbidden}
 }
 
 func (z *closedSlots) close(slot string) {
@@ -652,7 +654,7 @@ func (z *closedSlots) Changes(ctx context.Context, zone string, since uint64) (t
 	closed := z.closed[zone]
 	z.mu.Unlock()
 	if closed {
-		return transport.Batch{}, transport.ErrForbidden
+		return transport.Batch{}, z.refusal
 	}
 	return z.Fake.Changes(ctx, zone, since)
 }
@@ -666,7 +668,7 @@ func (z *closedSlots) Save(ctx context.Context, items []transport.SaveItem) ([]t
 	}
 	z.mu.Unlock()
 	if closed {
-		return nil, transport.ErrForbidden
+		return nil, z.refusal
 	}
 	return z.Fake.Save(ctx, items)
 }
@@ -714,5 +716,41 @@ func TestAClosedPairingSlotIsDroppedOnItsFirstForbidden(t *testing.T) {
 	}
 	if reads, _ := z.counts("slot2"); reads != 1 {
 		t.Fatalf("slot2 read %d times, want 1", reads)
+	}
+}
+
+// A refusal of the hub itself (UNAUTHENTICATED, attestation: ErrForbidden
+// without the zone's FORBIDDEN) closes no slot: it is returned, and the slot
+// is read and written again once the hub is let in.
+func TestAHubWideForbiddenKeepsThePairingSlot(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	z := newClosedSlots(r.clock)
+	z.refusal = transport.ErrForbidden
+	code := r.issue()
+	p := newPhone(t)
+	r.writeHello(z.Fake, "slot1", p, code.Nonce, withRelayID(relayID(t)))
+	if err := r.c.OnPairingOpened(ctx, z, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	z.close("slot1")
+	if err := r.c.PublishPairKeyboxes(ctx, z); !errors.Is(err, transport.ErrForbidden) {
+		t.Fatalf("a hub-wide refusal on a write: %v, want it returned", err)
+	}
+	if err := r.c.OnPairingOpened(ctx, z, "slot1"); !errors.Is(err, transport.ErrForbidden) {
+		t.Fatalf("a hub-wide refusal on a read: %v, want it returned", err)
+	}
+	z.mu.Lock()
+	z.closed = map[string]bool{}
+	z.mu.Unlock()
+	reads, writes := z.counts("slot1")
+	if err := r.c.PublishPairKeyboxes(ctx, z); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.OnPairingOpened(ctx, z, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	if gotR, gotW := z.counts("slot1"); gotR == reads || gotW == writes {
+		t.Fatalf("the slot was dropped: %d/%d reads, %d/%d writes", gotR, reads, gotW, writes)
 	}
 }

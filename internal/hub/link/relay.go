@@ -49,8 +49,9 @@ const (
 
 // pairSlot is one pairing slot the hub reads: when it was opened, how far
 // its zone was read, and the phones whose hellos came through it. closed:
-// the relay refused it FORBIDDEN (promoted or expired there); it is kept
-// until pruned only so that a later event never opens it again.
+// the relay refused the zone FORBIDDEN (transport.ErrZoneForbidden: promoted
+// or expired there); it is kept until pruned only so that a later event
+// never opens it again.
 type pairSlot struct {
 	opened  time.Time
 	cursor  uint64
@@ -164,18 +165,20 @@ func (c *Center) OnPairingOpened(ctx context.Context, t transport.Transport, slo
 	return errors.Join(failed, c.pairClosed(slot, c.writePairKeyboxes(ctx, t, zone, answered)))
 }
 
-// pairClosed drops slot when err is the relay's FORBIDDEN (the slot was
-// promoted or expired there), so the slot is neither written nor read again
-// and its error is not returned; any other err is returned as is.
+// pairClosed drops slot when err is the relay's FORBIDDEN on the zone
+// (transport.ErrZoneForbidden: the slot was promoted or expired there), so
+// the slot is neither written nor read again and its error is not returned;
+// any other err — a refusal of the hub itself (UNAUTHENTICATED, attestation)
+// included — is returned as is and the slot stays.
 func (c *Center) pairClosed(slot string, err error) error {
-	if !errors.Is(err, transport.ErrForbidden) {
+	if !errors.Is(err, transport.ErrZoneForbidden) {
 		return err
 	}
 	c.pairMu.Lock()
 	defer c.pairMu.Unlock()
 	if s := c.pairs[slot]; s != nil && !s.closed {
 		s.closed, s.devices = true, nil
-		log.Printf("hub link: a pairing slot was closed on the relay: dropped")
+		log.Printf("hub link: pair zone refused (%s): slot dropped", transportClass(err))
 	}
 	return nil
 }
@@ -324,7 +327,7 @@ func (c *Center) SyncReaders(ctx context.Context, set func(context.Context, []st
 
 // transportClass is a transport error's class for the log, never its text.
 func transportClass(err error) string {
-	for _, s := range []error{transport.ErrUnavailable, transport.ErrForbidden, transport.ErrEntitlementInactive,
+	for _, s := range []error{transport.ErrUnavailable, transport.ErrZoneForbidden, transport.ErrForbidden, transport.ErrEntitlementInactive,
 		transport.ErrRateLimited, transport.ErrUnsupportedVersion, transport.ErrNotVouched, context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, s) {
 			return s.Error()
