@@ -127,9 +127,25 @@ enum ConnectSecret {
         return out
     }
 
-    /// A verb's failure, scrubbed of the secret.
+    /// A verb's failure for the agent. The view models cut stderr at 200
+    /// characters, so a secret can survive only in part: an error that holds
+    /// any piece of the secret (`holdsPiece`) is replaced by `fallback`,
+    /// which never holds a credential.
     static func failure(_ error: String?, secret: String, fallback: String) -> ConnectDriverError {
-        .failed(scrub(error?.isEmpty == false ? error ?? fallback : fallback, secret))
+        guard let error, !error.isEmpty else { return .failed(fallback) }
+        guard !holdsPiece(of: secret, in: error) else {
+            return .failed("\(fallback) (Watchtower hid the error text: it repeated part of what was pasted)")
+        }
+        return .failed(error)
+    }
+
+    /// Whether `text` holds any run of the secret's characters as long as
+    /// `piece` (or the whole secret, when it is shorter).
+    static func holdsPiece(of secret: String, in text: String, piece: Int = 8) -> Bool {
+        let chars = Array(secret.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !chars.isEmpty else { return false }
+        let length = min(piece, chars.count)
+        return (0...(chars.count - length)).contains { text.contains(String(chars[$0..<($0 + length)])) }
     }
 }
 

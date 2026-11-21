@@ -21,7 +21,7 @@ Press **Connect with Claude** (or Codex) in **Connections → Google** and the a
 1. **Agent:** Call `connect_status`. If Google is blocked by the organization, say so and stop. If a flow is running, wait for it with `connect_wait` or ask the customer whether to `connect_cancel` it. Ask the customer whether they want Calendar, Gmail or both. On Watchtower's shared app, offer Calendar and point Gmail to the own-project page.
 2. **Agent:** Call `connect_start` with `scopes` set to `calendar`, `gmail` or `calendar,gmail`. Watchtower opens Google's sign-in page in the default browser.
 3. **You:** Pick the Google account, sign in (2FA included) and approve the access Google asks for, ticking every service it lists.
-4. **Check:** Call `connect_wait`; while it says `waiting`, call it again. On `connected`, go on; on `failed` or `timeout`, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong). Then call `connect_status` to confirm the account and tell the customer the first sync has started.
+4. **Check:** Call `connect_wait`; while it says `waiting`, call it again. On `connected`, go on; on `failed` or `timeout`, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong). On `failed` that says the account was already connected, call `connect_status` before giving up. Then call `connect_status` to confirm the account and tell the customer the first sync has started.
 
 ## If something goes wrong
 

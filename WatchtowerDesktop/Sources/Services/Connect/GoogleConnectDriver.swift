@@ -49,7 +49,7 @@ final class GoogleConnectDriver: ConnectServiceDriving {
         guard !scopes.isEmpty, scopes.isSubset(of: ["calendar", "gmail"]) else {
             return .failure(.badArgs("scopes is calendar, gmail or calendar,gmail"))
         }
-        guard !model.isConnecting else { return .failure(.busy) }
+        guard !model.isConnecting, flows.current == nil else { return .failure(.busy) }
         let before = Set(model.connectRows.map(\.id))
         guard model.addAccount(calendar: scopes.contains("calendar"), gmail: scopes.contains("gmail"),
                                clientID: "", clientSecret: "", daemonPolicy: .restart) else {

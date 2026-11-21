@@ -17,6 +17,8 @@ protocol QuickConnectionConnectModel: AnyObject {
     func loadTools(_ connection: ExternalConnection) async
     func cancelSignIn()
     func refreshAsync() async
+    /// The last sign-in ended in a Cancel: the connection holds no grant.
+    var lastSignInCancelled: Bool { get }
 }
 
 extension ExternalConnectionsViewModel: QuickConnectionConnectModel {}
@@ -37,8 +39,22 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
     private let model: any QuickConnectionConnectModel
     private let policy: @MainActor () -> ManagedPolicy
     private var fields: [String: String] = [:]
-    /// The connection the last confirm card named: only that start enables.
-    private var confirmedEnable: String?
+    /// The connection the last confirm card showed, as it was then: only a
+    /// start for that same row and server enables, so a row removed and
+    /// added again under the name while the card was open needs a new card.
+    private var approved: Approval?
+
+    private struct Approval: Equatable {
+        let id: Int, name: String, kind: String, url: String, command: String
+
+        init(_ c: ExternalConnection) {
+            id = c.id
+            name = c.name
+            kind = c.kind
+            url = c.url
+            command = c.command
+        }
+    }
 
     static let fieldKeys: Set<String> = ["name", "kind", "command", "args", "url", "oauth", "header", "variable"]
 
@@ -65,13 +81,16 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
     }
 
     private func enable(_ name: String) async -> Result<String, ConnectDriverError> {
-        defer { confirmedEnable = nil }
+        let approval = approved
+        approved = nil
         await model.refreshAsync()
         guard let connection = model.connections.first(where: { $0.name == name }) else {
             return .failure(.badArgs("no Quick Connection named \(name)"))
         }
         guard connection.allowed(by: policy()) else { return .failure(.policy) }
-        guard confirmedEnable == name else { return .failure(.failed("turning \(name) on needs the customer's confirm")) }
+        guard approval == Approval(connection) else {
+            return .failure(.failed("turning \(name) on needs the customer's confirm: call connect_start with enable again"))
+        }
         guard !model.isBusy else { return .failure(.busy) }
         return .success(flows.begin { [model] _ in
             await model.setEnabled(connection, enabled: true)
@@ -93,11 +112,15 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
             await model.addConnection(name: server.name, kind: server.kind, command: server.command, args: server.args,
                                       url: server.url, secretJSON: nil, useOAuth: server.oauth)
             await model.refreshAsync()
+            let cancelled = server.oauth && (flows.wasCancelled(id) || model.lastSignInCancelled)
+            if model.error == nil, cancelled, model.connections.contains(where: { $0.name == server.name }) {
+                return .failed(reason: "the sign-in was cancelled: \(server.name) is added but not signed in")
+            }
             if model.error == nil, let row = model.connections.first(where: { $0.name == server.name }) {
                 return .connected(account: row.name)
             }
             return ConnectOutcome.of(error: model.error, before: before, after: [],
-                                     cancelled: flows.wasCancelled(id), noun: "connection")
+                                     cancelled: cancelled, noun: "connection")
         })
     }
 
@@ -143,7 +166,9 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
         guard let json else { return .failure(.badArgs("call set_fields with header or variable first")) }
         await model.addConnection(name: server.name, kind: server.kind, command: server.command, args: server.args,
                                   url: server.url, secretJSON: json, useOAuth: false)
-        if let error = model.error { return .failure(ConnectSecret.failure(error, secret: value, fallback: "")) }
+        if let error = model.error {
+            return .failure(ConnectSecret.failure(error, secret: value, fallback: "connections add failed"))
+        }
         return .success(ConnectSecretResult.data(state: "added", account: server.name))
     }
 
@@ -185,15 +210,17 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
         .failure(.badArgs("Quick Connections has nothing to choose"))
     }
 
-    /// The `enable` card, unless the policy refuses that connection: then
-    /// the start refuses it with no card.
+    /// The `enable` card for a listed connection the policy allows, with the
+    /// row it shows remembered. An unknown name or a refused connection gets
+    /// no card: the start, which re-reads the list, refuses it (or, for a
+    /// row the list had not shown yet, asks for the call again, which then
+    /// shows the card).
     func confirmNeeded(tool: String, options: [String: String]) -> ConnectAssistantConfirm? {
-        confirmedEnable = nil
-        guard tool == "connect_start", let name = options["enable"] else { return nil }
-        if let connection = model.connections.first(where: { $0.name == name }), !connection.allowed(by: policy()) {
-            return nil
-        }
-        confirmedEnable = name
+        approved = nil
+        guard tool == "connect_start", let name = options["enable"],
+              let connection = model.connections.first(where: { $0.name == name }),
+              connection.allowed(by: policy()) else { return nil }
+        approved = Approval(connection)
         return .quickConnection(name: name)
     }
 

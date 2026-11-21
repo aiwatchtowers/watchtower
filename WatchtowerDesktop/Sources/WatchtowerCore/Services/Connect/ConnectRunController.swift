@@ -161,6 +161,7 @@ package final class ConnectRunController {
     /// call answers `closed`, later calls too. A running flow keeps today's
     /// behaviour (spec §8): nothing on the driver is cancelled.
     package func end() {
+        if !ended { driver.runEnded() }
         ended = true
         pendingCard = nil
         waitingStep = nil

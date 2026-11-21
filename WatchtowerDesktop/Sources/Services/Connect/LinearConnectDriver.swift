@@ -54,7 +54,7 @@ final class LinearConnectDriver: ConnectServiceDriving {
         guard options["oauth"] == "true" else {
             return .failure(.badArgs("connect_start runs the Linear sign-in (oauth); a key goes through request_secret"))
         }
-        guard !model.isBusy else { return .failure(.busy) }
+        guard !model.isBusy, flows.current == nil else { return .failure(.busy) }
         let before = Set(rows.map(\.id))
         return .success(flows.begin { [model, flows, weak self] id in
             await model.addWithOAuth(daemonPolicy: .restart)

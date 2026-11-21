@@ -184,9 +184,15 @@ final class ExternalConnectionsViewModel {
         if let process = authProcess, process.isRunning {
             process.terminate()
         }
+        if authProcess != nil { lastSignInCancelled = true }
         authProcess = nil
         isBusy = false
     }
+
+    /// The last sign-in ended in a Cancel (here or a SIGTERM/SIGKILL): the
+    /// connection was added but holds no grant. Read by the connect
+    /// assistant's driver, which must not call that connected.
+    @ObservationIgnored private(set) var lastSignInCancelled = false
 
     // MARK: - Enable / Disable
 
@@ -434,6 +440,7 @@ final class ExternalConnectionsViewModel {
 
         isBusy = true
         error = nil
+        lastSignInCancelled = false
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
@@ -450,6 +457,7 @@ final class ExternalConnectionsViewModel {
         let result = await Self.runProcess(process)
         authProcess = nil
         isBusy = false
+        if result.exitCode == 15 || result.exitCode == 9 { lastSignInCancelled = true }
         applyResult(result, failurePrefix: failurePrefix)
     }
 

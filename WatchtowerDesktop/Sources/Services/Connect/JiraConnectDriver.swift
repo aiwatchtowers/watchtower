@@ -12,9 +12,11 @@ protocol JiraConnectModel: AnyObject {
     var accounts: [JiraAccount] { get }
     /// The running flow's site question, while it waits for an answer.
     var siteChoices: [JiraSiteChoice]? { get }
-    func addAccount(
+    /// The sheet's connect: the daemon restart is held until `finishBoardStep`.
+    func addAccountHoldingRestart(
         withConfluence: Bool, company: String?, site: String?, daemonPolicy: DaemonRestartPolicy
-    ) async -> JiraAccountsViewModel.AuthFlowEnd
+    ) async -> (connected: Bool, accountIDsBefore: Set<Int>?, cancelled: Bool, timedOut: Bool)
+    func finishBoardStep()
     func chooseSite(_ site: JiraSiteChoice)
     func cancelConnect()
     func refreshAsync() async
@@ -55,8 +57,12 @@ final class JiraConnectDriver: ConnectServiceDriving {
     private let steps: any JiraConnectSteps
     private let policy: @MainActor () -> ManagedPolicy
     private let companySlug: @MainActor () -> String?
-    /// The site `set_fields` named, for the next start or the running flow's question.
-    private var pendingSite: String?
+    /// The site `set_fields` named before the site question showed: for the
+    /// next start (`flow` nil) or for that flow's question only.
+    private var pendingSite: (flow: String?, site: String)?
+    /// A connect this driver made holds the daemon restart until the boards
+    /// are picked, the run ends, or the next start (the sheet's board step).
+    private var holdsRestart = false
     /// The site ids before this driver's last connect: boards and spaces
     /// list the sites it added (`JiraBoardPicker.sites`).
     private var idsBefore: Set<Int>?
@@ -88,44 +94,68 @@ final class JiraConnectDriver: ConnectServiceDriving {
     }
 
     func status() async -> ConnectStatus {
-        let asking = flows.current != nil && model.siteChoices != nil
+        let state = flows.current != nil ? model.siteChoices.map(Self.siteQuestion) ?? "running" : "running"
         return ConnectStatus(service: service, accounts: rows.map(\.account), policyLocked: !policyAllows(),
-                             flow: flows.statusFlow(state: asking ? Self.siteQuestionState : "running"))
+                             flow: flows.statusFlow(state: state))
     }
 
-    /// The flow's state while Watchtower asks which site to add.
+    /// The flow's state while Watchtower asks which site to add: the prefix,
+    /// then each site's name and address, so the agent can ask the customer.
     static let siteQuestionState = "choose_site"
+
+    static func siteQuestion(_ choices: [JiraSiteChoice]) -> String {
+        "\(siteQuestionState): " + choices.map { "\($0.name) (\($0.url))" }.joined(separator: "; ")
+    }
 
     func start(options: [String: String]) async -> Result<String, ConnectDriverError> {
         let allowed: Set<String> = ["site", "with_confluence"]
         if let refusal = ConnectOptions.unknown(options, allowed: allowed, service: service) { return .failure(refusal) }
         guard !model.isConnecting, flows.current == nil else { return .failure(.busy) }
+        releaseRestart()  // a held restart from the last connect is not lost to this one
         let withConfluence = options["with_confluence"] == "true"
-        let site = options["site"].flatMap { $0.isEmpty ? nil : $0 } ?? pendingSite
+        let named = options["site"].flatMap { $0.isEmpty ? nil : $0 }
+        let site = named ?? (pendingSite?.flow == nil ? pendingSite?.site : nil)
         pendingSite = nil
         let before = Set(model.accounts.map(\.id))
         idsBefore = before
         listedBoards = []
         let company = companySlug()
-        return .success(flows.begin { [model, steps, flows] id in
-            let end = await model.addAccount(
+        return .success(flows.begin { [model, steps, flows, weak self] id in
+            let result = await model.addAccountHoldingRestart(
                 withConfluence: withConfluence, company: company, site: site, daemonPolicy: .restart)
+            self?.dropPendingSite(of: id)
+            // Connected: the view model holds the restart for the board pick.
+            // A Cancel that came too late added the site and restarted already.
+            if result.connected { self?.holdsRestart = true }
             await model.refreshAsync()
-            // A Cancel that came too late still added the site (`.cancelledAfterConnecting`).
-            if end == .cancelled { return .failed(reason: ConnectFlowBook.cancelled) }
             let outcome = ConnectOutcome.of(
-                error: model.error, before: Set(before.map(String.init)),
+                error: result.connected ? nil : model.error, before: Set(before.map(String.init)),
                 after: model.accounts.map { ConnectAccountRow(id: $0.id, ConnectionAccountState($0)) },
-                cancelled: flows.wasCancelled(id), noun: "site")
+                cancelled: result.cancelled || flows.wasCancelled(id), noun: "site")
             guard withConfluence, case let .connected(name) = outcome else { return outcome }
             let line = await steps.confluenceLine(accountIDsBefore: before)
             return .connected(account: line.isEmpty ? name : "\(name). \(line)")
         })
     }
 
+    /// The held daemon restart runs now (`finishBoardStep`).
+    private func releaseRestart() {
+        guard holdsRestart else { return }
+        holdsRestart = false
+        model.finishBoardStep()
+    }
+
+    func runEnded() {
+        releaseRestart()
+    }
+
+    private func dropPendingSite(of flowID: String) {
+        if pendingSite?.flow == flowID { pendingSite = nil }
+    }
+
     func wait(flowID: String) async -> ConnectWaitOutcome {
-        if flows.current == flowID, let site = pendingSite, let choices = model.siteChoices,
-           let pick = Self.match(site, in: choices) {
+        if flows.current == flowID, let pending = pendingSite, pending.flow == flowID,
+           let choices = model.siteChoices, let pick = Self.match(pending.site, in: choices) {
             pendingSite = nil
             model.chooseSite(pick)
         }
@@ -133,7 +163,9 @@ final class JiraConnectDriver: ConnectServiceDriving {
     }
 
     func cancel(flowID: String) async {
-        if flows.cancel(flowID) { model.cancelConnect() }
+        guard flows.cancel(flowID) else { return }
+        dropPendingSite(of: flowID)
+        model.cancelConnect()
     }
 
     func setFields(_ fields: [String: String]) async -> Result<Void, ConnectDriverError> {
@@ -146,11 +178,13 @@ final class JiraConnectDriver: ConnectServiceDriving {
             guard let pick = Self.match(site, in: choices) else {
                 return .failure(.badArgs("\(site) is not one of: \(choices.map(\.url).joined(separator: ", "))"))
             }
+            pendingSite = nil
             model.chooseSite(pick)
             return .success(())
         }
-        // Before the question shows (or before a start): `wait` or the next start uses it.
-        pendingSite = site
+        // Before the question shows: that flow's `wait` answers with it; with
+        // no flow, the next start passes it as `--site`.
+        pendingSite = (flows.current, site)
         return .success(())
     }
 
@@ -190,6 +224,7 @@ final class JiraConnectDriver: ConnectServiceDriving {
             return .failure(.failed(failure))
         }
         listedBoards = []
+        releaseRestart()  // the boards are picked: one restart wires the site and them in
         return .success(Self.choices(boards, chosen: chosen))
     }
 

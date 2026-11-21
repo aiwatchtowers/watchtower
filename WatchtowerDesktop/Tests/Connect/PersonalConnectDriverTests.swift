@@ -64,7 +64,7 @@ final class PersonalConnectDriverTests: XCTestCase {
         let result = await driver.submitSecret(kind: "ics_url", value: "https://cal.example.com/private-abc")
         guard case let .failure(.failed(message)) = result else { return XCTFail("\(result)") }
         XCTAssertFalse(message.contains("private-abc"))
-        XCTAssertTrue(message.contains("[hidden]"))
+        XCTAssertTrue(message.hasPrefix("the calendar was not added"))
     }
 
     func testSetFieldsThenSecretUsesFields() async {
@@ -202,7 +202,7 @@ final class PersonalConnectDriverTests: XCTestCase {
         model.siteChoices = [JiraSiteChoice(url: "https://alpha.atlassian.net", name: "alpha"),
                              JiraSiteChoice(url: "https://beta.atlassian.net", name: "beta")]
         let asking = await driver.status()
-        XCTAssertEqual(asking.flow?.state, JiraConnectDriver.siteQuestionState)
+        XCTAssertTrue(asking.flow?.state.hasPrefix(JiraConnectDriver.siteQuestionState) == true)
         if case .success = await driver.setFields(["site": "gamma.atlassian.net"]) { XCTFail("not a listed site") }
         _ = try await driver.setFields(["site": "beta.atlassian.net"]).get()
         XCTAssertEqual(model.chosenSite?.name, "beta")
@@ -397,6 +397,123 @@ final class PersonalConnectDriverTests: XCTestCase {
         XCTAssertTrue(quick.calls.isEmpty)
     }
 
+    // MARK: - Review fixes
+
+    /// The view models cut stderr at 200 characters, so only a piece of a
+    /// long secret may be left in it: that piece never reaches the agent.
+    func testLongSecretCutInErrorIsHidden() async {
+        let secret = "https://cal.example.com/feeds/" + String(repeating: "a1b2c3d4", count: 30) + ".ics"
+        let stderr = String(("caldav add-ics: cannot read " + secret + ": 404").prefix(200))
+        XCTAssertFalse(stderr.contains(secret), "the fixture keeps only a piece")
+        let model = FakeCalendarModel()
+        model.failWith = { stderr }
+        let result = await CalendarConnectDriver(model: model, policy: Self.open).submitSecret(kind: "ics_url", value: secret)
+        guard case let .failure(.failed(message)) = result else { return XCTFail("\(result)") }
+        XCTAssertFalse(ConnectSecret.holdsPiece(of: secret, in: message))
+        XCTAssertFalse(message.contains("a1b2c3d4"))
+        // An error without any piece of the secret still says why.
+        let plain = ConnectSecret.failure("imap add: connection test failed: timeout", secret: "hunter22pw", fallback: "x")
+        XCTAssertEqual(plain, .failed("imap add: connection test failed: timeout"))
+    }
+
+    func testQuickConnectionApprovalIsForTheRowTheCardShowed() async throws {
+        let model = FakeQuickModel()
+        model.connections = [Self.connection(1, "docs", url: "https://docs.example.com/mcp")]
+        let driver = QuickConnectionConnectDriver(model: model, policy: Self.open)
+        XCTAssertNil(driver.confirmNeeded(tool: "connect_start", options: ["enable": "nope"]), "no card for an unknown name")
+        XCTAssertNotNil(driver.confirmNeeded(tool: "connect_start", options: ["enable": "docs"]))
+        // Removed and added again under the same name while the card was open.
+        model.connections = [Self.connection(2, "docs", url: "https://evil.example.com/mcp")]
+        let refused = await driver.start(options: ["enable": "docs"])
+        guard case .failure(.failed) = refused else { return XCTFail("\(refused)") }
+        XCTAssertTrue(model.enabled.isEmpty)
+        // A fresh card for the new row enables it.
+        XCTAssertNotNil(driver.confirmNeeded(tool: "connect_start", options: ["enable": "docs"]))
+        let flowID = try await driver.start(options: ["enable": "docs"]).get()
+        await driver.flows.finished(flowID)
+        XCTAssertEqual(model.enabled, ["docs"])
+    }
+
+    func testQuickConnectionCancelledSignInIsNotConnected() async throws {
+        let model = FakeQuickModel()
+        model.signInCancels = true
+        let driver = QuickConnectionConnectDriver(model: model, policy: Self.open)
+        _ = try await driver.setFields(["name": "docs", "kind": "http", "url": "https://mcp.example.com", "oauth": "true"]).get()
+        let flowID = try await driver.start(options: [:]).get()
+        await driver.flows.finished(flowID)
+        let outcome = await driver.wait(flowID: flowID)
+        XCTAssertEqual(outcome, .failed(reason: "the sign-in was cancelled: docs is added but not signed in"))
+    }
+
+    func testJiraSiteQuestionListsTheSites() async throws {
+        let model = FakeJiraModel()
+        let driver = JiraConnectDriver(model: model, steps: FakeJiraSteps(), policy: Self.open, companySlug: Self.noCompany)
+        let flowID = try await driver.start(options: [:]).get()
+        await model.until { model.added != nil }
+        model.siteChoices = [JiraSiteChoice(url: "https://alpha.atlassian.net", name: "alpha"),
+                             JiraSiteChoice(url: "https://beta.atlassian.net", name: "beta")]
+        let state = await driver.status().flow?.state
+        XCTAssertEqual(state, "choose_site: alpha (https://alpha.atlassian.net); beta (https://beta.atlassian.net)")
+        model.gate.open()
+        await driver.flows.finished(flowID)
+    }
+
+    func testJiraPendingSiteDiesWithItsFlow() async throws {
+        let model = FakeJiraModel()
+        let driver = JiraConnectDriver(model: model, steps: FakeJiraSteps(), policy: Self.open, companySlug: Self.noCompany)
+        let first = try await driver.start(options: [:]).get()
+        await model.until { model.added != nil }
+        _ = try await driver.setFields(["site": "alpha.atlassian.net"]).get()  // before any question
+        model.gate.open()
+        await driver.flows.finished(first)
+        model.gate = Gate()
+        let second = try await driver.start(options: [:]).get()
+        await model.until { model.added?.site == nil && model.isConnecting }
+        XCTAssertNil(model.added?.site, "the old flow's answer is no --site for the next one")
+        await driver.cancel(flowID: second)
+        await driver.flows.finished(second)
+
+        // A site named with no flow running is the next start's --site.
+        _ = try await driver.setFields(["site": "beta.atlassian.net"]).get()
+        model.gate = Gate()
+        model.connects = true
+        let third = try await driver.start(options: [:]).get()
+        await model.until { model.added?.site == "beta.atlassian.net" }
+        model.gate.open()
+        await driver.flows.finished(third)
+    }
+
+    func testJiraRestartWaitsForTheBoardPick() async throws {
+        let model = FakeJiraModel()
+        let steps = FakeJiraSteps()
+        let driver = JiraConnectDriver(model: model, steps: steps, policy: Self.open, companySlug: Self.noCompany)
+        let flowID = try await driver.start(options: [:]).get()
+        model.gate.open()
+        await driver.flows.finished(flowID)
+        XCTAssertEqual(model.restarts, 0, "held while the boards are not picked")
+        steps.boards = [Self.board(1, 10, selected: false)]
+        _ = try await driver.choose(kind: "jira_boards", select: ["1:10"]).get()
+        XCTAssertEqual(model.restarts, 1)
+        driver.runEnded()
+        XCTAssertEqual(model.restarts, 1, "released once")
+
+        // No pick: the run's end releases it.
+        model.gate = Gate()
+        let again = try await driver.start(options: [:]).get()
+        model.gate.open()
+        await driver.flows.finished(again)
+        driver.runEnded()
+        XCTAssertEqual(model.restarts, 2)
+
+        // A connect the customer cancelled holds nothing.
+        model.gate = Gate()
+        let cancelled = try await driver.start(options: [:]).get()
+        await driver.cancel(flowID: cancelled)
+        await driver.flows.finished(cancelled)
+        driver.runEnded()
+        XCTAssertEqual(model.restarts, 2)
+    }
+
     // MARK: - Fixtures
 
     static let open: @MainActor () -> ManagedPolicy = { .none }
@@ -561,15 +678,23 @@ private final class FakeJiraModel: JiraConnectModel {
     var chosenSite: JiraSiteChoice?
     var gate = Gate()
 
-    func addAccount(
+    var connects = true
+    var restarts = 0
+
+    func addAccountHoldingRestart(
         withConfluence: Bool, company: String?, site: String?, daemonPolicy: DaemonRestartPolicy
-    ) async -> JiraAccountsViewModel.AuthFlowEnd {
+    ) async -> (connected: Bool, accountIDsBefore: Set<Int>?, cancelled: Bool, timedOut: Bool) {
         added = (withConfluence, company, site)
         isConnecting = true
         await gate.wait()
         isConnecting = false
+        guard connects else { return (false, nil, true, false) }
         accounts.append(JiraAccount(row: ["id": accounts.count + 1, "site_name": "acme", "enabled": true]))
-        return .finished
+        return (true, nil, false, false)
+    }
+
+    func finishBoardStep() {
+        restarts += 1
     }
 
     func chooseSite(_ site: JiraSiteChoice) {
@@ -577,6 +702,7 @@ private final class FakeJiraModel: JiraConnectModel {
     }
 
     func cancelConnect() {
+        connects = false
         gate.open()
     }
 
@@ -671,6 +797,8 @@ private final class FakeQuickModel: QuickConnectionConnectModel {
     var secretJSON: String?
     var added: (name: String, args: [String], secretJSON: String?)?
     var enabled: [String] = []
+    var lastSignInCancelled = false
+    var signInCancels = false
 
     func addConnection(
         name: String, kind: String, command: String, args: [String], url: String, secretJSON: String?, useOAuth: Bool
@@ -678,6 +806,7 @@ private final class FakeQuickModel: QuickConnectionConnectModel {
         calls.append("add")
         self.secretJSON = secretJSON
         added = (name, args, secretJSON)
+        if useOAuth { lastSignInCancelled = signInCancels }
         connections.append(PersonalConnectDriverTests.connection(connections.count + 1, name, url: url))
     }
 

@@ -203,14 +203,17 @@ final class JiraAccountsViewModel {
     /// overlapping ones. If the sheet already went away, the policy applies
     /// as soon as the connect succeeds. Also reads the account ids before
     /// the connect, so the board step can list the site it added (nil when
-    /// that read fails).
+    /// that read fails). `company` and `site` are `addAccount`'s.
     func addAccountHoldingRestart(
-        withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy
+        withConfluence: Bool = false,
+        company: String? = nil,
+        site: String? = nil,
+        daemonPolicy: DaemonRestartPolicy
     ) async -> (connected: Bool, accountIDsBefore: Set<Int>?, cancelled: Bool, timedOut: Bool) {
         boardStepClosed = false
         heldRestart = nil
         let before = try? await dbPool.read { db in Set(try JiraAccountQueries.fetchAll(db).map(\.id)) }
-        switch await addAccount(withConfluence: withConfluence, daemonPolicy: .deferred) {
+        switch await addAccount(withConfluence: withConfluence, company: company, site: site, daemonPolicy: .deferred) {
         case .finished:
             break
         case .cancelled:

@@ -41,6 +41,14 @@ package protocol ConnectServiceDriving: AnyObject {
     func confirmNeeded(tool: String, options: [String: String]) -> ConnectAssistantConfirm?
     /// False when the organization's policy blocks the service.
     func policyAllows() -> Bool
+    /// The run ended (`ConnectRunController.end`): a driver releases what it
+    /// held for the run's later steps (Jira's daemon restart held for the
+    /// board pick). Never ends a flow.
+    func runEnded()
+}
+
+extension ConnectServiceDriving {
+    package func runEnded() {}
 }
 
 /// The company setup's extra actions (spec §5.4), on the setup wizard's

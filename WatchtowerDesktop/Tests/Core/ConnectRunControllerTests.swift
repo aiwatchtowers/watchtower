@@ -288,6 +288,8 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertNotNil(controller.pendingCard)
 
         controller.end()
+        controller.end()
+        XCTAssertEqual(driver.runEnds, 1, "the driver hears the run end once")
         let flowAnswer = await flowWait.value
         let secretAnswer = await secret.value
         XCTAssertEqual(flowAnswer, "error:closed")

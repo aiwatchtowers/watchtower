@@ -53,7 +53,7 @@ final class EmailConnectDriver: ConnectServiceDriving {
         guard options["outlook"] == "true" else {
             return .failure(.badArgs("connect_start runs the Outlook sign-in; IMAP takes set_fields and request_secret"))
         }
-        guard !model.isRunning else { return .failure(.busy) }
+        guard !model.isRunning, flows.current == nil else { return .failure(.busy) }
         let before = Set(model.connectRows.map(\.id))
         model.connectOutlook()
         guard model.isRunning, let task = model.outlookTask else {
