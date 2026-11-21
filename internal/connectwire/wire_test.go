@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"testing/synctest"
@@ -534,5 +535,91 @@ func TestCall_TimeoutMessagePerToolKind(t *testing.T) {
 		var we *Error
 		require.ErrorAs(t, err, &we)
 		assert.Contains(t, we.Message, "connect_status before repeating", "the real timeout path uses it")
+	})
+}
+
+// cutConn cuts the first write that carries cutTool: it puts 5 bytes on the
+// pipe, signals inWrite, waits for proceed, then fails like a deadline.
+type cutConn struct {
+	net.Conn
+	cutTool string
+	inWrite chan struct{}
+	proceed chan struct{}
+	// closeGate holds Close until the test opens it.
+	closeGate chan struct{}
+	once      sync.Once
+}
+
+func (c *cutConn) Write(b []byte) (int, error) {
+	cut := false
+	if bytes.Contains(b, []byte(c.cutTool)) {
+		c.once.Do(func() { cut = true })
+	}
+	if !cut {
+		return c.Conn.Write(b)
+	}
+	n, err := c.Conn.Write(b[:5])
+	if err != nil {
+		return n, err
+	}
+	close(c.inWrite)
+	<-c.proceed
+	return n, os.ErrDeadlineExceeded
+}
+
+// Close waits for closeGate, widening the window between a cut write and
+// the close to everything that can run in it.
+func (c *cutConn) Close() error {
+	<-c.closeGate
+	return c.Conn.Close()
+}
+
+// Two overlapping calls: the first write is cut mid-frame while the second
+// waits for the write turn. The second gets closed and the Desktop never
+// sees its line glued to the cut one.
+func TestCall_QueuedCallNeverGluedToACutFrame(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client, server := net.Pipe()
+		defer func() { _ = server.Close() }()
+		seen := make(chan string, 1)
+		go func() {
+			r := bufio.NewReader(server)
+			if _, err := r.ReadString('\n'); err != nil {
+				return
+			}
+			if _, err := server.Write([]byte("{\"ok\":true}\n")); err != nil {
+				return
+			}
+			rest, _ := io.ReadAll(r)
+			seen <- string(rest)
+		}()
+		cc := &cutConn{Conn: client, cutTool: "connect_start", inWrite: make(chan struct{}), proceed: make(chan struct{}), closeGate: make(chan struct{})}
+		c, err := handshake(context.Background(), cc, testToken, "slack")
+		require.NoError(t, err)
+
+		first := make(chan error, 1)
+		go func() {
+			_, err := c.Call(context.Background(), "connect_start", nil)
+			first <- err
+		}()
+		<-cc.inWrite
+		second := make(chan error, 1)
+		go func() {
+			_, err := c.Call(context.Background(), "connect_status", nil)
+			second <- err
+		}()
+		synctest.Wait() // the second call waits for the write turn
+		close(cc.proceed)
+		// The close of the cut connection is held: whatever can run before
+		// it does (a queued call that got the turn would write its line).
+		synctest.Wait()
+		close(cc.closeGate)
+
+		for _, ch := range []chan error{first, second} {
+			var we *Error
+			require.ErrorAs(t, <-ch, &we)
+			assert.Equal(t, CodeClosed, we.Code)
+		}
+		assert.Equal(t, `{"id"`, <-seen, "only the cut 5 bytes: nothing appended, no complete line")
 	})
 }

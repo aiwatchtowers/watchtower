@@ -152,9 +152,8 @@ func (c *Client) Call(ctx context.Context, tool string, args json.RawMessage) (j
 	defer cancel()
 	if started, err := c.write(callCtx, line); err != nil {
 		if started {
-			// Part of the frame may be on the socket: the next line would
-			// be glued to it. Drop the connection; every call gets closed.
-			_ = c.conn.Close()
+			// write closed the socket under the turn (a cut frame); every
+			// call gets closed.
 			return nil, errClosed
 		}
 		// Nothing was sent; the connection and the other calls are fine.
@@ -201,7 +200,8 @@ func noAnswer(tool string) string {
 // budget while it waits for the write turn sends nothing (started false),
 // and the write deadline (the budget left) keeps a Desktop that stopped
 // reading from hanging the call. started reports that Write was entered,
-// so part of the line may be on the socket.
+// so part of the line may be on the socket; a started write that fails
+// has already closed the connection.
 func (c *Client) write(ctx context.Context, line []byte) (started bool, err error) {
 	select {
 	case c.writeTurn <- struct{}{}:
@@ -213,10 +213,16 @@ func (c *Client) write(ctx context.Context, line []byte) (started bool, err erro
 		return false, err
 	}
 	deadline, _ := ctx.Deadline()
-	if err := c.conn.SetWriteDeadline(deadline); err != nil {
-		return true, err // the socket is gone: close it like a failed write
+	err = c.conn.SetWriteDeadline(deadline)
+	if err == nil {
+		_, err = c.conn.Write(append(line, '\n'))
 	}
-	_, err = c.conn.Write(append(line, '\n'))
+	if err != nil {
+		// Part of the frame may be on the socket. Close it while this call
+		// still holds the turn, so a queued call can never append its line
+		// to the cut one: its own write then fails on the closed socket.
+		_ = c.conn.Close()
+	}
 	return true, err
 }
 
