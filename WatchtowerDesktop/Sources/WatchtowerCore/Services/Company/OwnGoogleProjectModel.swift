@@ -58,6 +58,9 @@ package final class OwnGoogleProjectModel {
     /// A run connected an account: AppState re-reads the accounts and
     /// re-wires the daemon.
     @ObservationIgnored package var onConnected: (() -> Void)?
+    /// Cancel ended a run: AppState re-reads the accounts and companies only
+    /// (no daemon restart), since a kill while Go saves leaves what it saved.
+    @ObservationIgnored package var onCancelled: (() -> Void)?
     @ObservationIgnored private let makeStreamer: @MainActor () -> (any CLILineStreaming)?
     /// The running sign-in's stream; nil when none runs or Cancel ended it.
     /// A run's answer lands only while it is still this one.
@@ -171,12 +174,14 @@ package final class OwnGoogleProjectModel {
 
     /// **Cancel** on the waiting line: the sign-in stops (cancelling the
     /// stream kills the CLI's process group) and the page is the form again,
-    /// with its JSON and no error.
+    /// with its JSON and no error. A kill while Go was saving leaves what it
+    /// saved, so the lists are re-read (`onCancelled`).
     package func cancel() {
         guard isRunning else { return }
         run?.cancel()
         run = nil
         phase = .idle
+        onCancelled?()
     }
 
     private static func answer(_ streamer: (any CLILineStreaming)?, args: [String], stdin: Data) async -> Answer {

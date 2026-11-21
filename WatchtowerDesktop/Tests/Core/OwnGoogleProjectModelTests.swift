@@ -209,7 +209,9 @@ final class OwnGoogleProjectModelTests: XCTestCase {
     func testCancelReturnsToTheForm() async {
         let (m, cli) = blocking()
         var connected = 0
+        var cancelled = 0
         m.onConnected = { connected += 1 }
+        m.onCancelled = { cancelled += 1 }
         let run = Task { await m.connect() }
         _ = await cli.base.session(number: 1)
         XCTAssertTrue(m.isRunning)
@@ -224,12 +226,13 @@ final class OwnGoogleProjectModelTests: XCTestCase {
         XCTAssertNotNil(m.droppedLine, "the JSON stays for the next Connect")
         XCTAssertEqual(m.primaryTitle, "Connect")
         XCTAssertTrue(m.primaryEnabled)
-        XCTAssertEqual(connected, 0)
+        XCTAssertEqual(connected, 0, "a cancel never re-wires the daemon")
+        XCTAssertEqual(cancelled, 1, "what Go saved before the kill is re-read once")
     }
 
-    /// The CLI exits as the owner presses Cancel: its answer is dropped,
-    /// the page is the form with no error.
-    func testCancelAfterTheStubExited() async {
+    /// The CLI exits as the owner presses Cancel: its answer, already
+    /// buffered in the stream, is dropped; the page is the form, no error.
+    func testCancelDropsTheBufferedAnswer() async {
         let (m, cli) = blocking()
         let run = Task { await m.connect() }
         let session = await cli.base.session(number: 1)
@@ -250,8 +253,7 @@ final class OwnGoogleProjectModelTests: XCTestCase {
         m.cancel()
         let second = Task { await m.connect() }
         let two = await cli.base.session(number: 2)
-        one.emit(#"{"result":"ok","account_id":4,"email":"bob@example.org"}"#)
-        one.exit(code: 1)
+        one.exit(code: 1) // the first child dies after its kill; a cancelled stream delivers nothing more
         await first.value
         XCTAssertTrue(m.isRunning, "the first run's end is ignored")
         XCTAssertEqual(m.status, .waiting(.google))
@@ -263,12 +265,17 @@ final class OwnGoogleProjectModelTests: XCTestCase {
         XCTAssertEqual(cli.cancelledRuns, 1)
     }
 
-    /// Cancel does nothing once a run has ended: its result stays.
+    /// Cancel does nothing once a run has ended: its result stays, nothing
+    /// is re-read.
     func testCancelLeavesAFinishedRun() async {
         let (m, _) = model([.init(lines: [#"{"result":"rejected","code":"invalid_client"}"#])])
+        var cancelled = 0
+        m.onCancelled = { cancelled += 1 }
+        m.cancel()
         dropped(m)
         await m.connect()
         m.cancel()
+        XCTAssertEqual(cancelled, 0, "Cancel with nothing running re-reads nothing")
         XCTAssertEqual(m.primaryTitle, "Try again")
         guard case .problem = m.status else { return XCTFail("the refusal stays") }
     }
