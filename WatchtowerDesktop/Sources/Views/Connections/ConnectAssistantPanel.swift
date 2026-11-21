@@ -313,7 +313,7 @@ struct ConnectAssistantHost: View {
             onAsk: { session.engine?.send($0) },
             onClose: { appState.closeConnectAssistant() }
         )
-        .id(session.service)
+        .id(ObjectIdentifier(session))
     }
 
     /// The composer takes questions only while a run is under way: before

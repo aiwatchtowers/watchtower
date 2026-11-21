@@ -17,7 +17,7 @@ struct ConnectionsTabView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // The connect assistant (#2133 §7): the 380 pt panel on the right.
-            if let service = appState.connectAssistantService, let session = appState.connectAssistants.loaded(service) {
+            if let session = appState.connectAssistantPanelSession {
                 Rectangle().fill(Stroke.hairlineColor).frame(width: Stroke.hairline)
                 ConnectAssistantHost(session: session)
             }

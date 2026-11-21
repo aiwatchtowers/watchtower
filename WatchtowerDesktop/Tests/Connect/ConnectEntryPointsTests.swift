@@ -274,9 +274,14 @@ final class ConnectEntryPointsTests: XCTestCase {
         // Codex is taken away (the policy, its CLI gone); Claude is offered.
         state.connectReadyProviders = ["claude"]
         XCTAssertEqual(state.connectPickerHarnesses(session), [], "the picker offers no blocked harness")
+        XCTAssertTrue(state.connectAssistantPanelSession === session)
+        let panelChanged = ChangeFlag()
+        withObservationTracking { _ = state.connectAssistantPanelSession } onChange: { panelChanged.set() }
         state.connectAssistantRun(.retry, service: "company")
         let fresh = try XCTUnwrap(state.connectAssistants.loaded("company"))
         XCTAssertFalse(fresh === session, "a new session over the current offer")
+        XCTAssertTrue(panelChanged.value, "the panel hears of the replacement")
+        XCTAssertTrue(state.connectAssistantPanelSession === fresh, "the panel reads the new session")
         XCTAssertEqual(fresh.harness.id, "claude")
         XCTAssertEqual(fresh.state, .empty, "nothing runs on its own")
         XCTAssertEqual(ai.calls.count, turn + 1, "no run on the blocked harness")
@@ -311,16 +316,44 @@ final class ConnectEntryPointsTests: XCTestCase {
         own.close()
     }
 
+    /// A session that is done but still answering a follow-up keeps its live
+    /// chat when the offer changes and its harness is still offered; once
+    /// the answer ends, a reopen makes it anew.
+    func testReopenKeepsAChatStillAnsweringAfterDone() async throws {
+        let state = appState(ready: ["codex"])
+        let ai = ScriptedAIService()
+        install(ai: ai, in: state, connects: true)
+        state.openConnectAssistant(service: "company")
+        let session = try XCTUnwrap(state.connectAssistants.loaded("company"))
+        let turn = await startRun(session, ai: ai)
+        _ = await session.handle(ConnectWireRequest(id: 1, tool: "connect_start", args: Data("{}".utf8)))
+        _ = await session.handle(ConnectWireRequest(id: 2, tool: "connect_wait", args: Data("{}".utf8)))
+        await untilObserved { if case .done = session.state { true } else { false } }
+        XCTAssertEqual(session.engine?.isBusy, true, "the turn is still answering")
+
+        state.connectReadyProviders = ["claude", "codex"]  // the offer changes; codex stays
+        state.openConnectAssistant(service: "company")
+        XCTAssertTrue(state.connectAssistants.loaded("company") === session, "the live chat is kept")
+        XCTAssertEqual(session.engine?.isBusy, true, "the answer goes on")
+
+        ai.finish(call: turn)
+        await untilObserved { session.engine?.isBusy == false && session.engine?.isFinishing == false }
+        state.openConnectAssistant(service: "company")
+        XCTAssertFalse(state.connectAssistants.loaded("company") === session, "an idle done session is made anew")
+        XCTAssertTrue(state.connectAssistantPanelSession === state.connectAssistants.loaded("company"))
+    }
+
     // MARK: - Helpers
 
     /// The app state's sessions over a scripted AI and a one-flow driver:
     /// the real session, no CLI.
-    private func install(ai: ScriptedAIService, in state: AppState) {
+    private func install(ai: ScriptedAIService, in state: AppState, connects: Bool = false) {
         state.connectAssistant.center = ConnectAssistantCenter { [weak state] service in
             guard let state, let initial = state.connectHarnesses.initial else { return nil }
             return ConnectAssistantSession(
                 service: service, displayName: AppState.connectServiceName(service),
-                harnesses: state.connectHarnesses.harnesses, initial: initial, driver: OneFlowDriver(service: service),
+                harnesses: state.connectHarnesses.harnesses, initial: initial,
+                driver: OneFlowDriver(service: service, connects: connects),
                 aiService: ai, probe: ConnectBrowserProbe(aiService: ai), gate: EmbeddedStreamGate())
         }
         addTeardownBlock { @MainActor in state.connectAssistant.closeAll() }
@@ -334,19 +367,28 @@ final class ConnectEntryPointsTests: XCTestCase {
     }
 }
 
-/// A driver whose `connect_start` starts one flow that never ends.
+/// Set from an observation's onChange (a Sendable closure).
+private final class ChangeFlag: @unchecked Sendable {
+    private(set) var value = false
+    func set() { value = true }
+}
+
+/// A driver whose `connect_start` starts one flow; it never ends, or with
+/// `connects` it is connected at the first wait.
 @MainActor
 private final class OneFlowDriver: ConnectServiceDriving {
     let service: String
     let secretKinds: Set<String> = []
+    private let connects: Bool
 
-    init(service: String) {
+    init(service: String, connects: Bool) {
         self.service = service
+        self.connects = connects
     }
 
     func status() async -> ConnectStatus { ConnectStatus(service: service) }
     func start(options: [String: String]) async -> Result<String, ConnectDriverError> { .success("flow-1") }
-    func wait(flowID: String) async -> ConnectWaitOutcome { .waiting }
+    func wait(flowID: String) async -> ConnectWaitOutcome { connects ? .connected(account: "acme") : .waiting }
     func cancel(flowID: String) async {}
     func submitSecret(kind: String, value: String) async -> Result<Data, ConnectDriverError> {
         .failure(.badArgs("no secret"))

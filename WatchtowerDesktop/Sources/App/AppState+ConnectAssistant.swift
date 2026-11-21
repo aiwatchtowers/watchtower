@@ -15,6 +15,9 @@ final class ConnectAssistantWiring {
     /// The Add sheet a service's detail opens once it shows (the panel's
     /// **Set up by hand**); the detail clears it.
     var addRequest: ConnectionService?
+    /// Bumped whenever a session is dropped and made again: the center's
+    /// cache is not observed, so the panel reads its session through this.
+    var generation = 0
     /// The catalog's providers; tests pass their own.
     @ObservationIgnored var providers: @MainActor () -> [AIModelCatalog.Provider] = { AIModelCatalog.shared.providers }
     /// One session per service; their drivers live as long as the app state.
@@ -53,6 +56,20 @@ extension AppState {
         set { connectAssistant.providers = newValue }
     }
     var connectAssistants: ConnectAssistantCenter { connectAssistant.center }
+
+    /// The session the panel shows: observed through the panel's service and
+    /// the generation, so a session made anew (Retry on a harness taken
+    /// away) replaces the old one on screen.
+    var connectAssistantPanelSession: ConnectAssistantSession? {
+        _ = connectAssistant.generation
+        return connectAssistantService.flatMap(connectAssistants.loaded)
+    }
+
+    /// Drops a service's session (closing it) and tells the panel.
+    private func dropConnectSession(_ service: String) {
+        connectAssistants.drop(service)
+        connectAssistant.generation += 1
+    }
 
     /// The connect service ids that are not a Connections service: the
     /// company setup wizard and a bring-your-own Google client (preflight F5).
@@ -108,14 +125,17 @@ extension AppState {
 
     /// The service's session, checked against the current offer: a session
     /// whose harness list is stale is dropped and made again, except while
-    /// its run is under way on a harness that is still offered. nil when
-    /// nothing is offered or the driver cannot be made.
+    /// it is live on a harness that is still offered: its run under way, or
+    /// its chat still answering (a follow-up after done, spec §5.2: reopening
+    /// shows the live chat). nil when nothing is offered or the driver
+    /// cannot be made.
     func currentConnectSession(_ service: String) -> ConnectAssistantSession? {
         let offered = connectHarnesses
         guard offered.initial != nil else { return nil }
         if let existing = connectAssistants.loaded(service), existing.harnesses != offered.harnesses {
-            let keeps = Self.runUnderWay(existing.state) && offered.harnesses.contains(existing.harness)
-            if !keeps { connectAssistants.drop(service) }
+            let live = Self.runUnderWay(existing.state) || existing.engine?.isBusy == true
+                || existing.engine?.isFinishing == true
+            if !(live && offered.harnesses.contains(existing.harness)) { dropConnectSession(service) }
         }
         return connectAssistants.session(for: service)
     }
@@ -129,7 +149,7 @@ extension AppState {
         guard let cached = connectAssistants.loaded(service) else { return }
         let offered = connectHarnesses
         guard offered.harnesses.contains(cached.harness) else {
-            connectAssistants.drop(service)
+            dropConnectSession(service)
             if currentConnectSession(service) == nil, connectAssistantService == service { connectAssistantService = nil }
             return
         }
