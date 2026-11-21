@@ -754,3 +754,83 @@ func TestAHubWideForbiddenKeepsThePairingSlot(t *testing.T) {
 		t.Fatalf("the slot was dropped: %d/%d reads, %d/%d writes", gotR, reads, gotW, writes)
 	}
 }
+
+// #1127: a phone the hub still lists as linked that ended its own link
+// (Forget, a reinstall keeping its signing key, a new agreement key) and
+// links again reads its waiting keybox sealed to the key it sent now.
+func TestARelinkWithANewAgreementKeyOpensItsWaitingKeybox(t *testing.T) {
+	r := newRig(t)
+	a := newPhone(t)
+	r.confirmLinked(a)
+	again := phoneWith(t, a.sig) // the same device id, a new agreement key
+	code := r.issue()
+	if got := r.handle(again, code.Nonce); got.Code == "" {
+		t.Fatalf("re-link not waiting: %+v", got)
+	}
+	if kb := r.mustKeybox(again); kb.Grant.AwaitingConfirmation == nil || kb.Keys != nil {
+		t.Fatalf("waiting keybox %+v", kb)
+	}
+	if err := r.c.Confirm(again.id.String(), r.code(again), true); err != nil {
+		t.Fatal(err)
+	}
+	if kb := r.mustKeybox(again); !kb.Grant.Linked || kb.Keys == nil {
+		t.Fatalf("after Confirm: %+v", kb)
+	}
+}
+
+// #1127: a re-link the owner refuses, or whose code expires, is answered with
+// a refusal the phone reads (link_refused, decided now) for RefusalLifetime,
+// sealed to the key it sent; the phone's link on the hub stays, and its
+// linked keybox is back once the refusal is forgotten.
+func TestARefusedRelinkIsAnsweredAndKeepsTheLink(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		refuse func(r *rig, p phone)
+		want   string
+	}{
+		{"refused", func(r *rig, p phone) {
+			if err := r.c.Confirm(p.id.String(), r.code(p), false); err != nil {
+				r.t.Fatal(err)
+			}
+		}, wire.RefusedNotConfirmed},
+		{"expired", func(r *rig, p phone) {
+			r.advance(wire.LinkLifetime + time.Second)
+			if err := r.c.Sweep(); err != nil {
+				r.t.Fatal(err)
+			}
+		}, wire.RefusedExpiredCode},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			a := newPhone(t)
+			r.confirmLinked(a)
+			again := phoneWith(t, a.sig)
+			code := r.issue()
+			if got := r.handle(again, code.Nonce); got.Code == "" {
+				t.Fatalf("re-link not waiting: %+v", got)
+			}
+			asked := r.clock()
+			tc.refuse(r, again)
+			kb := r.mustKeybox(again)
+			if kb.Grant.LinkRefused == nil || *kb.Grant.LinkRefused != tc.want || kb.Grant.Linked || kb.Keys != nil ||
+				kb.Grant.DecidedAt == nil || kb.Grant.DecidedAt.Before(asked.Truncate(time.Second)) {
+				t.Fatalf("refusal keybox %+v (keys %v)", kb.Grant, kb.Keys != nil)
+			}
+			if !r.linked(a) {
+				t.Fatal("a refused re-link unlinked the phone")
+			}
+			r.advance(RefusalLifetime + time.Second)
+			published := 0
+			r.c.publish = func(...string) { published++ }
+			if err := r.c.Sweep(); err != nil {
+				t.Fatal(err)
+			}
+			if published == 0 {
+				t.Fatal("the refusal forgotten, the grants were not published at once")
+			}
+			if kb := r.mustKeybox(a); !kb.Grant.Linked || kb.Keys == nil {
+				t.Fatalf("after the refusal's lifetime: %+v (keys %v)", kb.Grant, kb.Keys != nil)
+			}
+		})
+	}
+}

@@ -65,8 +65,12 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 		// A linked phone that links again (a new hello, no unlink) reads
 		// its waiting grant until the owner answers: the compare code, and
 		// no keys meanwhile. Confirm links it again with its grants kept; a
-		// refusal or an expiry drops the request and its linked row is back.
-		relinking := map[string]bool{}
+		// refusal or an expiry is answered with the refusal for its
+		// lifetime, then its linked row is back.
+		relinking, err := refusedRelinksTx(tx)
+		if err != nil {
+			return err
+		}
 		for _, p := range pending {
 			relinking[strings.ToUpper(p.deviceID)] = true
 		}
@@ -197,11 +201,34 @@ func (c *Center) linkedRows(tx *sql.Tx) ([]wire.Keybox, bool, error) {
 	return out, anyKeyed, rows.Err()
 }
 
+// refusedRelinksTx are the linked phones whose re-link was refused
+// (refusePending keeps a linked phone's refusal; linking deletes it, Sweep
+// forgets it after RefusalLifetime), uppercase. Not filtered by age: the
+// refusal shows until Sweep deletes it, as state.Store.RelinkKey seals it.
+func refusedRelinksTx(tx *sql.Tx) (map[string]bool, error) {
+	rows, err := tx.Query(`SELECT UPPER(r.device_id) FROM link_refusals r
+		JOIN devices d ON d.device_id = r.device_id COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 // refusedRows are the refusals younger than RefusalLifetime, newest first;
 // decided_at is the refusal's time, so a second identical refusal still
 // reads as a new answer.
 func (c *Center) refusedRows(tx *sql.Tx, now time.Time, answered map[string]bool) ([]wire.Keybox, error) {
 	rows, err := tx.Query(`SELECT device_id, name, scope, reason, at FROM link_refusals WHERE at >= ?
+		OR EXISTS (SELECT 1 FROM devices d WHERE d.device_id = link_refusals.device_id COLLATE NOCASE)
 		ORDER BY at DESC, device_id`, secs(now.Add(-RefusalLifetime)))
 	if err != nil {
 		return nil, err

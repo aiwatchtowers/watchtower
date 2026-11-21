@@ -490,15 +490,13 @@ func refuseHello(tx *sql.Tx, p pendingDevice, reason, codeNonce string, now time
 }
 
 // refusePending refuses a waiting request (the owner's Refuse, an unlink, an
-// expiry, another phone's link) and removes it; a linked phone gets no
-// refusal. Not bounded: the request already drew its answer.
+// expiry, another phone's link) and removes it. A phone the hub still lists
+// as linked (a re-link: it ended its own link) gets the refusal too, which
+// Keyboxes shows in place of its linked row for RefusalLifetime; its link on
+// the hub stays. Not bounded: the request already drew its answer.
 func refusePending(tx *sql.Tx, p pendingDevice, reason string, now time.Time) error {
-	if linked, err := isLinked(tx, p.deviceID); err != nil {
+	if err := saveRefusal(tx, p, reason, now); err != nil {
 		return err
-	} else if !linked {
-		if err := saveRefusal(tx, p, reason, now); err != nil {
-			return err
-		}
 	}
 	_, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID)
 	return err

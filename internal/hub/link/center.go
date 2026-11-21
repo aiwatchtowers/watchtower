@@ -414,7 +414,10 @@ func (c *Center) Sweep() error {
 	c.mu.Lock()
 	defer c.unlock()
 	now := c.now()
-	var refused []pendingDevice
+	var (
+		refused []pendingDevice
+		forgot  int64 // refusals forgotten
+	)
 	err := c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
 		all, err := pendingDevicesTx(tx)
 		if err != nil {
@@ -433,7 +436,12 @@ func (c *Center) Sweep() error {
 			}
 			refused = append(refused, p)
 		}
-		if _, err := tx.Exec(`DELETE FROM link_refusals WHERE at < ?`, secs(now.Add(-RefusalLifetime))); err != nil {
+		res, err := tx.Exec(`DELETE FROM link_refusals WHERE at < ?`, secs(now.Add(-RefusalLifetime)))
+		if err != nil {
+			return err
+		}
+		forgot, err = res.RowsAffected()
+		if err != nil {
 			return err
 		}
 		_, err = tx.Exec(`DELETE FROM revoked_devices WHERE removed_at <= ?`, secs(now.Add(-RevokedLifetime)))
@@ -447,6 +455,10 @@ func (c *Center) Sweep() error {
 	}
 	if len(refused) > 0 {
 		log.Printf("hub link: %d waiting requests refused at their code's expiry", len(refused))
+	}
+	if forgot > 0 {
+		// A re-linked phone's refusal gone: its linked keybox is back now.
+		c.changed()
 	}
 	return nil
 }
