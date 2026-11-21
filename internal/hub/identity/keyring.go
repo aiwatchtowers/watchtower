@@ -963,12 +963,12 @@ func (k *Keyring) relayKeyOffer(device secure.ID) (*ecdh.PublicKey, bool, error)
 	if err != nil || !linked || row.KXOffer == nil {
 		return nil, false, err
 	}
-	pub, err := ecdh.X25519().NewPublicKey(row.KXOffer)
-	if err != nil {
-		log.Printf("hub: stored relay key offer of device %s does not parse", device)
-		return nil, false, nil
+	if pub, err := ecdh.X25519().NewPublicKey(row.KXOffer); err == nil {
+		return pub, true, nil
 	}
-	return pub, true, nil
+	// As before: an unparsable offer falls back to the agreement key.
+	log.Printf("hub: stored relay key offer of device %s does not parse", device)
+	return nil, false, nil
 }
 
 // Check implements secure.RollbackGuard over relay_seen.

@@ -839,7 +839,9 @@ func LinkErrClass(err error) string {
 		switch accountErr.Account {
 		case transport.AccountNoAccount, transport.AccountRestricted, transport.AccountNoEntitlement:
 			return ErrClassNoICloud
+		case transport.AccountTemporarilyUnavailable, transport.AccountAvailable:
 		}
+		// Temporarily unavailable, or unreadable (AccountUnreadable): retryable.
 		return ErrClassICloudUnreachable
 	case errors.Is(err, link.ErrOwnerUnknown):
 		return ErrClassICloudUnreachable
