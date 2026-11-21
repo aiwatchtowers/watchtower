@@ -68,6 +68,36 @@ final class WatchmanArmingCopyTests: XCTestCase {
         XCTAssertTrue(Copy.armInProgress.hasPrefix("Watchman is still handing this over or taking it back"))
     }
 
+    /// The strip chip while learning (tuning spec §3), and its percent:
+    /// `min(99, written*100/estimated)` while the first pass runs, 99 while
+    /// only the relabel pass is left, none once learned or while off.
+    func testStripLearningAndItsPercent() throws {
+        XCTAssertEqual(Copy.stripLearning(percent: 42), "Watchman · learning 42%")
+        XCTAssertEqual(Copy.stripLearning(percent: 0), "Watchman · learning 0%")
+
+        func row(_ learning: String?, enabled: Bool = true) throws -> WatchmanWorkbenchStatus {
+            let enabledAt = enabled ? #""2026-11-20T08:00:00Z""# : "null"
+            return try JSONDecoder().decode(WatchmanWorkbenchStatus.self, from: Data(#"""
+                {"workbench":1,"name":"acme-api","enabled_at":\#(enabledAt),"analytics_on":true,"running":false,
+                 "learning":\#(learning ?? "null")}
+                """#.utf8))
+        }
+        XCTAssertEqual(try row(#"{"written":340,"estimated":1850,"done":false}"#).learningPercent, 18)
+        XCTAssertEqual(try row(#"{"written":777,"estimated":1850,"done":false}"#).learningPercent, 42)
+        XCTAssertEqual(try row(#"{"written":2000,"estimated":1850,"done":false}"#).learningPercent, 99,
+                       "never 100 while not done")
+        XCTAssertEqual(try row(#"{"written":12,"estimated":0,"done":false}"#).learningPercent, 0, "no estimate")
+        XCTAssertEqual(try row(#"{"written":300,"estimated":320,"done":true,"relabel_pending":40}"#).learningPercent, 99,
+                       "learned, relabel left: still learning")
+        XCTAssertNil(try row(#"{"written":317,"estimated":320,"done":true,"relabel_pending":0}"#).learningPercent)
+        XCTAssertNil(try row(nil, enabled: false).learningPercent, "Watchman is not on")
+        XCTAssertEqual(try row(nil).learningPercent, 0, "on, no learning row yet")
+
+        let status = WatchmanStatusFixtures.status(WatchmanStatusFixtures.learning)
+        XCTAssertEqual(status.learningPercents, [2: 18], "acme-web is not on: left out")
+        XCTAssertEqual(WatchmanStatusFixtures.status(WatchmanStatusFixtures.results).learningPercents, [:])
+    }
+
     func testSubject() {
         XCTAssertEqual(Copy.subject(.session(41), title: "Ship task 3"), "#41 Ship task 3")
         XCTAssertEqual(Copy.subject(.session(41), title: nil), "Session 41")

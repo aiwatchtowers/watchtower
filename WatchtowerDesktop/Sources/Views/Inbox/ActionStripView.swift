@@ -66,7 +66,9 @@ struct ActionStripView: View {
                     artifactMenu: appState.inboxArtifactMenu,
                     onReadWatchmanStatus: { await appState.watchmanCenter?.load() },
                     watchmanJournal: appState.watchmanJournal,
-                    watchmanDaemon: appState.watchmanCenter?.daemon ?? .unknown
+                    watchmanDaemon: appState.watchmanCenter?.daemon ?? .unknown,
+                    watchmanLearning: appState.watchmanCenter?.lastStatus?.learningPercents ?? [:],
+                    backgroundAIPaused: !appState.backgroundAI.isAllowed
                 )
             } else {
                 ProgressView()
@@ -244,6 +246,10 @@ struct ActionStripActionsView: View {
     var watchmanJournal: WatchmanJournalViewModel?
     /// `watchman status`'s `daemon_running`.
     var watchmanDaemon: WatchmanDaemonState = .unknown
+    /// `watchman status`'s learning percent of each workbench still learning.
+    var watchmanLearning: [Int64: Int] = [:]
+    /// `AppState.backgroundAI` reads paused (Home's "Background AI is paused").
+    var backgroundAIPaused = false
 
     /// What the header opened in the reading pane, and the Idea finder's
     /// open row; settable at init so a design shot can open one.
@@ -521,6 +527,12 @@ struct ActionStripActionsView: View {
                 WatchmanJournalView(model: watchmanJournal, readStatus: onReadWatchmanStatus)
                     .onChange(of: watchmanDaemon, initial: true) { _, daemon in
                         watchmanJournal.daemon = daemon
+                    }
+                    .onChange(of: watchmanLearning, initial: true) { _, learning in
+                        watchmanJournal.learningPercents = learning
+                    }
+                    .onChange(of: backgroundAIPaused, initial: true) { _, paused in
+                        watchmanJournal.backgroundAIPaused = paused
                     }
             } else {
                 pane(nil)

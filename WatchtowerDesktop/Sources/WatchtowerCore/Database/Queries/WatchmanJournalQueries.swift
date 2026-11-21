@@ -66,6 +66,30 @@ package enum WatchmanJournalQueries {
             """)
     }
 
+    /// How many queued items of `workbench` wait for its learning to end
+    /// (tuning spec §3, D5) — Go's `db.WatchmanWaitingForLearning`, the
+    /// same rule (`internal/db/testdata/watchman_waiting_learning_cases.json`
+    /// runs on both).
+    package static func waitingForLearning(_ db: Database, workbench: Int64) throws -> Int {
+        try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM watchman_items
+            JOIN watchman_workbenches w ON w.workbench_id = watchman_items.workbench_id
+            WHERE watchman_items.workbench_id = ? AND \(waitingForLearningSQL)
+            """, arguments: [workbench]) ?? 0
+    }
+
+    /// `waitingForLearning` of every workbench with an item waiting, by
+    /// workbench id: the journal's busy line.
+    package static func waitingForLearningByWorkbench(_ db: Database) throws -> [Int64: Int] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT watchman_items.workbench_id AS workbench, COUNT(*) AS n FROM watchman_items
+            JOIN watchman_workbenches w ON w.workbench_id = watchman_items.workbench_id
+            WHERE \(waitingForLearningSQL)
+            GROUP BY watchman_items.workbench_id
+            """)
+        return Dictionary(rows.map { ($0["workbench"], $0["n"]) }) { first, _ in first }
+    }
+
     /// The first line of each precedent's situation, by id: what a
     /// decision leaned on. An id whose precedent is gone is left out.
     package static func precedentTitles(_ db: Database, ids: Set<Int64>) throws -> [Int64: String] {
@@ -97,6 +121,54 @@ package enum WatchmanJournalQueries {
     }
 
     // MARK: - Private
+
+    /// Go's `watchmanArmedTargets`: every target an armed target covers.
+    private static let armedTargets = """
+        WITH RECURSIVE sub(id) AS (
+            SELECT ref_id FROM watchman_arming WHERE scope = 'target'
+            UNION
+            SELECT t.id FROM targets t JOIN sub ON t.parent_id = sub.id
+        ) SELECT id FROM sub
+        """
+
+    /// Go's `armedSessionsFrom` (its ids): the live agent sessions armed
+    /// directly or under an armed target.
+    private static let armedSessions = """
+        WITH RECURSIVE sub(id) AS (
+            SELECT ref_id FROM watchman_arming WHERE scope = 'target'
+            UNION
+            SELECT t.id FROM targets t JOIN sub ON t.parent_id = sub.id
+        )
+        SELECT ts.id FROM terminal_sessions ts JOIN projects p ON p.id = ts.project_id
+        WHERE ts.finished_at IS NULL AND ts.delete_requested_at IS NULL AND ts.kind <> 'shell'
+          AND (EXISTS (SELECT 1 FROM watchman_arming a WHERE a.scope = 'session' AND a.ref_id = ts.id)
+               OR ts.target_id IN (SELECT id FROM sub))
+        """
+
+    /// The WHERE of Go's `WatchmanWaitingForLearning` over `watchman_items`
+    /// joined to its `watchman_workbenches` row `w`, but the workbench: a
+    /// queued item of a kind that waits (not permission, not stall), its
+    /// workbench still learning (`db.WatchmanLearningSQL`), its wait point
+    /// still waiting (an ask-bound item's ask open, or a handover whose ask
+    /// the twin answered), its session armed (`watchmanItemArmedSQL`).
+    private static let waitingForLearningSQL = """
+        watchman_items.state = 'queued'
+          AND watchman_items.kind NOT IN ('permission', 'stall')
+          AND (w.learned_through IS NULL OR EXISTS (SELECT 1 FROM watchman_precedents p
+               WHERE p.workbench_id = w.workbench_id AND p.flags_at IS NULL AND p.source IN ('ask','turn','permission')))
+          AND (watchman_items.ref_kind <> 'ask' OR EXISTS (SELECT 1 FROM owner_asks a
+               WHERE a.id = watchman_items.ref_id AND (a.status = 'open'
+                 OR (watchman_items.kind = 'handover' AND a.status IN ('answered', 'delivered')
+                     AND EXISTS (SELECT 1 FROM watchman_items t WHERE t.ref_kind = 'ask' AND t.ref_id = a.id
+                                 AND t.kind != 'handover' AND t.state = 'done' AND t.outcome = 'answered')))))
+          AND (CASE WHEN watchman_items.kind = 'handover' THEN
+                 COALESCE(watchman_items.session_id IN (SELECT ref_id FROM watchman_arming WHERE scope = 'session')
+                   OR watchman_items.target_id IN (\(armedTargets))
+                   OR (SELECT ts.target_id FROM terminal_sessions ts
+                       WHERE ts.id = watchman_items.session_id AND ts.delete_requested_at IS NULL)
+                      IN (\(armedTargets)), 0)
+               ELSE watchman_items.session_id IN (SELECT id FROM (\(armedSessions))) END)
+        """
 
     private static func gaps(_ db: Database, endingAfter start: Date) throws -> [ClosedRange<Date>] {
         let rows = try Row.fetchAll(db, sql: """

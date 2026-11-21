@@ -8,9 +8,10 @@ import WatchtowerCore
 /// `docs/superpowers/specs/2026-11-21-watchman-tuning-design.md`). The
 /// instruction sheet in each state and the armed strip with Instruction…
 /// are the real views (`WatchmanArmSheet`, `WorkbenchSessionStrip`, Task
-/// 2b); the strip while learning, the journal's wait-for-learning line and
-/// a stall card are still design only, in `WatchmanTuningMockCopy` strings
-/// that their tasks move into the copy types. Sample data only (`acme`,
+/// 2b), as are the strip while learning and the journal's wait-for-learning
+/// line (`WatchmanJournalContent`, Task 3b); a stall card is still design
+/// only, in `WatchmanTuningMockCopy` strings that its task moves into the
+/// copy types. Sample data only (`acme`,
 /// made-up ids).
 @MainActor
 enum WatchmanTuningShotFixtures {
@@ -51,8 +52,11 @@ enum WatchmanTuningShotFixtures {
             case .instructionEdit:
                 InstructionSheetShot(content: .edit(subject: Copy.session), text: Copy.sampleInstruction)
             case .stripArmedInstruction: WatchmanArmingShotFixture.strip(armed: true, instructions: Copy.sampleInstruction)
-            case .stripArmedLearning: StripMock()
-            case .journalWaitingLearning: JournalWaitingMock()
+            case .stripArmedLearning:
+                // 777 of 1 850 decisions written: 42%.
+                WatchmanArmingShotFixture.strip(armed: true, instructions: Copy.sampleInstruction,
+                                                learning: (written: 777, estimated: 1850))
+            case .journalWaitingLearning: JournalWaitingShot()
             case .journalStall: JournalStallMock()
             }
         }
@@ -137,50 +141,38 @@ private struct InstructionSheetShot: View {
     }
 }
 
-// MARK: - The session strip
-
-/// The armed strip while the workbench still learns (Task 3), design only.
-private struct StripMock: View {
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: "terminal").foregroundStyle(.secondary)
-                Text(Copy.session).font(.callout.weight(.semibold)).lineLimit(1)
-                Spacer(minLength: Spacing.regular)
-                Chip(text: Copy.stripLearning, color: watchmanTone, dot: true).fixedSize()
-                Button {} label: { Label(Copy.instructionButton, systemImage: "text.quote") }
-                    .buttonStyle(.kitSecondary)
-                    .fixedSize()
-                    .help(Copy.sampleInstruction.components(separatedBy: "\n").first ?? "")
-                Button(Copy.takeBack) {}.buttonStyle(.kitSecondary).fixedSize()
-            }
-            .controlSize(.small)
-            .padding(.horizontal, Spacing.large)
-            .padding(.vertical, Spacing.regular)
-            Color.clear.frame(height: Spacing.hero)
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-}
-
 // MARK: - The journal
 
-private struct JournalWaitingMock: View {
+/// The real journal tonight while acme-api learns (42%): three questions
+/// queued for it, one decision made before.
+private struct JournalWaitingShot: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.medium) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: Copy.icon).foregroundStyle(watchmanTone)
-                Text(Copy.tonight).font(.title3.weight(.semibold))
-            }
-            HStack(spacing: Spacing.regular) {
-                ProgressView().controlSize(.small)
-                Text(Copy.waitingLearning).font(.callout).foregroundStyle(.secondary)
-            }
+        WatchmanJournalContent(model: Self.model(), scrolls: false)
+    }
+
+    private static func model() -> WatchmanJournalViewModel {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = .gmt
+        func at(_ text: String) -> Date { AutomationDates.parse(text) ?? .distantPast }
+        func item(_ id: Int64, _ created: String, kind: String = "ask", state: String, question: String) -> WatchmanItem {
+            WatchmanItem(id: id, workbenchName: "acme-api", sessionID: 41, kind: kind, state: state,
+                         outcome: state == "done" ? "answered" : "", question: question,
+                         choice: state == "done" ? "Per workbench" : "", confidence: "high", category: "design",
+                         unsure: false, costUSD: state == "done" ? 0.4 : 0, createdAt: at(created),
+                         decidedAt: state == "done" ? at(created).addingTimeInterval(60) : nil)
         }
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
+        let decided = item(1840, "2026-11-16T22:10:00Z", state: "done", question: "Store the window per workbench?")
+        let queued = [
+            item(1841, "2026-11-17T01:05:00Z", state: "queued", question: "Which store for the export cache?"),
+            item(1842, "2026-11-17T01:40:00Z", kind: "check", state: "queued", question: "Check the CSV export"),
+            item(1843, "2026-11-17T02:20:00Z", kind: "handover", state: "queued", question: "Left: the CSV import")
+        ]
+        let night = WatchmanNight(date: at("2026-11-16T12:00:00Z"), decided: [decided], pending: queued, costUSD: 0.4)
+        let now = at("2026-11-17T03:00:00Z")
+        let vm = WatchmanJournalViewModel(read: { throw CancellationError() }, now: { now }, calendar: utc)
+        vm.apply(.success(.init(nights: [night], deciding: [], waitingForLearning: [1: queued.count])))
+        vm.learningPercents = [1: 42]
+        return vm
     }
 }
 

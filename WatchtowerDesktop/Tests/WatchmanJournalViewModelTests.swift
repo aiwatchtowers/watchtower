@@ -150,6 +150,40 @@ final class WatchmanJournalViewModelTests: XCTestCase {
         XCTAssertEqual(vm.page?.busyLine, "Deciding: Rename the Hold button?")
     }
 
+    /// Questions waiting for learning (tuning spec §3): the count of the
+    /// workbenches in scope at the least learned one's percent; the paused
+    /// line while background AI is paused; a deciding item still wins.
+    func testWaitingForLearningBusyLine() async {
+        let queued = item(2, question: "Which store?", state: "queued")
+        let snapshot = WatchmanJournalViewModel.Snapshot(
+            nights: [night(decided: [item(1)], pending: [queued])], deciding: [], waitingForLearning: [1: 2, 2: 1])
+        let vm = model(Replies([.success(snapshot)]))
+        await vm.load()
+        XCTAssertEqual(vm.page?.busyLine, "Waiting for learning (0%): 3 questions", "no status read yet: 0%")
+        vm.learningPercents = [1: 42, 2: 71]
+        XCTAssertEqual(vm.page?.busyLine, "Waiting for learning (42%): 3 questions")
+        vm.scope = 1
+        XCTAssertEqual(vm.page?.busyLine, "Waiting for learning (42%): 2 questions")
+        vm.scope = nil
+        vm.backgroundAIPaused = true
+        XCTAssertEqual(vm.page?.busyLine, "Waiting for learning — background AI is paused")
+        vm.backgroundAIPaused = false
+
+        let deciding = item(3, question: "Rename the Hold button?", state: "deciding")
+        vm.apply(.success(.init(nights: snapshot.nights, deciding: [deciding], waitingForLearning: [1: 2])))
+        XCTAssertEqual(vm.page?.busyLine, "Deciding: Rename the Hold button?")
+        vm.apply(.success(.init(nights: snapshot.nights, deciding: [], waitingForLearning: [:])))
+        XCTAssertNil(vm.page?.busyLine, "nothing waits: no line")
+    }
+
+    /// Paused with nothing waiting: no line at all.
+    func testPausedWithNothingWaitingHasNoLine() async {
+        let vm = model(Replies([.success(.init(nights: [night(decided: [item(1)])], deciding: []))]))
+        await vm.load()
+        vm.backgroundAIPaused = true
+        XCTAssertNil(vm.page?.busyLine)
+    }
+
     /// Owner-first and superseded items are lines under Decided, never counted.
     func testOwnerFirstLines() async throws {
         var owner = item(5, question: "Use a sheet?")

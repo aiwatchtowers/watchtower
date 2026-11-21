@@ -37,6 +37,16 @@ package enum WatchmanJournalCopy {
         "Deciding: \(oneLine(question))"
     }
 
+    /// The busy line while questions wait for their workbench's learning to
+    /// end (tuning spec §3, D5): "Waiting for learning (42%): 3 questions".
+    package static func waitingForLearning(percent: Int, count: Int) -> String {
+        "Waiting for learning (\(percent)%): \(count) \(count == 1 ? "question" : "questions")"
+    }
+
+    /// The busy line while they wait and background AI is paused: learning
+    /// does not run then.
+    package static let waitingForLearningPaused = "Waiting for learning — background AI is paused"
+
     // MARK: Home
 
     package static func homeRow(_ counts: WatchmanNightCounts) -> String {

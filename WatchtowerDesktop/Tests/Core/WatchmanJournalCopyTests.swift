@@ -13,6 +13,13 @@ final class WatchmanJournalCopyTests: XCTestCase {
 
     private func date(_ text: String) -> Date { AutomationDates.parse(text) ?? .distantPast }
 
+    /// The busy line while questions wait for learning (tuning spec §3).
+    func testWaitingForLearningLines() {
+        XCTAssertEqual(Copy.waitingForLearning(percent: 42, count: 3), "Waiting for learning (42%): 3 questions")
+        XCTAssertEqual(Copy.waitingForLearning(percent: 7, count: 1), "Waiting for learning (7%): 1 question")
+        XCTAssertEqual(Copy.waitingForLearningPaused, "Waiting for learning — background AI is paused")
+    }
+
     func testHomeRowText() {
         let counts = WatchmanNightCounts(start: date("2026-11-16T12:00:00Z"), decided: 14, unsure: 2, waiting: 2)
         XCTAssertEqual(Copy.homeRow(counts), "Overnight Watchman decided 14 — 2 unsure, 2 waiting for you")

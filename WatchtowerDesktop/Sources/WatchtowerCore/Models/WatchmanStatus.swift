@@ -73,6 +73,12 @@ package struct WatchmanStatus: Decodable, Equatable, Sendable {
         workbenches.first { $0.workbench == id }
     }
 
+    /// The learning percent of every workbench Watchman is still learning
+    /// (`WatchmanWorkbenchStatus.learningPercent`), by workbench id.
+    package var learningPercents: [Int64: Int] {
+        Dictionary(workbenches.compactMap { row in row.learningPercent.map { (row.workbench, $0) } }) { first, _ in first }
+    }
+
     /// Whether the twin decides for this session now: armed itself or under
     /// an armed target.
     package func isArmed(session id: Int64) -> Bool {
@@ -378,6 +384,20 @@ package struct WatchmanWorkbenchStatus: Decodable, Equatable, Sendable {
     /// cannot start (the CLI refuses it).
     package var relabelLeft: Int { learning?.relabelPending ?? 0 }
     package var isRelabelling: Bool { relabelLeft > 0 }
+    /// Watchman is on for the workbench and still learning it: the first
+    /// pass is not done, or the relabel pass still sorts earlier decisions
+    /// (Go's `db.WatchmanLearningSQL`, tuning spec §3).
+    package var isStillLearning: Bool { isEnabled && (!isLearned || isRelabelling) }
+    /// The progress the strip chip and the journal's busy line show while
+    /// still learning: `min(99, written*100/estimated)` while the first pass
+    /// runs (0 without an estimate), 99 once only the relabel pass is left;
+    /// nil once learned or while Watchman is not on.
+    package var learningPercent: Int? {
+        guard isStillLearning else { return nil }
+        guard let learning, !learning.done else { return learning == nil ? 0 : 99 }
+        guard learning.estimated > 0 else { return 0 }
+        return min(99, max(0, learning.written * 100 / learning.estimated))
+    }
 }
 
 package struct WatchmanSourceProgress: Decodable, Equatable, Sendable {

@@ -312,9 +312,15 @@ enum WatchmanArmingShotFixture {
 
     /// `watchman status --json` with one arming row (none when not armed);
     /// `sessions` are the armed sessions, under the target when it is one,
-    /// each with `instructions` as its own instruction.
+    /// each with `instructions` as its own instruction; `workbenches` is the
+    /// status's workbench rows (JSON).
     static func statusJSON(
-        armed: Bool, scope: WatchmanArmedEntry.Scope, id: Int64, sessions: [Int64], instructions: String = ""
+        armed: Bool,
+        scope: WatchmanArmedEntry.Scope,
+        id: Int64,
+        sessions: [Int64],
+        instructions: String = "",
+        workbenches: String = "[]"
     ) -> String {
         guard armed else {
             return #"{"ok":true,"workbenches":[],"mode":"off","mode_since":null,"armed":[],"armed_sessions":[],"daemon_running":true}"#
@@ -325,7 +331,7 @@ enum WatchmanArmingShotFixture {
         let entries = sessions.map {
             #"{"id":\#($0),"target":\#(target),"armed_at":"\#(since)","instructions":\#(text)}"#
         }
-        return #"{"ok":true,"workbenches":[],"mode":"sleep","mode_since":"\#(since)","#
+        return #"{"ok":true,"workbenches":\#(workbenches),"mode":"sleep","mode_since":"\#(since)","#
             + #""armed":[{"scope":"\#(scope.rawValue)","id":\#(id),"armed_at":"\#(since)"}],"#
             + #""armed_sessions":[\#(entries.joined(separator: ","))],"daemon_running":true}"#
     }
@@ -342,8 +348,9 @@ enum WatchmanArmingShotFixture {
     }
 
     /// The real `WorkbenchSessionStrip` of an agent session; `instructions`
-    /// is its stored instruction (the chip's tooltip).
-    static func strip(armed: Bool, instructions: String = "") -> AnyView {
+    /// is its stored instruction (the chip's tooltip); `learning` (written,
+    /// estimated) has Watchman still learning its workbench.
+    static func strip(armed: Bool, instructions: String = "", learning: (written: Int, estimated: Int)? = nil) -> AnyView {
         do {
             let (pool, path) = try TestDatabase.createPool()
             poolPaths.append(path)
@@ -359,8 +366,13 @@ enum WatchmanArmingShotFixture {
             let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
             vm.selectedWorkbenchID = project.id
             vm.terminalSessions[project.id] = [session]
+            let rows = learning.map { learning in
+                #"[{"workbench":\#(project.id),"name":"acme-api","enabled_at":"2026-11-17T01:40:00Z","#
+                    + #""analytics_on":true,"running":false,"#
+                    + #""learning":{"written":\#(learning.written),"estimated":\#(learning.estimated),"done":false}}]"#
+            } ?? "[]"
             vm.watchman = center(statusJSON(armed: armed, scope: .session, id: session.id, sessions: [session.id],
-                                            instructions: instructions))
+                                            instructions: instructions, workbenches: rows))
             kept.append(vm)
             return AnyView(VStack(spacing: 0) {
                 WorkbenchSessionStrip(vm: vm, project: project, pane: .session(session.id), sessionID: session.id,

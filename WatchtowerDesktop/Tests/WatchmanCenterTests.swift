@@ -145,6 +145,14 @@ private final class ScriptedWatchmanRunner: CLIRunnerProtocol, @unchecked Sendab
     }
 }
 
+/// Counts the center's waits (its injected sleep runs off the main actor).
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func increment() -> Int { lock.withLock { count += 1; return count } }
+}
+
 @MainActor
 final class WatchmanCenterTests: XCTestCase {
     private typealias Fixtures = WatchmanStatusFixtures
@@ -301,6 +309,28 @@ final class WatchmanCenterTests: XCTestCase {
         runner.setStatus(Fixtures.results)
         await center.load()
         XCTAssertFalse(center.needsPolling)
+    }
+
+    /// The strip follows its workbench's learning: rereads every
+    /// `learningPollInterval` until it is learned; another workbench, or
+    /// none, reads once.
+    func testRereadFollowsLearningUntilLearned() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.learning)
+        let waits = LockedCounter()
+        // acme-api (2) finishes learning during the second wait.
+        let center = WatchmanCenter(runner: runner) { interval in
+            XCTAssertEqual(interval, WatchmanCenter.learningPollInterval)
+            if waits.increment() == 2 { runner.setStatus(Fixtures.neverRun) }
+        }
+        await center.reread(followingLearning: 2)
+        let statusReads = { runner.invocations.filter { $0 == ["watchman", "status", "--json"] }.count }
+        XCTAssertEqual(statusReads(), 3)
+        XCTAssertEqual(waits.value, 2)
+
+        runner.setStatus(Fixtures.learning)
+        await center.reread(followingLearning: 3)
+        await center.reread(followingLearning: nil)
+        XCTAssertEqual(statusReads(), 5, "acme-web is not on, nil follows nothing: one read each")
     }
 
     // MARK: - Editing (phase 2)

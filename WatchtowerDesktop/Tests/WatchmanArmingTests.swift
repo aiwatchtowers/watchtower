@@ -428,6 +428,30 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertEqual(WatchmanArmControl.since(.session(7), in: status), AutomationDates.parse("2026-11-17T01:40:00Z"))
     }
 
+    /// The strip chip reads the learning percent while the session's
+    /// workbench still learns (tuning spec §3), else since <HH:MM>.
+    func testChipReadsLearningWhileTheWorkbenchLearns() throws {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = .gmt
+        func status(_ learning: String) throws -> WatchmanStatus {
+            try WatchmanStatusFixtures.decode(#"""
+                {"ok":true,"mode":"sleep","mode_since":"2026-11-17T01:40:00Z",
+                 "workbenches":[{"workbench":1,"name":"acme-api","enabled_at":"2026-11-17T01:40:00Z",
+                                 "analytics_on":true,"running":false,"learning":\#(learning)}],
+                 "armed":[{"scope":"session","id":5,"armed_at":"2026-11-17T01:40:00Z"}],
+                 "armed_sessions":[{"id":5,"target":0,"armed_at":"2026-11-17T01:40:00Z"}]}
+                """#)
+        }
+        let learning = try status(#"{"written":777,"estimated":1850,"done":false}"#)
+        XCTAssertEqual(WatchmanArmControl.chipText(.session(5), workbench: 1, in: learning, calendar: utc),
+                       "Watchman · learning 42%")
+        XCTAssertEqual(WatchmanArmControl.chipText(.session(5), workbench: nil, in: learning, calendar: utc),
+                       "Watchman · since 01:40", "no workbench given: the plain chip")
+        let learned = try status(#"{"written":1850,"estimated":1850,"done":true}"#)
+        XCTAssertEqual(WatchmanArmControl.chipText(.session(5), workbench: 1, in: learned, calendar: utc),
+                       "Watchman · since 01:40")
+    }
+
     /// `arm` exited 0 but its reply could not be read: say the state is
     /// being reread (not that it failed), and reread it.
     func testUnreadableArmReplyRereads() async {

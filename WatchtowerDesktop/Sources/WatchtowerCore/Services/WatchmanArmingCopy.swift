@@ -40,6 +40,12 @@ package enum WatchmanArmingCopy {
         "Watchman · \(self.since(since, calendar: calendar))"
     }
 
+    /// The strip's chip while the session's workbench is still learning
+    /// (tuning spec §3): "Watchman · learning 42%".
+    package static func stripLearning(percent: Int) -> String {
+        "Watchman · learning \(percent)%"
+    }
+
     /// The target panel's line: "Watchman has this target · since 01:40";
     /// without a time just "Watchman has this target".
     package static func targetArmed(since: Date?, calendar: Calendar = .current) -> String {

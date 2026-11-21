@@ -41,4 +41,10 @@ final class WatchmanTuningMockCopyTests: XCTestCase {
         XCTAssertEqual(Real.learningLine(WatchmanEstimate(decisions: 1850, needLabels: 0, tokens: 0)),
                        Copy.learningLine.replacingOccurrences(of: "1,850", with: "1 850"))
     }
+
+    /// The learning chip and the journal's wait line are built (Task 3b).
+    func testLearningCopyMatchesTheMock() {
+        XCTAssertEqual(WatchmanArmingCopy.stripLearning(percent: 42), Copy.stripLearning)
+        XCTAssertEqual(WatchmanJournalCopy.waitingForLearning(percent: 42, count: 3), Copy.waitingLearning)
+    }
 }

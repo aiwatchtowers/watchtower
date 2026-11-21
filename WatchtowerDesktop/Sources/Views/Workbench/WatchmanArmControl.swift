@@ -21,6 +21,9 @@ struct WatchmanArmControl: View {
     /// The session's or target's title the short and edit sheets name (nil:
     /// the session's own title, else its id).
     var title: String?
+    /// The session's workbench (the strip): while Watchman still learns it
+    /// the chip reads the learning percent. nil: never.
+    var workbenchID: Int64?
     /// "since 01:40" on this clock (a design shot pins one).
     @Environment(\.calendar) private var calendar
 
@@ -83,6 +86,22 @@ struct WatchmanArmControl: View {
         return Copy.viaTargetHelp(target: entry.target, direct: direct)
     }
     private var since: Date? { Self.since(scope, in: center.lastStatus) }
+
+    /// The strip chip: `Watchman · learning <p>%` while the workbench is
+    /// still learning (tuning spec §3), else `Watchman · since <HH:MM>`.
+    static func chipText(
+        _ scope: WatchmanArmScope, workbench: Int64?, in status: WatchmanStatus?, calendar: Calendar
+    ) -> String {
+        if let workbench, let percent = status?.workbench(workbench)?.learningPercent {
+            return Copy.stripLearning(percent: percent)
+        }
+        return Copy.stripArmed(since: since(scope, in: status), calendar: calendar)
+    }
+
+    private var chipText: String {
+        Self.chipText(scope, workbench: workbenchID, in: center.lastStatus, calendar: calendar)
+    }
+
     /// The warning lines under a control: the daemon is stopped while it is
     /// handed over (nothing decides), then the last call's notice.
     static func noticeLines(arming: Arming, daemon: WatchmanDaemonState, notice: String?) -> [String] {
@@ -103,8 +122,21 @@ struct WatchmanArmControl: View {
             case .panel: panel
             }
         }
-        // Each appearance rereads the arming (an arm made elsewhere shows).
-        .task(id: scope) { await center.reread() }
+        // Each appearance rereads the arming (an arm made elsewhere shows);
+        // the strip keeps rereading while its workbench learns, from the
+        // moment learning starts (a first hand-over turns it on).
+        .task(id: FollowKey(scope: scope, learning: learning)) {
+            await center.reread(followingLearning: workbenchID)
+        }
+    }
+
+    private struct FollowKey: Hashable {
+        let scope: WatchmanArmScope
+        let learning: Bool
+    }
+
+    private var learning: Bool {
+        workbenchID.flatMap { center.lastStatus?.workbench($0)?.isStillLearning } ?? false
     }
 
     // MARK: - Strip
@@ -115,13 +147,13 @@ struct WatchmanArmControl: View {
             if hasNotices { notices.frame(maxWidth: ListLayout.textColumn).layoutPriority(1) }
             switch arming {
             case .armed:
-                Chip(text: Copy.stripArmed(since: since, calendar: calendar), color: Self.tone, dot: true)
+                Chip(text: chipText, color: Self.tone, dot: true)
                     .fixedSize()
                     .help(instructionHelp ?? "")
                 instructionButton
                 takeBackButton.help(Copy.takeBackHelp)
             case .viaTarget:
-                Chip(text: Copy.stripArmed(since: since, calendar: calendar), color: Self.tone, dot: true)
+                Chip(text: chipText, color: Self.tone, dot: true)
                     .fixedSize()
                     .help(Self.chipHelp(viaTarget: viaTargetHelp, instruction: instructionHelp))
                 instructionButton

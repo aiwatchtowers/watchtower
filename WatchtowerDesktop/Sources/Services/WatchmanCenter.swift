@@ -24,6 +24,9 @@ import WatchtowerCore
 @Observable
 final class WatchmanCenter {
     nonisolated static let pollInterval: Duration = .seconds(3)
+    /// How often a session strip on screen rereads while its workbench still
+    /// learns: its chip's percent follows the learner (tuning spec §3).
+    nonisolated static let learningPollInterval: Duration = .seconds(30)
     /// A whole backtest: up to 8 × 30 model calls plus the judge.
     nonisolated static let backtestTimeout: TimeInterval = 6 * 3600
     /// The first learning pass runs under its own budget in the CLI.
@@ -266,6 +269,19 @@ final class WatchmanCenter {
         inFlightRead = read
         await read.value
         inFlightRead = nil
+    }
+
+    /// `reread`, then again every `learningPollInterval` while `workbench`
+    /// is still learning (nil: once), until the calling task ends — the
+    /// session strip, whose chip reads `Watchman · learning <p>%` meanwhile.
+    func reread(followingLearning workbench: Int64?) async {
+        await reread()
+        guard let workbench else { return }
+        while lastStatus?.workbench(workbench)?.isStillLearning == true, !Task.isCancelled {
+            do { try await sleep(Self.learningPollInterval) } catch { return }
+            guard !Task.isCancelled else { return }
+            await reread()
+        }
     }
 
     /// Hand to Watchman: `arm --check` first, then always the sheet — the
