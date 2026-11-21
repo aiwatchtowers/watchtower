@@ -207,8 +207,13 @@ package final class CompanySetupWizardModel {
     /// Per vendor, bumped by its check's start and Cancel: a re-read after
     /// Cancel lands Go's mark only while no newer check of that vendor
     /// started. Another vendor's check never drops it; the name is guarded
-    /// apart (released only while no check runs).
+    /// apart (`checkActivity`).
     @ObservationIgnored private var checkEpochs: [CompanyVendor: Int] = [:]
+    /// Bumped by every check start and Cancel, of any vendor: a re-read after
+    /// Cancel releases the name only while nothing started or was cancelled
+    /// since (a check started and cancelled meanwhile may have stored the
+    /// company under it).
+    @ObservationIgnored private var checkActivity = 0
 
     private final class CheckRun {
         let values: [String]
@@ -867,6 +872,7 @@ package final class CompanySetupWizardModel {
         }
         checks[v] = .running
         checkEpochs[v, default: 0] += 1
+        checkActivity += 1
         let run = CheckRun(values: values)
         checkRuns[v] = run
         defer { if checkRuns[v] === run { checkRuns[v] = nil } }
@@ -905,7 +911,9 @@ package final class CompanySetupWizardModel {
         run.task?.cancel()
         checks[v] = nil
         checkEpochs[v, default: 0] += 1
+        checkActivity += 1
         let epoch = checkEpochs[v]
+        let activity = checkActivity
         let started = generation
         // A newer check of this vendor (started, or cancelled again) owns its step.
         let current = { [self] in generation == started && checkEpochs[v] == epoch }
@@ -922,8 +930,9 @@ package final class CompanySetupWizardModel {
             if let read = show.draft {
                 landed(v, read: read, checked: show.checkedVendors.contains(v.rawValue), values: run.values)
             }
-            // Another vendor's check may still sign in under the name.
-            if checkRuns.isEmpty { releaseUnstoredName() }
+            // Another vendor's check may still sign in under the name, or one
+            // started (and maybe cancelled) since may have stored it.
+            if checkRuns.isEmpty, checkActivity == activity { releaseUnstoredName() }
         }
     }
 

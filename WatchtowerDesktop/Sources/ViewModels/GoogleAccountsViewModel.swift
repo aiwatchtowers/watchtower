@@ -100,7 +100,7 @@ final class GoogleAccountsViewModel {
     /// syncers) don't fire GRDB's ValueObservation, so callers reload on
     /// appear / after a CLI call completes rather than observing live.
     func refresh(quiet: Bool = false) {
-        refreshTask = Task { await refreshAsync(quiet: quiet) }
+        refreshTask = Task { _ = await refreshAsync(quiet: quiet) }
     }
 
     /// The awaitable body of `refresh()`, split out so tests can call it
@@ -110,9 +110,14 @@ final class GoogleAccountsViewModel {
     /// `quiet` (the re-read after a Cancel) reports a failed read through
     /// `readError` only, never `error`: a Cancel stays silent, and a newer
     /// attempt's result is never overwritten.
-    func refreshAsync(quiet: Bool = false) async {
+    ///
+    /// Returns this read's own accounts (nil when it failed): `accounts` and
+    /// `readError` may already hold a concurrent refresh's answer.
+    @discardableResult
+    func refreshAsync(quiet: Bool = false) async -> [GoogleAccount]? {
+        let rows: [GoogleAccount]
         do {
-            let rows = try await dbPool.read { db in try GoogleAccountQueries.fetchAll(db) }
+            rows = try await dbPool.read { db in try GoogleAccountQueries.fetchAll(db) }
             self.accounts = rows
             readError = nil
             hasRead = true
@@ -121,9 +126,10 @@ final class GoogleAccountsViewModel {
             if !quiet { self.error = "Failed to load accounts: \(error.localizedDescription)" }
             readError = error.localizedDescription
             hasRead = true
-            return
+            return nil
         }
         if readsAccountFlags { await sharedFlags.read(cliPath: cliPath()) }
+        return rows
     }
 
     // MARK: - Add

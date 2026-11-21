@@ -228,6 +228,48 @@ final class CompanySetupCheckCancelTests: XCTestCase {
         await atlassianRun.value
     }
 
+    /// Google's re-read after Cancel is still out while Atlassian's check
+    /// starts and is cancelled (it may have stored the company): Google's
+    /// late "nothing stored" answer keeps the name.
+    func testLateRereadKeepsTheNameAfterAnotherCheckCame() async {
+        let cli = CompanyScriptedCLI()
+        cli.on(["company", "draft", "show"], [#"{"state":"ok","draft":"# + bothDraft + #","bad_file":"","checked_vendors":[]}"#])
+        let model = Model(streamer: cli, slack: SlackAppSetupModel(streamer: cli, mode: .wizard))
+        await model.open()
+        let google = ["company", "check", "google"]
+        let show = ["company", "draft", "show"]
+        cli.hold(google)
+        let googleRun = Task { await model.check(.google) }
+        await cli.waitFor(google)
+        cli.hold(show)
+        model.cancelCheck(.google)
+        let googleReread = model.rereadAfterCancel
+        await cli.waitFor(show, count: 2)
+        await googleRun.value
+        cli.release(google, [])
+
+        cli.hold(check)
+        let atlassianRun = Task { await model.check(.atlassian) }
+        await cli.waitFor(check)
+        cli.hold(show)
+        model.cancelCheck(.atlassian)
+        let atlassianReread = model.rereadAfterCancel
+        await cli.waitFor(show, count: 3)
+        await atlassianRun.value
+        cli.release(check, [])
+
+        // Google's read answers first: nothing stored, as far as it saw.
+        cli.release(show, [#"{"state":"none","draft":null,"bad_file":"","checked_vendors":[]}"#])
+        await googleReread?.value
+        XCTAssertEqual(model.draft.company, "Acme")
+
+        let stored = bothDraft.replacingOccurrences(of: #""company":"Acme","#, with: #""company":"Acme","slug":"acme","#)
+        cli.release(show, [#"{"state":"ok","draft":"# + stored + #","bad_file":"","checked_vendors":[]}"#])
+        await atlassianReread?.value
+        XCTAssertEqual(model.draft.company, "Acme")
+        XCTAssertEqual(model.draft.slug, "acme")
+    }
+
     /// The re-read waits for the killed child's exit: Go may still be
     /// writing the draft until then.
     func testRereadWaitsForTheCancelledChildToExit() async {

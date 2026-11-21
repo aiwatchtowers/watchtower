@@ -37,10 +37,18 @@ extension AppState {
         }
         // A good read without the account may be older than it: read again.
         return Task { [self] in
-            await vm.refreshAsync(quiet: true)
-            if let account = vm.accounts.first(where: { $0.id == accountID }) {
+            let rows = await vm.refreshAsync(quiet: true)
+            // Calendar's empty-state Connect may have started during the read
+            // (the model's own sign-ins hit its busy guard below).
+            if GoogleConnectFlow.shared.isRunning {
+                vm.refuseBusy(place: .account(accountID))
+                return
+            }
+            // This read's own answer: a concurrent refresh may have replaced
+            // `accounts`/`readError` meanwhile.
+            if let rows, let account = rows.first(where: { $0.id == accountID }) {
                 vm.relogin(account, daemonPolicy: accountDaemonPolicy)
-            } else if vm.readError == nil {
+            } else if rows != nil {
                 vm.reloginLegacyCalendar(daemonPolicy: accountDaemonPolicy)
             } else {
                 vm.relogin(accountID: accountID, daemonPolicy: accountDaemonPolicy)

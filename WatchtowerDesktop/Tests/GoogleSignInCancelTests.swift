@@ -345,6 +345,69 @@ final class GoogleSignInCancelTests: XCTestCase {
         XCTAssertNil(vm.error)
     }
 
+    /// Holds the model's next successful read (after its accounts landed)
+    /// until `held` opens; `entered` opens once it got there.
+    private func holdNextRead(_ vm: GoogleAccountsViewModel) -> (entered: AsyncGate, held: AsyncGate) {
+        let entered = AsyncGate()
+        let held = AsyncGate()
+        vm.onAccountsChanged = { entered.release(); await held.wait() }
+        return (entered, held)
+    }
+
+    /// A Google sign-in started while the re-read ran: the alert's Reconnect
+    /// starts none beside it and says the sign-in is busy.
+    func testReconnectRereadRefusesASignInStartedDuringIt() async throws {
+        let stub = try stub()
+        let pool = try pool()
+        let (vm, _) = makeVM(pool, cli: stub.path)
+        _ = try await brokenAccount(pool, vm: vm)
+        let appState = appState(vm)
+        let (entered, held) = holdNextRead(vm)
+
+        let reread = try XCTUnwrap(appState.reconnectGoogleCalendar(accountID: 99))
+        await entered.wait()
+        vm.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: "")
+        let add = try XCTUnwrap(vm.signInTask)
+        held.release()
+        await reread.value
+
+        XCTAssertEqual(vm.signIn, .section, "only the sign-in started meanwhile runs")
+        XCTAssertEqual(vm.signInTask, add)
+        XCTAssertEqual(vm.error, GoogleAccountsViewModel.busyMessage)
+        XCTAssertEqual(vm.failedSignIn, .section, "the legacy login it would have run")
+        _ = try await stub.nextRun(or: add)
+        vm.cancelConnect()
+        await add.value
+    }
+
+    /// The decision reads the re-read's own answer: a concurrent refresh
+    /// that failed meanwhile does not turn a good "account gone" into a
+    /// re-login of the flagged id.
+    func testReconnectDecidesOnItsOwnRead() async throws {
+        let stub = try stub()
+        let cli = try logging(stub)
+        let pool = try pool()
+        let (vm, _) = makeVM(pool, cli: cli.path)
+        _ = try await brokenAccount(pool, vm: vm)
+        let appState = appState(vm)
+        let (entered, held) = holdNextRead(vm)
+
+        let reread = try XCTUnwrap(appState.reconnectGoogleCalendar(accountID: 99))
+        await entered.wait()
+        try await pool.write { db in try db.execute(sql: "DROP TABLE google_accounts") }
+        await vm.refreshAsync(quiet: true)
+        XCTAssertNotNil(vm.readError, "the concurrent refresh failed")
+        held.release()
+        await reread.value
+
+        XCTAssertEqual(vm.signIn, .section)
+        let run = try XCTUnwrap(vm.signInTask)
+        _ = try await stub.nextRun(or: run)
+        XCTAssertEqual(try args(cli.log), [GoogleAccountsViewModel.legacyCalendarLoginArgs.joined(separator: " ")])
+        vm.cancelConnect()
+        await run.value
+    }
+
     // MARK: - Sign-ins that never start
 
     /// No CLI, or another sign-in runs: the error is marked as the place's
