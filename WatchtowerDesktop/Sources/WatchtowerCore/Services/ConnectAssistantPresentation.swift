@@ -266,6 +266,13 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
     package static func setUpCompanyWith(_ harness: ConnectHarness) -> String {
         "Set up for my company with \(harness.name)"
     }
+    /// The onboarding Connect step's footnote: today's line, plus who walks
+    /// the customer through the sign-ins when a harness is offered.
+    package static func onboardingFootnote(_ harness: ConnectHarness?) -> String {
+        guard let harness else { return "Everything stays on your Mac. Connect opens the same sheet as in Settings." }
+        return "Everything stays on your Mac. \(harness.name) walks you through each sign-in; "
+            + "Connect opens the same sheet as in Settings."
+    }
 
     /// Why the run is in words: a browser harness whose browser is not
     /// detected, or a harness that cannot drive one.

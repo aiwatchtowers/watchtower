@@ -22,6 +22,10 @@ struct CompanyAccountsSections<Row: View>: View {
     var error: String?
     /// The policy locks in force: their groups end with the lock card.
     var locks: Set<LockKey> = []
+    /// The connect assistant's entries (agent connect spec §7): **Connect
+    /// with <harness>** first in the add and empty rows, and **Set up for my
+    /// company with <harness>** beside **Set up for my company**.
+    var agent: ConnectAgentEntry?
     let perform: (DetailAction.Kind) -> Void
     let bannerAction: (CompanyBanner.Action) -> Void
     let tryAgain: () -> Void
@@ -77,10 +81,25 @@ struct CompanyAccountsSections<Row: View>: View {
 
     @ViewBuilder
     private func buttonRow(_ actions: [DetailAction]) -> some View {
+        if let agent, let harness = agent.harness(vendorService) {
+            ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(harness)) { agent.open(vendorService) }
+                .disabled(busy)
+        }
         ForEach(actions) { action in
             DetailActionButton(action: action, disabled: busy, blocked: blocked) { perform(action.kind) }
+            if action.kind == .setUpForCompany, let agent, let harness = agent.harness(AppState.companyConnectService) {
+                ConnectAgentButton(title: ConnectAssistantPresentation.setUpCompanyWith(harness)) {
+                    agent.open(AppState.companyConnectService)
+                }
+                .disabled(busy)
+            }
         }
         if busy { ProgressView().controlSize(.small) }
+    }
+
+    /// The connect service of this detail's vendor.
+    private var vendorService: String {
+        vendor == .google ? ConnectionService.google.rawValue : ConnectionService.jira.rawValue
     }
 }
 

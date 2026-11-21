@@ -94,6 +94,13 @@ extension AppState {
         return connectHarnesses.initial
     }
 
+    /// The entry points' agent buttons over this state: which harness a
+    /// service's button names, and opening the panel on it.
+    var connectAgentEntry: ConnectAgentEntry {
+        ConnectAgentEntry(harness: { [weak self] in self?.connectAssistantButton(for: $0) },
+                          open: { [weak self] in self?.openConnectAssistant(service: $0) })
+    }
+
     /// Whether the organization lets the service be connected at all.
     func connectServiceAllowed(_ service: String) -> Bool {
         let policy = managedPolicy.policy
@@ -115,12 +122,13 @@ extension AppState {
     /// earlier is reused, so a running chat shows again; one made over
     /// another harness list (a CLI found since, the policy) is made anew
     /// unless its run is under way on a harness still offered. Another
-    /// service's run keeps going: only Close ends a run.
+    /// service's run keeps going: only Close ends a run. During onboarding
+    /// the panel shows beside the Connect step, so no tab is chosen.
     func openConnectAssistant(service: String) {
         guard connectServiceAllowed(service), connectHarnesses.initial != nil,
               currentConnectSession(service) != nil else { return }
         connectAssistantService = service
-        selectedDestination = .connections
+        if !needsOnboarding { selectedDestination = .connections }
     }
 
     /// The service's session, checked against the current offer: a session
@@ -177,9 +185,14 @@ extension AppState {
 
     /// **Set up by hand**: the panel closes and today's screen opens — the
     /// service's Add sheet where it has one, else its detail, the company
-    /// wizard or the own-Google-project page.
+    /// wizard or the own-Google-project page. During onboarding the Connect
+    /// step opens its own sheet for the source instead.
     func connectAssistantSetUpByHand(service: String) {
         closeConnectAssistant()
+        if needsOnboarding {
+            connectionAddRequest = ConnectionService(rawValue: service)
+            return
+        }
         switch service {
         case Self.companyConnectService:
             openCompanySetup()
@@ -209,6 +222,10 @@ extension AppState {
         if let other = Self.relatedConnectServices[service],
            let session = connectAssistants.loaded(other), session.controller?.activeFlow != nil {
             connectAssistantService = other
+            return
+        }
+        if needsOnboarding {  // the Connect step's sheet shows the running sign-in
+            connectionAddRequest = ConnectionService(rawValue: service)
             return
         }
         switch service {

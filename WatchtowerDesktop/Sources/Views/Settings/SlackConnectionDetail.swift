@@ -479,14 +479,17 @@ struct SlackConnectionDetail: View {
             SlackRevokeNoticeLine(text: notice)
         }
 
-        SlackWorkspacesAddRow(
-            section: connectPresentation, blocked: sourceBlocked,
-            addDisabled: vm.isConnecting || appState.connectFlowRunning,
-            add: { showAddSlackAccountSheet = true },
-            openFold: {
-                connectExpanded = true
-                connectFieldFocused = true
-            })
+        HStack(spacing: Spacing.regular) {
+            ConnectAgentDetailButton(service: .slack, disabled: vm.isConnecting || appState.connectFlowRunning)
+            SlackWorkspacesAddRow(
+                section: connectPresentation, blocked: sourceBlocked,
+                addDisabled: vm.isConnecting || appState.connectFlowRunning,
+                add: { showAddSlackAccountSheet = true },
+                openFold: {
+                    connectExpanded = true
+                    connectFieldFocused = true
+                })
+        }
     }
 
     /// The dictionary editor lives only on the Reactions built-in's card (ask #366, C3).

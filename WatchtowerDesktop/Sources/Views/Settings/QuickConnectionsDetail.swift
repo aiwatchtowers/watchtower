@@ -89,6 +89,7 @@ struct QuickConnectionsDetail: View {
                 }
 
                 HStack {
+                    ConnectAgentDetailButton(service: .quickConnections)
                     Button("Add Connection") {
                         showAddConnectionSheet = true
                     }

@@ -149,6 +149,15 @@ struct ConnectAssistantPresentationTests {
             == "Connect your company")
     }
 
+    @Test("the onboarding footnote names the harness only when one is offered")
+    func onboardingFootnote() {
+        #expect(Pres.onboardingFootnote(nil)
+            == "Everything stays on your Mac. Connect opens the same sheet as in Settings.")
+        #expect(Pres.onboardingFootnote(claude)
+            == "Everything stays on your Mac. Claude walks you through each sign-in; "
+            + "Connect opens the same sheet as in Settings.")
+    }
+
     @Test("confirm cards: the customer presses them, never the model")
     func confirm() {
         guard case .confirm(let pkce) = slack(.confirm(.slackPKCE)).card,

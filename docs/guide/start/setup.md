@@ -47,7 +47,7 @@ A **Check failed** tile says why under it. "Watchtower couldn’t run the check 
 
 ## What the Connect step shows
 
-Only the sources your goals need, as cards: Slack, Google ("Calendar"; "Mail and calendar" on a company build), Jira and Linear. A source your company's profile does not allow is not offered.
+Only the sources your goals need, as cards: Slack, Google ("Calendar"; "Mail and calendar" on a company build), Jira and Linear. A source your company's profile does not allow is not offered. With Claude or Codex installed, a card offers **Connect with Claude** (or Codex) first; the assistant opens beside the step.
 
 Google connects Calendar here through Watchtower's app; Gmail needs your company's Google project or your own, so connect it afterwards in **Connections → Google**. **Connect** opens the same sheet as **Connections**, and a connected card shows a check mark and the account name. The Jira sheet's **Also connect Confluence** box (ticked) adds Confluence to the same sign-in and selects up to five spaces you wrote in or viewed lately. After Jira connects, the sheet asks which boards to sync (**Choose Boards**); only those boards sync, and **Skip** leaves Jira's tabs saying "Choose Jira boards to get this" until you pick some. The Linear sheet signs in with Linear in the browser or takes a personal API key. The step says "You can continue without any" and **Continue** is on even with nothing connected.
 
