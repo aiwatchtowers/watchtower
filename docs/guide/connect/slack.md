@@ -27,14 +27,14 @@ Pick one path after step 1: connect through an existing app (steps 2–5), creat
 5. **Check:** Call `connect_wait`; while it says `waiting`, call it again. On `connected`, go on; on `failed` or `timeout`, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong). Tell the customer the first sync has started.
 6. **Agent:** Open api.slack.com/apps, scroll to **Your App Configuration Tokens** and stop there. Call `request_secret` with kind `slack_config_token`. The card asks the customer to leave the page before sending.
 7. **You only:** Press **Generate Token** for your workspace, copy the access token into the assistant's card, leave Slack's page, then press **Send**.
-8. **You:** When Slack's page opens in your browser to connect your own account, sign in if it asks and press **Allow**.
-9. **Check:** Call `connect_wait`; while it says `waiting`, call it again. On `connected`, go on; on `failed` or `timeout`, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong). Then call `connect_status` to confirm the account and tell the customer to share the app's **About** page with colleagues.
+8. **You:** Watchtower creates the app, then opens Slack's page in your browser to connect your own account: sign in if it asks and press **Allow**.
+9. **Check:** `request_secret` returns when the setup ends. Only when it says the account is connected and the connect link is on the **About** page, tell the customer to share that page with colleagues. Connected without the link, waiting on an admin's approval, not connected or any other failure: tell the customer and stop at [If something goes wrong](#if-something-goes-wrong).
 10. **Agent:** Call `connect_start` with `pkce`. The assistant's panel shows a confirm card: the update turns on Slack's PKCE sign-in for the app, which cannot be undone, and colleagues may need to allow Watchtower again.
 11. **You:** Read the card and press its confirm button, or decline. A decline ends this path; nothing changed.
 12. **Agent:** After the confirm, open api.slack.com/apps, scroll to **Your App Configuration Tokens** and stop there. Call `request_secret` with kind `slack_config_token`.
 13. **You only:** Press **Generate Token** for your workspace, copy the access token into the card, leave Slack's page, then press **Send**.
-14. **You:** When Slack's page opens in your browser, sign in if it asks and press **Allow**.
-15. **Check:** Call `connect_wait`; while it says `waiting`, call it again. On `connected`, go on; on `failed` or `timeout`, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong). Then call `connect_status` to confirm the account.
+14. **Check:** `request_secret` returns the update's result; the update opens no sign-in. On success, call `connect_status`. On a failure, tell the customer and stop at [If something goes wrong](#if-something-goes-wrong).
+15. **Agent:** If `connect_status` shows no connected account for this workspace, connect it through the app: go to step 2.
 
 ## Slack Live
 
@@ -56,7 +56,9 @@ The assistant's panel always offers **Set up by hand**, which opens **Connection
 - **"Your workspace does not let you create apps."** Ask a Slack admin to run the setup, or to allow app creation.
 - **"Your token cannot change this app."** One of the app's collaborators (its **Collaborators** page lists them) must run the update.
 - **Watchtower asks for the app's App ID.** Use **Set up by hand** and enter it from the app's **Basic Information** page.
-- **"The app's About page has no connect link yet."** The token expired mid-setup. Start the create path again with a fresh token.
+- **"Setup is not finished: Watchtower's app exists in …, but you have not connected yet."** The app is there; only your own sign-in is missing. Do not create the app again: use **Set up by hand** and press **Continue setup**.
+- **"Waiting for your admin's approval."** Slack sent an admin a request to install Watchtower. Once they approve, use **Set up by hand** and press **Check again**.
+- **"The app's About page has no connect link yet."** Your account is connected, but the token expired before the link was written. Use **Set up by hand**: press **Add the link to the app** and paste a fresh token.
 - **"Slack did not answer when Watchtower asked it to create the app."** Use **Set up by hand**: find Watchtower on api.slack.com/apps and enter its **App ID** and **Client ID**.
 - **The confirm card was declined.** Nothing changed. Start again when you are ready.
 

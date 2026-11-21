@@ -226,10 +226,11 @@ jobs:
       - name: Guide check
         # internal/chat pins guide.Map() in the prompt golden, internal/kb
         # searches every guide page and internal/learn validates the Learn
-        # cards, so a guide-only PR must run them (cmd and internal/hub
+        # cards, internal/connectplay parses the connect playbooks, so a
+        # guide-only PR must run them (cmd and internal/hub
         # import only guide.Version). scripts/tests/test-ci-path-filters.sh
         # keeps this list in step with the guide's importers.
-        run: go test ./docs/guide/ ./internal/kb/ ./internal/chat/ ./internal/learn/
+        run: go test ./docs/guide/ ./internal/kb/ ./internal/chat/ ./internal/learn/ ./internal/connectplay/
 
   go-lint:
     name: Go Lint
