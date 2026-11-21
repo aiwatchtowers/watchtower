@@ -26,7 +26,9 @@ action: nav:connections
 
 **What you paste never reaches the assistant.** When a step needs a token, password, API key or client secret, the panel shows a card. You paste the value there and press **Send**; it goes straight to Watchtower and the assistant only hears whether it worked. In browser mode the assistant could read a vendor page that shows a secret while it is open, so close that page or dialog before you press **Send**; the card reminds you.
 
-**Some steps need your confirm.** Steps that can't be undone or that add trust show a card only you can press: turning on PKCE for a Slack app, updating your company's Slack app, using your own Google project, turning on a Quick Connection, publishing or replacing your company's setup. The card says "Only you can press this — Claude can't."
+**The card shows where the value goes.** When the place comes from the assistant (your mail server, a calendar address, a Quick Connection), the card names it, for example "Sends it to imap.example.com:993 (ssl) as you@example.com". Check it before you press **Send**: while the card is open the assistant can't change it.
+
+**Some steps need your confirm.** Steps that can't be undone or that add trust show a card only you can press: turning on PKCE for a Slack app, updating your company's Slack app, using your own Google project, turning on a Quick Connection, publishing or replacing your company's setup. The card shows exactly what it applies to, such as the command or address a Quick Connection runs, the Client ID or the services you publish, and nothing runs if that changes before your press. It says "Only you can press this — Claude can't."
 
 **Browser or words.** With Claude and the Claude in Chrome extension connected, the panel says **Using Claude in Chrome**: the assistant opens and fills the vendor's pages in your own Chrome. Otherwise it says **I'll tell you each step**: you click, it tells you what to click and checks the result. Codex always works in words today. If the extension drops out mid-setup, the assistant goes on in words.
 
