@@ -22,11 +22,17 @@ const (
 // ProtocolVersion is Hello.V.
 const ProtocolVersion = 1
 
-// CallTimeout bounds one call: Codex gives an MCP tool call 60 s, so a call
-// that can wait longer (connect_wait, request_secret, a confirm-gated call,
-// company_check) answers {"state":"waiting"} before this and the agent calls
-// again.
-const CallTimeout = 45 * time.Second
+// WaitBudget is how long the Desktop holds a call that waits on the
+// customer or a flow (connect_wait, request_secret, a confirm-gated call,
+// company_check) before it answers {"state":"waiting"}; the agent then calls
+// again and re-attaches to the same step (spec §5.3). The Desktop (Tasks 8
+// and 9) uses this value, never CallTimeout.
+const WaitBudget = 45 * time.Second
+
+// CallTimeout is the MCP side's read deadline for one call: longer than
+// WaitBudget plus the socket and parsing slack, so a waiting answer always
+// arrives, and shorter than Codex's 60-s MCP tool timeout.
+const CallTimeout = 55 * time.Second
 
 // MaxLine caps one JSON line in either direction.
 const MaxLine = 1 << 20

@@ -89,7 +89,8 @@ func setOf(pbs ...connectplay.Playbook) toolSet {
 	return u
 }
 
-// Tools are exactly pb.Tools with their input schemas.
+// Tools are exactly pb.Tools with their input schemas, less a tool no call
+// could satisfy (request_secret when pb.Secrets is empty).
 func Tools(pb connectplay.Playbook) []*mcpsdk.Tool {
 	return setOf(pb).mcpTools()
 }
@@ -129,7 +130,9 @@ func stringMap(desc string) *jsonschema.Schema {
 
 const waitNote = " If it returns {\"state\":\"waiting\"}, call it again: it re-attaches to the same step."
 
-// tool is one connect tool's definition; nil for a name outside KnownTools.
+// tool is one connect tool's definition; nil for a name outside KnownTools
+// and for one no call could satisfy (request_secret without secrets,
+// company_check without vendors).
 func tool(name string, ts toolSet) *mcpsdk.Tool {
 	var desc string
 	var schema *jsonschema.Schema
@@ -151,6 +154,9 @@ func tool(name string, ts toolSet) *mcpsdk.Tool {
 		desc = "Cancel the running sign-in flow."
 		schema = object(nil)
 	case "request_secret":
+		if len(ts.secrets) == 0 {
+			return nil // an empty kind enum no call could satisfy
+		}
 		desc = "Show a secure field card in the panel for the customer to paste a secret into. You never see the secret; you get the result of the step it feeds." + waitNote
 		schema = object(map[string]*jsonschema.Schema{
 			"kind":  enum("the secret's kind, from the playbook", ts.secrets),
@@ -172,6 +178,9 @@ func tool(name string, ts toolSet) *mcpsdk.Tool {
 			"fields": stringMap("field name → value; omit to read the draft"),
 		})
 	case "company_check":
+		if len(ts.vendors) == 0 {
+			return nil
+		}
 		desc = "Check a vendor's company setup; it may open a sign-in the customer approves." + waitNote
 		schema = object(map[string]*jsonschema.Schema{"vendor": enum("the vendor to check", ts.vendors)}, "vendor")
 	case "company_publish":

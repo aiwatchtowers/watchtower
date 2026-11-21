@@ -75,6 +75,9 @@ func mcpPreRun(cmd *cobra.Command, args []string) error {
 // --db-path, which both mount paths (ai.ChatMCPConfig,
 // codex.WatchtowerServerTOML) append and the connect mode ignores.
 func checkMCPConnectFlags(cmd *cobra.Command) error {
+	if strings.TrimSpace(mcpFlagConnect) == "" {
+		return errors.New("--connect needs a service")
+	}
 	var others []string
 	cmd.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) {
 		if f.Changed && f.Name != "connect" && f.Name != "db-path" {
@@ -405,7 +408,12 @@ func mcpAgent(raw string) (agentkind.Kind, error) {
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {
-	if mcpFlagConnect != "" {
+	if cmd.Flags().Changed("connect") {
+		// On Changed, not the value: `--connect ""` must never fall into a
+		// database mode (the schema hook was skipped for it).
+		if err := checkMCPConnectFlags(cmd); err != nil {
+			return err
+		}
 		return runMCPConnect(cmd.Context(), mcpFlagConnect, os.Getenv)
 	}
 	cfg, err := config.Load(flagConfig)

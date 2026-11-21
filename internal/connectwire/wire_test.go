@@ -320,7 +320,9 @@ func pipeRun(t *testing.T, answer func(server net.Conn, r Request)) *Client {
 	return c
 }
 
-func TestCall_TimeoutAt45s(t *testing.T) {
+// The Desktop answers waiting after WaitBudget; the client waits
+// CallTimeout, so that answer always arrives.
+func TestCall_WaitingAnswerBeatsCallTimeout(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		release := make(chan struct{})
 		reply := func(server net.Conn, id int64, result string) {
@@ -333,7 +335,7 @@ func TestCall_TimeoutAt45s(t *testing.T) {
 				<-release // answered only after the call gave up
 				reply(server, r.ID, `{"state":"connected","account":"acme"}`)
 			case "request_secret":
-				time.Sleep(CallTimeout - time.Second)
+				time.Sleep(WaitBudget + 5*time.Second)
 				reply(server, r.ID, `{"state":"waiting"}`)
 			default:
 				reply(server, r.ID, `{}`)
@@ -341,7 +343,7 @@ func TestCall_TimeoutAt45s(t *testing.T) {
 		})
 
 		res, err := c.Call(context.Background(), "request_secret", nil)
-		require.NoError(t, err, "an answer at 44 s is in time")
+		require.NoError(t, err, "a waiting answer at WaitBudget+5s is in time")
 		assert.JSONEq(t, `{"state":"waiting"}`, string(res))
 
 		start := time.Now()
@@ -349,7 +351,8 @@ func TestCall_TimeoutAt45s(t *testing.T) {
 		var we *Error
 		require.ErrorAs(t, err, &we)
 		assert.Equal(t, CodeFailed, we.Code)
-		assert.Equal(t, CallTimeout, time.Since(start), "the call gives up at exactly 45 s")
+		assert.Equal(t, CallTimeout, time.Since(start), "the call gives up at exactly CallTimeout")
+		assert.Contains(t, we.Message, "call it again")
 
 		// The late answer is dropped, and the connection still serves.
 		close(release)
@@ -365,4 +368,48 @@ func TestError_MessageCarriesCode(t *testing.T) {
 	assert.Equal(t, "bad_args: label is too long", err.Error())
 	var we *Error
 	assert.True(t, errors.As(err, &we))
+}
+
+func TestWire_CallTimeoutOutlastsWaitBudget(t *testing.T) {
+	assert.Greater(t, CallTimeout, WaitBudget+5*time.Second, "slack for the socket and parsing")
+	assert.Less(t, CallTimeout, 60*time.Second, "under Codex's MCP tool timeout")
+}
+
+// A cancelled call never reaches the Desktop, even while another call holds
+// the write turn.
+func TestCall_CancelledCallIsNeverSent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		got := make(chan string, 4)
+		c := pipeRun(t, func(server net.Conn, r Request) {
+			got <- r.Tool
+			b, _ := json.Marshal(Response{ID: r.ID, Result: json.RawMessage(`{}`)})
+			_, _ = server.Write(append(b, '\n'))
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := c.Call(ctx, "connect_start", nil)
+		require.ErrorIs(t, err, context.Canceled)
+
+		c.writeTurn <- struct{}{} // another call is writing
+		ctx, cancel = context.WithCancel(context.Background())
+		errc := make(chan error, 1)
+		go func() {
+			_, err := c.Call(ctx, "connect_cancel", nil)
+			errc <- err
+		}()
+		synctest.Wait()
+		cancel()
+		require.ErrorIs(t, <-errc, context.Canceled)
+		<-c.writeTurn
+
+		_, err = c.Call(context.Background(), "connect_status", nil)
+		require.NoError(t, err)
+		synctest.Wait()
+		close(got)
+		var tools []string
+		for tl := range got {
+			tools = append(tools, tl)
+		}
+		assert.Equal(t, []string{"connect_status"}, tools, "only the live call reached the Desktop")
+	})
 }

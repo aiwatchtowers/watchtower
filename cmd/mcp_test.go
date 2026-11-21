@@ -485,3 +485,18 @@ func TestMCP_PlainModeUnchanged(t *testing.T) {
 	}
 	assert.True(t, names["list_targets"], "the read tools stay")
 }
+
+// An empty --connect fails closed: never the plain mode's database open.
+func TestMCPConnect_EmptyServiceRefused(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "never.db")
+	for _, args := range [][]string{
+		{"mcp", "--connect", "", "--db-path", dbPath},
+		{"mcp", "--connect=", "--db-path", dbPath},
+		{"mcp", "--connect", " ", "--db-path", dbPath},
+	} {
+		_, _, err := runRootCmd(t, []*cobra.Command{mcpCmd}, args...)
+		require.ErrorContains(t, err, "--connect needs a service", args)
+		_, statErr := os.Stat(dbPath)
+		assert.ErrorIs(t, statErr, os.ErrNotExist, "no database is opened")
+	}
+}

@@ -20,9 +20,11 @@ var errClosed = &Error{Code: CodeClosed, Message: "the connect run in the Watcht
 // hello on dial; calls may overlap (each waits for the response with its
 // own id).
 type Client struct {
-	conn    net.Conn
-	writeMu sync.Mutex
-	nextID  atomic.Int64
+	conn net.Conn
+	// writeTurn holds one token while a line is written (a lock a
+	// cancelled call can stop waiting for).
+	writeTurn chan struct{}
+	nextID    atomic.Int64
 
 	mu      sync.Mutex
 	pending map[int64]chan Response
@@ -84,7 +86,7 @@ func handshake(ctx context.Context, conn net.Conn, token, service string) (*Clie
 		_ = conn.Close()
 		return nil, errClosed
 	}
-	c := &Client{conn: conn, pending: map[int64]chan Response{}}
+	c := &Client{conn: conn, writeTurn: make(chan struct{}, 1), pending: map[int64]chan Response{}}
 	go c.read(sc)
 	return c, nil
 }
@@ -146,9 +148,12 @@ func (c *Client) Call(ctx context.Context, tool string, args json.RawMessage) (j
 		c.mu.Unlock()
 	}()
 
-	timer := time.NewTimer(CallTimeout)
-	defer timer.Stop()
-	if err := c.write(line); err != nil {
+	callCtx, cancel := context.WithTimeout(ctx, CallTimeout)
+	defer cancel()
+	if err := c.write(callCtx, line); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err() // cancelled before the line went out
+		}
 		_ = c.conn.Close()
 		return nil, errClosed
 	}
@@ -163,19 +168,30 @@ func (c *Client) Call(ctx context.Context, tool string, args json.RawMessage) (j
 			return nil, &Error{Code: CodeFailed, Message: "the Watchtower app answered without a result"}
 		}
 		return r.Result, nil
-	case <-timer.C:
-		return nil, &Error{Code: CodeFailed, Message: fmt.Sprintf("the Watchtower app did not answer %s within %s", tool, CallTimeout)}
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case <-callCtx.Done():
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, &Error{Code: CodeFailed, Message: fmt.Sprintf("the Watchtower app did not answer %s within %s; call it again", tool, CallTimeout)}
 	}
 }
 
-// write sends one line; the write deadline keeps a Desktop that stopped
-// reading from hanging the call.
-func (c *Client) write(line []byte) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if err := c.conn.SetWriteDeadline(time.Now().Add(CallTimeout)); err != nil {
+// write sends one line under the call's budget: a call cancelled while it
+// waits for the write turn never reaches the Desktop, and the write
+// deadline (the budget left) keeps a Desktop that stopped reading from
+// hanging the call.
+func (c *Client) write(ctx context.Context, line []byte) error {
+	select {
+	case c.writeTurn <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-c.writeTurn }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	deadline, _ := ctx.Deadline()
+	if err := c.conn.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
 	_, err := c.conn.Write(append(line, '\n'))

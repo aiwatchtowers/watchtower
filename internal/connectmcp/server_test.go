@@ -94,6 +94,17 @@ func TestTools_OnlyPlaybookTools(t *testing.T) {
 	assert.ElementsMatch(t, pb.Tools, mounted)
 }
 
+// request_secret with no secret kind (an empty enum) and company_check with
+// no vendor are not mounted: no call could satisfy them.
+func TestTools_UnsatisfiableToolsNotMounted(t *testing.T) {
+	pb := connectplay.Playbook{Service: "linear", Tools: []string{"connect_status", "request_secret", "company_check"}}
+	assert.Equal(t, []string{"connect_status"}, toolNames(Tools(pb)))
+	listed, err := session(t, &fakeCaller{}, pb).ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, listed.Tools, 1)
+	assert.Equal(t, "connect_status", listed.Tools[0].Name)
+}
+
 // Every known tool has a definition: a playbook may list any of them.
 func TestTools_EveryKnownToolDefined(t *testing.T) {
 	ts := toolSet{tools: connectplay.KnownTools, secrets: []string{"imap_password"}, vendors: []string{"google"}}
