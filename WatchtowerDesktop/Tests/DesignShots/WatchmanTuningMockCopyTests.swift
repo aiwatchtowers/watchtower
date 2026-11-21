@@ -1,4 +1,5 @@
 import XCTest
+import WatchtowerCore
 @testable import WatchtowerDesktop
 
 /// Pins the Watchman tuning spec's mock strings (#2134) to the spec's text, so
@@ -20,5 +21,24 @@ final class WatchmanTuningMockCopyTests: XCTestCase {
         XCTAssertTrue(Copy.learningLine.contains("Questions asked meanwhile wait and are decided once it finishes"))
         XCTAssertEqual(Copy.counter(1912), "1912 / 2000")
         XCTAssertEqual(Copy.trayHeader(8), "Hands over 8 sessions:")
+    }
+
+    /// The instruction sheet is built (Task 2b): its real copy is the spec's.
+    func testImplementedCopyMatchesTheMock() {
+        typealias Real = WatchmanArmingCopy
+        XCTAssertEqual(Real.shortTitle, Copy.sheetTitle)
+        XCTAssertEqual(Real.editTitle, Copy.editTitle)
+        XCTAssertEqual(Real.fieldLabel, Copy.fieldLabel)
+        XCTAssertEqual(Real.placeholder, Copy.placeholder)
+        XCTAssertEqual(Real.handOver, Copy.handOver)
+        XCTAssertEqual(Real.save, Copy.save)
+        XCTAssertEqual(Real.cancel, Copy.cancel)
+        XCTAssertEqual(Real.instructionButton, Copy.instructionButton)
+        XCTAssertEqual(Real.saveFailed(Copy.saveFailedReason), Copy.saveFailed)
+        XCTAssertEqual(Real.counter(1912), Copy.counter(1912))
+        XCTAssertEqual(Real.stripArmed(since: nil), "Watchman · on")
+        // The real line groups digits as the history line beside it does.
+        XCTAssertEqual(Real.learningLine(WatchmanEstimate(decisions: 1850, needLabels: 0, tokens: 0)),
+                       Copy.learningLine.replacingOccurrences(of: "1,850", with: "1 850"))
     }
 }

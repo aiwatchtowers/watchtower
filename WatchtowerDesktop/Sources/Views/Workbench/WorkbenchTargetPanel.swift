@@ -91,7 +91,8 @@ struct WorkbenchTargetPanel: View {
                 progress
             }
             if let watchman {
-                WatchmanArmControl(center: watchman, scope: .target(Int64(target.id)), workbench: workbenchName, style: .panel)
+                WatchmanArmControl(center: watchman, scope: .target(Int64(target.id)), workbench: workbenchName, style: .panel,
+                                   title: WorkbenchBoardCard.title(target.text))
             }
             gitLinks
         }

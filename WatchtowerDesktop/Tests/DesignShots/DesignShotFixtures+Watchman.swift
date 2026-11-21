@@ -297,7 +297,7 @@ private struct HomeRowShot: View {
 
 /// The arming controls' fixtures: a workbench `acme-api` with a session and
 /// a group target, and a `WatchmanCenter` holding a status read before (so
-/// the controls draw without calling the CLI). "Sleep since" is read in UTC.
+/// the controls draw without calling the CLI). "since" is read in UTC.
 @MainActor
 enum WatchmanArmingShotFixture {
     private static var poolPaths: [String] = []
@@ -311,14 +311,20 @@ enum WatchmanArmingShotFixture {
     }
 
     /// `watchman status --json` with one arming row (none when not armed);
-    /// `sessions` are the armed sessions, under the target when it is one.
-    static func statusJSON(armed: Bool, scope: WatchmanArmedEntry.Scope, id: Int64, sessions: [Int64]) -> String {
+    /// `sessions` are the armed sessions, under the target when it is one,
+    /// each with `instructions` as its own instruction.
+    static func statusJSON(
+        armed: Bool, scope: WatchmanArmedEntry.Scope, id: Int64, sessions: [Int64], instructions: String = ""
+    ) -> String {
         guard armed else {
             return #"{"ok":true,"workbenches":[],"mode":"off","mode_since":null,"armed":[],"armed_sessions":[],"daemon_running":true}"#
         }
         let since = "2026-11-17T01:40:00Z"
         let target = scope == .target ? id : 0
-        let entries = sessions.map { #"{"id":\#($0),"target":\#(target),"armed_at":"\#(since)"}"# }
+        let text = (try? JSONEncoder().encode(instructions)).flatMap { String(bytes: $0, encoding: .utf8) } ?? #""""#
+        let entries = sessions.map {
+            #"{"id":\#($0),"target":\#(target),"armed_at":"\#(since)","instructions":\#(text)}"#
+        }
         return #"{"ok":true,"workbenches":[],"mode":"sleep","mode_since":"\#(since)","#
             + #""armed":[{"scope":"\#(scope.rawValue)","id":\#(id),"armed_at":"\#(since)"}],"#
             + #""armed_sessions":[\#(entries.joined(separator: ","))],"daemon_running":true}"#
@@ -335,8 +341,9 @@ enum WatchmanArmingShotFixture {
         return center
     }
 
-    /// The real `WorkbenchSessionStrip` of an agent session.
-    static func strip(armed: Bool) -> AnyView {
+    /// The real `WorkbenchSessionStrip` of an agent session; `instructions`
+    /// is its stored instruction (the chip's tooltip).
+    static func strip(armed: Bool, instructions: String = "") -> AnyView {
         do {
             let (pool, path) = try TestDatabase.createPool()
             poolPaths.append(path)
@@ -352,7 +359,8 @@ enum WatchmanArmingShotFixture {
             let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
             vm.selectedWorkbenchID = project.id
             vm.terminalSessions[project.id] = [session]
-            vm.watchman = center(statusJSON(armed: armed, scope: .session, id: session.id, sessions: [session.id]))
+            vm.watchman = center(statusJSON(armed: armed, scope: .session, id: session.id, sessions: [session.id],
+                                            instructions: instructions))
             kept.append(vm)
             return AnyView(VStack(spacing: 0) {
                 WorkbenchSessionStrip(vm: vm, project: project, pane: .session(session.id), sessionID: session.id,
@@ -415,7 +423,7 @@ private struct ArmSheetShot: View {
             firstTime: true, estimate: WatchmanEstimate(decisions: 1850, needLabels: 1200, tokens: 1_600_000),
             protectionWarning: WatchmanArmingCopy.protectionWarning)
         WatchmanArmSheet(content: WatchmanArmSheetContent(workbench: "acme-api", reply: reply),
-                         onCancel: {}, onConfirm: {})
+                         onCancel: {}, onConfirm: { _ in })
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .detailBackground()
     }

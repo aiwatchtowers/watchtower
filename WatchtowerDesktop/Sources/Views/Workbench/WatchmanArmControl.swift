@@ -18,7 +18,10 @@ struct WatchmanArmControl: View {
     /// The workbench the sheet's title names.
     let workbench: String
     let style: Style
-    /// "Sleep since" on this clock (a design shot pins one).
+    /// The session's or target's title the short and edit sheets name (nil:
+    /// the session's own title, else its id).
+    var title: String?
+    /// "since 01:40" on this clock (a design shot pins one).
     @Environment(\.calendar) private var calendar
 
     private typealias Copy = WatchmanArmingCopy
@@ -49,7 +52,7 @@ struct WatchmanArmControl: View {
         }
     }
 
-    /// "Sleep since": the session's own arming time (its target's when it
+    /// "since": the session's own arming time (its target's when it
     /// came with one) or the target row's; else the status's `mode_since`.
     static func since(_ scope: WatchmanArmScope, in status: WatchmanStatus?) -> Date? {
         guard let status else { return nil }
@@ -112,12 +115,16 @@ struct WatchmanArmControl: View {
             if hasNotices { notices.frame(maxWidth: ListLayout.textColumn).layoutPriority(1) }
             switch arming {
             case .armed:
-                Chip(text: Copy.stripArmed(since: since, calendar: calendar), color: Self.tone, dot: true).fixedSize()
+                Chip(text: Copy.stripArmed(since: since, calendar: calendar), color: Self.tone, dot: true)
+                    .fixedSize()
+                    .help(instructionHelp ?? "")
+                instructionButton
                 takeBackButton.help(Copy.takeBackHelp)
             case .viaTarget:
                 Chip(text: Copy.stripArmed(since: since, calendar: calendar), color: Self.tone, dot: true)
                     .fixedSize()
                     .help(viaTargetHelp)
+                instructionButton
                 // Also handed over itself: Take back removes that row only.
                 if let target = Self.directUnderTarget(scope, in: center.lastStatus) {
                     takeBackButton.help(Copy.takeBackDirectHelp(target: target))
@@ -160,6 +167,8 @@ struct WatchmanArmControl: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // Under the caption: the panel is narrow, and the line keeps its width.
+            instructionButton
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -168,9 +177,28 @@ struct WatchmanArmControl: View {
 
     // MARK: - Parts
 
+    /// The first line of the scope's instruction, the chip's tooltip; nil
+    /// without one.
+    private var instructionHelp: String? {
+        Copy.instructionHelp(center.instructions[scope] ?? "")
+    }
+
+    /// Instruction…: the edit sheet, the text it opens with as its tooltip.
+    private var instructionButton: some View {
+        Button {
+            center.editInstruction(scope, title: title)
+        } label: {
+            Label(Copy.instructionButton, systemImage: Copy.instructionIcon)
+        }
+        .buttonStyle(.kitSecondary)
+        .fixedSize()
+        .help(instructionHelp ?? "")
+        .disabled(busy)
+    }
+
     private var handButton: some View {
         Button {
-            Task { await center.handTo(scope, workbench: workbench) }
+            Task { await center.handTo(scope, workbench: workbench, title: title) }
         } label: {
             Label(Copy.handTo, systemImage: WatchmanStyle.icon)
         }

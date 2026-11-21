@@ -1,6 +1,6 @@
 # Watchman
 
-Watchman learns how you decide in a workbench and tests, on your own past decisions, how often a stand-in would have chosen what you chose. It is for the person who wants to hand agents a task and leave, and first wants to know whether a stand-in could be trusted. It answers only for the sessions you hand it, until you take them back.
+Watchman learns how you decide in a workbench and tests, on your own past decisions, how often a stand-in would have chosen what you chose. It is for handing agents a task and leaving, once you know a stand-in can be trusted. It answers only for the sessions you hand it, until you take them back.
 
 ## Why use it
 
@@ -66,11 +66,13 @@ kind: feature
 since: 0.29.0
 -->
 
-**Hand to Watchman** on a session's strip hands that session over; on a target's panel, every session under the target, also later ones; **Hand all running sessions to Watchman** in the menu bar, every running agent session. Until you press **Take back**, Watchman answers their asks and spec reviews (and permission prompts in Claude Code sessions) and reviews a session's changes before it may finish, whether you are at the Mac or not. The strip reads "Watchman · Sleep since 01:40".
+**Hand to Watchman** on a session's strip hands that session over; on a target's panel, every session under the target, also later ones; **Hand all running sessions to Watchman** in the menu bar, every running agent session. Until you press **Take back**, Watchman answers their asks and spec reviews (and permission prompts in Claude Code sessions) and reviews a session's changes before it may finish, whether you are at the Mac or not. The strip reads "Watchman · since 01:40".
+
+Each hand-over takes an optional instruction Watchman follows within its limits; **Instruction…** by the chip edits it.
 
 **Take back** stops new decisions; one already under way still finishes. On a session also handed over through its target, Take back on the strip removes only the direct hand-over.
 
-The first time on a workbench a sheet shows what turns on: Agent analytics and learning, with its estimate; until learning finishes, Watchman parks everything for you. It warns when main is not protected on GitHub, the git guard cannot go into a repository, or a session's folder lacks Watchman's guard (Repair the workbench, restart the session). Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
+The first time on a workbench the sheet also shows what turns on: Agent analytics and learning, with its estimate. It warns when main is not protected on GitHub, the git guard cannot go into a repository, or a session's folder lacks Watchman's guard (Repair the workbench, restart the session). Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
 
 ### Read the night's journal
 <!-- learn
@@ -83,10 +85,10 @@ kind: feature
 since: 0.29.0
 -->
 
-Everything Watchman handled lands in **Inbox → Watchman**, one night per entry from 12:00 to 12:00 the next day. Home shows last night as one line, such as "Overnight Watchman decided 14 — 2 unsure, 2 waiting for you"; click it to open the journal.
+Everything Watchman handled lands in **Inbox → Watchman**, one night per entry from 12:00 to 12:00 the next day. Home shows last night as one line, such as "Overnight Watchman decided 14 — 2 unsure, 2 waiting for you", which opens the journal.
 
 - **WAITING FOR YOU**: what Watchman parked for you (a hard limit, a failure) or handed back because it needs your hands.
-- **Decided**: each decision with what it chose, why, the earlier decisions it leaned on and its confidence. In this version every decision is marked **Unsure**.
+- **Decided**: each decision with what it chose, why, the earlier decisions it leaned on and its confidence (**Unsure** in this version).
 - **Checks nobody ran**: checks a session asked for that Watchman passed on.
 
 The night's header shows its span, when the Mac slept ("the Mac slept from 02:10 to 03:05, nothing ran") and the cost. While Watchman works, a "Deciding: …" line shows its current item; when the daemon is stopped, "Watchman is not running — the daemon is stopped" sits above the last night. A menu narrows it to one workbench.
