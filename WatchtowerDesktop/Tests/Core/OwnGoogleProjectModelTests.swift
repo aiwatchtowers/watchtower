@@ -324,6 +324,30 @@ final class OwnGoogleProjectModelTests: XCTestCase {
         await second.value
     }
 
+    /// A cancelled run that turns out to have connected after the owner
+    /// dropped another client JSON: the new form stays, the accounts are
+    /// still re-read and re-wired once.
+    func testStaleSuccessLeavesANewForm() async {
+        let (m, cli) = blocking()
+        var connectedCount = 0
+        let (connects, connected) = AsyncStream.makeStream(of: Void.self)
+        m.onConnected = { connectedCount += 1; connected.yield() }
+        let run = Task { await m.connect() }
+        let session = await cli.session(number: 1)
+        session.exitsOnTerminate = false
+        m.cancel()
+        let other = Data(#"{"installed":{"client_id":"9999-other.apps.googleusercontent.com","client_secret":"s","project_id":"acme"}}"#.utf8)
+        XCTAssertTrue(m.drop(other, fileName: "client_secret_9999-other.json"))
+        session.emit(#"{"result":"ok","account_id":4,"email":"bob@example.org"}"#)
+        session.exit()
+        await run.value
+        var events = connects.makeAsyncIterator()
+        await events.next()
+        XCTAssertEqual(connectedCount, 1)
+        XCTAssertEqual(m.phase, .idle, "the new form stays")
+        XCTAssertEqual(m.droppedLine, "client_secret_9999-other.json · project acme")
+    }
+
     /// Cancel does nothing once a run has ended: its result stays, nothing
     /// is re-read.
     func testCancelLeavesAFinishedRun() async {

@@ -65,6 +65,9 @@ package final class OwnGoogleProjectModel {
     /// The running sign-in; nil when none runs or Cancel ended it. A run's
     /// answer lands only while it is still this one.
     @ObservationIgnored private var run: Run?
+    /// Bumped by every new form (a drop, a reset) and every Connect: a cancelled
+    /// run's late Done shows only while the page is still the form it left.
+    @ObservationIgnored private var formGeneration = 0
 
     private struct Run {
         /// Reads the CLI's lines to its end, then waits for its exit.
@@ -127,6 +130,7 @@ package final class OwnGoogleProjectModel {
     }
 
     private func reset() {
+        formGeneration += 1
         phase = .idle
         notGranted = []
         file = nil
@@ -147,6 +151,7 @@ package final class OwnGoogleProjectModel {
         fileProblem = false
         file = DroppedFile(name: fileName, client: client)
         phase = .idle
+        formGeneration += 1
         return true
     }
 
@@ -165,6 +170,7 @@ package final class OwnGoogleProjectModel {
     package func connect() async {
         guard canConnect, let file else { return }
         phase = .checking
+        formGeneration += 1
         let args = Self.connectArgs(clientID: file.client.clientID)
         let stdin = Data((file.client.clientSecret + "\n").utf8)
         let session = makeStreamer()?.oneShot(args: args, stdin: stdin)
@@ -192,16 +198,19 @@ package final class OwnGoogleProjectModel {
         old.session?.terminate()
         run = nil
         phase = .idle
+        let generation = formGeneration
         Task {
             let answer = await old.task.value
+            // Go prints `ok` only after it saved the account: even a run
+            // killed after that line is a finished connect.
             guard answer.failure == nil, let result = answer.result, result.result == "ok" else {
                 onCancelled?()
                 return
             }
-            if run == nil, phase == .idle {
+            if formGeneration == generation, phase == .idle {
                 apply(result) // the done page and onConnected
             } else {
-                onConnected?() // a new run owns the page; still re-read and re-wire
+                onConnected?() // a new form or run owns the page; still re-read and re-wire
             }
         }
     }
