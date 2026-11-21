@@ -61,12 +61,15 @@ final class ConnectRunServerTests: XCTestCase {
         }
     }
 
-    /// `hold` runs until it is cancelled; any other tool answers at once with
-    /// `{"tool":…}` under a wrong id (the server must put the request's).
+    /// `hold` runs until it is cancelled; `big` answers ~900 KB (more than a
+    /// socket buffer, less than a wire line); any other tool answers at once
+    /// with `{"tool":…}` under a wrong id (the server must put the
+    /// request's). `keep` false leaves the server's lifetime to the test.
     private func makeServer(
         service: String = "slack",
         ownerUID: uid_t = getuid(),
-        log: HandlerLog? = nil
+        log: HandlerLog? = nil,
+        keep: Bool = true
     ) -> ConnectRunServer {
         let log = log ?? HandlerLog()
         let server = ConnectRunServer(service: service, ownerUID: ownerUID, helloWithin: nil) { request in
@@ -78,9 +81,12 @@ final class ConnectRunServerTests: XCTestCase {
                 return ConnectWireResponse(id: request.id, error: .failed, message: "held")
             }
             log.finish(request.id, cancelled: false)
+            if request.tool == "big" {
+                return .result(id: 999, json: Data(#"{"pad":"\#(String(repeating: "a", count: 900_000))"}"#.utf8))
+            }
             return .result(id: 999, json: Data(#"{"tool":"\#(request.tool)"}"#.utf8))
         }
-        servers.append(server)
+        if keep { servers.append(server) }
         return server
     }
 
@@ -309,6 +315,138 @@ final class ConnectRunServerTests: XCTestCase {
         client.send(#"{"id":1,"tool":"connect_status","args":{"x":"\#(padding)"}}"#)
         let reply = await client.readLine()
         XCTAssertNil(reply)
+    }
+
+    /// Handlers start in arrival order through the FIFO even while earlier
+    /// calls are still running; a finished call is no longer tracked.
+    func testHandlersStartInArrivalOrderWhileOverlapping() async throws {
+        let log = HandlerLog()
+        let server = makeServer(log: log)
+        let (path, token) = try server.start()
+        let client = try await admittedClient(path, token: token)
+
+        client.send([
+            #"{"id":1,"tool":"hold","args":{}}"#,
+            #"{"id":2,"tool":"connect_status","args":{}}"#,
+            #"{"id":3,"tool":"hold","args":{}}"#,
+            #"{"id":4,"tool":"connect_status","args":{}}"#
+        ].joined(separator: "\n"))
+
+        let first = try await response(client)
+        let second = try await response(client)
+        XCTAssertEqual([first.id, second.id], [2, 4])
+        XCTAssertEqual(log.started, [1, 2, 3, 4])
+        XCTAssertEqual(server.core.runningCalls, 2, "only the two held calls are tracked")
+    }
+
+    /// Requests already read when the run stops never reach the handler.
+    func testQueuedRequestsNeverStartAfterStop() async throws {
+        let log = HandlerLog()
+        let server = makeServer(log: log)
+        let queued = DispatchSemaphore(value: 0)
+        server.core.onQueued = { queued.signal() }
+        let (path, token) = try server.start()
+        let client = try await admittedClient(path, token: token)
+
+        client.send([
+            #"{"id":1,"tool":"connect_status","args":{}}"#,
+            #"{"id":2,"tool":"connect_status","args":{}}"#
+        ].joined(separator: "\n"))
+        // The main actor stays blocked until both are queued, so the
+        // dispatcher cannot start either before the stop.
+        Self.waitBlocking(queued, times: 2)
+        server.stop()
+
+        await server.core.dispatcher?.value
+        XCTAssertEqual(log.started, [])
+        let reply = await client.readLine()
+        XCTAssertNil(reply)
+    }
+
+    /// A peer that stops reading in the middle of a large answer, then sends
+    /// garbage: its reader ends, the blocked write is failed, and the
+    /// descriptor closes.
+    func testReaderEndUnblocksStuckWrite() async throws {
+        let log = HandlerLog()
+        let server = makeServer(log: log)
+        let closed = Self.closedEvents(server)
+        let (path, token) = try server.start()
+        let client = try await admittedClient(path, token: token)
+
+        client.send(#"{"id":1,"tool":"big","args":{}}"#)
+        var event = await log.next()
+        while let current = event, current != .finished(1, cancelled: false) { event = await log.next() }
+        client.send("garbage")
+
+        var events = closed.makeAsyncIterator()
+        _ = await events.next()
+        XCTAssertEqual(server.core.openConnections, 0)
+        _ = try await admittedClient(path, token: token)
+    }
+
+    /// The same stuck peer, still connected: stop cuts it.
+    func testStopCutsPeerThatStoppedReading() async throws {
+        let log = HandlerLog()
+        let server = makeServer(log: log)
+        let closed = Self.closedEvents(server)
+        let (path, token) = try server.start()
+        let client = try await admittedClient(path, token: token)
+        client.send(#"{"id":1,"tool":"big","args":{}}"#)
+        var event = await log.next()
+        while let current = event, current != .finished(1, cancelled: false) { event = await log.next() }
+
+        server.stop()
+        var events = closed.makeAsyncIterator()
+        _ = await events.next()
+        XCTAssertEqual(server.core.openConnections, 0)
+    }
+
+    /// Nothing but the owner keeps the server alive: releasing it ends the
+    /// run like `stop`.
+    func testReleasingServerStopsRun() async throws {
+        var server: ConnectRunServer? = makeServer(keep: false)
+        weak let released = server
+        let (path, token) = try XCTUnwrap(server).start()
+        let dir = (path as NSString).deletingLastPathComponent
+        let client = try await admittedClient(path, token: token)
+
+        server = nil
+
+        XCTAssertNil(released)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir))
+        let reply = await client.readLine()
+        XCTAssertNil(reply)
+    }
+
+    func testNoStartAfterStop() {
+        let server = makeServer()
+        server.stop()
+        XCTAssertThrowsError(try server.start()) { XCTAssertEqual($0 as? ConnectRunServer.ServerError, .alreadyStarted) }
+    }
+
+    /// Only an empty peek (EOF) or a real error is a hang-up; nothing to read
+    /// yet is a live peer.
+    func testHungUpOnlyOnEOF() {
+        XCTAssertTrue(ConnectRunPeer.peekMeansHungUp(0, errno: 0))
+        XCTAssertFalse(ConnectRunPeer.peekMeansHungUp(1, errno: 0))
+        XCTAssertFalse(ConnectRunPeer.peekMeansHungUp(-1, errno: EAGAIN))
+        XCTAssertFalse(ConnectRunPeer.peekMeansHungUp(-1, errno: EWOULDBLOCK))
+        XCTAssertFalse(ConnectRunPeer.peekMeansHungUp(-1, errno: EINTR))
+        XCTAssertTrue(ConnectRunPeer.peekMeansHungUp(-1, errno: ECONNRESET))
+    }
+
+    /// Blocks the calling thread (the main actor here) until `semaphore` is
+    /// signalled `times` times.
+    nonisolated private static func waitBlocking(_ semaphore: DispatchSemaphore, times: Int) {
+        for _ in 0..<times { semaphore.wait() }
+    }
+
+    /// One event per closed connection descriptor.
+    private static func closedEvents(_ server: ConnectRunServer) -> AsyncStream<Void> {
+        let (stream, continuation) = AsyncStream.makeStream(of: Void.self)
+        server.core.onClosed = { continuation.yield() }
+        return stream
     }
 
     func testTokenComparison() {
