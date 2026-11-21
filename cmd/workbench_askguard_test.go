@@ -1689,6 +1689,9 @@ func TestAskGuard_StaleSidecarLineNotArmed(t *testing.T) {
 	database, pid, row := stopGuardFixture(t)
 	path := filepath.Join(t.TempDir(), "watchman.armed")
 	require.NoError(t, watchmanact.WriteSidecar(path, []db.ArmedSession{{SessionID: row}}, false))
+	orig := askGuardSidecarPath
+	askGuardSidecarPath = func() string { return path }
+	t.Cleanup(func() { askGuardSidecarPath = orig })
 	armed, ok := askGuardSessionArmed(database, row, path)
 	assert.False(t, armed)
 	assert.True(t, ok)
