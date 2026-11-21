@@ -29,8 +29,8 @@ A Slack problem never ends the run: the other vendor pages go on, and only Publi
 
 Run this last, after the Microsoft 365 page.
 
-1. **Agent:** Ask the customer for the link deny list: hosts whose links Watchtower never opens, such as the intranet (`intranet.example.com`, no `https://` or path). Save them with `company_draft`, or none.
-2. **Agent:** Call `company_draft`. Every service the company uses is checked, or skipped by the customer; Atlassian also needs the customer's three ticks; a Slack app is ready. Read the company name to the customer and save a change with `company_draft`.
+1. **Agent:** Ask the customer for the link deny list: hosts whose links Watchtower never fetches or reads on its own to add to knowledge, such as the intranet (`intranet.example.com`, no `https://` or path). Save them with `company_draft`, or none.
+2. **Agent:** Call `company_draft`. Every service the company uses is checked, or skipped by the customer; Atlassian also needs the customer's three ticks; when Slack is part of the setup, its app is ready. A company without Slack publishes without it: no token, and the result is `no_slack`. Read the company name to the customer and save a change with `company_draft`.
 3. **Agent:** Call `company_publish`. The panel shows a confirm card: Publish writes the connect link and code to the About page of the company's Slack app, which the whole company sees.
 4. **You:** Read the card and press its confirm button, or decline. A decline writes nothing.
 5. **Agent:** With Slack in the setup, after the confirm, open api.slack.com/apps, scroll to **Your App Configuration Tokens** and stop there. Call `request_secret` with kind `slack_config_token`. Without Slack, skip to step 7.
