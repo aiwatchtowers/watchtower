@@ -20,6 +20,8 @@ package final class CompanyScriptedCLI: CLILineStreaming, @unchecked Sendable {
     private var held: [(prefix: [String], sink: AsyncThrowingStream<String, Error>.Continuation)] = []
     private var recorded: [Call] = []
     private var cancelledRuns: [[String]] = []
+    private var exitHolds: [[String]] = []
+    private var exitGates: [(prefix: [String], gate: ExitGate)] = []
     package let signal = StateSignal()
     package var setups = #"{"setups":[]}"#
 
@@ -105,7 +107,27 @@ package final class CompanyScriptedCLI: CLILineStreaming, @unchecked Sendable {
 
     /// The scripted `lines` run as a session that has already ended.
     package func oneShot(args: [String], stdin: Data?) -> any CLILineSession {
-        EndedLinesSession(lines: lines(args: args, stdin: stdin))
+        let gate = lock.withLock { () -> ExitGate? in
+            guard let index = exitHolds.firstIndex(where: { Array(args.prefix($0.count)) == $0 }) else { return nil }
+            let gate = ExitGate()
+            exitGates.append((exitHolds.remove(at: index), gate))
+            return gate
+        }
+        return EndedLinesSession(lines: lines(args: args, stdin: stdin), exit: gate)
+    }
+
+    /// The next one-shot run with this prefix "exits" only at `releaseExit`
+    /// (its lines end as usual): a child killed but not yet reaped.
+    package func holdExit(_ prefix: [String]) {
+        lock.withLock { exitHolds.append(prefix) }
+    }
+
+    package func releaseExit(_ prefix: [String]) {
+        let gate = lock.withLock { () -> ExitGate? in
+            guard let index = exitGates.firstIndex(where: { $0.prefix == prefix }) else { return nil }
+            return exitGates.remove(at: index).gate
+        }
+        gate?.open()
     }
 
     /// The wizard runs no long-lived child; a stray one is recorded and never answers.
@@ -115,16 +137,45 @@ package final class CompanyScriptedCLI: CLILineStreaming, @unchecked Sendable {
     }
 }
 
-/// A scripted run seen as a session: its lines, no child to kill or wait for.
+/// A scripted run seen as a session: its lines; it has exited unless its
+/// exit is held (`holdExit`).
 private final class EndedLinesSession: CLILineSession, @unchecked Sendable {
     let lines: AsyncThrowingStream<String, Error>
+    private let exit: ExitGate?
 
-    init(lines: AsyncThrowingStream<String, Error>) {
+    init(lines: AsyncThrowingStream<String, Error>, exit: ExitGate?) {
         self.lines = lines
+        self.exit = exit
     }
 
     func write(_ data: Data) {}
     func closeInput() {}
     func terminate() {}
-    func waitForExit() async {}
+    func waitForExit() async { await exit?.wait() }
+}
+
+/// A held child's exit: `wait` returns once `open` was called.
+private final class ExitGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func open() {
+        let woken = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            opened = true
+            defer { waiters = [] }
+            return waiters
+        }
+        woken.forEach { $0.resume() }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            let ready = lock.withLock { () -> Bool in
+                if !opened { waiters.append(waiter) }
+                return opened
+            }
+            if ready { waiter.resume() }
+        }
+    }
 }
