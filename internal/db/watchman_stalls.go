@@ -130,12 +130,22 @@ func (db *DB) WatchmanSessionAskCount(sessionID int64) (int, error) {
 }
 
 // WatchmanSessionItemsPending reports whether sessionID has a Watchman item
-// still queued or being decided (any kind: a code review, a question, a
-// handover): the session waits on Watchman, not stalled.
+// still queued or being decided that it waits on: its code review (or any
+// item not bound to an ask) always; an ask-bound one (a question, a check,
+// a review, a handover) only while its ask is open — a handover also while
+// held for the finish, or while its ask was answered by the twin as a
+// question. A stale item whose ask the owner answered or withdrew does not
+// keep the session off the stall watch.
 func (db *DB) WatchmanSessionItemsPending(sessionID int64) (bool, error) {
 	var yes bool
-	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM watchman_items
-		WHERE session_id = ? AND state IN ('queued','deciding'))`, sessionID).Scan(&yes); err != nil {
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM watchman_items i
+		WHERE i.session_id = ? AND i.state IN ('queued','deciding')
+		  AND (i.ref_kind != 'ask'
+		       OR (i.kind = 'handover' AND i.error = `+watchmanHeldSQL+`)
+		       OR EXISTS (SELECT 1 FROM owner_asks a WHERE a.id = i.ref_id AND (a.status = 'open'
+		           OR (i.kind = 'handover' AND a.status IN ('answered','delivered') AND EXISTS (SELECT 1 FROM watchman_items t
+		               WHERE t.ref_kind = 'ask' AND t.ref_id = a.id AND t.kind != 'handover' AND t.state = 'done' AND t.outcome = 'answered'))))))`,
+		sessionID).Scan(&yes); err != nil {
 		return false, fmt.Errorf("reading the pending watchman items of session %d: %w", sessionID, err)
 	}
 	return yes, nil

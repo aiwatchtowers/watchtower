@@ -660,7 +660,7 @@ final class WatchmanJournalViewModel {
              meta: WatchmanJournalCopy.meta(item), outcome: WatchmanJournalCopy.outcome(item), handed: false,
              canJudge: item.feedback.isEmpty, feedbackLine: feedbackLine(item), sendLine: sendLine(item),
              sendFailed: sendState(item).map { if case .failed = $0 { true } else { false } } ?? false,
-             canOpen: item.sessionID > 0 || startedSessions[item.id] != nil)
+             canOpen: startedSessions[item.id] != nil || (item.sessionID > 0 && item.sessionExists))
     }
 
     private func feedbackLine(_ item: WatchmanItem) -> String? {

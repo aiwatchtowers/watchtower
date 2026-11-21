@@ -352,8 +352,28 @@ func TestWatchmanSessionItemsPending(t *testing.T) {
 	_, err = d.Exec(`UPDATE watchman_items SET state = 'done' WHERE id = ?`, review)
 	require.NoError(t, err)
 	assert.False(t, pending(), "decided")
-	insert(s, "ask", "ask", 9, "queued")
-	assert.True(t, pending(), "a question queued")
+	stale := insert(s, "ask", "ask", 9, "queued")
+	assert.False(t, pending(), "an ask item whose ask is gone")
+	_, err = d.Exec(`DELETE FROM watchman_items WHERE id = ?`, stale)
+	require.NoError(t, err)
+
+	// An ask-bound item counts only while its ask is open.
+	ask := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: wb, SessionID: nullID(s), Kind: "question", Title: "Flag?"})
+	item := insert(s, "ask", "ask", ask, "queued")
+	assert.True(t, pending(), "a question queued while its ask is open")
+	markAskAnswered(t, d, ask)
+	assert.False(t, pending(), "the owner answered it: stale, not waited on")
+	// A handover held for the finish counts whatever its ask's status.
+	_, err = d.Exec(`UPDATE watchman_items SET kind = 'handover', error = ? WHERE id = ?`, WatchmanHandoverHeld, item)
+	require.NoError(t, err)
+	assert.True(t, pending(), "a held handover")
+	_, err = d.Exec(`UPDATE watchman_items SET error = '' WHERE id = ?`, item)
+	require.NoError(t, err)
+	assert.False(t, pending(), "a released handover of an ask the owner answered")
+	_, err = d.Exec(`INSERT INTO watchman_items (workbench_id, session_id, kind, ref_kind, ref_id, state, outcome, created_at)
+		VALUES (?, ?, 'ask', 'ask', ?, 'done', 'answered', ?)`, wb, s, ask, wmTime(time.Now()))
+	require.NoError(t, err)
+	assert.True(t, pending(), "a handover of an ask the twin answered as a question")
 }
 
 // Fix 8: a session ArmWatchmanSet newly arms — directly or under a target

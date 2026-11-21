@@ -352,6 +352,30 @@ final class WatchmanCorrectTests: XCTestCase {
         XCTAssertEqual(recorder.routes, [WorkbenchRoute(projectID: 1, pane: .terminal, subjectID: 43)])
     }
 
+    /// A decided card whose session was deleted offers no Open session (the
+    /// button would do nothing); one with a live session does.
+    func testDecidedCardWithSessionGoneHasNoOpen() {
+        let recorder = Recorder()
+        var gone = item(1838)
+        gone.sessionID = 44
+        gone.sessionExists = false
+        var live = item(1839)
+        live.sessionID = 45
+        let night = WatchmanNight(date: date("2026-11-16T12:00:00Z"), decided: [gone, live])
+        var actions = WatchmanJournalViewModel.Actions.none
+        actions.open = { recorder.routes.append($0) }
+        let vm = WatchmanJournalViewModel(read: { .init(nights: [night], deciding: []) }, calendar: calendar,
+                                          actions: actions)
+        vm.apply(.success(.init(nights: [night], deciding: [])))
+        let cards = Dictionary(uniqueKeysWithValues: (vm.page?.decided ?? []).map { ($0.id, $0) })
+        XCTAssertEqual(cards[1838]?.canOpen, false)
+        XCTAssertEqual(cards[1839]?.canOpen, true)
+        vm.openSession(1838)
+        XCTAssertEqual(recorder.routes, [])
+        vm.openSession(1839)
+        XCTAssertEqual(recorder.routes, [WorkbenchRoute(projectID: 1, pane: .terminal, subjectID: 45)])
+    }
+
     /// A handover whose next session did not start waits too: Mark done
     /// clears it with owner_done_at, never check_done_at.
     func testMarkDoneClearsAFailedHandoverStart() async {

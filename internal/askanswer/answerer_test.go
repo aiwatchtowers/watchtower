@@ -472,14 +472,15 @@ func TestAnswerer_SubmitLineNowOnlyIntoTheSameStop(t *testing.T) {
 	e.exec(`UPDATE owner_asks SET status = 'answered', answer = '{}' WHERE id = ?`, s.ask)
 
 	// The agent goes on between the paste and the Return: the host leaves
-	// the line typed (its re-check refused the Return); nothing counted.
+	// the line typed (its re-check refused the Return); it counts as typed,
+	// so the stall watch's stuck park can surface it.
 	e.port.onDeliver = func(DeliverRequest) {
 		e.exec(`UPDATE terminal_sessions SET agent_state = 'working', agent_state_at = ? WHERE id = ?`,
 			db.AgentStateStamp(at.Add(3*time.Second)), s.session)
 	}
 	e.port.result = DeliverResult{Outcome: DeliverTyped, Reason: "cannot_submit"}
-	if got := e.a.SubmitLineNow(ctx, s.session, stop, "ping"); got != DeliveryHeld {
-		t.Fatalf("went on during the pause: %q, want held (not counted)", got)
+	if got := e.a.SubmitLineNow(ctx, s.session, stop, "ping"); got != DeliveryTyped {
+		t.Fatalf("went on during the pause: %q, want typed (left in the prompt)", got)
 	}
 	e.port.mu.Lock()
 	checks := append([]CheckAnswer(nil), e.port.checks...)
@@ -487,6 +488,25 @@ func TestAnswerer_SubmitLineNowOnlyIntoTheSameStop(t *testing.T) {
 	if len(checks) != 1 || !checks[0].Fresh || checks[0].CanSubmit {
 		t.Fatalf("checks = %+v, want one fresh refusing the Return", checks)
 	}
+
+	// The re-check cannot read the state (the row is being deleted): no
+	// Return, the line left typed.
+	e.exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ? WHERE id = ?`,
+		db.AgentStateStamp(at.Add(3*time.Second)), s.session)
+	stop = e.stopOf(s.session)
+	e.port.onDeliver = func(DeliverRequest) {
+		e.exec(`UPDATE terminal_sessions SET delete_requested_at = ? WHERE id = ?`, db.AgentStateStamp(at), s.session)
+	}
+	if got := e.a.SubmitLineNow(ctx, s.session, stop, "ping"); got != DeliveryTyped {
+		t.Fatalf("unread re-check: %q, want typed", got)
+	}
+	e.port.mu.Lock()
+	unread := e.port.checks[len(e.port.checks)-1]
+	e.port.mu.Unlock()
+	if unread.Fresh || unread.CanSubmit {
+		t.Fatalf("check = %+v, want an unread one refusing the Return", unread)
+	}
+	e.exec(`UPDATE terminal_sessions SET delete_requested_at = NULL WHERE id = ?`, s.session)
 
 	// Still the same stop through the pause: the Return goes.
 	e.port.onDeliver = nil

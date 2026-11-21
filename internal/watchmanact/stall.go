@@ -133,7 +133,8 @@ func (t *Twin) liveChildren(ctx context.Context, id int64) (int, error) {
 //     once;
 //  2. the state: only a live run Resolve reads as stopped (its live
 //     sub-sessions counted), with no Watchman item of its own queued or
-//     deciding, for StallAfter goes on;
+//     deciding that it waits on (WatchmanSessionItemsPending), for
+//     StallAfter goes on;
 //  3. the decision: a parked row waits; after a stop later than the last
 //     ping, StallMaxPings counted → park with StallReason, else offer the
 //     ping through SubmitLineNow (never queued; the arming read again
@@ -213,8 +214,9 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 	if sessionstate.Resolve(row, now) != sessionstate.StateStopped {
 		return
 	}
-	// Waiting on Watchman itself (its code review, a question queued while
-	// it learns, a handover): not stopped — no ping, no park, the count kept.
+	// Waiting on Watchman itself (its code review, a question still open and
+	// queued while it learns, a held handover): not stopped — no ping, no
+	// park, the count kept.
 	if pending, err := t.d.DB.WatchmanSessionItemsPending(id); err != nil || pending {
 		if err != nil {
 			log.Printf("watchman stall: %v", err)
@@ -288,7 +290,9 @@ func (t *Twin) resetStall(st *db.WatchmanStallRow, head string, asks int) bool {
 
 // offerPing offers the ping, the arming read again right before and the
 // session still stopped by stop (the stop this tick read, SubmitLineNow
-// re-reads it before the paste and after the pause); true when
+// re-reads it before the paste and after the pause — a Return refused after
+// the paste leaves it typed, counted as typed so the stuck park can surface
+// it); true when
 // it reached the session (submitted or typed — never submitted or cleared
 // here, the prompt may hold the owner's text), which ends the tick. It is
 // counted only when its row is written: a failed write leaves st as it was

@@ -357,9 +357,10 @@ func (a *Answerer) lineCheck(sessionID int64, live LiveRun) func(ctx context.Con
 // failed read, a permission prompt, the owner's draft, an agent that went on
 // or asked since), DeliveryNoSession or DeliveryCannotType and is not
 // queued; the caller tries again itself. An agent that went on during the
-// pause gets no Return: the line stays typed and DeliveryHeld is returned
-// (the caller counts nothing). DeliverySubmitted is the only outcome that
-// reached the agent.
+// pause, or a re-check that could not read the state, gets no Return: the
+// line stays in the prompt and DeliveryTyped is returned (whatever the
+// reason), so the caller counts it as typed and its stuck park can surface
+// it. DeliverySubmitted is the only outcome that reached the agent.
 func (a *Answerer) SubmitLineNow(ctx context.Context, sessionID int64, stoppedSince time.Time, line string) string {
 	live, ok, err := a.d.Sessions.Live(ctx, sessionID)
 	if err != nil {
@@ -378,22 +379,15 @@ func (a *Answerer) SubmitLineNow(ctx context.Context, sessionID int64, stoppedSi
 	if s, r, fresh := ReadState(ctx, a.d.DB, sessionID, live, a.d.Clock()); !fresh || !sameStop(s, r) {
 		return DeliveryHeld
 	}
-	var mu sync.Mutex
-	moved := false
-	lineCheck := a.lineCheck(sessionID, live)
+	// lineCheck's gates and the same stop on one read: a Return only when
+	// that read succeeded and confirms both.
 	check := func(ctx context.Context) CheckAnswer {
-		ans := lineCheck(ctx)
-		if !ans.Fresh {
-			return ans
-		}
 		s, r, fresh := ReadState(ctx, a.d.DB, sessionID, live, a.d.Clock())
-		if fresh && !sameStop(s, r) {
-			mu.Lock()
-			moved = true
-			mu.Unlock()
-			ans.CanSubmit = false
+		return CheckAnswer{
+			Fresh:         fresh,
+			CanSubmit:     fresh && sessionstate.HooksReported(r) && !sessionstate.NeedsApproval(s) && sameStop(s, r),
+			AnswersDialog: sessionstate.NeedsApproval(s),
 		}
-		return ans
 	}
 	res, err := a.d.Sessions.Deliver(ctx, DeliverRequest{
 		SessionID: sessionID, Run: live.Run, Text: line, HoldIfPromptText: true, Settle: SubmitSettle,
@@ -409,11 +403,6 @@ func (a *Answerer) SubmitLineNow(ctx context.Context, sessionID int64, stoppedSi
 		}
 		return DeliverySubmitted
 	case DeliverTyped:
-		mu.Lock()
-		defer mu.Unlock()
-		if moved {
-			return DeliveryHeld
-		}
 		return DeliveryTyped
 	case DeliverHeld:
 		return DeliveryHeld

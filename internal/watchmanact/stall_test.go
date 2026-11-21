@@ -1032,29 +1032,57 @@ func TestStall_WaitingOnWatchmanReviewNotPinged(t *testing.T) {
 	}
 }
 
-// I1: a question queued while the workbench is learning (its item waits
-// for the end of learning) keeps the session waiting on Watchman, not
-// stopped; a ping already counted is kept, not raised.
-func TestStall_QueuedAskWhileLearningNotPinged(t *testing.T) {
+// I1: a handover held for the session's finish (its finish gate waits on
+// Watchman) keeps the session waiting on Watchman, not stopped; a ping
+// already counted is kept, not raised.
+func TestStall_HeldHandoverNotPinged(t *testing.T) {
 	e := newStallEnv(t)
 	at := e.pingCycle(stallT0)
 	if n := len(e.port.delivered()); n != 1 {
 		t.Fatalf("first ping = %d", n)
 	}
-	_, err := e.db.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, state, not_before, created_at)
-		VALUES (?, ?, ?, 'ask', 'ask', 77, 'queued', ?, ?)`, e.wb, e.session, e.target,
-		at.Add(24*time.Hour).Format(time.RFC3339Nano), at.Format(time.RFC3339Nano))
+	_, err := e.db.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, state, error, created_at)
+		VALUES (?, ?, ?, 'handover', 'ask', 77, 'queued', ?, ?)`, e.wb, e.session, e.target, db.WatchmanHandoverHeld,
+		at.Format(time.RFC3339Nano))
 	e.must(err)
 	for i := 0; i < 2*StallMaxPings; i++ {
 		at = e.pingCycle(at.Add(time.Minute))
 	}
 	if n := len(e.port.delivered()); n != 1 {
-		t.Fatalf("pings while the question waits = %d, want 1", n)
+		t.Fatalf("pings while the handover is held = %d, want 1", n)
 	}
 	if st := e.row(); st == nil || st.Pings != 1 || st.ParkedAt != nil {
 		t.Fatalf("row = %+v, want the count kept at 1, not parked", st)
 	}
 	if len(e.stallItems()) != 0 {
-		t.Fatal("parked while the question waits")
+		t.Fatal("parked while the handover is held")
+	}
+}
+
+// I1: a question queued while the workbench learns whose ask the owner
+// then answered is stale: it no longer keeps the session off the watch.
+func TestStall_AnsweredQueuedAskDoesNotBlockTheWatch(t *testing.T) {
+	e := newStallEnv(t)
+	var ask int64
+	e.must(e.db.WithTx(func(tx *sql.Tx) error {
+		var err error
+		ask, _, err = e.db.InsertOwnerAsk(tx, db.OwnerAsk{WorkbenchID: e.wb, SessionID: sql.NullInt64{Int64: e.session, Valid: true},
+			Kind: asks.KindQuestion, Title: "Flag?",
+			Payload: `{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}`})
+		return err
+	}))
+	_, err := e.db.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, state, not_before, created_at)
+		VALUES (?, ?, ?, 'ask', 'ask', ?, 'queued', ?, ?)`, e.wb, e.session, e.target, ask,
+		stallT0.Add(24*time.Hour).Format(time.RFC3339Nano), stallT0.Format(time.RFC3339Nano))
+	e.must(err)
+	at := e.pingCycle(stallT0)
+	if n := len(e.port.delivered()); n != 0 {
+		t.Fatalf("pinged %d times with the question open", n)
+	}
+	_, err = e.db.Exec(`UPDATE owner_asks SET status = 'answered', answer = '{}' WHERE id = ?`, ask)
+	e.must(err)
+	e.pingCycle(at.Add(time.Minute))
+	if n := len(e.port.delivered()); n != 1 {
+		t.Fatalf("pings after the owner answered = %d, want 1 (the queued item is stale)", n)
 	}
 }
