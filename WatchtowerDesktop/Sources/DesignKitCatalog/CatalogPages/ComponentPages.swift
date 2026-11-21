@@ -332,6 +332,7 @@ struct DisplayPage: View {
                         TowerRowState(state: .unknown, busyLabel: "Approving…") {}
                     }
                 }
+                SignInWaitSample()
             }
             PageSection("In place") {
                 Sample("The top of a target panel") {
@@ -424,6 +425,27 @@ struct ContainersPage: View {
                     Label("Not fully cleaned", systemImage: "exclamationmark.triangle")
                         .kitRow(isSelected: false, tint: Tone.warning)
                         .frame(width: 300)
+                }
+            }
+        }
+    }
+}
+
+/// The waiting browser sign-in (#2132): the whole line, and a row's split.
+private struct SignInWaitSample: View {
+    var body: some View {
+        Sample("SignInWaitLine: a browser sign-in waiting for the owner, with Cancel; a row splits it into "
+               + "SignInWaitText under its title and SignInWaitCancel in its trailing slot",
+               usage: "SignInWaitLine(line: copy.line, hint: copy.hint, cancelTitle: copy.cancelTitle) { cancel() }") {
+            VStack(alignment: .leading, spacing: Spacing.medium) {
+                SignInWaitLine(line: "Waiting for the Google sign-in in your browser…",
+                               hint: "If the page shows an error or you closed it, press Cancel.",
+                               cancelTitle: "Cancel") {}
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    SignInWaitText(line: "Waiting for the Slack sign-in in your browser…",
+                                   hint: "If the page shows an error or you closed it, press Cancel.")
+                    Spacer(minLength: Spacing.regular)
+                    SignInWaitCancel(cancelTitle: "Cancel") {}
                 }
             }
         }
