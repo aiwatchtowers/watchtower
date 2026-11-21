@@ -148,7 +148,14 @@ final class EmailAccountsViewModel {
             // Cancel (or a newer attempt) while it resolves drops this launch.
             process.environment = await Constants.resolvedEnvironmentAsync()
             guard await MainActor.run(body: { self.authProcess === process }) else { return }
-            let result = await Self.runProcess(process)
+            // A Cancel that landed while the launch was under way found
+            // nothing running to terminate: stop the child once it exists.
+            let onLaunch: @Sendable (Process) -> Void = { launched in
+                Task { @MainActor in
+                    if self.authProcess !== launched { launched.terminate() }
+                }
+            }
+            let result = await ProcessPipes.run(process, onLaunch: onLaunch).trimmed
             let applied = await MainActor.run {
                 // A Cancel meanwhile owns the state now.
                 guard self.authProcess === process else { return false }
@@ -169,9 +176,12 @@ final class EmailAccountsViewModel {
                 }
                 return true
             }
-            // A cancelled run: only re-read what it may have saved before it
-            // was killed (no daemon restart).
-            if !applied { await self.refreshAsync() }
+            guard !applied else { return }
+            // A cancelled run: re-read what it saved. One that had exited 0
+            // before the Cancel came is a finished connect and keeps its
+            // daemon restart; one the Cancel killed while saving does not.
+            await self.refreshAsync()
+            if result.exitCode == 0 { await self.daemon.restartLogging() }
         }
     }
 

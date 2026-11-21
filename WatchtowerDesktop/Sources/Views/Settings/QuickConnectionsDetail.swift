@@ -208,11 +208,11 @@ struct QuickConnectionRow: View {
             }
             Spacer()
             Circle()
-                .fill(statusColor)
+                .fill(wait == nil ? statusColor : Tone.status("gray"))
                 .frame(width: 8, height: 8)
-                .help(connection.isOK
+                .help(wait?.line ?? (connection.isOK
                     ? "OK"
-                    : (connection.error.isEmpty ? connection.status : connection.error))
+                    : (connection.error.isEmpty ? connection.status : connection.error)))
             if let wait {
                 SignInWaitCancel(cancelTitle: wait.cancelTitle) { vm.cancelSignIn() }
             } else {
@@ -226,7 +226,7 @@ struct QuickConnectionRow: View {
         let busy = vm.isBusy || vm.toolsInFlight.contains(connection.id)
         if connection.needsSignIn {
             Button("Sign in again") {
-                Task { await vm.signIn(connection) }
+                Task { await vm.signInAgain(connection) }
             }
             .buttonStyle(.kitQuiet)
             .disabled(busy)
@@ -244,8 +244,7 @@ struct QuickConnectionRow: View {
         // one still on can be turned off.
         .managedByOrganization(!connection.enabled && !connection.allowed(by: policy))
         Button("Remove", action: onRemove)
-            .buttonStyle(.kitQuiet)
-            .foregroundStyle(Tone.error)
+            .buttonStyle(KitQuietButtonStyle(label: Tone.error))
             .disabled(busy)
     }
 

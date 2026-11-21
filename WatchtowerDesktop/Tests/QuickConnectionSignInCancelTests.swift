@@ -13,11 +13,20 @@ import XCTest
 final class QuickConnectionSignInCancelTests: XCTestCase {
     private var pool: DatabasePool!
 
-    private func makeVM(_ stub: GatedLoginStub) throws -> ExternalConnectionsViewModel {
+    private func makeVM(
+        _ stub: GatedLoginStub, beforeLaunch: @escaping @Sendable () async -> Void = {}
+    ) throws -> ExternalConnectionsViewModel {
         let (pool, path) = try TestDatabase.createPool()
         addTeardownBlock { TestDatabase.cleanup(path: path) }
         self.pool = pool
-        return ExternalConnectionsViewModel(dbPool: pool, makeRunner: { nil }, cliPath: { stub.path })
+        return ExternalConnectionsViewModel(
+            dbPool: pool, makeRunner: { nil }, cliPath: { stub.path }, beforeLaunch: beforeLaunch
+        )
+    }
+
+    @MainActor
+    private final class VMBox {
+        var vm: ExternalConnectionsViewModel?
     }
 
     private func stub(ignoreTerm: Bool = false) throws -> GatedLoginStub {
@@ -35,8 +44,8 @@ final class QuickConnectionSignInCancelTests: XCTestCase {
         let vm = try makeVM(stub)
         let wiki = connection(3, "acme-wiki")
 
-        let run = Task { await vm.signIn(wiki) }
-        _ = await stub.nextRun()
+        let run = Task { await vm.signInAgain(wiki) }
+        _ = try await stub.nextRun(or: run)
         XCTAssertTrue(vm.isBusy)
         XCTAssertEqual(vm.signInWait(for: wiki), SignInWaitCopy(service: "acme-wiki"))
 
@@ -58,8 +67,8 @@ final class QuickConnectionSignInCancelTests: XCTestCase {
         let wiki = connection(3, "acme-wiki")
         XCTAssertTrue(vm.connections.isEmpty)
 
-        let run = Task { await vm.signIn(wiki) }
-        _ = await stub.nextRun()
+        let run = Task { await vm.signInAgain(wiki) }
+        _ = try await stub.nextRun(or: run)
         try await pool.write { db in
             try db.execute(sql: "INSERT INTO external_connections (name, kind, url, enabled, status, error) "
                 + "VALUES ('acme-wiki', 'http', 'https://mcp.example.com', 0, 'revoked', '')")
@@ -77,8 +86,8 @@ final class QuickConnectionSignInCancelTests: XCTestCase {
         let vm = try makeVM(stub)
         let wiki = connection(3, "acme-wiki")
 
-        let run = Task { await vm.signIn(wiki) }
-        await stub.release(await stub.nextRun(), exitCode: 0)
+        let run = Task { await vm.signInAgain(wiki) }
+        await stub.release(try await stub.nextRun(or: run), exitCode: 0)
         await run.value
 
         vm.cancelSignIn()
@@ -93,11 +102,11 @@ final class QuickConnectionSignInCancelTests: XCTestCase {
         let wiki = connection(3, "acme-wiki")
         let docs = connection(4, "acme-docs")
 
-        let first = Task { await vm.signIn(wiki) }
-        let firstPID = await stub.nextRun()
+        let first = Task { await vm.signInAgain(wiki) }
+        let firstPID = try await stub.nextRun(or: first)
         vm.cancelSignIn() // SIGTERM is ignored: the first run lives on
-        let second = Task { await vm.signIn(docs) }
-        let secondPID = await stub.nextRun()
+        let second = Task { await vm.signInAgain(docs) }
+        let secondPID = try await stub.nextRun(or: second)
 
         await stub.release(firstPID, exitCode: 1)
         await first.value
@@ -124,19 +133,56 @@ final class QuickConnectionSignInCancelTests: XCTestCase {
 
         XCTAssertThrowsError(try row.inspect().find(text: copy.line))
         XCTAssertNoThrow(try row.inspect().find(button: "Sign in again"))
+        XCTAssertNoThrow(try row.inspect().find(ViewType.Toggle.self))
 
-        let run = Task { await vm.signIn(wiki) }
-        _ = await stub.nextRun()
+        let run = Task { await vm.signInAgain(wiki) }
+        _ = try await stub.nextRun(or: run)
         XCTAssertNoThrow(try row.inspect().find(text: copy.line))
         XCTAssertNoThrow(try row.inspect().find(text: copy.hint))
         XCTAssertThrowsError(try row.inspect().find(button: "Sign in again"))
         XCTAssertThrowsError(try row.inspect().find(button: "Remove"))
+        XCTAssertThrowsError(try row.inspect().find(ViewType.Toggle.self))
 
         try row.inspect().find(button: copy.cancelTitle).tap()
         XCTAssertFalse(vm.isBusy)
         XCTAssertNil(vm.signInConnectionID)
         await run.value
         XCTAssertNil(vm.error)
+    }
+
+    /// A sign-in the Add sheet or an import runs is cancelled there (an
+    /// import's Cancel also stops its next sign-ins), so no row shows it.
+    func testASignInTheRowDidNotStartIsNotShownOnTheRow() async throws {
+        let stub = try stub()
+        let vm = try makeVM(stub)
+        let wiki = connection(3, "acme-wiki")
+        let row = QuickConnectionRow(connection: wiki, vm: vm, policy: .none) {}
+
+        let run = Task { await vm.signIn(wiki) }
+        _ = try await stub.nextRun(or: run)
+        XCTAssertTrue(vm.isBusy)
+        XCTAssertNil(vm.signInWait(for: wiki))
+        XCTAssertThrowsError(try row.inspect().find(button: SignInWaitCopy(service: "acme-wiki").cancelTitle))
+
+        vm.cancelSignIn()
+        await run.value
+    }
+
+    /// A Cancel that lands after the identity check but before the child
+    /// runs finds nothing to terminate; the child is stopped as soon as it
+    /// launches, so it never signs in.
+    func testCancelDuringTheLaunchStopsTheChild() async throws {
+        let stub = try stub()
+        let box = VMBox()
+        let vm = try makeVM(stub) { await MainActor.run { box.vm?.cancelSignIn() } }
+        box.vm = vm
+
+        let run = Task { await vm.signInAgain(connection(3, "acme-wiki")) }
+        await run.value // the stub would wait at its gate for ever without the post-launch check
+
+        XCTAssertFalse(vm.isBusy)
+        XCTAssertNil(vm.error)
+        XCTAssertNil(vm.signInConnectionID)
     }
 }
 
@@ -165,7 +211,7 @@ final class OutlookConnectCancelTests: XCTestCase {
         let vm = try makeVM(stub, daemon: daemon)
 
         let run = try XCTUnwrap(vm.connectOutlook())
-        _ = await stub.nextRun()
+        _ = try await stub.nextRun(or: run)
         XCTAssertTrue(vm.isRunning)
 
         vm.cancelConnect()
@@ -188,7 +234,7 @@ final class OutlookConnectCancelTests: XCTestCase {
         vm.onAccountsChanged = { rereads += 1 }
 
         let run = try XCTUnwrap(vm.connectOutlook())
-        _ = await stub.nextRun()
+        _ = try await stub.nextRun(or: run)
         _ = try await pool.write { db in
             try TestDatabase.insertEmailAccount(db, provider: "outlook", emailAddress: "owner@example.com")
         }
@@ -206,7 +252,7 @@ final class OutlookConnectCancelTests: XCTestCase {
         let vm = try makeVM(stub, daemon: FakeDaemonRestarter())
 
         let run = try XCTUnwrap(vm.connectOutlook())
-        await stub.release(await stub.nextRun(), exitCode: 0)
+        await stub.release(try await stub.nextRun(or: run), exitCode: 0)
         await run.value
 
         vm.cancelConnect()
@@ -220,21 +266,25 @@ final class OutlookConnectCancelTests: XCTestCase {
         let vm = try makeVM(stub, daemon: daemon)
 
         let first = try XCTUnwrap(vm.connectOutlook())
-        let firstPID = await stub.nextRun()
+        let firstPID = try await stub.nextRun(or: first)
         vm.cancelConnect() // SIGTERM is ignored: the first run lives on
         let second = try XCTUnwrap(vm.connectOutlook())
-        let secondPID = await stub.nextRun()
+        let secondPID = try await stub.nextRun(or: second)
 
         await stub.release(firstPID, exitCode: 1)
         await first.value
         XCTAssertTrue(vm.isRunning, "the stale completion must not reset the second connect")
         XCTAssertNil(vm.error)
 
+        XCTAssertEqual(daemon.restartCount, 0)
+
+        // The second exits 0 though cancelled: a finished connect, so it
+        // keeps its daemon restart.
         vm.cancelConnect()
         await stub.release(secondPID, exitCode: 0)
         await second.value
         XCTAssertFalse(vm.isRunning)
         XCTAssertNil(vm.error)
-        XCTAssertEqual(daemon.restartCount, 0)
+        XCTAssertEqual(daemon.restartCount, 1)
     }
 }
