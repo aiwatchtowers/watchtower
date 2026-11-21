@@ -598,7 +598,9 @@ public final class HostedRelayConnection: Sendable {
             await dial.value
             timer.cancel()
         }
-        Task { await old.socket.close(code: Self.closeNormal) }
+        // Closed before the wake returns (the contract above), not in a detached task: a close only cancels the
+        // socket and never waits on the network.
+        await old.socket.close(code: Self.closeNormal)
     }
 
     /// Cuts the reconnect loop's backoff short, or skips its next one.
