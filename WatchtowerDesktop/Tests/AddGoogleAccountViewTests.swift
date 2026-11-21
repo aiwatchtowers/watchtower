@@ -50,7 +50,7 @@ final class AddGoogleAccountViewTests: XCTestCase {
         let view = AddGoogleAccountView(offersGmail: false).environment(appState)
 
         try view.inspect().find(button: "Connect").tap()
-        await vm.addTask?.value
+        await vm.signInTask?.value
         let args = try String(contentsOf: cli.log, encoding: .utf8)
         XCTAssertEqual(args.trimmingCharacters(in: .whitespacesAndNewlines), "google add --app-return --calendar")
     }

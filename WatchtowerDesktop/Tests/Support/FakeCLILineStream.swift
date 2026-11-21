@@ -127,7 +127,7 @@ package final class FakeCLILineSession: CLILineSession, @unchecked Sendable {
     private var written: [Data] = []
     private var inputClosedFlag = false
     private var terminatedFlag = false
-    private var consumerCancelledFlag = false
+    private var exitsOnTerminateFlag = true
     private var exited = false
     private var exitWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -135,24 +135,6 @@ package final class FakeCLILineSession: CLILineSession, @unchecked Sendable {
         self.args = args
         self.signal = signal
         (lines, sink) = AsyncThrowingStream.makeStream(of: String.self)
-        sink.onTermination = { [weak self] termination in
-            if case .cancelled = termination { self?.markConsumerCancelled() }
-        }
-    }
-
-    /// The code under test cancelled its read of `lines` — what a real
-    /// session turns into a kill of the child's group. Unlike `terminated`,
-    /// the fake child keeps running until the test calls `exit`.
-    package var consumerCancelled: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return consumerCancelledFlag
-    }
-
-    private func markConsumerCancelled() {
-        lock.lock()
-        consumerCancelledFlag = true
-        lock.unlock()
-        signal.changed()
     }
 
     /// What was written to stdin, in order.
@@ -205,11 +187,20 @@ package final class FakeCLILineSession: CLILineSession, @unchecked Sendable {
         signal.changed()
     }
 
+    /// `terminate()` ends the child at once (default). False: it is only
+    /// recorded and the child lives on until the test calls `exit`, as a
+    /// killed process does until it is reaped.
+    package var exitsOnTerminate: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return exitsOnTerminateFlag }
+        set { lock.lock(); exitsOnTerminateFlag = newValue; lock.unlock() }
+    }
+
     package func terminate() {
         lock.lock()
         terminatedFlag = true
+        let exits = exitsOnTerminateFlag
         lock.unlock()
-        exit(code: 0)
+        if exits { exit(code: 0) }
     }
 
     package func waitForExit() async {
