@@ -209,10 +209,9 @@ func (w *world) launched(row int64) sessionhost.SessionInfo {
 	eventually(w.t, "session "+strconv.FormatInt(row, 10)+" launched", func() bool {
 		info, ok := findRun(w.list(), sessionhost.Scope(w.dbPath), row)
 		got = info
-		// The stub's shell redirect creates cwd.N empty before pwd writes it:
-		// wait for the content, not the file.
-		st, err := os.Stat(filepath.Join(w.stub, "cwd."+strconv.FormatInt(row, 10)))
-		return ok && !info.Exited && err == nil && st.Size() > 0
+		// The stub renames cwd.N in whole: once it exists, it is written.
+		_, err := os.Stat(filepath.Join(w.stub, "cwd."+strconv.FormatInt(row, 10)))
+		return ok && !info.Exited && err == nil
 	})
 	return got
 }
