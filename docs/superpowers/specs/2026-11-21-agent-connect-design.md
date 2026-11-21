@@ -24,7 +24,7 @@ Success: a customer who has never seen Slack's app console connects Slack, Googl
 - Removing or rewriting today's connect screens: they stay as the manual path (ask #1702).
 
 **Anti-goals** (a failure even if it works)
-- A secret (Slack configuration token, IMAP password, API key, ICS URL, client secret) passing through the model — its context, a transcript, a log.
+- A secret (Slack configuration token, IMAP password, API key, ICS URL, a client secret the customer pastes) passing through the model — its context, a transcript, a log. The one proposed exception, loopback-only OAuth client secrets in the company setup, is decision P2 (§12).
 - The agent writing to Watchtower by any path other than the flows the buttons already use.
 - A web page the agent reads making it do something outside the playbook (prompt injection).
 - A customer stuck: when the assistant fails, the panel always offers **Set up by hand**, which opens today's screen for that connector.
@@ -56,7 +56,7 @@ Success: a customer who has never seen Slack's app console connects Slack, Googl
 
 - A new embedded chat surface `connect` (`ChatSurfaceSpec`, memory persistence: a setup chat is not kept as a conversation). First-turn prompt = the connect system prompt (role, the injection rules of §6, the steps-in-words fallback) + the playbook text + the current state from `connect_status` (§5.3). The surface is per connector; reopening the panel during a run shows the live chat.
 - Harness: the base harness from onboarding (the app's provider; onboarding does not let the customer past without one), switchable in the panel among the allowed ones (`AllowedAIProviders`). A harness without tool calling in embedded chats (Ollama today) does not get the button; the manual screens are its path.
-- Browser on: Claude — `--chrome` added for this surface only (a new `ClaudeOptions.Chrome` field). Codex — `browser_use` and `browser_use_external` removed from the forced-off list for this surface only (a per-run override; the snapshot test pins both lists). Every other surface keeps the browser off.
+- Browser on: Claude — `--chrome` added for this surface only (a new `ClaudeOptions.Chrome` field). Codex — the browser stays forced off until spike S3 shows a browser that drives the customer's own Chrome with an enforceable host list; today `browser_use` in `codex exec` only adds `web__run`, an unrestricted web access, so turning it on would widen what a page can reach without giving the agent Chrome. When S3 passes, the needed features come off the forced-off list for this surface only (a per-run override; the snapshot test pins both lists), and turning on `plugins` for the bundled Chrome plugin is decision P4 (§12). Every other surface keeps the browser off.
 - Tools: the connect tools (§5.3) of this playbook and the browser; no Bash, no file writes, no other Watchtower tools, no claude.ai connectors (`--strict-mcp-config`).
 - Words-only mode when: the extension is not detected (spike S1 decides how: Claude's init event / a probe turn; Codex's feature state); or the customer picks **Guide me in words**. The panel says which mode it is in one line.
 
@@ -113,8 +113,11 @@ The company setup wizard ([company-setup.md](../../features/company-setup.md), #
   - busy (another connect running: "Slack is already connecting in another window" + **Open it**),
   - narrow scope (no browser for this harness: words mode only, e.g. Codex until S3 passes; a policy-blocked source or provider never opens the panel, §6),
   - secret card (field, **Send**, "goes straight to Watchtower, Claude doesn't see it"),
+  - confirm card ("Turn on PKCE for the Slack app? This can't be undone", **Confirm** / **Cancel**),
   - done ("Slack is connected — 2 workspaces").
   - the confirm card carries "Only you can press this — <harness> can't."; the loading state has **Cancel**.
+
+Mockups (light theme; dark renders from the same catalog): [overview](assets/2026-11-21-agent-connect/connect-overview-agent-light.png), [empty](assets/2026-11-21-agent-connect/connect-assistant-empty-light.png), [loading](assets/2026-11-21-agent-connect/connect-assistant-loading-light.png), [error](assets/2026-11-21-agent-connect/connect-assistant-error-light.png), [busy](assets/2026-11-21-agent-connect/connect-assistant-busy-light.png), [narrow](assets/2026-11-21-agent-connect/connect-assistant-narrow-light.png), [secret](assets/2026-11-21-agent-connect/connect-assistant-secret-light.png), [confirm](assets/2026-11-21-agent-connect/connect-assistant-confirm-light.png), [done](assets/2026-11-21-agent-connect/connect-assistant-done-light.png). The onboarding Connect step and a detail's **Add account** reuse the overview's button pair; the plan adds their shots with the real views.
 
 Shots (`make desktop-shots`, `DesignShotCatalog`): `connect-assistant-{empty,loading,error,busy,narrow,secret,confirm,done}`, `connect-overview-agent`; strings in `ConnectAssistantPresentation` with `ConnectAssistantPresentationTests`.
 
@@ -138,13 +141,13 @@ Shots (`make desktop-shots`, `DesignShotCatalog`): `connect-assistant-{empty,loa
 - **Extension disconnects mid-run:** tool error → the agent switches to words mode for the remaining steps and says so. Test with a fake backend.
 - **Provider quota / CLI missing:** error state with **Retry** and the provider picker; no automatic fallback mid-run (tool turns are not replay-safe).
 - **Half-done vendor side** (Slack app created, token not pasted): the next run's `connect_status` + `slack app status` reports `pending_create`/`install`; the playbook's "If something goes wrong" covers each stage.
-- **Writers of the same data:** the assistant, a manual Reconnect from an attention banner, onboarding, the daemon's token refresh. All go through the same Desktop flows: the Slack `Registry` (one flow, `busy`), the per-account token lock, the accounts view models. The first flow wins; a second start gets `busy` and the panel shows the busy state. Test: two `connect_start` calls → second `busy`.
+- **Writers of the same data:** the assistant, a manual Reconnect from an attention banner, onboarding, the daemon's token refresh. The sign-ins all go through the same Desktop flows (the Slack `Registry`: one flow, `busy`; the accounts view models), so the first start wins and a second gets `busy` (the panel shows the busy state). The daemon is not a client of those flows: it refreshes tokens through `slackauth.LoadFresh` under the per-account token flock, and every Slack token write of a sign-in takes the same flock (`withSlackTokenLock`, guarded by `TestSlackTokenWriters_AllLocked`), so a refresh and a new sign-in serialise and the later write wins with the newer grant. The other services keep their existing per-account write paths; the assistant adds no new writer. Tests: two `connect_start` calls → second `busy`; a refresh racing an assistant Slack sign-in leaves the sign-in's token.
 
 ## 9. Verification
 
 - Go: `internal/connectplay` (every playbook parses; domains/tools/secrets valid), connect MCP server (tools forward, secret kinds map to verbs, policy refusal), `ClaudeOptions.Chrome` argv golden, Codex per-run feature override (snapshot of both lists).
-- Swift: `ConnectAssistantPresentation` strings, tower `connect.*` command handlers on fake view models, secret card never enters the transcript, every state shot.
-- Live matrix (manual, recorded in the plan's last task): each of the 14 playbooks × {Claude + extension, Codex + browser, words only}.
+- Swift: `ConnectAssistantPresentation` strings; the per-run socket's handlers (§5.3) on fake view models; the secret card never enters the transcript; a confirm card cannot be answered by any tool call (only the panel button resolves it); the sixth `connect_start` in a run is refused; the socket refuses a second peer and closes at run end; every state shot.
+- Live matrix (manual, recorded in the plan's last task): each of the 14 playbooks × {Claude + extension, Claude words only, Codex words only}, plus Codex + browser once S3 passes.
 
 ## 10. v1 limits and open spikes
 
@@ -158,3 +161,23 @@ The spikes run first (plan Task 0) and their answers are written into this secti
 ## 11. Left to the builder
 
 The tower command shapes, the MCP server's process lifecycle, how the panel hosts the chat (reuse `SetupAssistantPanel`), playbook wording within the template.
+
+## 12. Decisions
+
+**From the owner**
+- #1697: without the extension the agent guides in words; every connector in one delivery; Claude and Codex as equals.
+- #1698: the vendors' own browser extensions (no bridge, no extension of ours).
+- #1702: another path beside today's screens, not a replacement; the assistant runs on the base harness set up in onboarding; the extension may be missing. "The browser is surely there for both — check": checked (§10 S3) — Claude yes; Codex not from the CLI today.
+
+**Pending the owner** (asked together with this review)
+- P1. Codex parity while its CLI has no Chrome: ship Codex in words mode, or hold the feature until Codex has a browser.
+- P2. Loopback-only OAuth client secrets (Google, Atlassian) in the company setup: the agent may read them off the console (they already travel in clear in the bundle, company-setup D10), or the customer pastes them through `request_secret`.
+- P3. The company setup wizard is in scope (§5.4).
+- P4. Turning on Codex `plugins` for this surface only, if S3 needs the bundled Chrome plugin.
+
+**By the spec author** (open to the owner's veto)
+- A1. Per-run Desktop socket as the agent → app channel (§5.3).
+- A2. Confirm cards for steps that cannot be undone or that add trust (PKCE, own Google client, Quick Connection enable, Publish, Replace); at most 5 `connect_start` per run (§5.3, §5.4).
+- A3. The customer does sign-ins, 2FA and the final **Allow** (§5.5).
+- A4. A harness without tool calling in embedded chats (Ollama) gets no button; the assistant chat is not kept as a conversation (§5.2).
+- A5. Codex's browser stays off until S3 passes (§5.2).
