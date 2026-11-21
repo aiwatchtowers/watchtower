@@ -968,8 +968,14 @@ func TestTheStartsCloseRefusesOnlyTheEarlierRunsWaitingRequests(t *testing.T) {
 	if got, err := r.ckHello(b, code.Nonce); err != nil || got.Code == "" {
 		t.Fatalf("not waiting: %+v %v", got, err)
 	}
+	pairEvents(r.c) // this run's code's own events
 	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
 		t.Fatal(err)
+	}
+	// A pair stream with no phone bound yet ends at any refused event (the
+	// CLI's hub pair): the earlier run's refusals never reach this run's.
+	if evs := pairEvents(r.c); evs[EventRefused] != 0 {
+		t.Errorf("the earlier run's refusal reached this run's pair streams: %v", evs)
 	}
 	if kb := r.mustKeybox(a); refusal(kb) != wire.RefusedNotConfirmed || kb.Keys != nil {
 		t.Errorf("the earlier run's request: %+v", kb.Grant)
@@ -979,6 +985,90 @@ func TestTheStartsCloseRefusesOnlyTheEarlierRunsWaitingRequests(t *testing.T) {
 	}
 	if !r.s.isOpen() {
 		t.Error("the start's close shut this run's public link")
+	}
+}
+
+// Before any code of this run (a pair stream may already wait for its
+// issue behind the start's close), the earlier run's requests are refused
+// in their keyboxes without a pair event, and its link is closed.
+func TestTheStartsCloseRefusesTheEarlierRunsRequestsSilently(t *testing.T) {
+	r := newCKRig(t)
+	old := r.issueCK()
+	a := newPhone(t)
+	if got, err := r.ckHello(a, old.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("not waiting: %+v %v", got, err)
+	}
+	r.c = r.ckCenter(DefaultSweep)
+	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if evs := pairEvents(r.c); evs[EventRefused] != 0 {
+		t.Errorf("the earlier run's refusal reached this run's pair streams: %v", evs)
+	}
+	if kb := r.mustKeybox(a); refusal(kb) != wire.RefusedNotConfirmed || kb.Keys != nil {
+		t.Errorf("the earlier run's request: %+v", kb.Grant)
+	}
+	if ids := pendingIDs(t, r.c); len(ids) != 0 {
+		t.Errorf("pending %v", ids)
+	}
+	if r.s.isOpen() || r.sweepMark() != "0" {
+		t.Errorf("open %v mark %q: the earlier run's link outlived the start's close", r.s.isOpen(), r.sweepMark())
+	}
+}
+
+// A relay code issued while the start's close runs (Issue takes no
+// issueSem) is this run's too: a request under it is never refused as the
+// earlier run's.
+func TestTheStartsCloseKeepsARequestUnderACodeIssuedMeanwhile(t *testing.T) {
+	r := newCKRig(t)
+	r.issueCK() // the earlier run's code
+	r.c = r.ckCenter(DefaultSweep)
+	r.issueCK()
+	b := newPhone(t)
+	r.c.beforeStartRefusal = func() {
+		relay := r.issue()
+		if got, err := r.ckHello(b, relay.Nonce); err != nil || got.Code == "" {
+			t.Fatalf("not waiting: %+v %v", got, err)
+		}
+	}
+	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(b)) {
+		t.Errorf("pending %v: the request under the code issued meanwhile was refused", ids)
+	}
+}
+
+// The own codes are kept only until the start's close ran or gave up: a
+// hub issuing codes for days keeps no growing set.
+func TestTheOwnCodesAreDroppedOnceTheStartsCloseRan(t *testing.T) {
+	ownCodes := func(c *Center) int {
+		c.ck.mu.Lock()
+		defer c.ck.mu.Unlock()
+		return len(c.ck.ownCodes)
+	}
+	r := newCKRig(t)
+	r.issueCK()
+	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	r.issueCK()
+	r.issue()
+	if n := ownCodes(r.c); n != 0 {
+		t.Errorf("%d own codes kept after the start's close", n)
+	}
+	// Given up (the worker's context ended while an issue held the center).
+	gaveUp := r.ckCenter(DefaultSweep)
+	r.c = gaveUp
+	r.issue()
+	gaveUp.issueSem <- struct{}{}
+	ctx, cancel := context.WithCancel(r.ctx)
+	cancel()
+	_ = gaveUp.CloseOnStart(ctx, r.s)
+	<-gaveUp.issueSem
+	r.issue()
+	if n := ownCodes(gaveUp); n != 0 {
+		t.Errorf("%d own codes kept after the start's close gave up", n)
 	}
 }
 

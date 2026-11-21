@@ -168,7 +168,7 @@ func (h *hubRuntime) passTick(ctx context.Context) {
 // cloudKitStart closes, once at start, a CloudKit link an earlier run left
 // open (a crash with the QR on screen): link.Center.CloseOnStart, which
 // sweeps only when the sweep is marked pending, refuses only the earlier
-// run's waiting requests and leaves alone a code this run already issued
+// run's waiting requests (no pair event) and leaves alone a code this run already issued
 // (a pair can come before the worker gets here); a failure schedules a
 // deferred sweep (worker only).
 func (h *hubRuntime) cloudKitStart(ctx context.Context) {

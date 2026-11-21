@@ -91,10 +91,12 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 	}
 	c.ck.mu.Lock()
 	c.ck.codeGen++
-	if c.ck.ownCodes == nil {
-		c.ck.ownCodes = map[string]bool{}
+	if !c.ck.startClosed {
+		if c.ck.ownCodes == nil {
+			c.ck.ownCodes = map[string]bool{}
+		}
+		c.ck.ownCodes[p.Nonce] = true
 	}
-	c.ck.ownCodes[p.Nonce] = true
 	if ck == nil && c.ck.open != nil {
 		// A relay code replaces the CloudKit code on screen: off screen
 		// now (a close of it refuses nobody waiting on the relay code), its
