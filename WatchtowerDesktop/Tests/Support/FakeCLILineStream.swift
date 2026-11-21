@@ -85,6 +85,26 @@ package final class FakeCLILineStream: CLILineStreaming, @unchecked Sendable {
         open(args: args, record: true)
     }
 
+    /// As `lines(args:stdin:)`: a queued reply is a session that already
+    /// printed it and exited; otherwise a session the test drives.
+    package func oneShot(args: [String], stdin: Data?) -> any CLILineSession {
+        lock.lock()
+        recorded.append(Invocation(args: args, stdin: stdin))
+        let reply = queued.isEmpty ? nil : queued.removeFirst()
+        lock.unlock()
+        guard let reply else {
+            let session = open(args: args, record: false)
+            if let stdin { session.write(stdin) }
+            session.closeInput()
+            return session
+        }
+        signal.changed()
+        let session = FakeCLILineSession(args: args, signal: signal)
+        reply.lines.forEach { session.emit($0) }
+        session.exit(code: reply.exitCode, stderr: reply.stderr)
+        return session
+    }
+
     private func open(args: [String], record: Bool) -> FakeCLILineSession {
         let session = FakeCLILineSession(args: args, signal: signal)
         lock.lock()
@@ -107,6 +127,7 @@ package final class FakeCLILineSession: CLILineSession, @unchecked Sendable {
     private var written: [Data] = []
     private var inputClosedFlag = false
     private var terminatedFlag = false
+    private var consumerCancelledFlag = false
     private var exited = false
     private var exitWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -114,6 +135,24 @@ package final class FakeCLILineSession: CLILineSession, @unchecked Sendable {
         self.args = args
         self.signal = signal
         (lines, sink) = AsyncThrowingStream.makeStream(of: String.self)
+        sink.onTermination = { [weak self] termination in
+            if case .cancelled = termination { self?.markConsumerCancelled() }
+        }
+    }
+
+    /// The code under test cancelled its read of `lines` — what a real
+    /// session turns into a kill of the child's group. Unlike `terminated`,
+    /// the fake child keeps running until the test calls `exit`.
+    package var consumerCancelled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return consumerCancelledFlag
+    }
+
+    private func markConsumerCancelled() {
+        lock.lock()
+        consumerCancelledFlag = true
+        lock.unlock()
+        signal.changed()
     }
 
     /// What was written to stdin, in order.
@@ -143,11 +182,11 @@ package final class FakeCLILineSession: CLILineSession, @unchecked Sendable {
     }
 
     /// The child exits: 0 finishes the stream, any other code throws.
-    package func exit(code: Int32 = 0) {
+    package func exit(code: Int32 = 0, stderr: String = "") {
         if code == 0 {
             sink.finish()
         } else {
-            sink.finish(throwing: CLIRunnerError.nonZeroExit(code: code, stderr: ""))
+            sink.finish(throwing: CLIRunnerError.nonZeroExit(code: code, stderr: stderr))
         }
         markExited()
     }
