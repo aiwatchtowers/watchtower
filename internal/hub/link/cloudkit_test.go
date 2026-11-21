@@ -899,6 +899,89 @@ func TestTheStartsCloseLeavesACodeThisRunIssued(t *testing.T) {
 	}
 }
 
+// This run's first code got no share URLs (EnsureShares failed: a
+// private-only QR): the public link is still the earlier run's, so the
+// start's close shuts it and sweeps, while the code stays on screen.
+func TestTheStartsCloseShutsAnInheritedLinkThisRunsCodeDidNotOpen(t *testing.T) {
+	r := newCKRig(t)
+	r.issueCK() // the earlier run's code: its public link open, the sweep marked
+	r.c = r.ckCenter(DefaultSweep)
+	r.s.setFailing("ensure_shares")
+	p := r.issueCK()
+	r.s.setFailing()
+	if p.DataShare != nil || !r.s.isOpen() {
+		t.Fatalf("share URLs %v, open %v: want a private-only code over the inherited open link", p.DataShare, r.s.isOpen())
+	}
+	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() || r.sweepMark() != "0" {
+		t.Errorf("open %v mark %q: the inherited public link outlived the start's close", r.s.isOpen(), r.sweepMark())
+	}
+	if !r.c.LinkUrgent() {
+		t.Error("the start's close took this run's code off screen")
+	}
+	if got, err := r.ckHello(newPhone(t), p.Nonce); err != nil || got.Code == "" {
+		t.Errorf("this run's code no longer links: %+v %v", got, err)
+	}
+}
+
+// A start's close cut short while an issue holds the center (the worker's
+// context ended) leaves a deferred sweep due, so the earlier run's link is
+// still closed by a later pass.
+func TestAStartsCloseCutShortLeavesTheSweepDue(t *testing.T) {
+	r := newCKRig(t)
+	r.issueCK()
+	r.c = r.ckCenter(DefaultSweep)
+	r.c.issueSem <- struct{}{} // an issue in flight
+	ctx, cancel := context.WithCancel(r.ctx)
+	cancel()
+	if err := r.c.CloseOnStart(ctx, r.s); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CloseOnStart: %v", err)
+	}
+	<-r.c.issueSem
+	if !r.s.isOpen() {
+		t.Fatal("closed without the start's close")
+	}
+	r.advance(sweepRetryDelays[0])
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() || r.sweepMark() != "0" {
+		t.Errorf("open %v mark %q: nothing retried the start's close", r.s.isOpen(), r.sweepMark())
+	}
+}
+
+// After a code of this run, the start's close still refuses the requests
+// the earlier run left waiting (not_confirmed, as CloseRestart did), and
+// only those: a request under this run's code keeps waiting.
+func TestTheStartsCloseRefusesOnlyTheEarlierRunsWaitingRequests(t *testing.T) {
+	r := newCKRig(t)
+	old := r.issueCK()
+	a := newPhone(t)
+	if got, err := r.ckHello(a, old.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("not waiting: %+v %v", got, err)
+	}
+	r.c = r.ckCenter(DefaultSweep)
+	code := r.issueCK()
+	b := newPhone(t)
+	if got, err := r.ckHello(b, code.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("not waiting: %+v %v", got, err)
+	}
+	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if kb := r.mustKeybox(a); refusal(kb) != wire.RefusedNotConfirmed || kb.Keys != nil {
+		t.Errorf("the earlier run's request: %+v", kb.Grant)
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(b)) {
+		t.Errorf("pending %v, want only this run's request", ids)
+	}
+	if !r.s.isOpen() {
+		t.Error("the start's close shut this run's public link")
+	}
+}
+
 func TestALateHelloAfterACloseReadsTheClosesRefusal(t *testing.T) {
 	for _, tc := range []struct {
 		reason CloseReason
