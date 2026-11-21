@@ -42,6 +42,10 @@ final class JiraAccountsViewModel {
     @ObservationIgnored private var boardStepClosed = false
     /// The last browser flow ended in a user Cancel (SIGTERM/SIGKILL).
     @ObservationIgnored private var lastAuthFlowCancelled = false
+    /// The last browser flow ended on its own with the CLI's success: it
+    /// wrote the account. False after a Cancel, a declined site list or a
+    /// failure, whatever the account list reads afterwards.
+    @ObservationIgnored private(set) var lastAuthFlowWroteAccount = false
     /// The last browser flow timed out (`jira add`'s stable exit code).
     @ObservationIgnored private var lastAuthFlowTimedOut = false
     /// The running consent's stdout so far (`noteAuthOutput`).
@@ -128,10 +132,20 @@ final class JiraAccountsViewModel {
     /// owner's ask): unticking it is the opt-out.
     static let alsoConnectConfluenceByDefault = true
 
-    static func addArgs(withConfluence: Bool = false) -> [String] {
+    /// `company` (a stored company's slug) signs in through that company's
+    /// Atlassian app (`--company`): the public build has no shared one.
+    /// `site` picks the site up front (`--site`, matched against each site's
+    /// URL and name), so no site question follows.
+    static func addArgs(withConfluence: Bool = false, company: String? = nil, site: String? = nil) -> [String] {
         var args = ["jira", "add", "--app-return", "--app-site-picker"]
         if withConfluence {
             args.append("--with-confluence")
+        }
+        if let company, !company.isEmpty {
+            args += ["--company", company]
+        }
+        if let site, !site.isEmpty {
+            args += ["--site", site]
         }
         return args
     }
@@ -141,9 +155,14 @@ final class JiraAccountsViewModel {
     /// `authProcess` so `cancelConnect()` can terminate it mid-flow.
     /// Tells whether a Cancel ended the flow (`runAuthFlow`).
     @discardableResult
-    func addAccount(withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy = .restart) async -> AuthFlowEnd {
+    func addAccount(
+        withConfluence: Bool = false,
+        company: String? = nil,
+        site: String? = nil,
+        daemonPolicy: DaemonRestartPolicy = .restart
+    ) async -> AuthFlowEnd {
         await runAuthFlow(
-            args: Self.addArgs(withConfluence: withConfluence),
+            args: Self.addArgs(withConfluence: withConfluence, company: company, site: site),
             failurePrefix: "Connect failed",
             daemonPolicy: daemonPolicy,
             picksSite: true
@@ -188,14 +207,17 @@ final class JiraAccountsViewModel {
     /// overlapping ones. If the sheet already went away, the policy applies
     /// as soon as the connect succeeds. Also reads the account ids before
     /// the connect, so the board step can list the site it added (nil when
-    /// that read fails).
+    /// that read fails). `company` and `site` are `addAccount`'s.
     func addAccountHoldingRestart(
-        withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy
+        withConfluence: Bool = false,
+        company: String? = nil,
+        site: String? = nil,
+        daemonPolicy: DaemonRestartPolicy
     ) async -> (connected: Bool, accountIDsBefore: Set<Int>?, cancelled: Bool, timedOut: Bool) {
         boardStepClosed = false
         heldRestart = nil
         let before = try? await dbPool.read { db in Set(try JiraAccountQueries.fetchAll(db).map(\.id)) }
-        switch await addAccount(withConfluence: withConfluence, daemonPolicy: .deferred) {
+        switch await addAccount(withConfluence: withConfluence, company: company, site: site, daemonPolicy: .deferred) {
         case .finished:
             break
         case .cancelled:
@@ -360,6 +382,9 @@ final class JiraAccountsViewModel {
     private func runAuthFlow(
         args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy, picksSite: Bool = false
     ) async -> AuthFlowEnd {
+        // A flow that never starts wrote nothing: reset before the guards,
+        // so an early return leaves no earlier flow's success behind.
+        lastAuthFlowWroteAccount = false
         guard !isConnecting else {
             error = "Another connection is already in progress."
             return .finished
@@ -429,6 +454,7 @@ final class JiraAccountsViewModel {
             error = nil
             return .finished
         }
+        lastAuthFlowWroteAccount = result.exitCode == 0
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
         return .finished
     }

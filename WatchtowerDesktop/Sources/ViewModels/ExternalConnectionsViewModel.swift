@@ -46,13 +46,17 @@ final class ExternalConnectionsViewModel {
     /// The running `connections import` command (`cancelImport()` cancels it).
     private var importTask: Task<Data, Error>?
     private var authProcess: Process?
+    /// The CLI the sign-in runs (tests pass a stand-in script).
+    private let cliPath: () -> String?
 
     init(dbPool: DatabasePool,
          makeRunner: @escaping () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() },
-         importSignIn: ((ExternalConnection) async -> Void)? = nil) {
+         importSignIn: ((ExternalConnection) async -> Void)? = nil,
+         cliPath: @escaping () -> String? = Constants.findCLIPath) {
         self.dbPool = dbPool
         self.makeRunner = makeRunner
         self.importSignIn = importSignIn
+        self.cliPath = cliPath
     }
 
     // MARK: - Refresh
@@ -184,9 +188,15 @@ final class ExternalConnectionsViewModel {
         if let process = authProcess, process.isRunning {
             process.terminate()
         }
+        if authProcess != nil { lastSignInCancelled = true }
         authProcess = nil
         isBusy = false
     }
+
+    /// The last sign-in ended in a Cancel (here or a SIGTERM/SIGKILL): the
+    /// connection was added but holds no grant. Read by the connect
+    /// assistant's driver, which must not call that connected.
+    @ObservationIgnored private(set) var lastSignInCancelled = false
 
     // MARK: - Enable / Disable
 
@@ -423,11 +433,14 @@ final class ExternalConnectionsViewModel {
     /// `authProcess` so `cancelSignIn()` can terminate it while this awaits.
     /// Structural copy of `SlackAccountsViewModel.runAuthFlow`.
     private func runAuthFlow(args: [String], failurePrefix: String) async {
+        // Reset before the guards: a sign-in that never starts was not
+        // cancelled, and an earlier one's Cancel must not hide its error.
+        lastSignInCancelled = false
         guard !isBusy else {
             error = "Another operation is already in progress."
             return
         }
-        guard let cliPath = Constants.findCLIPath() else {
+        guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
             return
         }
@@ -450,6 +463,7 @@ final class ExternalConnectionsViewModel {
         let result = await Self.runProcess(process)
         authProcess = nil
         isBusy = false
+        if result.exitCode == 15 || result.exitCode == 9 { lastSignInCancelled = true }
         applyResult(result, failurePrefix: failurePrefix)
     }
 

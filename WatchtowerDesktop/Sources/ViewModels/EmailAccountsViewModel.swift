@@ -23,6 +23,9 @@ final class EmailAccountsViewModel {
     /// Resolves the CLI binary for `rename`; injectable so tests can run a stand-in.
     private let cliPath: () -> String?
     private var authProcess: Process?
+    /// The in-flight Outlook sign-in, held so the connect assistant's driver
+    /// can await the fire-and-forget flow.
+    @ObservationIgnored private(set) var outlookTask: Task<Void, Never>?
 
     init(dbPool: DatabasePool, cliPath: @escaping () -> String? = Constants.findCLIPath) {
         self.dbPool = dbPool
@@ -134,7 +137,7 @@ final class EmailAccountsViewModel {
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
 
-        Task.detached {
+        outlookTask = Task.detached {
             // The login environment is awaited here, off the main actor; a
             // Cancel (or a newer attempt) while it resolves drops this launch.
             process.environment = await Constants.resolvedEnvironmentAsync()

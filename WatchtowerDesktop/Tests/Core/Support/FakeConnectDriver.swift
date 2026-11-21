@@ -155,6 +155,9 @@ class FakeConnectDriver: ConnectServiceDriving {
     }
 
     func policyAllows() -> Bool { allowed }
+
+    private(set) var runEnds = 0
+    func runEnded() { runEnds += 1 }
 }
 
 /// The company setup's fake: its draft view carries the stored client
