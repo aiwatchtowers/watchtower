@@ -35,10 +35,17 @@ final class LinearConnectDriver: ConnectServiceDriving {
     private let policy: @MainActor () -> ManagedPolicy
     /// The workspace this driver connected last: `choose` picks its teams.
     private var connectedID: Int64?
+    /// `AppState.accountDaemonPolicy`: onboarding defers the restart, as the sheet does.
+    private let daemonPolicy: @MainActor () -> DaemonRestartPolicy
 
-    init(model: any LinearConnectModel, policy: @escaping @MainActor () -> ManagedPolicy) {
+    init(
+        model: any LinearConnectModel,
+        policy: @escaping @MainActor () -> ManagedPolicy,
+        daemonPolicy: @escaping @MainActor () -> DaemonRestartPolicy = { .restart }
+    ) {
         self.model = model
         self.policy = policy
+        self.daemonPolicy = daemonPolicy
     }
 
     private var rows: [ConnectAccountRow] {
@@ -56,8 +63,9 @@ final class LinearConnectDriver: ConnectServiceDriving {
         }
         guard !model.isBusy, flows.current == nil else { return .failure(.busy) }
         let before = Set(rows.map(\.id))
+        let restart = daemonPolicy()
         return .success(flows.begin { [model, flows, weak self] id in
-            await model.addWithOAuth(daemonPolicy: .restart)
+            await model.addWithOAuth(daemonPolicy: restart)
             await model.refreshAsync()
             let after = model.accounts
             self?.noteConnected(after, before: before)
@@ -81,7 +89,7 @@ final class LinearConnectDriver: ConnectServiceDriving {
         guard policyAllows() else { return .failure(.policy) }
         guard !model.isBusy else { return .failure(.busy) }
         let before = Set(rows.map(\.id))
-        guard await model.addWithAPIKey(value, daemonPolicy: .restart) else {
+        guard await model.addWithAPIKey(value, daemonPolicy: daemonPolicy()) else {
             return .failure(ConnectSecret.failure(model.error, secret: value, fallback: "linear add failed"))
         }
         noteConnected(model.accounts, before: before)

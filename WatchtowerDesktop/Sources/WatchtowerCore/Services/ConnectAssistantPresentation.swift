@@ -110,9 +110,14 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
     /// The secure field card (§5.3): its value goes to the Desktop flow, never to the chat.
     package struct SecretCard: Equatable, Sendable {
         package let label: String
+        /// What to close before Send on a page that shows the secret (§10,
+        /// "Pages that show a secret"), e.g. "Close Google's dialog, then Send."
+        package var closeFirst: String?
         package var placeholder = "Paste it here"
         package let footnote: String
         package var send = "Send"
+        /// The card's dismiss: the agent hears `cancelled`.
+        package var dismiss = "Don't send"
     }
 
     /// A step only the customer may press (§5.3).
@@ -132,6 +137,8 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
     package let title: String
     package let harness: String
     package let modeLine: String
+    /// The mode line's help: the v1 limits of the run (§10).
+    package let helpText: String
     /// The agent tells each step instead of driving the browser.
     package let wordsOnly: Bool
     /// The assistant's opening line, shown above the chat until a run starts.
@@ -145,23 +152,32 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
     package static let composerPlaceholder = "Ask a question…"
     package static let close = "Close the assistant"
     package static let switchHarness = "Switch the assistant"
+    /// The panel's name for the connect services that are not a Connections service.
+    package static let companyName = "your company"
+    package static let ownGoogleProjectName = "your Google project"
+    /// The overview's quiet links beside the agent buttons: today's path.
+    package static let connectByHand = "Connect"
+    package static let reconnectByHand = "Reconnect"
 
     /// - Parameters:
     ///   - service: the connector's display name ("Slack").
     ///   - browserAvailable: false when the harness's browser is not detected (no extension, §10 S1);
     ///     the panel then runs in words only. A harness whose capability is not `.browser` never has one.
+    ///   - secretKind: the secret card's `request_secret` kind, for its close-first line.
     package init(
         service: String,
         harness: ConnectHarness,
         mode: ConnectAssistantMode,
         browserAvailable: Bool = true,
-        state: ConnectAssistantState
+        state: ConnectAssistantState,
+        secretKind: String? = nil
     ) {
         let browserAvailable = browserAvailable && harness.capability == .browser
         let words = mode == .words || !browserAvailable
         title = "Connect \(service)"
         self.harness = harness.name
         modeLine = Self.modeLine(harness: harness, words: words)
+        helpText = Self.helpText(harness: harness, words: words)
         wordsOnly = words
         composerPlaceholder = Self.composerPlaceholder
         var intro: String?
@@ -193,7 +209,8 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
             status = Status(kind: .problem, text: "\(service) is already connecting in another window")
             actions = [.openIt]
         case .secret(let label):
-            card = .secret(SecretCard(label: label, footnote: Self.secretFootnote(harness)))
+            card = .secret(SecretCard(label: label, closeFirst: secretKind.flatMap(Self.closeFirst(kind:)),
+                                      footnote: Self.secretFootnote(harness)))
         case .confirm(let confirm):
             let (question, detail) = Self.confirm(confirm)
             card = .confirm(ConfirmCard(question: question, detail: detail,
@@ -214,6 +231,40 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
     /// The secret card's footnote: the value never reaches the model (§5.3, §6).
     package static func secretFootnote(_ harness: ConnectHarness) -> String {
         "Goes straight to Watchtower — \(harness.name) doesn't see it"
+    }
+
+    /// The secret card's "close it first" line (§10, "Pages that show a
+    /// secret"): the page that shows the secret is gone before Send, so the
+    /// agent's next browser step starts on a page without it. nil for a
+    /// secret no vendor page shows (a password, an address).
+    package static func closeFirst(kind: String) -> String? {
+        switch kind {
+        case "google_client_secret": "Close Google's dialog, then Send."
+        case "atlassian_client_secret": "Leave Atlassian's Settings page, then Send."
+        case "slack_config_token": "Leave Slack's token page, then Send."
+        default: nil
+        }
+    }
+
+    /// The mode line's help text: what a run can and cannot enforce in v1
+    /// (spec §10: the S2 prompt rule and "Pages that show a secret").
+    package static func helpText(harness: ConnectHarness, words: Bool) -> String {
+        let name = harness.name
+        let secrets = "A secret you paste into the card goes straight to Watchtower; \(name) never gets it."
+        guard !words else {
+            return "\(name) tells you each step and checks it; you do the clicks in your browser. " + secrets
+        }
+        return "\(name) works in your own Chrome. It opens only the pages this setup needs, but a link, a form "
+            + "or a redirect to another site can't be blocked: \(name) is only told not to follow one. "
+            + "You make the click that shows a secret and close that page before Send; while it is open, "
+            + "\(name) could read it. " + secrets
+    }
+
+    /// The entry points' agent buttons (§7): secondary, with the sparkles icon.
+    package static func connectWith(_ harness: ConnectHarness) -> String { "Connect with \(harness.name)" }
+    /// The Connect… menu's company entry (preflight F22).
+    package static func setUpCompanyWith(_ harness: ConnectHarness) -> String {
+        "Set up for my company with \(harness.name)"
     }
 
     /// Why the run is in words: a browser harness whose browser is not

@@ -110,6 +110,45 @@ struct ConnectAssistantPresentationTests {
         #expect(Pres.secretFootnote(codex) == "Goes straight to Watchtower — Codex doesn't see it")
     }
 
+    @Test("the secret card asks to close the vendor's page first; a password needs no such line")
+    func testSecretCardAsksToCloseFirst() {
+        func card(_ kind: String?) -> Pres.SecretCard? {
+            guard case .secret(let card) = Pres(service: "Acme", harness: claude, mode: .browser,
+                                                state: .secret(label: "Client secret"), secretKind: kind).card
+            else { return nil }
+            return card
+        }
+        #expect(card("google_client_secret")?.closeFirst == "Close Google's dialog, then Send.")
+        #expect(card("atlassian_client_secret")?.closeFirst == "Leave Atlassian's Settings page, then Send.")
+        #expect(card("slack_config_token")?.closeFirst == "Leave Slack's token page, then Send.")
+        #expect(card("imap_password")?.closeFirst == nil)
+        #expect(card(nil)?.closeFirst == nil)
+        #expect(card(nil)?.dismiss == "Don't send")
+    }
+
+    @Test("the help text names what v1 cannot enforce")
+    func testHelpTextNamesV1Limit() {
+        let browser = slack(.empty).helpText
+        #expect(browser == "Claude works in your own Chrome. It opens only the pages this setup needs, but a link, "
+            + "a form or a redirect to another site can't be blocked: Claude is only told not to follow one. "
+            + "You make the click that shows a secret and close that page before Send; while it is open, "
+            + "Claude could read it. A secret you paste into the card goes straight to Watchtower; "
+            + "Claude never gets it.")
+        let words = slack(.empty, harness: codex, browser: false).helpText
+        #expect(words == "Codex tells you each step and checks it; you do the clicks in your browser. "
+            + "A secret you paste into the card goes straight to Watchtower; Codex never gets it.")
+    }
+
+    @Test("the entry points' agent buttons name the harness; today's path is the quiet link")
+    func agentButtons() {
+        #expect(Pres.connectWith(claude) == "Connect with Claude")
+        #expect(Pres.setUpCompanyWith(claude) == "Set up for my company with Claude")
+        #expect([Pres.connectByHand, Pres.reconnectByHand] == ["Connect", "Reconnect"])
+        #expect([Pres.companyName, Pres.ownGoogleProjectName] == ["your company", "your Google project"])
+        #expect(Pres(service: Pres.companyName, harness: claude, mode: .browser, state: .empty).title
+            == "Connect your company")
+    }
+
     @Test("confirm cards: the customer presses them, never the model")
     func confirm() {
         guard case .confirm(let pkce) = slack(.confirm(.slackPKCE)).card,

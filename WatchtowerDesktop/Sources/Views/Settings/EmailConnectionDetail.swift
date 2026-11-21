@@ -40,6 +40,7 @@ struct EmailConnectionDetail: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .detailBackground()
+        .opensAddSheet(.email) { showAddEmailAccountSheet = true }
         .sheet(isPresented: $showAddEmailAccountSheet) {
             AddEmailAccountView()
                 .environment(appState)

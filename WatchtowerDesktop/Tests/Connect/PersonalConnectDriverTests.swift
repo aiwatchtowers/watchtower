@@ -539,6 +539,32 @@ final class PersonalConnectDriverTests: XCTestCase {
         XCTAssertEqual(daemon.restartCount, 1)
     }
 
+    /// A connect during onboarding leaves the daemon to onboarding's finish
+    /// (`AppState.accountDaemonPolicy`), as the sheet does; read at release.
+    func testJiraRestartFollowsTheDaemonPolicy() async throws {
+        let model = FakeJiraModel()
+        let daemon = FakeDaemonRestarter()
+        var onboarding = true
+        let driver = JiraConnectDriver(
+            model: model, steps: FakeJiraSteps(), policy: Self.open, companySlug: Self.noCompany, daemon: daemon
+        ) { onboarding ? .deferred : .restart }
+        let first = try await driver.start(options: [:]).get()
+        model.gate.open()
+        await driver.flows.finished(first)
+        driver.runEnded()
+        XCTAssertNil(driver.restartTask, "deferred during onboarding")
+        XCTAssertEqual(daemon.restartCount, 0)
+
+        onboarding = false
+        model.gate = Gate()
+        let second = try await driver.start(options: [:]).get()
+        model.gate.open()
+        await driver.flows.finished(second)
+        driver.runEnded()
+        await driver.restartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
+    }
+
     /// The add sheet holds its own restart for site B while the driver's
     /// site A waits: the driver's release is its own daemon restart and
     /// leaves the sheet's hold alone (#572).

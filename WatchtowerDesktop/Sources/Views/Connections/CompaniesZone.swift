@@ -26,6 +26,9 @@ struct CompaniesZone: View {
     /// A connect flow or another sign-in runs: no card starts a second one.
     var flowBusy = false
     let actions: CompaniesZoneActions
+    /// The connect assistant's **Connect with <harness>** (agent connect
+    /// §5.4, §7), before **Set up for my company**; nil: no button.
+    var agent: (harness: ConnectHarness, open: () -> Void)?
 
     private typealias Pres = CompanyConnectionsPresentation
 
@@ -137,6 +140,9 @@ struct CompaniesZone: View {
 
     private func zoneButtons(only shown: [CompaniesZoneState.Action]) -> some View {
         HStack(spacing: Spacing.regular) {
+            if let agent, shown.contains(.setUpForCompany) {
+                ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(agent.harness), action: agent.open)
+            }
             ForEach(Array(shown.enumerated()), id: \.offset) { _, action in
                 Button(action.title) {
                     switch action {

@@ -32,10 +32,17 @@ final class GoogleConnectDriver: ConnectServiceDriving {
 
     private let model: any GoogleConnectModel
     private let policy: @MainActor () -> ManagedPolicy
+    /// `AppState.accountDaemonPolicy`: onboarding defers the restart, as the sheet does.
+    private let daemonPolicy: @MainActor () -> DaemonRestartPolicy
 
-    init(model: any GoogleConnectModel, policy: @escaping @MainActor () -> ManagedPolicy) {
+    init(
+        model: any GoogleConnectModel,
+        policy: @escaping @MainActor () -> ManagedPolicy,
+        daemonPolicy: @escaping @MainActor () -> DaemonRestartPolicy = { .restart }
+    ) {
         self.model = model
         self.policy = policy
+        self.daemonPolicy = daemonPolicy
     }
 
     func status() async -> ConnectStatus {
@@ -52,7 +59,7 @@ final class GoogleConnectDriver: ConnectServiceDriving {
         guard !model.isConnecting, flows.current == nil else { return .failure(.busy) }
         let before = Set(model.connectRows.map(\.id))
         guard model.addAccount(calendar: scopes.contains("calendar"), gmail: scopes.contains("gmail"),
-                               clientID: "", clientSecret: "", daemonPolicy: .restart) else {
+                               clientID: "", clientSecret: "", daemonPolicy: daemonPolicy()) else {
             return .failure(.failed(model.error ?? "Google did not start the sign-in"))
         }
         let task = model.addTask
