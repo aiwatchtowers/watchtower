@@ -191,8 +191,6 @@ final class CodeIndexCenterTests: XCTestCase {
         }
         XCTAssertFalse(stub.requests.isEmpty, "a request went out while the writes went on")
         XCTAssertEqual(stub.requests, [Array(paths[..<5]), Array(paths[5...])], "one request per 1 s cap")
-        let all = await eventually { Set(self.stub.requests.joined()) == Set(paths) }
-        XCTAssertTrue(all, "requests: \(stub.requests)")
     }
 
     func testARescanDropsWhatWasDebouncing() async throws {
