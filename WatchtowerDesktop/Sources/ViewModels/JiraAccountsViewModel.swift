@@ -128,10 +128,20 @@ final class JiraAccountsViewModel {
     /// owner's ask): unticking it is the opt-out.
     static let alsoConnectConfluenceByDefault = true
 
-    static func addArgs(withConfluence: Bool = false) -> [String] {
+    /// `company` (a stored company's slug) signs in through that company's
+    /// Atlassian app (`--company`): the public build has no shared one.
+    /// `site` picks the site up front (`--site`, matched against each site's
+    /// URL and name), so no site question follows.
+    static func addArgs(withConfluence: Bool = false, company: String? = nil, site: String? = nil) -> [String] {
         var args = ["jira", "add", "--app-return", "--app-site-picker"]
         if withConfluence {
             args.append("--with-confluence")
+        }
+        if let company, !company.isEmpty {
+            args += ["--company", company]
+        }
+        if let site, !site.isEmpty {
+            args += ["--site", site]
         }
         return args
     }
@@ -141,9 +151,14 @@ final class JiraAccountsViewModel {
     /// `authProcess` so `cancelConnect()` can terminate it mid-flow.
     /// Tells whether a Cancel ended the flow (`runAuthFlow`).
     @discardableResult
-    func addAccount(withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy = .restart) async -> AuthFlowEnd {
+    func addAccount(
+        withConfluence: Bool = false,
+        company: String? = nil,
+        site: String? = nil,
+        daemonPolicy: DaemonRestartPolicy = .restart
+    ) async -> AuthFlowEnd {
         await runAuthFlow(
-            args: Self.addArgs(withConfluence: withConfluence),
+            args: Self.addArgs(withConfluence: withConfluence, company: company, site: site),
             failurePrefix: "Connect failed",
             daemonPolicy: daemonPolicy,
             picksSite: true
