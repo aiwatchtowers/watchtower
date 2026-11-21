@@ -251,3 +251,25 @@ func TestWatchmanUpkeep_SidecarFailureStillHolds(t *testing.T) {
 	d.phaseWatchmanUpkeep(ctx)
 	assert.Len(t, gapRows(t, database), 1)
 }
+
+// The upkeep drops the instructions of a deleted session and a removed
+// target; a live session's text stays, armed or not (D7).
+func TestWatchmanUpkeep_PrunesInstructionRows(t *testing.T) {
+	d, database, logs, _ := newUpkeepDaemon(t)
+	d.SetWatchmanAwake((&fakeAwake{}).hold)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	live := upkeepSession(t, database, wb, t.TempDir())
+	require.NoError(t, database.SetWatchmanInstruction("session", live, "keep"))
+	require.NoError(t, database.SetWatchmanInstruction("session", 999, "gone"))
+	require.NoError(t, database.SetWatchmanInstruction("target", 998, "gone"))
+
+	d.phaseWatchmanUpkeep(context.Background())
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM watchman_instructions`).Scan(&n))
+	assert.Equal(t, 1, n)
+	text, err := database.WatchmanInstruction("session", live)
+	require.NoError(t, err)
+	assert.Equal(t, "keep", text)
+	assert.Contains(t, logs.String(), "2 instruction(s)")
+}

@@ -2688,6 +2688,13 @@ CREATE TABLE IF NOT EXISTS session_outside_touches (
     quiet      INTEGER NOT NULL DEFAULT 0 CHECK (quiet IN (0,1)),
     PRIMARY KEY (session_id, repo_root)
 );
+CREATE TABLE IF NOT EXISTS watchman_instructions (
+    scope      TEXT NOT NULL CHECK (scope IN ('session','target')),
+    ref_id     INTEGER NOT NULL,          -- session or target id
+    text       TEXT NOT NULL,             -- trimmed, at most 2000 runes
+    updated_at TEXT NOT NULL,             -- RFC 3339 UTC
+    PRIMARY KEY (scope, ref_id)
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,

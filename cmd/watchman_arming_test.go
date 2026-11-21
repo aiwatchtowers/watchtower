@@ -61,6 +61,9 @@ func resetWatchmanArmFlags() {
 	watchmanArmFlagSession, watchmanArmFlagTarget = 0, 0
 	watchmanArmFlagAllRunning, watchmanArmFlagCheck, watchmanArmFlagJSON = false, false, false
 	watchmanArmFlagOnly = nil
+	watchmanArmFlagInstructionsFile = ""
+	watchmanInstructFlagSession, watchmanInstructFlagTarget = 0, 0
+	watchmanInstructFlagTextFile, watchmanInstructFlagJSON = "", false
 	watchmanDisarmFlagSession, watchmanDisarmFlagTarget = 0, 0
 	watchmanDisarmFlagAll, watchmanDisarmFlagJSON = false, false
 }

@@ -71,6 +71,12 @@ func (d *Daemon) phaseWatchmanUpkeep(ctx context.Context) {
 	} else if n > 0 {
 		d.logger.Printf("watchman upkeep: %d arming row(s) of ended sessions or removed targets dropped", n)
 	}
+	// Instructions outlive Take back (D7) but not their session or target.
+	if n, err := d.db.PruneWatchmanInstructions(); err != nil {
+		d.logger.Printf("watchman upkeep: %v", err)
+	} else if n > 0 {
+		d.logger.Printf("watchman upkeep: %d instruction(s) of deleted sessions or removed targets dropped", n)
+	}
 	arming, err := watchmanact.RefreshSidecar(ctx, d.config.WorkspaceDir(), d.db)
 	if err != nil {
 		d.logger.Printf("watchman upkeep: %v", err)

@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,7 +15,7 @@ func TestWatchmanDecidePromptRegistered(t *testing.T) {
 	assert.Equal(t, "watchman.decide", id)
 	assert.NotEmpty(t, Defaults[id])
 	assert.True(t, contains(AllIDs, id))
-	assert.Equal(t, 4, DefaultVersions[id])
+	assert.Equal(t, 5, DefaultVersions[id])
 	assert.NotEmpty(t, Descriptions[id])
 	assert.NotContains(t, Defaults[id], "%")
 	for _, want := range []string{`"choice"`, `"rationale"`,
@@ -31,11 +32,44 @@ func TestWatchmanDecidePromptRegistered(t *testing.T) {
 // "findings" input and the reply's "marks" shape (key, the three states,
 // body), empty for every other item.
 func TestWatchmanDecidePrompt_V4Marks(t *testing.T) {
-	assert.Equal(t, 4, DefaultVersions[WatchmanDecide])
+	assert.GreaterOrEqual(t, DefaultVersions[WatchmanDecide], 4)
 	for _, want := range []string{`"findings"`, `"marks"`, `{"key": "<the finding's key, copied verbatim>", "state": "ok" | "comment" | "not_useful", "body": "…"}`,
 		`For every other item "marks" is []`, `"handoff": "none", "marks": []}`} {
 		assert.Contains(t, Defaults[WatchmanDecide], want)
 	}
+}
+
+// TestWatchmanDecidePrompt_V5SessionInstructions pins v5's session
+// instruction: its input field sits between "profile" and the standing
+// "instructions", its block between the hard limits and the standing rules,
+// with the rule that it wins over the profile and the precedents and never
+// lifts a hard limit. One template serves every provider (no provider
+// variant exists; both resolve the built-in text).
+func TestWatchmanDecidePrompt_V5SessionInstructions(t *testing.T) {
+	assert.Equal(t, 5, DefaultVersions[WatchmanDecide])
+	for _, role := range []string{"", "top_management"} {
+		tmpl, _, err := Resolve(nil, WatchmanDecide, role)
+		assert.NoError(t, err)
+		assert.Equal(t, Defaults[WatchmanDecide], tmpl, "no role or provider variant of watchman.decide")
+	}
+	p := Defaults[WatchmanDecide]
+	rule := "the session instruction wins over the profile and the precedents; it never lifts a hard limit"
+	assert.Contains(t, strings.ToLower(p), rule)
+	order := []string{
+		`- "profile":`, `- "session_instructions":`, `- "instructions":`,
+		"Hard limits:", "The session instruction:", "it never lifts a hard limit", "How to decide:",
+		"The profile and the instructions are his general rules",
+	}
+	last := -1
+	for _, s := range order {
+		i := strings.Index(p, s)
+		if assert.GreaterOrEqual(t, i, 0, s) {
+			assert.Greater(t, i, last, "%q out of order", s)
+			last = i
+		}
+	}
+	assert.Contains(t, p, `"Target: …" line`)
+	assert.Contains(t, p, `"Session: …" line`)
 }
 
 // TestWatchmanLabelPromptRegistered pins watchman.label the same way: verbatim
