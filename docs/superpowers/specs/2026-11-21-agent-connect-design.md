@@ -24,7 +24,7 @@ Success: a customer who has never seen Slack's app console connects Slack, Googl
 - Removing or rewriting today's connect screens: they stay as the manual path (ask #1702).
 
 **Anti-goals** (a failure even if it works)
-- A secret (Slack configuration token, IMAP password, API key, ICS URL, a client secret the customer pastes) passing through the model — its context, a transcript, a log. The one proposed exception, loopback-only OAuth client secrets in the company setup, is decision P2 (§12).
+- A secret (Slack configuration token, IMAP password, API key, ICS URL, a client secret the customer pastes) passing through the model — its context, a transcript, a log. No exception: company OAuth client secrets are pasted by the customer too (decision P2, §12).
 - The agent writing to Watchtower by any path other than the flows the buttons already use.
 - A web page the agent reads making it do something outside the playbook (prompt injection).
 - A customer stuck: when the assistant fails, the panel always offers **Set up by hand**, which opens today's screen for that connector.
@@ -56,7 +56,7 @@ Success: a customer who has never seen Slack's app console connects Slack, Googl
 
 - A new embedded chat surface `connect` (`ChatSurfaceSpec`, memory persistence: a setup chat is not kept as a conversation). First-turn prompt = the connect system prompt (role, the injection rules of §6, the steps-in-words fallback) + the playbook text + the current state from `connect_status` (§5.3). The surface is per connector; reopening the panel during a run shows the live chat.
 - Harness: the base harness from onboarding (the app's provider; onboarding does not let the customer past without one), switchable in the panel among the allowed ones (`AllowedAIProviders`). A harness without tool calling in embedded chats (Ollama today) does not get the button; the manual screens are its path.
-- Browser on: Claude — `--chrome` added for this surface only (a new `ClaudeOptions.Chrome` field). Codex — the browser stays forced off until spike S3 shows a browser that drives the customer's own Chrome with an enforceable host list; today `browser_use` in `codex exec` only adds `web__run`, an unrestricted web access, so turning it on would widen what a page can reach without giving the agent Chrome. When S3 passes, the needed features come off the forced-off list for this surface only (a per-run override; the snapshot test pins both lists), and turning on `plugins` for the bundled Chrome plugin is decision P4 (§12). Every other surface keeps the browser off.
+- Browser on: Claude — `--chrome` added for this surface only (a new `ClaudeOptions.Chrome` field). Codex — the browser stays forced off until spike S3 shows a browser that drives the customer's own Chrome with an enforceable host list; today `browser_use` in `codex exec` only adds `web__run`, an unrestricted web access, so turning it on would widen what a page can reach without giving the agent Chrome. When S3 passes, the needed features come off the forced-off list for this surface only (a per-run override; the snapshot test pins both lists), and, if the bundled Chrome plugin is the way, `plugins` turn on for this surface only with `chrome@openai-bundled` as the one allowed plugin (P4, §12). Every other surface keeps the browser off.
 - Tools: the connect tools (§5.3) of this playbook and the browser; no Bash, no file writes, no other Watchtower tools, no claude.ai connectors (`--strict-mcp-config`).
 - Words-only mode when: the extension is not detected (spike S1 decides how: Claude's init event / a probe turn; Codex's feature state); or the customer picks **Guide me in words**. The panel says which mode it is in one line.
 
@@ -72,7 +72,7 @@ A small MCP server `watchtower connect mcp --service <svc>` (stdio, spawned by t
 | `connect_start` | starts the service's sign-in (`add`/`login`/Slack `start`), with options from the playbook (Google scopes, Jira `--with-confluence`, site) | flow id; the sign-in page opens in the default browser |
 | `connect_wait` | waits up to 60 s for the flow's end | `connected{account}` / `failed{reason}` / `waiting` |
 | `connect_cancel` | cancels the running flow | — |
-| `request_secret` | shows a secure field card in the panel (kind from the playbook's `secrets`, label from the agent ≤ 80 chars); the customer pastes; the Desktop passes it on stdin to the verb named by the kind (`slack_config_token` → `slack app create|adopt`, `imap_password` → `imap add`, `linear_api_key`, `caldav_password`, `ics_url`, `mcp_secret`, `google_client_secret`) | the verb's result, never the secret |
+| `request_secret` | shows a secure field card in the panel (kind from the playbook's `secrets`, label from the agent ≤ 80 chars); the customer pastes; the Desktop passes it on stdin to the verb named by the kind (`slack_config_token` → `slack app create|adopt`, `imap_password` → `imap add`, `linear_api_key`, `caldav_password`, `ics_url`, `mcp_secret`, `google_client_secret`, `atlassian_client_secret` — a company client secret goes to the wizard draft, never through the model) | the verb's result, never the secret |
 | `set_fields` | non-secret form values (IMAP host/port, CalDAV URL, Quick Connection command/URL, Jira site) for the next `connect_start`/`request_secret` | — |
 | `choose` | Jira boards, Linear teams, Confluence spaces: list or select | JSON |
 
@@ -84,8 +84,8 @@ The company setup wizard ([company-setup.md](../../features/company-setup.md), #
 
 - **Connect with <harness>** sits beside **Set up for my company** (Connections → Companies zone, the **Connect…** menu, Jira's empty state) and beside **Use my own Google project**. It opens the panel on the `company` playbook set: the agent runs one vendor playbook after another, in the wizard's order.
 - It drives the same `CompanySetupWizardModel` and its draft (`company draft save`), so the wizard sheet and the panel show one state. A customer can leave the panel and finish in the wizard, or the other way round.
-- Extra tools for these playbooks: `company_draft` (read; save the non-secret fields and the loopback OAuth client ids and secrets), `company_check` (`company check <vendor>`; a Google or Atlassian check opens a sign-in the customer approves), `company_publish` (the Slack configuration token comes through `request_secret`).
-- **Secrets here** (proposed; decision P2, §12): a Google or Atlassian OAuth client secret for a loopback-only desktop client is not treated as a secret. It already travels in clear in the bundle (company-setup D10), so the agent may read it off the vendor console and save it to the draft. The Slack configuration token stays a real secret: `request_secret` only, never seen by the model.
+- Extra tools for these playbooks: `company_draft` (read; save the non-secret fields and the client ids), `company_check` (`company check <vendor>`; a Google or Atlassian check opens a sign-in the customer approves), `company_publish` (the Slack configuration token comes through `request_secret`).
+- **Secrets here** (decision P2, ask #1716): the agent never reads a secret. When the console shows a Google or Atlassian client secret, or Slack's configuration token, the agent points at it and calls `request_secret` (kinds `google_client_secret`, `atlassian_client_secret`, `slack_config_token`); the customer copies it into the card and the Desktop saves it to the draft or passes it on stdin. Client ids are not secrets; the agent saves them with `company_draft`.
 - Confirm cards (§5.3) also cover **Publish** (it writes the Slack app's About text to the whole company) and a **Replace** of a stored company.
 
 ### 5.5 Who clicks what in the browser
@@ -169,11 +169,11 @@ The tower command shapes, the MCP server's process lifecycle, how the panel host
 - #1698: the vendors' own browser extensions (no bridge, no extension of ours).
 - #1702: another path beside today's screens, not a replacement; the assistant runs on the base harness set up in onboarding; the extension may be missing. "The browser is surely there for both — check": checked (§10 S3) — Claude yes; Codex not from the CLI today.
 
-**Pending the owner** (asked together with this review)
-- P1. Codex parity while its CLI has no Chrome: ship Codex in words mode, or hold the feature until Codex has a browser.
-- P2. Loopback-only OAuth client secrets (Google, Atlassian) in the company setup: the agent may read them off the console (they already travel in clear in the bundle, company-setup D10), or the customer pastes them through `request_secret`.
-- P3. The company setup wizard is in scope (§5.4).
-- P4. Turning on Codex `plugins` for this surface only, if S3 needs the bundled Chrome plugin.
+**From the owner, ask #1716**
+- P1: Codex ships in words mode, Claude with the browser; Codex's browser turns on when S3 passes.
+- P2: company OAuth client secrets are pasted by the customer through `request_secret`; the agent sees no secret at all.
+- P3: the company setup wizard is in this delivery (§5.4).
+- P4: if Codex's Chrome needs the bundled plugin, Codex `plugins` are turned on for the connect surface only, with `chrome@openai-bundled` as the only allowed plugin.
 
 **By the spec author** (open to the owner's veto)
 - A1. Per-run Desktop socket as the agent → app channel (§5.3).
