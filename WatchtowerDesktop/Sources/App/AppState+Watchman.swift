@@ -1,7 +1,17 @@
 import Foundation
+import GRDB
 import WatchtowerCore
 
 extension AppState {
+    /// The arm sheet's session titles and its instruction pre-fill, read
+    /// from `watchman_instructions` before each sheet (tuning spec D7).
+    func wireWatchmanSheets(dbPool: DatabasePool) {
+        watchmanCenter?.sessionTitle = { [weak self] in self?.workbenchesViewModel?.sessionTitle($0) }
+        watchmanCenter?.readInstruction = { scope in
+            try await dbPool.read { try WatchmanInstructionQueries.text($0, scope: scope) }
+        }
+    }
+
     /// What the morning journal's Correct… and Open session reach (spec
     /// §10, D26): the shared `SessionLineDelivery` (PROJ-12) for a live
     /// session, the target's start path for a new one — in the owner's

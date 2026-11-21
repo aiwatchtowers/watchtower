@@ -96,6 +96,8 @@ struct WatchmanArmSheet: View {
         .frame(width: PaneWidth.narrowPage + Spacing.hero, alignment: .topLeading)
         .interactiveDismissDisabled(busy)
         .onAppear { fieldFocused = true }
+        // A failed save gives the field back (it was disabled while busy).
+        .onChange(of: busy) { _, running in if !running, error != nil { fieldFocused = true } }
     }
 
     private var sessionList: some View {

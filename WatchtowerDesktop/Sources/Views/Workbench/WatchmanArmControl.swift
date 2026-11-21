@@ -123,7 +123,7 @@ struct WatchmanArmControl: View {
             case .viaTarget:
                 Chip(text: Copy.stripArmed(since: since, calendar: calendar), color: Self.tone, dot: true)
                     .fixedSize()
-                    .help(viaTargetHelp)
+                    .help(Self.chipHelp(viaTarget: viaTargetHelp, instruction: instructionHelp))
                 instructionButton
                 // Also handed over itself: Take back removes that row only.
                 if let target = Self.directUnderTarget(scope, in: center.lastStatus) {
@@ -177,6 +177,12 @@ struct WatchmanArmControl: View {
 
     // MARK: - Parts
 
+    /// A via-target chip's tooltip: the session's own instruction first,
+    /// then where it is taken back.
+    static func chipHelp(viaTarget: String, instruction: String?) -> String {
+        [instruction, viaTarget].compactMap(\.self).filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
     /// The first line of the scope's instruction, the chip's tooltip; nil
     /// without one.
     private var instructionHelp: String? {
@@ -186,7 +192,7 @@ struct WatchmanArmControl: View {
     /// Instruction…: the edit sheet, the text it opens with as its tooltip.
     private var instructionButton: some View {
         Button {
-            center.editInstruction(scope, title: title)
+            Task { await center.editInstruction(scope, title: title) }
         } label: {
             Label(Copy.instructionButton, systemImage: Copy.instructionIcon)
         }

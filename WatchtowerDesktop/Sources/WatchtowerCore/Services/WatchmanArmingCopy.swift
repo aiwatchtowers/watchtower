@@ -142,13 +142,24 @@ package enum WatchmanArmingCopy {
         return count > instructionCounterFrom ? counter(count) : nil
     }
 
-    /// The text the field keeps: at most `instructionMaxCharacters` runes.
+    /// The text the field keeps: at most `instructionMaxCharacters` runes
+    /// counted as the counter and Go count them (after the leading blanks;
+    /// the trailing ones go with the cut).
     package static func clipped(_ text: String) -> String {
-        guard text.unicodeScalars.count > instructionMaxCharacters else { return text }
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars.count > instructionMaxCharacters
+        else { return text }
+        let lead = text.unicodeScalars.prefix { CharacterSet.whitespacesAndNewlines.contains($0) }.count
         var scalars = String.UnicodeScalarView()
-        scalars.append(contentsOf: text.unicodeScalars.prefix(instructionMaxCharacters))
+        scalars.append(contentsOf: text.unicodeScalars.prefix(lead + instructionMaxCharacters))
         return String(scalars)
     }
+
+    /// Save on an empty field while the stored text could not be read: an
+    /// empty file would clear a text the owner never saw.
+    package static let instructionUnread = "Watchman's stored instruction could not be read, so an empty one "
+        + "would erase it unseen — type the new instruction, or Cancel"
+    /// A confirm while the same scope's hand-over or Take back still runs.
+    package static let armInProgress = "Watchman is still handing this over or taking it back — try again in a moment"
 
     /// The chip's tooltip: the instruction's first non-blank line; nil
     /// without one.

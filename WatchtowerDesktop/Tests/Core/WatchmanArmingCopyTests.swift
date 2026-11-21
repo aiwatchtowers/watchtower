@@ -59,6 +59,13 @@ final class WatchmanArmingCopyTests: XCTestCase {
         XCTAssertEqual(Copy.counter(for: String(repeating: "é", count: 1900)), "1900 / 2000")
         XCTAssertEqual(Copy.clipped(String(repeating: "a", count: 2100)).count, 2000)
         XCTAssertEqual(Copy.clipped("ship task 3"), "ship task 3")
+        // Counted as the counter and Go count: the edges do not use the budget.
+        let padded = "\n  " + String(repeating: "a", count: 2000) + "  \n"
+        XCTAssertEqual(Copy.clipped(padded), padded)
+        XCTAssertEqual(Copy.clipped("  " + String(repeating: "a", count: 2001)), "  " + String(repeating: "a", count: 2000))
+        XCTAssertEqual(Copy.instructionUnread, "Watchman's stored instruction could not be read, so an empty one "
+            + "would erase it unseen — type the new instruction, or Cancel")
+        XCTAssertTrue(Copy.armInProgress.hasPrefix("Watchman is still handing this over or taking it back"))
     }
 
     func testSubject() {
