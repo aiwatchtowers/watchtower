@@ -812,21 +812,23 @@ var askGuardSidecarPath = func() string {
 }
 
 // askGuardSessionArmed reports whether session rowID is handed to Watchman,
-// directly or through a target: the sidecar's `session <id>` line first (no
-// database read), then the database (WatchmanItemArmed with no target walks
-// the session's own ticket up). ok is false when neither could be read, and
-// the caller keeps today's presence.
+// directly or through a target: the database first (WatchmanItemArmed with
+// no target walks the session's own ticket up; the arming row is
+// authoritative, a stale sidecar line is not), and only when that read fails
+// the sidecar's `session <id>` line. ok is false when neither could be read,
+// and the caller keeps today's presence.
 func askGuardSessionArmed(database *db.DB, rowID int64, sidecar string) (armed, ok bool) {
-	if sidecar != "" {
-		if sc, err := watchmanact.ReadSidecar(sidecar); err == nil && slices.Contains(sc.Sessions, rowID) {
-			return true, true
-		}
+	if armed, err := database.WatchmanItemArmed(rowID, 0); err == nil {
+		return armed, true
 	}
-	armed, err := database.WatchmanItemArmed(rowID, 0)
+	if sidecar == "" {
+		return false, false
+	}
+	sc, err := watchmanact.ReadSidecar(sidecar)
 	if err != nil {
 		return false, false
 	}
-	return armed, true
+	return slices.Contains(sc.Sessions, rowID), true
 }
 
 // hasStateHooks reports whether the session's folder has the core state

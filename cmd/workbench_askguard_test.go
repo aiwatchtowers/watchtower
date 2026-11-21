@@ -96,6 +96,11 @@ func TestAskGuard_DeniesAskUserQuestionInALiveWorkbench(t *testing.T) {
 			setOwnerPresence(t, database, row, time.Now())
 			return askToolPayload("AskUserQuestion")
 		}, true},
+		{"armed session, owner present", func(t *testing.T, database *db.DB, _, row int64) string {
+			setOwnerPresence(t, database, row, time.Now())
+			armSessionForGuard(t, database, row)
+			return askToolPayload("AskUserQuestion")
+		}, false},
 		{"no presence row", func(*testing.T, *db.DB, int64, int64) string { return askToolPayload("AskUserQuestion") }, false},
 		{"in no session", func(t *testing.T, database *db.DB, _, _ int64) string {
 			setOwnerPresence(t, database, nil, time.Now())
@@ -1653,22 +1658,9 @@ func TestAskGuard_ArmedViaTarget(t *testing.T) {
 	assert.Equal(t, guardBlock(t, askGuardReasonAway), out)
 }
 
-// The sidecar's session line decides first, with no database read.
-func TestAskGuard_SidecarSessionLineIsArmed(t *testing.T) {
-	database, _, row := stopGuardFixture(t)
-	path := filepath.Join(t.TempDir(), "watchman.armed")
-	require.NoError(t, watchmanact.WriteSidecar(path, []db.ArmedSession{{SessionID: row}}, false))
-	armed, ok := askGuardSessionArmed(database, row, path)
-	assert.True(t, armed)
-	assert.True(t, ok)
-}
-
-// When neither the sidecar nor the database can be read the arming is
-// unknown and the owner's presence stands.
-func TestAskGuard_ArmingUnreadableKeepsPresence(t *testing.T) {
-	database, pid, row := stopGuardFixture(t)
-	setOwnerPresence(t, database, row, time.Now())
-	armSessionForGuard(t, database, row)
+// breakWatchmanArmingTable makes every read of watchman_arming fail.
+func breakWatchmanArmingTable(t *testing.T, database *db.DB) {
+	t.Helper()
 	for _, q := range []string{
 		`DROP TABLE watchman_arming`,
 		`CREATE TABLE arming_src (id INTEGER)`,
@@ -1678,6 +1670,45 @@ func TestAskGuard_ArmingUnreadableKeepsPresence(t *testing.T) {
 		_, err := database.Exec(q)
 		require.NoError(t, err, q)
 	}
+}
+
+// With the database unreadable, the sidecar's session line decides.
+func TestAskGuard_SidecarSessionLineIsArmed(t *testing.T) {
+	database, _, row := stopGuardFixture(t)
+	breakWatchmanArmingTable(t, database)
+	path := filepath.Join(t.TempDir(), "watchman.armed")
+	require.NoError(t, watchmanact.WriteSidecar(path, []db.ArmedSession{{SessionID: row}}, false))
+	armed, ok := askGuardSessionArmed(database, row, path)
+	assert.True(t, armed)
+	assert.True(t, ok)
+}
+
+// A sidecar line left behind after the arming row was deleted never wins
+// over a readable database.
+func TestAskGuard_StaleSidecarLineNotArmed(t *testing.T) {
+	database, pid, row := stopGuardFixture(t)
+	path := filepath.Join(t.TempDir(), "watchman.armed")
+	require.NoError(t, watchmanact.WriteSidecar(path, []db.ArmedSession{{SessionID: row}}, false))
+	armed, ok := askGuardSessionArmed(database, row, path)
+	assert.False(t, armed)
+	assert.True(t, ok)
+	setOwnerPresence(t, database, row, time.Now())
+	useAskGuardGen(t, &stubAskGuardGen{reply: e1Verdict})
+
+	out, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(e1Message, false)))
+
+	require.NoError(t, err)
+	assert.Empty(t, out)
+	require.NotNil(t, storedChatQuestion(t, database, row))
+}
+
+// When neither the sidecar nor the database can be read the arming is
+// unknown and the owner's presence stands.
+func TestAskGuard_ArmingUnreadableKeepsPresence(t *testing.T) {
+	database, pid, row := stopGuardFixture(t)
+	setOwnerPresence(t, database, row, time.Now())
+	armSessionForGuard(t, database, row)
+	breakWatchmanArmingTable(t, database)
 	bad := filepath.Join(t.TempDir(), "sidecar")
 	require.NoError(t, os.Mkdir(bad, 0o700)) // a directory: unreadable as a file
 	armed, ok := askGuardSessionArmed(database, row, bad)
