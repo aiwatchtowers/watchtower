@@ -715,6 +715,17 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertTrue(company.published.isEmpty)
         XCTAssertTrue(company.saves.isEmpty)
 
+        // A change between Send and the publish task: the driver refuses it.
+        company.publishRevision = "draft-4"
+        let third = hold(controller, "company_publish")
+        try await whenHeld(third)
+        controller.answerConfirm(true)
+        controller.sendSecret("xoxe-sample")
+        company.publishRevision = "draft-5"  // lands before the publish task runs
+        let thirdAnswer = await third.value
+        XCTAssertEqual(thirdAnswer, "error:failed")
+        XCTAssertTrue(company.published.isEmpty)
+
         let read = await call(controller, "company_draft")
         XCTAssertNotEqual(read, "error:busy", "a read is never locked")
         let saved = await call(controller, "company_draft", save)

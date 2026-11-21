@@ -232,6 +232,9 @@ extension CompanySetupWizardModel {
 
     package static let publishWaitsAtlassian = "Publish waits for the Atlassian check: sign in on the Atlassian step, or "
         + "skip Atlassian."
+    /// The assistant's Publish: the setup changed after the customer approved it.
+    package static let publishChangedLine = "The setup changed after you approved Publish, so nothing was published. "
+        + "Approve Publish again."
 
     // MARK: Linear and Microsoft (§2.8)
 

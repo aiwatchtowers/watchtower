@@ -213,7 +213,9 @@ class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
         heldCheck = nil
     }
 
-    func publish(token: String) async -> Result<Data, ConnectDriverError> {
+    /// As the real driver: publishes only the approved revision.
+    func publish(token: String, approvedRevision: String) async -> Result<Data, ConnectDriverError> {
+        guard publishRevision == approvedRevision else { return .failure(.failed("the setup changed")) }
         published.append(token)
         return .success(Data(#"{"published":true}"#.utf8))
     }

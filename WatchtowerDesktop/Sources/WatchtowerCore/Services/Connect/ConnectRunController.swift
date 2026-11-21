@@ -138,7 +138,7 @@ package final class ConnectRunController {
             guard company.publishNeedsToken else {
                 // A setup without Slack publishes with no token (`no_slack`).
                 step.work = Task { [weak self] in
-                    let reply = Self.reply(await company.publish(token: ""))
+                    let reply = Self.reply(await company.publish(token: "", approvedRevision: step.revision ?? ""))
                     self?.finish(step, reply)
                 }
                 return
@@ -164,7 +164,7 @@ package final class ConnectRunController {
             // The draft the customer approved, or nothing (spec §6).
             guard company.publishRevision == step.revision else { return finish(step, Self.publishChanged) }
             step.work = Task { [weak self] in
-                let reply = Self.reply(await company.publish(token: value))
+                let reply = Self.reply(await company.publish(token: value, approvedRevision: step.revision ?? ""))
                 self?.finish(step, reply)
             }
         } else {

@@ -456,6 +456,11 @@ final class PersonalConnectDriverTests: XCTestCase {
         let driver = QuickConnectionConnectDriver(model: model, policy: Self.open)
         XCTAssertEqual(driver.confirmNeeded(tool: "connect_start", options: ["enable": "files"]),
                        .quickConnection(name: "files", server: .command(#"npx -y acme-mcp --root "/tmp/a b""#)))
+        // A command path with a space is quoted as one word.
+        XCTAssertEqual(QuickConnectionConnectDriver.commandLine("/opt/My Tools/server", ["--port", "8080"]),
+                       #""/opt/My Tools/server" --port 8080"#)
+        XCTAssertNotEqual(QuickConnectionConnectDriver.commandLine("/opt/My Tools/server", []),
+                          QuickConnectionConnectDriver.commandLine("/opt/My", ["Tools/server"]))
     }
 
     func testQuickConnectionApprovalIsForTheRowTheCardShowed() async throws {

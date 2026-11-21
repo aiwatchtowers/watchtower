@@ -74,16 +74,19 @@ package protocol ConnectCompanyDriving: ConnectServiceDriving {
     func check(vendor: String) async -> Result<Data, ConnectDriverError>
     /// Publishes the setup with the Slack configuration token. The
     /// controller calls it only after the Publish confirm card and, when
-    /// `publishNeedsToken`, the token's secret card (else with "").
+    /// `publishNeedsToken`, the token's secret card (else with ""). Publishes
+    /// only while `publishRevision` is still `approvedRevision`, checked
+    /// again once the draft Go publishes is saved (`.failed` otherwise).
     /// Success is `ConnectCompanyPublished`.
-    func publish(token: String) async -> Result<Data, ConnectDriverError>
+    func publish(token: String, approvedRevision: String) async -> Result<Data, ConnectDriverError>
     /// Slack is part of the setup: Publish takes the configuration token.
     var publishNeedsToken: Bool { get }
     /// Why Publish cannot run yet (no confirm card shows), nil when it can.
     var publishBlockedReason: String? { get }
     /// What Publish would publish now (the company name and the draft's
-    /// values), as one comparable value. The controller fixes it when the
-    /// Publish card opens and publishes only while it is unchanged.
+    /// values), as a SHA-256 hex digest: comparable, and never a secret the
+    /// draft holds. The controller fixes it when the Publish card opens and
+    /// publishes only while it is unchanged.
     var publishRevision: String { get }
 }
 

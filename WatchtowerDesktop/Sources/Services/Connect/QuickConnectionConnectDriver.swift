@@ -66,14 +66,15 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
         }
     }
 
-    /// A stdio command line as the card shows it: an argument with a space
-    /// or a quote in it is quoted.
+    /// A stdio command line as the card shows it: the command and each
+    /// argument with a space or a quote in it (or empty) is quoted, so
+    /// `/opt/My Tools/server` never reads as `/opt/My` plus an argument.
     nonisolated static func commandLine(_ command: String, _ args: [String]) -> String {
-        let quoted = args.map { arg in
-            let plain = !arg.isEmpty && !arg.contains { $0.isWhitespace || $0 == "\"" || $0 == "'" }
-            return plain ? arg : "\"" + arg.replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        ([command] + args).map { word in
+            let plain = !word.isEmpty && !word.contains { $0.isWhitespace || $0 == "\"" || $0 == "'" }
+            return plain ? word : "\"" + word.replacingOccurrences(of: "\"", with: "\\\"") + "\""
         }
-        return ([command] + quoted).joined(separator: " ")
+        .joined(separator: " ")
     }
 
     static let fieldKeys: Set<String> = ["name", "kind", "command", "args", "url", "oauth", "header", "variable"]

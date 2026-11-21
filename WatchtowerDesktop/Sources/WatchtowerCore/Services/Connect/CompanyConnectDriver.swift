@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The company setup's connect driver (agent connect spec §5.4): the
@@ -390,14 +391,17 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
     /// The name Publish uses and every draft value, without where the
     /// wizard's page stands (`step`, `startedAt`): moving between pages is
     /// no change to what gets published; any edit, here or on the page, is.
+    /// Only its SHA-256 leaves: the draft holds client secrets.
     package var publishRevision: String {
         var draft = wizard.draft
         draft.step = ""
         draft.startedAt = nil
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let values = (try? encoder.encode(draft)).flatMap { String(bytes: $0, encoding: .utf8) } ?? ""
-        return publishName + "\n" + values
+        var values = Data(publishName.utf8)
+        values.append(0x0A)
+        values.append((try? encoder.encode(draft)) ?? Data())
+        return SHA256.hash(data: values).map { String(format: "%02x", $0) }.joined()
     }
 
     package var publishBlockedReason: String? {
@@ -407,12 +411,18 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
         return wizard.publishBlockedReason
     }
 
-    package func publish(token: String) async -> Result<Data, ConnectDriverError> {
+    package func publish(token: String, approvedRevision: String) async -> Result<Data, ConnectDriverError> {
         guard await ensureOpen() else { return .failure(.failed(openFailed)) }
         if let reason = publishBlockedReason { return .failure(.failed(reason)) }
+        guard publishRevision == approvedRevision else {
+            return .failure(.failed(CompanySetupWizardModel.publishChangedLine))
+        }
         let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if publishNeedsToken, token.isEmpty { return .failure(.failed(CompanySetupWizardModel.publishNeedsTokenLine)) }
-        await wizard.publish(token: publishNeedsToken ? token : nil)
+        // Checked again once the draft Go publishes is saved, before the verb.
+        await wizard.publish(token: publishNeedsToken ? token : nil) { [weak self] in
+            self?.publishRevision == approvedRevision
+        }
         switch wizard.publishState {
         case let .done(published):
             wizard.showPublished()
