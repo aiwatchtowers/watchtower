@@ -81,6 +81,9 @@ final class ConfluenceSpacesViewModel {
     /// Keys with a select/unselect in flight (their toggles are disabled).
     private(set) var busyKeys: Set<String> = []
     private(set) var isReconsenting = false
+    /// The re-consent's login flow waits in the browser (not yet in its
+    /// reload): the section shows the waiting line and Cancel.
+    private(set) var isWaitingForSignIn = false
     /// Why the last "Grant Confluence access" or "Allow editing" failed (the
     /// Jira login flow's own error), mirrored here so it shows next to the
     /// button.
@@ -101,6 +104,11 @@ final class ConfluenceSpacesViewModel {
     private let onReconsent: @MainActor (Int64) async -> String?
     private let onSelected: @MainActor () async -> Void
     private let onAllowEditing: @MainActor (Int64) async -> String?
+    private let onCancelReconsent: @MainActor (Int64) -> Void
+    /// Bumped by every re-consent start and by `cancelReconsent()`: only the
+    /// run that is still current writes its result, so a cancelled run's late
+    /// end never resets a newer one.
+    private var reconsentRun = 0
     /// The last successful live listing, reused by `refreshStatuses()` so a
     /// status poll never hits the network.
     private var liveSpaces: [LiveSpace] = []
@@ -118,13 +126,15 @@ final class ConfluenceSpacesViewModel {
     /// successful select — AppState asks the daemon to sync now (the tray's
     /// Sync Now) so the new space starts without waiting for the next poll.
     /// `onAllowEditing` runs the login flow with `--with-confluence-write`
-    /// and returns its error, nil on success.
+    /// and returns its error, nil on success. `onCancelReconsent` ends the
+    /// running login flow (the waiting line's Cancel).
     init(
         accountID: Int64,
         dbPool: DatabasePool,
         runner: CLIRunnerProtocol?,
         onReconsent: @escaping @MainActor (Int64) async -> String? = { _ in nil },
         onAllowEditing: @escaping @MainActor (Int64) async -> String? = { _ in nil },
+        onCancelReconsent: @escaping @MainActor (Int64) -> Void = { _ in },
         onSelected: @escaping @MainActor () async -> Void = {}
     ) {
         self.accountID = accountID
@@ -133,6 +143,7 @@ final class ConfluenceSpacesViewModel {
         self.onReconsent = onReconsent
         self.onSelected = onSelected
         self.onAllowEditing = onAllowEditing
+        self.onCancelReconsent = onCancelReconsent
     }
 
     // MARK: - Load
@@ -319,12 +330,7 @@ final class ConfluenceSpacesViewModel {
     /// The awaitable body of `reconsent()`, split out for tests (the
     /// `JiraAccountsViewModel.refreshAsync` precedent).
     func reconsentAsync() async {
-        guard !isReconsenting else { return }
-        isReconsenting = true
-        defer { isReconsenting = false }
-        reconsentError = nil
-        reconsentError = await onReconsent(accountID)
-        await load()
+        await runReconsent(onReconsent)
     }
 
     /// "Allow editing": the Jira account's login flow with
@@ -336,12 +342,35 @@ final class ConfluenceSpacesViewModel {
 
     /// The awaitable body of `allowEditing()`, split out for tests.
     func allowEditingAsync() async {
-        guard !isReconsenting else { return }
-        isReconsenting = true
-        defer { isReconsenting = false }
+        await runReconsent(onAllowEditing)
+    }
+
+    /// The waiting line's Cancel: ends the login flow and puts the section
+    /// back as it was, with no error. The cancelled run's end is ignored.
+    func cancelReconsent() {
+        guard isWaitingForSignIn else { return }
+        reconsentRun += 1
+        isWaitingForSignIn = false
+        isReconsenting = false
         reconsentError = nil
-        reconsentError = await onAllowEditing(accountID)
+        onCancelReconsent(accountID)
+    }
+
+    /// One re-consent run: the login flow, then a reload. A run that
+    /// `cancelReconsent()` ended (or a newer one replaced) writes nothing.
+    private func runReconsent(_ flow: @MainActor (Int64) async -> String?) async {
+        guard !isReconsenting else { return }
+        reconsentRun += 1
+        let run = reconsentRun
+        isReconsenting = true
+        isWaitingForSignIn = true
+        reconsentError = nil
+        let error = await flow(accountID)
+        guard run == reconsentRun else { return }
+        isWaitingForSignIn = false
+        reconsentError = error
         await load()
+        isReconsenting = false
     }
 
     // MARK: - Errors
