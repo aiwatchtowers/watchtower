@@ -49,7 +49,7 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
     private var approved: Approval?
 
     private struct Approval: Equatable {
-        let id: Int, name: String, kind: String, url: String, command: String
+        let id: Int, name: String, kind: String, url: String, command: String, args: [String]
 
         init(_ c: ExternalConnection) {
             id = c.id
@@ -57,7 +57,23 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
             kind = c.kind
             url = c.url
             command = c.command
+            args = c.args
         }
+
+        /// What the card shows: what turning the row on runs or calls.
+        var server: ConnectAssistantServer {
+            kind == "http" ? .url(url) : .command(QuickConnectionConnectDriver.commandLine(command, args))
+        }
+    }
+
+    /// A stdio command line as the card shows it: an argument with a space
+    /// or a quote in it is quoted.
+    nonisolated static func commandLine(_ command: String, _ args: [String]) -> String {
+        let quoted = args.map { arg in
+            let plain = !arg.isEmpty && !arg.contains { $0.isWhitespace || $0 == "\"" || $0 == "'" }
+            return plain ? arg : "\"" + arg.replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        }
+        return ([command] + quoted).joined(separator: " ")
     }
 
     static let fieldKeys: Set<String> = ["name", "kind", "command", "args", "url", "oauth", "header", "variable"]
@@ -200,6 +216,17 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
         return .success(ConnectSecretResult.data(state: "added", account: server.name))
     }
 
+    /// Where the key goes: the header of the http server, or the variable of
+    /// the stdio command, as `submitSecret` would add it now. nil while the
+    /// fields are incomplete (Send then refuses as `submitSecret` does).
+    func secretDestination(kind: String) -> String? {
+        guard kind == "mcp_secret", case let .success(server) = readServer(withKey: true) else { return nil }
+        return server.kind == "http"
+            ? ConnectAssistantPresentation.headerDestination(header: server.keyName, url: server.url)
+            : ConnectAssistantPresentation.variableDestination(
+                variable: server.keyName, commandLine: Self.commandLine(server.command, server.args))
+    }
+
     /// The `set_fields` server, checked as the add sheet checks it.
     private struct Server {
         let name, kind, command, url, keyName: String
@@ -248,8 +275,9 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
         guard tool == "connect_start", let name = options["enable"],
               let connection = model.connections.first(where: { $0.name == name }),
               connection.allowed(by: policy()) else { return nil }
-        approved = Approval(connection)
-        return .quickConnection(name: name)
+        let approval = Approval(connection)
+        approved = approval
+        return .quickConnection(name: name, server: approval.server)
     }
 
     /// Off when the policy allows no Quick Connection at all; one it

@@ -425,11 +425,28 @@ final class CompanyConnectDriverTests: XCTestCase {
         XCTAssertEqual(unused, .failure(.badArgs("google is not among the company's services")))
     }
 
+    /// The revision the Publish card binds to moves with the name and any
+    /// draft value, never with the page the wizard shows.
+    func testPublishRevisionFollowsTheValues() async {
+        let cli = CompanyScriptedCLI()
+        cli.setups = acmeSetup
+        let (driver, wizard) = await resume(publishDraft, checked: ["atlassian"], cli: cli)
+        _ = driver.confirmNeeded(tool: "company_publish", options: [:])
+        let approved = driver.publishRevision
+        wizard.publishName = "Acme Corp"
+        XCTAssertNotEqual(driver.publishRevision, approved, "another name is another publish")
+        wizard.publishName = "Acme"
+        XCTAssertEqual(driver.publishRevision, approved)
+        _ = await driver.saveDraft(vendor: "atlassian", fields: ["site": "other.atlassian.net"])
+        XCTAssertNotEqual(driver.publishRevision, approved, "an edited draft is another publish")
+    }
+
     func testPublishNeedsConfirm() async throws {
         let cli = CompanyScriptedCLI()
         cli.setups = acmeSetup
         let (driver, wizard) = await resume(publishDraft, checked: ["atlassian"], cli: cli)
-        XCTAssertEqual(driver.confirmNeeded(tool: "company_publish", options: [:]), .companyPublish(company: "Acme"))
+        XCTAssertEqual(driver.confirmNeeded(tool: "company_publish", options: [:]),
+                       .companyPublish(company: "Acme", services: ["Slack", "Atlassian"]))
         XCTAssertTrue(driver.publishNeedsToken, "Slack is part of it: the token card follows the confirm")
         XCTAssertTrue(cli.calls(["company", "publish"]).isEmpty, "the card alone publishes nothing")
 
@@ -480,7 +497,7 @@ final class CompanyConnectDriverTests: XCTestCase {
 
     func testOwnGoogleClientNeedsConfirm() async throws {
         let (driver, model, cli) = ownDriver([.init(lines: [Self.ownOK])])
-        XCTAssertEqual(driver.confirmNeeded(tool: "connect_start", options: ["own_client": "5678-own"]), .ownGoogleClient)
+        XCTAssertEqual(driver.confirmNeeded(tool: "connect_start", options: ["own_client": "5678-own"]), .ownGoogleClient(clientID: "5678-own"))
         XCTAssertNil(driver.confirmNeeded(tool: "connect_wait", options: [:]))
 
         let early = await driver.start(options: ["own_client": "5678-own"])

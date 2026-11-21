@@ -4,8 +4,10 @@ import WatchtowerInterface
 
 /// A card in the connect panel only the customer can answer (spec §5.3).
 package enum ConnectPendingCard: Equatable, Sendable {
-    /// The secure field: `kind` names where the value goes, `label` is the agent's.
-    case secret(kind: String, label: String)
+    /// The secure field: `kind` names the verb the value goes to, `label` is
+    /// the agent's, `destination` the driver's place for it when the card
+    /// opened (`secretDestination(kind:)`; Send refuses a changed one).
+    case secret(kind: String, label: String, destination: String? = nil)
     case confirm(ConnectAssistantConfirm)
 }
 
@@ -26,6 +28,13 @@ package enum ConnectPendingCard: Equatable, Sendable {
 ///   that left the status while a newer start is underway, which ends alone.
 /// - No tool call resolves a card: only `answerConfirm`, `sendSecret` and
 ///   `cancelSecret`, which the panel calls.
+/// - What the customer approves or pastes into is what runs (spec §6): a
+///   card fixes its subject when it opens (a start's options, a secret's
+///   destination, Publish's draft revision); `set_fields` and a
+///   `company_draft` save are refused (`busy`) until the card's step is
+///   answered, and Send or Publish refuses a subject that changed anyway.
+/// - `slack_live_probe` runs as a step too: held at most `callBudget`, a
+///   repeat re-attaches to the running probe instead of starting another.
 /// - A secret goes from `sendSecret` straight to the driver; nothing here
 ///   keeps, logs or returns it.
 @MainActor
@@ -63,6 +72,7 @@ package final class ConnectRunController {
     @ObservationIgnored private var cardStep: Step?
     @ObservationIgnored private var flowStep: Step?
     @ObservationIgnored private var checkStep: Step?
+    @ObservationIgnored private var probeStep: Step?
 
     package init(
         driver: any ConnectServiceDriving,
@@ -80,7 +90,7 @@ package final class ConnectRunController {
     package var state: ConnectAssistantState {
         if let failure { return .failed(failure) }
         switch pendingCard {
-        case let .secret(_, label): return .secret(label: label)
+        case let .secret(_, label, destination): return .secret(label: label, destination: destination)
         case let .confirm(confirm): return .confirm(confirm)
         case nil: break
         }
@@ -123,6 +133,7 @@ package final class ConnectRunController {
             }
         case .publish:
             guard let company = driver as? any ConnectCompanyDriving else { return }
+            guard company.publishRevision == step.revision else { return finish(step, Self.publishChanged) }
             step.resetBudget()
             guard company.publishNeedsToken else {
                 // A setup without Slack publishes with no token (`no_slack`).
@@ -138,7 +149,7 @@ package final class ConnectRunController {
             cardStep = nil
             step.resetBudget()
             runCheck(step, vendor: vendor, company: company)
-        case .secret, .flow, .check:
+        case .secret, .flow, .check, .probe:
             break
         }
     }
@@ -146,15 +157,22 @@ package final class ConnectRunController {
     /// The secret card's value. Called only by the panel; the value goes to
     /// the driver and is kept nowhere.
     package func sendSecret(_ value: String) {
-        guard let step = cardStep, case let .secret(kind, _) = pendingCard else { return }
+        guard let step = cardStep, case let .secret(kind, _, destination) = pendingCard else { return }
         pendingCard = nil
         let driver = driver
         if case .publish = step.purpose, let company = driver as? any ConnectCompanyDriving {
+            // The draft the customer approved, or nothing (spec §6).
+            guard company.publishRevision == step.revision else { return finish(step, Self.publishChanged) }
             step.work = Task { [weak self] in
                 let reply = Self.reply(await company.publish(token: value))
                 self?.finish(step, reply)
             }
         } else {
+            // The place the card showed, or nothing: the value never goes
+            // where the customer did not see it go (spec §6).
+            guard driver.secretDestination(kind: kind) == destination else {
+                return finish(step, Self.destinationChanged)
+            }
             step.work = Task { [weak self] in
                 let sent = await driver.submitSecret(kind: kind, value: value)
                 guard let self else { return }
@@ -209,12 +227,14 @@ package final class ConnectRunController {
         waitingStep = nil
         flowStep?.work?.cancel()  // only the wait on the flow, never the flow
         if let card = cardStep { dropSecretConfirm(card) }
-        for step in [cardStep, flowStep, checkStep].compactMap(\.self) {
+        probeStep?.work?.cancel()  // nobody reads its answer any more
+        for step in [cardStep, flowStep, checkStep, probeStep].compactMap(\.self) {
             step.wakeAll(.closed)
         }
         cardStep = nil
         flowStep = nil
         checkStep = nil
+        probeStep = nil
     }
 
     // MARK: - Calls
@@ -264,7 +284,21 @@ package final class ConnectRunController {
         guard let provider = args["provider"] as? String, !provider.isEmpty else {
             return .error(.badArgs, "slack_live_probe needs a provider")
         }
-        return Self.reply(await prober.liveProbe(provider: provider))
+        // The probe can outlast a call (up to ~105 s): it runs as a step, so
+        // a repeat re-attaches to it instead of starting a second probe.
+        if let current = probeStep {
+            if case let .probe(running) = current.purpose, running == provider { return await attach(current) }
+            guard current.outcome != nil else { return .error(.busy, "a Slack Live check is still running") }
+            probeStep = nil  // another provider's answer nobody collected
+        }
+        let step = Step(purpose: .probe(provider))
+        probeStep = step
+        step.work = Task { [weak self] in
+            let reply = Self.reply(await prober.liveProbe(provider: provider))
+            guard let self, self.probeStep === step else { return }
+            self.finish(step, reply)
+        }
+        return await attach(step)
     }
 
     private func start(_ args: [String: Any]) async -> Reply {
@@ -276,7 +310,10 @@ package final class ConnectRunController {
             if activeFlow == flowID, current != flowID { forgetFlow(flowID) }
         }
         if let step = cardStep {
-            guard case .start = step.purpose else { return Self.cardOpen }
+            guard case let .start(pending) = step.purpose else { return Self.cardOpen }
+            // Only the same start re-attaches: another one never gets this
+            // card's answer (a flow id or a decline of something else).
+            guard Self.strings(args) == pending else { return Self.otherStartOnCard }
             return await attach(step)  // a re-call: never an answer to the card
         }
         guard driver.policyAllows() else { return .error(.policy, "your organization's policy blocks \(driver.service)") }
@@ -436,10 +473,19 @@ package final class ConnectRunController {
             guard case .secret(kind) = step.purpose else { return Self.cardOpen }
             return await attach(step)
         }
-        return await attach(showCard(.secret(kind: kind, label: label), purpose: .secret(kind)))
+        let destination = driver.secretDestination(kind: kind)
+        return await attach(showCard(.secret(kind: kind, label: label, destination: destination), purpose: .secret(kind)))
+    }
+
+    /// A card's step is unanswered, or its answer still runs: what it
+    /// approved must not change under it.
+    private var cardInFlight: Bool {
+        guard let step = cardStep else { return false }
+        return step.outcome == nil
     }
 
     private func setFields(_ args: [String: Any]) async -> Reply {
+        guard !cardInFlight else { return Self.fieldsLocked }
         guard let fields = args as? [String: String] else { return .error(.badArgs, "set_fields values must be strings") }
         // A Quick Connection's `enable` is a connect_start option behind the
         // customer's confirm card, never a field (preflight F4).
@@ -476,6 +522,7 @@ package final class ConnectRunController {
                 case let .failure(error): return Self.reply(error)
                 }
             }
+            guard !cardInFlight else { return Self.fieldsLocked }
             guard let vendor = args["vendor"] as? String, let fields = rawFields as? [String: String] else {
                 return .error(.badArgs, "company_draft save needs a vendor and string fields")
             }
@@ -494,7 +541,9 @@ package final class ConnectRunController {
             guard let confirm = company.confirmNeeded(tool: "company_publish", options: [:]) else {
                 return .error(.failed, company.publishBlockedReason ?? "the company setup is not ready to publish")
             }
-            return await attach(showCard(.confirm(confirm), purpose: .publish))
+            let step = showCard(.confirm(confirm), purpose: .publish)
+            step.revision = company.publishRevision  // the draft this card approves
+            return await attach(step)
         }
     }
 
@@ -564,6 +613,7 @@ package final class ConnectRunController {
         if cardStep === step { cardStep = nil }
         if flowStep === step { flowStep = nil }
         if checkStep === step { checkStep = nil }
+        if probeStep === step { probeStep = nil }
         return outcome
     }
 
@@ -613,6 +663,7 @@ package final class ConnectRunController {
             step.work?.cancel()
             waitingStep = nil
         }
+        if step === probeStep { step.work?.cancel() }
         if let abandonedFlow, activeFlow == abandonedFlow { activeFlow = nil }
         failure = .timedOut
         finish(step, reply)
@@ -639,9 +690,17 @@ package final class ConnectRunController {
     private static let closed = Reply.error(.closed, "the connect run has ended")
     private static let cardOpen = Reply.error(.busy, "the customer has a card open in the panel")
     private static let stopped = Reply.error(.closed, "this run stopped waiting; the customer can press Retry")
+    private static let otherStartOnCard = Reply.error(
+        .busy, "another connect_start waits on the customer's card; call that one again, or wait for its answer")
+    private static let fieldsLocked = Reply.error(
+        .busy, "the customer has a card open in the panel; change fields after it is answered")
+    private static let destinationChanged = Reply.error(
+        .failed, "where the secret goes changed after the card opened; nothing was sent: ask for it again")
+    private static let publishChanged = Reply.error(
+        .failed, "the company setup changed after the Publish card opened; nothing was published: call company_publish again")
     /// The calls that open a card or wait on a step.
     private static let stepTools: Set<String> = [
-        "connect_start", "connect_wait", "request_secret", "company_check", "company_publish"
+        "connect_start", "connect_wait", "request_secret", "company_check", "company_publish", "slack_live_probe"
     ]
 
     private static func json(_ value: some Encodable) -> Data {
@@ -723,6 +782,8 @@ private final class Step {
         case check
         /// A company check behind the Replace confirm card.
         case replaceCheck
+        /// A Slack Live probe for this provider.
+        case probe(String)
     }
 
     enum Wake { case resolved, elapsed, closed, cancelled }
@@ -730,6 +791,8 @@ private final class Step {
     let purpose: Purpose
     let flowID: String?
     let vendor: String?
+    /// Publish: the draft revision its card approved.
+    var revision: String?
     var outcome: Reply?
     var work: Task<Void, Never>?
     private(set) var spent: Duration = .zero

@@ -730,6 +730,29 @@ final class SlackConnectDriverTests: XCTestCase {
                        "a cancelled consent is gone: the token runs the create")
     }
 
+    /// A confirmed PKCE update still waiting for its token ends with its run:
+    /// a later run's token creates instead of adopting with PKCE, and its
+    /// starts are no longer busy behind it.
+    func testRunEndDropsAWaitingPKCEUpdate() async throws {
+        let rig = await makeRig(replies: [FakeCLILineStream.Reply(lines: [#"{"result":"existing_app","team_id":"T0ACME"}"#]), noSetups])
+        let flowID = success(await rig.driver.start(options: ["pkce": "1"]))
+        XCTAssertEqual(flowID, "flow-1")
+        rig.driver.runEnded()
+        let outcome = await rig.driver.wait(flowID: "flow-1")
+        XCTAssertEqual(outcome, .failed(reason: SlackConnectDriver.updateDropped))
+        _ = await rig.driver.submitSecret(kind: "slack_config_token", value: token)
+        XCTAssertFalse(rig.setupCLI.invocations.contains { $0.args.contains("adopt") },
+                       "the consent went with its run: no PKCE adopt without a new confirm")
+        let next = await rig.driver.start(options: ["pkce": "1"])
+        XCTAssertEqual(next, .success("flow-2"), "nothing left keeps a later start busy")
+    }
+
+    /// A problem line that quotes the token goes back with the token hidden.
+    func testTokenHiddenInTheResult() {
+        let echoed = SlackConfigTokenResult(result: "bad_token", message: "Slack refused \(token)")
+        XCTAssertEqual(SlackConnectDriver.hiding(token, in: echoed).message, "Slack refused [hidden]")
+    }
+
     func testPendingCreateReportedInStatus() async {
         let record = #"{"setups":[{"team_id":"T0ACME","team_name":"Acme","app_id":"","client_id":"","connected":false,"#
             + #""link_written":false,"install_requested":false,"stage":"pending_create"},{"team_id":"T0OTHER","#

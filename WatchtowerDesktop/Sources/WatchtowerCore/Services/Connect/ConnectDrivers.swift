@@ -33,6 +33,13 @@ package protocol ConnectServiceDriving: AnyObject {
     /// Hands a secret to the verb its kind names; returns the verb's JSON
     /// result, never the secret.
     func submitSecret(kind: String, value: String) async -> Result<Data, ConnectDriverError>
+    /// Where `submitSecret(kind:)` would send the value right now, as the
+    /// secret card shows it ("imap.example.com:993 as alice@example.com"):
+    /// every field that picks the host, URL, server or key name. nil when the
+    /// place is fixed (the vendor's own endpoint, Watchtower's store). The
+    /// controller fixes it when the card opens and refuses Send when it
+    /// changed since.
+    func secretDestination(kind: String) -> String?
     func setFields(_ fields: [String: String]) async -> Result<Void, ConnectDriverError>
     func choose(kind: String, select: [String]?) async -> Result<[ConnectChoice], ConnectDriverError>
     /// The card the customer must press before `tool` runs with `options`
@@ -49,6 +56,7 @@ package protocol ConnectServiceDriving: AnyObject {
 
 extension ConnectServiceDriving {
     package func runEnded() {}
+    package func secretDestination(kind: String) -> String? { nil }
 }
 
 /// The company setup's extra actions (spec §5.4), on the setup wizard's
@@ -73,6 +81,10 @@ package protocol ConnectCompanyDriving: ConnectServiceDriving {
     var publishNeedsToken: Bool { get }
     /// Why Publish cannot run yet (no confirm card shows), nil when it can.
     var publishBlockedReason: String? { get }
+    /// What Publish would publish now (the company name and the draft's
+    /// values), as one comparable value. The controller fixes it when the
+    /// Publish card opens and publishes only while it is unchanged.
+    var publishRevision: String { get }
 }
 
 /// A driver whose secret may need the customer's confirm before its verb
@@ -275,3 +287,40 @@ package struct ConnectCompanyPublished: Codable, Equatable, Sendable {
 
 /// The result of a call with nothing to return (Go `Done`): `{}`.
 package struct ConnectDone: Codable, Equatable, Sendable {}
+
+/// Hides a pasted secret in text that goes back to the agent (a verb's
+/// stderr or result line): every driver's secret result passes through it.
+package enum ConnectSecret {
+    /// `text` with every copy of `secret` hidden: a verb's stderr may echo
+    /// what it read (an ICS address, a key), and that text goes back to the
+    /// agent.
+    package static func scrub(_ text: String, _ secret: String) -> String {
+        let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        var out = text
+        for value in [secret, trimmed] where !value.isEmpty {
+            out = out.replacingOccurrences(of: value, with: "[hidden]")
+        }
+        return out
+    }
+
+    /// A verb's failure for the agent. The view models cut stderr at 200
+    /// characters, so a secret can survive only in part: an error that holds
+    /// any piece of the secret (`holdsPiece`) is replaced by `fallback`,
+    /// which never holds a credential.
+    package static func failure(_ error: String?, secret: String, fallback: String) -> ConnectDriverError {
+        guard let error, !error.isEmpty else { return .failed(fallback) }
+        guard !holdsPiece(of: secret, in: error) else {
+            return .failed("\(fallback) (Watchtower hid the error text: it repeated part of what was pasted)")
+        }
+        return .failed(error)
+    }
+
+    /// Whether `text` holds any run of the secret's characters as long as
+    /// `piece` (or the whole secret, when it is shorter).
+    package static func holdsPiece(of secret: String, in text: String, piece: Int = 8) -> Bool {
+        let chars = Array(secret.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !chars.isEmpty else { return false }
+        let length = min(piece, chars.count)
+        return (0...(chars.count - length)).contains { text.contains(String(chars[$0..<($0 + length)])) }
+    }
+}

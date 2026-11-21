@@ -285,7 +285,8 @@ final class PersonalConnectDriverTests: XCTestCase {
         guard case .failure = unconfirmed else { return XCTFail("\(unconfirmed)") }
         XCTAssertTrue(model.enabled.isEmpty)
 
-        XCTAssertEqual(driver.confirmNeeded(tool: "connect_start", options: ["enable": "docs"]), .quickConnection(name: "docs"))
+        XCTAssertEqual(driver.confirmNeeded(tool: "connect_start", options: ["enable": "docs"]),
+                       .quickConnection(name: "docs", server: .url("https://docs.example.com/mcp")))
         let flowID = try await driver.start(options: ["enable": "docs"]).get()
         await driver.flows.finished(flowID)
         XCTAssertEqual(model.enabled, ["docs"])
@@ -415,6 +416,46 @@ final class PersonalConnectDriverTests: XCTestCase {
         // An error without any piece of the secret still says why.
         let plain = ConnectSecret.failure("imap add: connection test failed: timeout", secret: "hunter22pw", fallback: "x")
         XCTAssertEqual(plain, .failed("imap add: connection test failed: timeout"))
+    }
+
+    /// Each driver names where its secret goes, from every field that picks
+    /// the place; nil before those fields are set or for a fixed place.
+    func testSecretDestinationNamesThePlace() async {
+        let email = EmailConnectDriver(model: FakeEmailModel(), policy: Self.open)
+        XCTAssertNil(email.secretDestination(kind: "imap_password"))
+        _ = await email.setFields(["host": "imap.example.com", "username": "alice@example.com"])
+        XCTAssertEqual(email.secretDestination(kind: "imap_password"), "imap.example.com:993 (ssl) as alice@example.com")
+        _ = await email.setFields(["port": "1143", "security": "starttls"])
+        XCTAssertEqual(email.secretDestination(kind: "imap_password"),
+                       "imap.example.com:1143 (starttls) as alice@example.com")
+
+        let calendar = CalendarConnectDriver(model: FakeCalendarModel(), policy: Self.open)
+        _ = await calendar.setFields(["url": "https://dav.example.com/", "username": "alice"])
+        XCTAssertEqual(calendar.secretDestination(kind: "caldav_password"), "https://dav.example.com/ as alice")
+        XCTAssertNil(calendar.secretDestination(kind: "ics_url"), "an ICS address is the place itself")
+
+        let http = QuickConnectionConnectDriver(model: FakeQuickModel(), policy: Self.open)
+        _ = await http.setFields(["name": "docs", "kind": "http", "url": "https://mcp.example.com/mcp"])
+        XCTAssertNil(http.secretDestination(kind: "mcp_secret"), "no header yet")
+        _ = await http.setFields(["header": "X-Api-Key"])
+        XCTAssertEqual(http.secretDestination(kind: "mcp_secret"), "the X-Api-Key header of https://mcp.example.com/mcp")
+        let stdio = QuickConnectionConnectDriver(model: FakeQuickModel(), policy: Self.open)
+        _ = await stdio.setFields(["name": "docs", "kind": "stdio", "command": "npx",
+                                   "args": #"-y acme-mcp "a b""#, "variable": "API_KEY"])
+        XCTAssertEqual(stdio.secretDestination(kind: "mcp_secret"), #"the API_KEY variable of npx -y acme-mcp "a b""#)
+        XCTAssertNil(LinearConnectDriver(model: FakeLinearModel(), policy: Self.open).secretDestination(kind: "linear_api_key"))
+    }
+
+    /// The enable card shows the stdio command with its arguments, as stored.
+    func testQuickConnectionEnableCardShowsTheCommand() {
+        let model = FakeQuickModel()
+        model.connections = [ExternalConnection(row: [
+            "id": 3, "name": "files", "kind": "stdio", "command": "npx", "args_json": #"["-y","acme-mcp","--root","/tmp/a b"]"#,
+            "enabled": false, "status": "ok"
+        ])]
+        let driver = QuickConnectionConnectDriver(model: model, policy: Self.open)
+        XCTAssertEqual(driver.confirmNeeded(tool: "connect_start", options: ["enable": "files"]),
+                       .quickConnection(name: "files", server: .command(#"npx -y acme-mcp --root "/tmp/a b""#)))
     }
 
     func testQuickConnectionApprovalIsForTheRowTheCardShowed() async throws {

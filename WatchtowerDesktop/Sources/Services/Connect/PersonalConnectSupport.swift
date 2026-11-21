@@ -114,41 +114,6 @@ struct ConnectSecretResult: Encodable {
     }
 }
 
-enum ConnectSecret {
-    /// `text` with every copy of `secret` hidden: a verb's stderr may echo
-    /// what it read (an ICS address, a key), and that text goes back to the
-    /// agent.
-    static func scrub(_ text: String, _ secret: String) -> String {
-        let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
-        var out = text
-        for value in [secret, trimmed] where !value.isEmpty {
-            out = out.replacingOccurrences(of: value, with: "[hidden]")
-        }
-        return out
-    }
-
-    /// A verb's failure for the agent. The view models cut stderr at 200
-    /// characters, so a secret can survive only in part: an error that holds
-    /// any piece of the secret (`holdsPiece`) is replaced by `fallback`,
-    /// which never holds a credential.
-    static func failure(_ error: String?, secret: String, fallback: String) -> ConnectDriverError {
-        guard let error, !error.isEmpty else { return .failed(fallback) }
-        guard !holdsPiece(of: secret, in: error) else {
-            return .failed("\(fallback) (Watchtower hid the error text: it repeated part of what was pasted)")
-        }
-        return .failed(error)
-    }
-
-    /// Whether `text` holds any run of the secret's characters as long as
-    /// `piece` (or the whole secret, when it is shorter).
-    static func holdsPiece(of secret: String, in text: String, piece: Int = 8) -> Bool {
-        let chars = Array(secret.trimmingCharacters(in: .whitespacesAndNewlines))
-        guard !chars.isEmpty else { return false }
-        let length = min(piece, chars.count)
-        return (0...(chars.count - length)).contains { text.contains(String(chars[$0..<($0 + length)])) }
-    }
-}
-
 enum ConnectOptions {
     /// Refuses an option the service's playbook does not name.
     static func unknown(_ options: [String: String], allowed: Set<String>, service: String) -> ConnectDriverError? {

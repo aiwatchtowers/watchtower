@@ -113,6 +113,17 @@ final class EmailConnectDriver: ConnectServiceDriving {
         return .success(ConnectSecretResult.data(state: "connected", account: name))
     }
 
+    /// The server and login `imap add` would use: "imap.example.com:993
+    /// (ssl) as alice@example.com". nil before host and username are set
+    /// (the Send then refuses as `submitSecret` does).
+    func secretDestination(kind: String) -> String? {
+        guard kind == "imap_password", let host = fields["host"], !host.isEmpty,
+              let username = fields["username"], !username.isEmpty else { return nil }
+        let port = Self.port(fields["port"] ?? "") ?? 993
+        return ConnectAssistantPresentation.mailDestination(
+            host: host, port: port, security: fields["security"] ?? "ssl", username: username)
+    }
+
     func choose(kind: String, select: [String]?) async -> Result<[ConnectChoice], ConnectDriverError> {
         .failure(.badArgs("mail has nothing to choose"))
     }

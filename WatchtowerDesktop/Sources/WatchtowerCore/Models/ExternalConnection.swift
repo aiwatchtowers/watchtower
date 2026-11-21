@@ -1,10 +1,13 @@
+import Foundation
 import GRDB
 
 /// One owner-managed external MCP server ("Quick Connections") from the
 /// `external_connections` table (internal/db/migrations/00064_external_connections.sql).
-/// A lean subset for the list UI — `args_json` (and any secret) live only on
-/// the Go side and are never read here; `url` and `command` are read only for
-/// the organization policy's check (#608, `ManagedPolicy.connectionAllowed`).
+/// A lean subset for the list UI — any secret lives only on the Go side and
+/// is never read here; `url` and `command` are read for the organization
+/// policy's check (#608, `ManagedPolicy.connectionAllowed`), and with `args`
+/// (`args_json`) for the connect assistant's `enable` card, which shows the
+/// customer exactly what turning the connection on runs.
 package struct ExternalConnection: FetchableRecord, Identifiable, Equatable {
     package let id: Int
     package let name: String
@@ -14,6 +17,8 @@ package struct ExternalConnection: FetchableRecord, Identifiable, Equatable {
     package let error: String
     package let url: String
     package let command: String
+    /// The stdio command's arguments; empty when unreadable or for http.
+    package let args: [String]
 
     package init(row: Row) {
         id = row["id"]
@@ -24,6 +29,8 @@ package struct ExternalConnection: FetchableRecord, Identifiable, Equatable {
         error = row["error"] ?? ""
         url = row["url"] ?? ""
         command = row["command"] ?? ""
+        let argsJSON: String = row["args_json"] ?? "[]"
+        args = (try? JSONDecoder().decode([String].self, from: Data(argsJSON.utf8))) ?? []
     }
 
     /// Whether the organization's policy allows this connection (#608).
