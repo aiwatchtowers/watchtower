@@ -10,7 +10,7 @@ Press **Connect with Claude** (or Codex) in **Connections → Jira** and the ass
 ## Before you start
 
 - Watchtower stays open on this Mac: Atlassian's sign-in returns to it on `127.0.0.1`.
-- Your company's Atlassian app is on this Mac: **Connections → Jira** offers **Connect with <company>'s Atlassian app**. Without one, open your company's Watchtower link, set it up with [Connect your company's Atlassian app with the assistant](company-atlassian.md), or connect by hand with an API token.
+- Your company's Atlassian app is on this Mac: **Connections → Jira** offers **Connect with <company>'s Atlassian app**. Without one, open your company's Watchtower link, set it up with [Set up your company's Atlassian app with the assistant](company-atlassian.md), or connect by hand with an API token.
 - You can sign in to Atlassian with an account that reaches the company's site.
 - Your organization's policy allows Jira. A blocked Jira shows **Blocked by your organization** and the assistant cannot connect it.
 - Atlassian's sign-in page is yours alone. The assistant reads only support.atlassian.com. It leaves any other page and stops.
@@ -30,7 +30,7 @@ The assistant's panel always offers **Set up by hand**, which opens **Connection
 
 - **Blocked by your organization** (`policy`). Your organization does not allow Jira. Ask your IT team.
 - **"Another connection is already in progress."** (`busy`). Another Jira sign-in is running. Wait for it, or cancel it, then start again.
-- **"no OAuth client configured: open your company's Watchtower link".** This Mac has no company Atlassian app. Open your company's link, run the company setup, or use **Connect with an API token** by hand.
+- **"no OAuth client configured: open your company's Watchtower link, or set WATCHTOWER_JIRA_CLIENT_ID for development".** This Mac has no company Atlassian app. Open your company's link, run the company setup, or use **Connect with an API token** by hand.
 - **"this Atlassian sign-in does not reach the company's site".** You signed in with an account outside the company's site. Sign in with your company account and start again.
 - **"Watchtower's shared Atlassian app is retired".** Connect through your company's app or with an API token.
 - **The sign-in page was closed, or the wait ran out** (`timeout`). Nothing was connected. Start again.

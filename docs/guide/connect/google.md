@@ -29,7 +29,7 @@ The assistant's panel always offers **Set up by hand**, which opens **Connection
 
 - **Blocked by your organization** (`connect_start` answers `policy`). Your organization does not allow Google. Ask your IT team.
 - **"Another connection is already in progress."** (`busy`). Another Google sign-in is running, from the panel or a sheet. Wait for it, or cancel it, then start again.
-- **"gmail needs your company's or your own Google project".** Watchtower's shared app asks for Calendar only. Connect Calendar alone, then open your company's Watchtower link or use [your own Google project](own-google-project.md).
+- **"gmail needs your company's or your own Google project".** Watchtower's shared app asks for Calendar only. Connect Calendar alone, then open your company's Watchtower link or follow [Connect your own Google project with the assistant](own-google-project.md).
 - **The sign-in page was closed, or the wait ran out** (`timeout`). Nothing was connected. Start again.
 - **"Connect failed" with a message.** The assistant reads you the message. Try again, or use **Set up by hand**.
 

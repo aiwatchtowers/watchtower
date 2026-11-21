@@ -15,7 +15,7 @@ The Microsoft 365 step of the company setup: the assistant registers your compan
 ## Steps
 
 1. **Agent:** Call `connect_status` and `company_draft`. If the draft has no company name, ask the customer for it and save it with `company_draft`. If the company does not use Microsoft 365, save that and go on to Publish. If the draft already holds both ids, go to step 6.
-2. **Agent:** On entra.microsoft.com, open **App registrations → New registration**: name Watchtower, **Accounts in this organizational directory only**, platform **Mobile and desktop applications** with the redirect URI `http://localhost`. Register it.
+2. **Agent:** On entra.microsoft.com, open **App registrations → New registration**: name Watchtower, **Accounts in this organizational directory only**, platform **Mobile and desktop applications** with the redirect URI `http://localhost`, as the wizard's own guide asks. Register it. Microsoft ignores the port of a loopback redirect; the check in step 6 asks with Watchtower's real address (`http://127.0.0.1:18531/callback`), so a mismatch shows there.
 3. **Agent:** Under **API permissions**, add the delegated permissions `IMAP.AccessAsUser.All`, `offline_access`, `openid` and `email`. Never open **Certificates & secrets**: Watchtower uses no secret.
 4. **You:** If you are a tenant admin, press **Grant admin consent** on **API permissions** and confirm. If not, skip it: step 7 gives you a link for your admin.
 5. **Agent:** On the app's **Overview**, read the **Application (client) ID** and the **Directory (tenant) ID** and save both with `company_draft`.
@@ -28,6 +28,7 @@ The assistant's panel always offers **Set up by hand**, which opens the setup wi
 
 - **"Your IT admin must approve Watchtower in Microsoft 365".** Send them the **Admin consent link**. You can go on and publish; press **Check again** on the Microsoft 365 step after they approve.
 - **"Microsoft does not accept this client in tenant" with a code.** Check both ids on the app's **Overview** page and save them again.
+- **The check is rejected with AADSTS50011 (redirect URI mismatch).** Add `http://127.0.0.1` as a second redirect URI under **Mobile and desktop applications**, then run the check again.
 - **"Could not reach Microsoft" with a reason.** Nothing was saved. Check the network and run the check again.
 - **New registration is refused.** Your tenant turned app registration off. Ask a tenant admin to register the app with step 2, then give the assistant its ids.
 - **"The check stopped before it answered."** Nothing was saved; run it again.

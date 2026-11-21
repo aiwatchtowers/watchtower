@@ -22,7 +22,7 @@ Press **Connect with Claude** (or Codex) beside **Use my own Google project** in
 4. **Agent:** Open the OAuth consent screen: user type **External**, app name Watchtower, the customer's address as support and contact email, and the customer as a test user. Then publish the app to production; Google calls it unverified, which is expected for a project of your own.
 5. **Agent:** Open **Credentials**, start **Create credentials → OAuth client ID**, set the type to **Desktop app** and the name to Watchtower, and stop before the form's last button. Call `request_secret` with kind `google_client_secret`. The card asks the customer to close Google's result window before sending.
 6. **You only:** Press **Create**, copy the client secret from the dialog into the assistant's card, close the dialog, then press **Send**.
-7. **Agent:** On the **Credentials** page, read the new client's Client ID from the OAuth 2.0 Client IDs list; never open its secret. Call `connect_start` with `own_client` set to that Client ID. The panel shows a confirm card: Watchtower will sign in through a client of your own.
+7. **Agent:** While `request_secret` says `waiting`, call it again; on `cancelled` or `timeout`, tell the customer and stop at [If something goes wrong](#if-something-goes-wrong). Then, on the **Credentials** page, read the new client's Client ID from the OAuth 2.0 Client IDs list; never open its secret. Call `connect_start` with `own_client` set to that Client ID. The panel shows a confirm card: Watchtower will sign in through a client of your own.
 8. **You:** Read the card and press its confirm button, or decline. A decline ends the run; nothing is stored.
 9. **You:** In the browser, sign in to Google. On "Google hasn't verified this app", check that it names your new project, then choose **Advanced** and go on to it. Approve Gmail and Calendar, ticking every permission.
 10. **Check:** Call `connect_wait`; while it says `waiting`, call it again. On `connected`, call `connect_status` to confirm the account and tell the customer the first sync has started; on `failed` or `timeout`, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong).
@@ -41,7 +41,7 @@ The assistant's panel always offers **Set up by hand**, which opens **Use my own
 - **"Gmail was not approved on Google's consent screen, so it does not sync."** (or Calendar). Start again from step 7 and approve every permission.
 - **"Could not connect your Google project" with a reason.** The assistant reads you the reason. Try again, or use **Set up by hand**.
 - **"Google hasn't verified this app" names another project.** Cancel: it is not yours. Tell the assistant, and stop.
-- **The confirm card was declined, or the wait ran out** (`timeout`). Nothing was stored. Start again when you are ready.
+- **The confirm card was declined, the secret card was cancelled** (`cancelled`), **or the wait ran out** (`timeout`). Nothing was stored. Start again when you are ready.
 
 ```connect
 service: google_own_project

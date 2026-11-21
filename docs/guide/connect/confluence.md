@@ -35,7 +35,7 @@ The assistant's panel always offers **Set up by hand**, which opens **Connection
 - **"Jira connected; Confluence isn't enabled for this Atlassian app."** Your company's app has no Confluence. Ask whoever set it up to add the Confluence API.
 - **"Turn on Confluence in search (Settings → Features) to sync your spaces."** Turn it on, then pick spaces in **Connections → Jira**.
 - **"Confluence: no space you wrote in or viewed in the last 90 days."** Pick spaces with the assistant (step 5) or in **Connections → Jira**.
-- **"no OAuth client configured: open your company's Watchtower link".** This Mac has no company Atlassian app. Open your company's link, or run the company setup.
+- **"no OAuth client configured: open your company's Watchtower link, or set WATCHTOWER_JIRA_CLIENT_ID for development".** This Mac has no company Atlassian app. Open your company's link, or run the company setup.
 - **The sign-in page was closed, or the wait ran out** (`timeout`). Nothing was connected. Start again.
 
 ```connect

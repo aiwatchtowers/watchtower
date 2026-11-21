@@ -21,7 +21,7 @@ The Google step of the company setup: the assistant builds your company's Google
 4. **Agent:** Open the OAuth consent screen: user type **Internal**, app name Watchtower, the customer's address as support and contact email.
 5. **Agent:** Open **Credentials**, start **Create credentials → OAuth client ID**, set the type to **Desktop app** and the name to Watchtower, and stop before the form's last button. Call `request_secret` with kind `google_client_secret`. The card asks the customer to close Google's result window before sending.
 6. **You only:** Press **Create**, copy the client secret from the dialog into the assistant's card, close the dialog, then press **Send**. The secret goes into the setup's draft on this Mac.
-7. **Agent:** On the **Credentials** page, read the new client's Client ID from the OAuth 2.0 Client IDs list; never open its secret. Save it with `company_draft`.
+7. **Agent:** While `request_secret` says `waiting`, call it again; on `cancelled` or `timeout`, tell the customer and stop at [If something goes wrong](#if-something-goes-wrong). Then, on the **Credentials** page, read the new client's Client ID from the OAuth 2.0 Client IDs list; never open its secret. Save it with `company_draft`.
 8. **Agent:** Call `company_check` with vendor `google`. Watchtower opens Google's sign-in in the browser; the sign-in checks the client and connects the customer's own Google account.
 9. **You:** If the panel says the company's stored Google app will be replaced, press its confirm button or decline. Then sign in with your company Google account and approve Gmail and Calendar.
 10. **Check:** While `company_check` says `waiting`, call it again. On `ok`, tell the customer "Connected as" with the address and go on to the next vendor page; on any other result, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong).
@@ -41,6 +41,7 @@ The assistant's panel always offers **Set up by hand**, which opens the setup wi
 - **The Replace card was declined.** The stored Google app stays and nothing changed. Stop, or set the company up under another name.
 - **"Your organization sets <company>'s apps on this Mac".** A configuration profile sets this company; what you set up is used once the profile is removed.
 - **"Watchtower could not save the setup's progress on this Mac, so nothing was checked."** Try again.
+- **The secret card was cancelled** (`cancelled`), **or a wait ran out** (`timeout`). Nothing was saved. Run the step again when you are ready.
 
 ```connect
 service: company

@@ -136,7 +136,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Connect Linear with the assistant](connect/linear.md) — a Linear workspace by sign-in or a personal API key, then the teams to sync
 - [Connect a Quick Connection with the assistant](connect/quick-connections.md) — another tool's MCP server, its key in a secure card, turned on by your confirm
 - [Connect your own Google project with the assistant](connect/own-google-project.md) — the assistant builds your own Google Cloud project for Gmail and Calendar; you copy its secret into a secure card
-- [Set up your company's Slack app with the assistant](connect/company-slack.md) — the company setup in the wizard's order, the Slack app it publishes to, and Publish
+- [Set up your company's Slack app with the assistant](connect/company-slack.md) — the company setup in the wizard's order, the company's Slack app created or updated, the link deny list and Publish
 - [Set up your company's Google app with the assistant](connect/company-google.md) — the company's Google Cloud project, checked by your sign-in
 - [Set up your company's Atlassian app with the assistant](connect/company-atlassian.md) — the company's Jira and Confluence app in the developer console, checked by your sign-in
 - [Set up your company's Linear app with the assistant](connect/company-linear.md) — the company's Linear OAuth application, checked without a sign-in

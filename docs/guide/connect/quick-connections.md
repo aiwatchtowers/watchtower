@@ -21,7 +21,7 @@ Press **Connect with Claude** (or Codex) in **Connections → Quick Connections*
 3. **Agent:** Without a key, call `connect_start`. With a key, call `request_secret` with kind `mcp_secret` instead, and tell the customer where the tool's docs say to make the key; do not open that page yourself.
 4. **You only:** If you were asked for a key, make it on the tool's site, copy it into the card, leave that page, then press **Send**.
 5. **You:** For a server with sign-in, sign in on the page that opens in your browser and approve.
-6. **Check:** Call `connect_wait` (or read the result of `request_secret`); while it says `waiting`, call it again. On `connected`, go on; on `failed` or `timeout`, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong).
+6. **Check:** Call `connect_wait`, or with a key read the result of `request_secret`; while either says `waiting`, call it again. On `connected` (or the key's result), go on; on `cancelled`, `failed` or `timeout`, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong).
 7. **Agent:** The connection is added but off. Call `connect_start` with `enable` set to its name. The panel shows a confirm card: turning it on lets the chat call its read-only tools.
 8. **You:** Read the card and press its confirm button, or decline. A decline keeps the connection off.
 9. **Check:** Call `connect_wait` and then `connect_status`. Tell the customer how many read-only tools the server offers, and that **Tools** under the connection switches them.
@@ -37,7 +37,7 @@ The assistant's panel always offers **Set up by hand**, which opens **Connection
 - **"Added but could not find the new connection to sign in."** Open the connection in **Connections → Quick Connections** and sign in there.
 - **"Sign in failed" or "Enable failed" with a message.** The assistant reads you the message. Check the command or URL and try again.
 - **The status dot is orange: no usable tools.** The server's tools could not be listed, or none is read-only, so the chat does not get it. Fix the server, then toggle **Enabled** or press **Refresh list**.
-- **The confirm card was declined, the card was cancelled, or the wait ran out** (`timeout`). The connection stays off. Start again when you are ready.
+- **The confirm card was declined** (`declined`), **the key card was cancelled** (`cancelled`), **or the wait ran out** (`timeout`). The connection stays off. Start again when you are ready.
 
 ```connect
 service: quickConnections

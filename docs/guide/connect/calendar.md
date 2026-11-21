@@ -19,14 +19,14 @@ Press **Connect with Claude** (or Codex) in **Connections → Calendar** and the
 
 Pick one path after step 1: CalDAV (steps 2–5) or an ICS link (steps 6–8).
 
-1. **Agent:** Call `connect_status`. If Calendar is blocked by the organization, say so and stop. Ask the customer where the calendar lives. For Google Calendar, offer the Google page or its private ICS link.
+1. **Agent:** Call `connect_status`. If Calendar is blocked by the organization, say so and stop. If a flow is running, wait for it with `connect_wait` or ask the customer whether to `connect_cancel` it. Ask the customer where the calendar lives. For Google Calendar, offer the Google page or its private ICS link.
 2. **Agent:** Find the provider's CalDAV address on its help pages (iCloud: `https://caldav.icloud.com`), or ask the customer. Call `set_fields` with `url` and `username`.
 3. **Agent:** Call `request_secret` with kind `caldav_password`. If the provider wants an app password, tell the customer where its help page says to make one; do not open that page yourself.
 4. **You only:** Make the app password on the provider's site if it needs one, copy it into the card, leave that page, then press **Send**. Watchtower tests the server before it saves anything.
-5. **Check:** `request_secret` returns the result once the test ends. On success, call `connect_status` to confirm the account. On a failure, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong).
+5. **Check:** While `request_secret` says `waiting`, call it again; on `cancelled` or `timeout`, tell the customer and stop at [If something goes wrong](#if-something-goes-wrong). It returns the result once the test ends. On success, call `connect_status` to confirm the account. On a failure, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong).
 6. **Agent:** Tell the customer where their calendar shows its private ICS address, then call `request_secret` with kind `ics_url`. Do not open the calendar's own pages.
 7. **You only:** Copy the private address into the card, leave the calendar's page, then press **Send**.
-8. **Check:** `request_secret` returns the result once Watchtower has read the feed. On success, call `connect_status` to confirm the calendar. On a failure, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong).
+8. **Check:** While `request_secret` says `waiting`, call it again; on `cancelled` or `timeout`, tell the customer and stop at [If something goes wrong](#if-something-goes-wrong). It returns the result once Watchtower has read the feed. On success, call `connect_status` to confirm the calendar. On a failure, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong).
 
 ## If something goes wrong
 
@@ -37,7 +37,7 @@ The assistant's panel always offers **Set up by hand**, which opens **Connection
 - **"caldav add: connection test failed" with a reason.** The address, username or password is wrong, or the provider wants an app password. Check them on the provider's help page and run the CalDAV path again.
 - **"caldav add-ics: connection test failed" with a reason.** Watchtower could not read the feed: the address is cut short, or the calendar reset it. Copy it again and run the ICS path again.
 - **"Connect failed" with a message.** The assistant reads you the message. Try again, or use **Set up by hand**.
-- **The secure card was cancelled, or the wait ran out** (`timeout`). Nothing was saved. Start again when you are ready.
+- **The secure card was cancelled** (`cancelled`), **or the wait ran out** (`timeout`). Nothing was saved. Start again when you are ready.
 
 ```connect
 service: calendar
