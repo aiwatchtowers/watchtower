@@ -50,7 +50,7 @@ package enum WatchmanJournalQueries {
         let items = try WatchmanItem.fetchAll(db, sql: """
             SELECT \(itemColumns)
             FROM watchman_items i LEFT JOIN projects p ON p.id = i.workbench_id
-            LEFT JOIN terminal_sessions ts ON ts.id = i.session_id
+            LEFT JOIN terminal_sessions ts ON ts.id = i.session_id AND ts.delete_requested_at IS NULL
             WHERE i.created_at >= ? AND i.created_at < ?
             ORDER BY i.created_at, i.id
             """, arguments: [AutomationDates.format(max(oldest, since ?? oldest)), until])
@@ -66,7 +66,7 @@ package enum WatchmanJournalQueries {
         try WatchmanItem.fetchAll(db, sql: """
             SELECT \(itemColumns)
             FROM watchman_items i LEFT JOIN projects p ON p.id = i.workbench_id
-            LEFT JOIN terminal_sessions ts ON ts.id = i.session_id
+            LEFT JOIN terminal_sessions ts ON ts.id = i.session_id AND ts.delete_requested_at IS NULL
             WHERE i.state = 'deciding'
             ORDER BY i.created_at, i.id
             """)
