@@ -22,6 +22,7 @@ import (
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/platform"
 	"watchtower/internal/policy"
@@ -114,6 +115,12 @@ const (
 	ErrClassFailed        = "failed"
 	ErrClassTooManyIDs    = "too_many_ids"
 	ErrClassNotAdopted    = adopt.ClassNotAdopted
+	// ErrClassNoICloud: a CloudKit code was refused, the Mac's iCloud
+	// account (or its user) cannot be read or used.
+	ErrClassNoICloud = "no_icloud"
+	// ErrClassICloudChanged: the Mac's iCloud account changed while a
+	// CloudKit code was being made; none was issued.
+	ErrClassICloudChanged = "icloud_changed"
 )
 
 // ControlRequest is one request on the control socket. Device names a phone
@@ -489,7 +496,9 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		return ControlAnswer{OK: true, Name: name}
 	case OpUnlink, OpAllow:
 		return s.withHubOr(func(h *hubRuntime) ControlAnswer { return h.handle(r, pl) }, func() ControlAnswer { return s.offlineLink(r) })
-	case OpPair, OpConfirm:
+	case OpPair:
+		return s.pair(r, pl)
+	case OpConfirm:
 		return s.withHub(func(h *hubRuntime) ControlAnswer { return h.handle(r, pl) })
 	case OpDesktopHeartbeat:
 		now := s.o.Clock()
@@ -724,6 +733,32 @@ func (s *supervisor) withHubOr(fn func(*hubRuntime) ControlAnswer, off func() Co
 	return fn(s.hub)
 }
 
+// pair issues a link code (OpPair). A hub whose active transport is
+// CloudKit issues a CloudKit code (hubRuntime.pairCloudKit), so the phone
+// links on the transport the hub publishes on; its share calls run outside
+// hubMu, the hub held by its wait group, which stop cancels and waits for.
+// Any other hub issues a relay code under hubMu (hubRuntime.handle).
+func (s *supervisor) pair(r ControlRequest, pl *pairListener) ControlAnswer {
+	var (
+		h      *hubRuntime
+		shares transport.Shares
+	)
+	a := s.withHub(func(rt *hubRuntime) ControlAnswer {
+		var ok bool
+		if shares, ok = rt.cloudKitCodes(); !ok {
+			return rt.handle(r, pl)
+		}
+		rt.wg.Add(1) // under hubMu: stop has not begun
+		h = rt
+		return ControlAnswer{}
+	})
+	if h == nil {
+		return a
+	}
+	defer h.wg.Done()
+	return h.pairCloudKit(shares)
+}
+
 // handle runs a request that needs the running hub.
 func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 	switch r.Op {
@@ -789,6 +824,10 @@ func LinkErrClass(err error) string {
 		return ErrClassNoRequest
 	case errors.Is(err, link.ErrCodeChanged):
 		return ErrClassCodeChanged
+	case errors.As(err, new(*link.AccountError)), errors.Is(err, link.ErrOwnerUnknown):
+		return ErrClassNoICloud
+	case errors.Is(err, link.ErrAccountChanged):
+		return ErrClassICloudChanged
 	}
 	return ErrClassFailed
 }

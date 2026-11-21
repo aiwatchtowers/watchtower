@@ -115,7 +115,7 @@ Since 2026-10-12, every record the hub and a phone exchange through CloudKit (an
 
 ### Pairing with the code (E2E4, E2E13, E2E16)
 
-1. **The QR** (`LinkPayload` v3) adds the hub's public keys `hub_sig` and `hub_kx` (base64url, 32 bytes; an all-zero key is refused) to the multi-hub v2 fields. The Go hub makes its identity before its first code (`link.Center.Issue` on the relay, `IssueCloudKit` with the share URLs); the code is v4 on the Go hub (protocol §5.1).
+1. **The QR** (`LinkPayload` v3) adds the hub's public keys `hub_sig` and `hub_kx` (base64url, 32 bytes; an all-zero key is refused) to the multi-hub v2 fields. The Go hub makes its identity before its first code (`link.Center.Issue` while the relay is the active transport and on a headless host, `IssueCloudKit` with the share URLs while CloudKit is, go-hub.md "Phase 3"); the code is v4 on the Go hub (protocol §5.1).
 2. **The phone** checks the code and creates its device identity on first use (only the link flow ever creates one). It stores the scan's `HubLinkKeys` (no `K_meta`, no epochs yet) and restarts on an empty replica (`prepare(fresh: true)`, so the old link's rollback marks, outbox and sealed recordings go). It then writes `hello-<device_id>`: a `DeviceHello` (its `DevicePayload` plus both public keys), HPKE-sealed to `hub_kx` with info `"wt/hello/v1" ‖ hub_id ‖ link_nonce`, and signed with `dev_sig`.
 3. **The hub** (`link.Center.HandleHello`, `HandleCloudKitHello` on CloudKit; the transport hands hellos over still sealed, F4) tries each kept code's nonce, newest first. It checks:
    - the frame is the hello its record names;

@@ -78,6 +78,32 @@ func (h *hubRuntime) shares() (transport.Shares, bool) {
 	return s, ok
 }
 
+// cloudKitCodes is the shares a link code is issued over: false (a relay
+// code) unless the hub's active transport is CloudKit — a desktop host's
+// switch on CloudKit, or a CloudKit hub — and it has the shares.
+func (h *hubRuntime) cloudKitCodes() (transport.Shares, bool) {
+	if h.tr.Kind() != transport.KindCloudKit {
+		return nil, false
+	}
+	return h.shares()
+}
+
+// pairCloudKit issues a CloudKit code (link.Center.IssueCloudKit, which
+// emits the qr and waiting events as Issue does) and runs a pass at once
+// for the phone's hello. A refusal is answered with its class (LinkErrClass:
+// no_icloud, icloud_changed, else failed). Called off hubMu with the hub
+// held by its wait group.
+func (h *hubRuntime) pairCloudKit(s transport.Shares) ControlAnswer {
+	ctx, cancel := context.WithTimeout(h.ctx, opTimeout)
+	defer cancel()
+	if _, _, err := h.center.IssueCloudKit(ctx, s); err != nil {
+		log.Printf("hub: CloudKit code not issued (%s)", errClass(err))
+		return ControlAnswer{Error: LinkErrClass(err)}
+	}
+	h.kick(h.passKick)
+	return ControlAnswer{OK: true}
+}
+
 // passTickEvery is the worker's pass ticker: Options.passEvery on the hosted
 // relay (live events, a backstop only), CloudKitActivePass on CloudKit, where
 // each tick asks the cadence whether a pass is due.

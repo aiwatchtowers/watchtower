@@ -471,6 +471,17 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   toward the relay waits at least 5 minutes after the previous one; a switch toward CloudKit is immediate. Every
   accepted switch rotates the keyring. A notice is left in the transport being left (decision 1), and old keys are
   kept for 7 days (decision 2). `hub_meta.transport` is `cloudkit|relay`.
+- **The code `hub pair` issues follows the active transport** (#1127). On a host whose active transport is CloudKit
+  (`hubRuntime.cloudKitCodes`: the switch on CloudKit and the bridge's `transport.Shares`) `OpPair` issues a CloudKit
+  code (`link.Center.IssueCloudKit`: v4, `transport: cloudkit`, `transports: ["cloudkit","relay"]`, the container,
+  the Mac's iCloud user, the share URLs, the relay identity kept), so the phone links where the hub publishes; on
+  the relay, and on a headless host, it issues a relay code (`Issue`). Until #1127 every code was a relay code, and
+  a paying phone that scanned one on a CloudKit Mac linked through a pairing slot onto the relay, where the hub
+  wrote no heartbeat, so the phone showed the Mac offline. The share calls run outside the supervisor's `hubMu`,
+  the hub held by its wait group (stop cancels and waits for them); the `qr` and `waiting` events reach the pair
+  stream as with `Issue`. A refusal answers `no_icloud` (no usable iCloud account, or the Mac's iCloud user
+  unreadable) or `icloud_changed` (the account changed while the code was made), worded by the CLI
+  (`hubAnswerError`), whose last stderr line Settings → Mobile shows; nothing is issued.
 - **A phone's relay id from its `device` record** (relay client Phase 3b Task 23, R22). An iCloud-linked phone that
   upgrades names its `relay_device_id` in its own `device` record with the `relay_auth` key's proof; the hub stores it
   only when the proof holds, moves the id off any other row that holds it (ask #1005), then counts the phone as paying
