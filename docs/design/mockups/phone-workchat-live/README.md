@@ -15,3 +15,5 @@ Rendered by `make mobile-shots SHOTS_ONLY=workchat-live` from `WatchtowerMobile/
 | L8 | Narrow scope: a subagent's chat |
 | L9 | Agents sheet with live Working rows, Done collapsed |
 | L10 | Empty: no turn running, no line |
+
+The real views as built, with every difference from these frames and why: [`implemented/`](implemented/README.md).

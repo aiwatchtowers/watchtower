@@ -24,6 +24,8 @@ Each session opens in the mode you last showed it in. A new session always opens
 
 Claude Code's own notices, such as a background task finishing or a message from another session, show as one grey line instead of as your messages. Click one for the details.
 
+Workchat reads the session again as soon as its transcript changes, so a new step shows within about a second. If it cannot watch the files, it reads every 3 seconds instead.
+
 Once the session ends, the field gives way to **Session finished. The history stays readable.** You can still scroll, and the agents button under it still opens finished subagents.
 
 ## Using it
@@ -127,7 +129,7 @@ While the agent works, the steps of this turn show above the line, newest at the
 
 ## When it's empty or wrong
 
-- **Activity unavailable** or **Activity out of date · …**. The live hint could not refresh, or is more than ten seconds old. Timers stop and the agent count becomes unknown; click **Retry**. The session may still be working.
+- **Activity unavailable** or **Activity out of date · …**. The live hint could not refresh, or Workchat could not watch the session's files and its last read is over ten seconds old. Timers stop and the agent count becomes unknown; click **Retry**. The session may still be working.
 - **⌃` does nothing.** No session is on screen, or both its modes show side by side in the split. Pick a session in the sessions panel, or turn the split off.
 - **Stop says A permission prompt is open — answer it on the card or in the terminal.** Esc would answer the prompt, so Stop holds back. Use the card or the terminal.
 - **Could not read the permission prompt.** Watchtower could not read its database, so no card shows. Answer in the terminal; the next session update tries again.

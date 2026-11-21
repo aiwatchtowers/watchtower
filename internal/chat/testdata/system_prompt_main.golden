@@ -276,6 +276,7 @@ Apps & integration
 - iPhone: permission prompts and interrupts (features/iphone-agent-prompts.md)
 - iPhone: AI chat (features/iphone-chat.md)
 - iPhone: the workchat (features/iphone-workbench.md)
+- iPhone: what the agent is doing (features/iphone-workchat-live.md)
 - iPhone: changes that are not delivered (features/iphone-not-delivered.md)
 - iPhone: work alerts (features/iphone-alerts.md)
 - iPhone: Relay (features/iphone-relay.md)

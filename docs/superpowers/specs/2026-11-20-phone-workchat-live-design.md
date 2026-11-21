@@ -21,6 +21,12 @@ Board: #2112. Decisions: see the Decisions section.
 | C7 | The live model and its presentation move to `WatchtowerChatText`; the Kit's `WatchtowerKit` target (not `WatchtowerSync`) depends on it | review round 1 of ask #1671 (architecture fixed in the spec) |
 | C8 | Summaries pass the shared secret redaction (today's `internal/watchman/redact.go`, moved to `internal/secretredact`) before they enter the payload | review round 1 of ask #1671 |
 | C9 | "Loading activity…" shows only while no record from a live-capable hub has arrived since the chat opened. Amended: Loading lasts until a record echoing this open's `open_id` arrives (each opening sends a new `open_id` in `session_chat_request`, its keep-alives repeat it, and the hub's next read echoes it in the record), replacing the "first record since open" rule | review round 1 of ask #1671; amended after the review of Task 7 |
+| C10 | The block's wire key is `activity_live` (Swift `SessionChat.activityLive`), not `live`: the payload already had a `live` bool for the session's liveness. `live_version` and `live_error` keep their names | plan Global Constraints; built in Task 3 |
+| C11 | Redaction happens in `sessionfeed` first: every one-line summary passes `secretredact.TextWithin` (bounded to 64 KiB, a URL authority or vendor token prefix cut by that bound is masked to the end) before the 120-rune clip, so a secret past the clip is still seen whole. The hub's `phoneLive` redacts again before its 200-rune cut (second layer) | review of Task 3 |
+| C12 | The hub watches files only. New conversations are found by the Wake loop comparing the session's agent-session id set (one database query), plus a stat on files that do not exist yet; the full resolve runs only when that set changed or a file is missing. The 3 s tick is a fallback only for: files that cannot be watched, a running agent whose transcript is not resolved or watched yet, a chat whose first read failed, and an agent record with nothing armed | review of Task 4 |
+| C13 | Mac Workchat: freshness by the watch's health (while the watch is healthy the line is given `observedAt = now`; it goes out of date only when the watch is unhealthy and the last read is old), sources per file plus the conversation directory and `subagents/` for new files, and a subagent drill-in refreshes on its own file events too | review of Task 9 |
+| C14 | Phone: the L8 subagent line is built (a subagent's chat shows that agent's step). The stale wording is the shared compact age ("Activity out of date · 40m ago"), the same on the Mac. The warning tone is red (`ReplicaFreshness.tone`, `PhoneTone.red`), not the mockup's orange: the phone keeps orange for waiting and asks (lint-enforced) | review of Task 7 |
+| C15 | The phone's agents sheet and toolbar badge are built from the shared `WorkchatLivePresentation.agentsList`/`agentsBadge`, as on the Mac | review of Task 8 |
 
 ## Intent
 
@@ -74,7 +80,8 @@ draining the battery.
   (`observed_at`, `turn_at`, `turn_active`, `current`, `latest`, `agents`, `agents_state`, `agents_more`, `steps`,
   `steps_more`).
 - Every `summary` (steps, current, latest, agents' actions) and every agent description passes
-  `secretredact.Text` before it is cut (C8): private keys, Slack/GitHub/OpenAI/AWS tokens, JWTs, `…key=`/`…token=`/
+  `secretredact.Text` before it is cut (C8; as built, `sessionfeed` already redacts each summary with
+  `secretredact.TextWithin` before its 120-rune clip and the hub redacts again, C11): private keys, Slack/GitHub/OpenAI/AWS tokens, JWTs, `…key=`/`…token=`/
   `…secret=`/`…password=` values, `Bearer <token>` and `user:pass@` in URLs become `[secret]`. The watchman's twin
   (`internal/watchman/redact.go`) moves into that package and keeps its tests; watchman calls the shared one.
 - Bounds on the phone payload: `summary` cut to 200 characters, at most 40 steps (as today) and 32 agents (as today).
@@ -83,8 +90,9 @@ draining the battery.
 - Every payload from a new hub carries `live_version: 1`. A finished session (not live) carries no `live`; a failed or
   hung live read (the existing 30 s read timeout) keeps the last `live` with the error in `live_error` (one line), so
   the phone shows "Activity unavailable" + Retry while the dialog still updates — a stuck read never looks current.
-- The Kit's `SessionChat` gains an optional `live: SessionFeedLive?` and `liveError: String?`. An old phone ignores the
-  keys (Decodable skips them); a new phone with an old hub sees `live == nil` and draws today's screen.
+- The Kit's `SessionChat` gains an optional `activityLive: SessionFeedLive?`, `liveVersion: Int?` and `liveError: String?`
+  (C10), and `openID` (C9). An old phone ignores the keys (Decodable skips them); a new phone with an old hub sees
+  `liveVersion == nil` and draws today's screen.
 
 ### 2. Reading on change, not on a tick (Go hub)
 
@@ -96,15 +104,17 @@ draining the battery.
   the next read; a conversation file that does not exist yet (a session just started) is stat-checked on the `Wake`
   loop until it appears, then watched and read. macOS gets kqueue, Linux inotify — the hub runs on both.
 - A new conversation after `/clear` changes the session's agent-session rows in the database (the existing
-  `terminal_session_agent_sessions` triggers); the source's existing `Wake` loop compares the resolved conversation
-  list (a database query and a stat, no transcript read) and re-arms the watch when it changed.
+  `terminal_session_agent_sessions` triggers); the source's existing `Wake` loop compares the session's agent-session
+  id set (a database query, no transcript read; C12) and, when it changed or one of its files is still missing (a stat),
+  re-resolves the conversation list and re-arms the watch.
 - An event marks the chat dirty; a dirty chat is read 250 ms after the last event (trailing debounce), and at most once
   per second while events keep coming (C3). A read whose payload equals the stored one publishes nothing (as today).
 - Re-resolve on `Remove`/`Rename` of a watched file and on a changed conversation list: the watch set follows the conversation.
 - The watch's other moments stay as they are: one read when the watch opens, one when the session stops being live
   (the liveness change already reaches the source on its `Wake` loop, which reads no file), drop on expiry or unlink.
 - Fallback: if a watcher cannot be added (descriptor limit, missing directory), that chat goes back to the 3 s tick,
-  logged once per chat. Nothing else polls.
+  logged once per chat. As built (C12) the tick also covers a live session's running agent whose transcript is not
+  resolved or watched yet, a chat whose first read failed, and an agent record with nothing armed. Nothing else polls.
 - The watchers exist only while a phone watches the chat (≤ 5 min after its last request) — at most a handful.
 
 ### 3. Getting it to the phone (unchanged path)
@@ -124,8 +134,11 @@ draining the battery.
   and stops with it; the timer counts from the step's `started_at`, clamped at 0:00 for clock skew.
 - Staleness (C4): while `ReplicaFreshness` is nil the snapshot counts as current (the presentation is given
   `observedAt = now`); when the tower is stale/offline it is given the heartbeat's time, so the line shows the
-  presentation's own stale wording ("Activity out of date · 42s ago") in the warning tone with Retry, without timer or
-  pulse — the freshness line under the header says why. Retry sends `session_chat_request` at once.
+  presentation's own stale wording in compact age ("Activity out of date · 40m ago", shared with the Mac, C14) in the
+  warning tone (red, C14) with Retry, without timer or pulse — the freshness line under the header says why. Retry
+  sends `session_chat_request` at once.
+- A subagent's chat (L8) draws the same line from its own record's block (the subagent's sidechain): it runs while the
+  session works and that subagent's turn has not ended (C14).
 - The line hides (presentation `activityHidden`) while a permission card or an inline ask stands above the composer,
   as on the Mac.
 - Which state shows (C9), decided by the phone model from the chat record and the session's working state:
@@ -184,6 +197,9 @@ draining the battery.
 - The 3 s timer stays only as the fallback for a session whose sources cannot be opened (descriptor limit, missing
   path), as on the hub.
 - The watch exists only while the Workchat pane is on screen (as the poll today); rename/delete re-resolves the paths.
+- Freshness (C13): reads come on change only, so the line's age is the watch's health, not the last read's: while the
+  watch is healthy the presentation gets `observedAt = now`; an unhealthy watch with an old read shows the stale wording.
+  A subagent drill-in has its own watch on that agent's files and refreshes on its events too.
 
 ### 9. Battery (D5)
 
@@ -195,8 +211,19 @@ draining the battery.
 | Mac/hub | reads every watched live transcript every 3 s | reads on change only, kqueue/inotify wakes |
 | Mac Workchat pane | CLI read every 3 s while on screen | CLI read on change or on the session's state change; no tick |
 
-No new background modes, push types or wakes. Measured in the plan: phone CPU and wakeups with the chat open for 10
-minutes of a busy turn (Instruments energy log), before/after.
+No new background modes, push types or wakes. The plan's Instruments energy log (phone CPU and wakeups, chat open
+for 10 minutes of a busy turn, before/after) needs a device and was not run (Task 10, 2026-11-21): no energy number is
+recorded. What the code guarantees instead, and the tests that pin it:
+
+- One `TimelineView(.periodic(by: 1))`, built only while a line shows (`WorkchatLiveSection`): no line, no timeline.
+  `WorkchatLiveLineTests` (no line when idle, no line for an older hub, none behind a card), mockup L10.
+- No new phone timer, background mode or wake: the request loop is the existing 60 s `session_chat_request`
+  (`SessionChatRequester`), Retry sends one request at once (`WorkchatLiveLineTests` Retry case).
+- The agents sheet has one timeline, only while it is open and a Working row carries a timer (`WorkchatAgents.ticks`,
+  `WorkchatAgentsTests`).
+- The header's one-second `TimelineView` predates this work; the live line adds no other.
+- Hub side, ≤ 1 read and ≤ 1 publish per second per chat in a burst (`TestChatFiles_BurstCapsReads`), no read without
+  an event (`TestChatFiles_NoEventNoRead`), watchers closed on expiry (`TestChatFiles_WatchersClosedOnExpiryAndUnlink`).
 
 ## FEED-05 change (D6 — approved, ask #1675)
 
@@ -264,8 +291,23 @@ a `PASSWORD=` env and a `user:pass@` URL reaches the payload as `[secret]`); the
 | Steps toggle, closed by default, closes at turn end/Stop/card/new conversation | phone model test |
 | Sheet Working rows with step + timer; without `live` "Running" | `WorkchatAgents` test |
 | Badge from `live`, finished-in-live counts as done | `WorkchatAgents` test |
-| No new phone timer outside the visible line | review check + energy log in the plan |
-| Event-to-phone latency ~1 s | measured on the local relay stand, number recorded here |
+| No new phone timer outside the visible line | review check + the tests in §9; energy log not run (needs a device, owner hand-off) |
+| Event-to-phone latency ~1 s | hub side measured, see "Latency, as measured" below; relay + phone part is an owner hand-off |
+
+### Latency, as measured (Task 10, 2026-11-21)
+
+**Hub side only: transcript append → `OnChange`** (the publisher's fast-lane nudge), real fsnotify (kqueue) watcher,
+`StandardChatTiming`, a real `sessionfeed.ReadChat` of a Claude-format transcript, each append a new Bash step 2 s after
+the last (a lone event), one Mac: `go test -tags measure ./internal/hub/slices/sources -run TestMeasure_ -v`
+(`chat_files_measure_test.go`). 10 samples: **median 254 ms, p90 262 ms** (min 251, max 263). That is the 250 ms
+debounce plus about 4 ms of kqueue delivery, read and encode. It does not cover the relay hop or the phone's apply.
+
+**Not measured here.** The local relay stand has no session-chat run (its `TestMeasure_HubLatencyOverTheStand` times
+actions, not transcript appends), and the stand's `wrangler` was not installed in the relay checkout on this machine.
+The stand's last numbers for the next leg (live-link.md "Stand numbers", 2026-11-18, loopback): `nudge_saved`
+p50 20 ms, p90 175 ms; `read_applied` p50 0 ms. Adding them gives a loopback **estimate** of about 275 ms p50 and
+440 ms p90 from append to record, not a measurement. Left for the owner: the same leg on the real relay with the phone
+(append on the Mac → record applied on the phone, 10 samples), and the energy log above.
 
 ## Mockups
 
@@ -287,7 +329,9 @@ pieces; colours through `PhoneTone`/`Tone`, no row separators.
 | L9 | Agents sheet with live Working rows (step + timer) and Done collapsed |
 | L10 | Empty: no turn running, no line |
 
-After the build the real views are captured beside these frames and compared.
+After the build the real views are captured beside these frames and compared: the captures and the table of
+differences are in [`docs/design/mockups/phone-workchat-live/implemented/`](../../design/mockups/phone-workchat-live/implemented/README.md)
+(Task 10).
 
 ## Left to the builder
 

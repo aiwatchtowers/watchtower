@@ -63,10 +63,9 @@ extension ScreenshotTourTests {
             var json = DemoSeed.workingChatPayload(now: now)
             let dialog = (json["entries"] as? [[String: Any]] ?? []).filter { $0["kind"] as? String != "subagent" }
             json["entries"] = dialog + markers
-            if let live {
-                json["activity_live"] = live
-                json["live_version"] = 1
-            }
+            // The seed's working chat carries a live block since #2112; P1–P4 are the frames without one.
+            json["activity_live"] = live
+            json["live_version"] = live.map { _ in 1 }
             let chat = try DemoSeed.record(kind: .sessionChat, id: 10, json: json, modifiedAt: Date())
             try await sealing.save([chat] + (session.map { [$0] } ?? []))
             _ = await env.refresh(.pull)

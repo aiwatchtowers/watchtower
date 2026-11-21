@@ -107,7 +107,7 @@ Spec: `docs/superpowers/specs/2026-10-18-session-chat-iphone-design.md`. Contrac
 
 **Flow.** Opening **Chat** on a session's detail screen enqueues the relay action `session_chat_request` `{session_id?, subagent_id?, tool_use_id?}` (entity = the `terminal_session-<id>` record; `SessionChatRequestHandler` needs no grant, since it only reads). The phone repeats it every 60 s while the screen is open (`SessionChatRequester`, stop keyed by screen so a push/pop does not stop the top screen's loop). An unknown session answers `.notFound` with message `unknown_session`. A subagent request carries both ids (`subagent_id` names the record, `tool_use_id` is what the CLI's `--subagent` takes; one without the other is `invalid_params`), and a `session_id` that differs from the entity is `invalid_params`. The handler replies `.applied()` at once and tells `SessionChatRunner` to watch the session or subagent. The watch counts from when the phone asked (`created_at`): a request older than the watch applies without opening a watch, a younger one ends `created_at` + 5 min (at most now + 5 min) (`.sessionChatRequest` is a session request kind for the relay's 24 h expiry). The phone does not queue a repeat while an earlier `session_chat_request` for the same chat still waits in its outbox.
 
-**Lifetime.** A watch lasts 5 minutes from the last request. The runner runs `watchtower workbench session-feed --session N --json` (or `--subagent <tool_use_id>`) off the main actor, every 3 s while the agent is live and once per watch for a finished session, bounded at 30 s. The result is clipped to the caps and kept **in memory only**: never in the clear on disk (not in `watchtower.db`, FEED-01; not in the hub sidecar) — only the sealed slice record waits in the hub's transport queue. When the watch expires the entries leave the slice window and the publisher deletes the record from the zone. Stopping the runner, and any time no phone is linked, drops every payload for good. `SessionChatSlice` (kind `session_chat`, record `session_chat-<session id>` or `session_chat-<session id>-<agent id>`) is an urgent kind, published after the ask kinds (asks stay first): the runner's `onChange` (a run stored a payload that differs from the last — payloads carry no clock) nudges the publisher's fast lane (`nudge(kinds: [.sessionChat])`, 1 s coalescing, 2 s spacing) and a saved or deleted record asks for the immediate send. A live chat is about 5 s behind.
+**Lifetime.** A watch lasts 5 minutes from the last request. The runner runs `watchtower workbench session-feed --session N --json` (or `--subagent <tool_use_id>`) off the main actor, every 3 s while the agent is live and once per watch for a finished session, bounded at 30 s (since #2112 the Go hub reads on transcript file events instead, the 3 s tick only as a fallback: "The live line on the phone" below). The result is clipped to the caps and kept **in memory only**: never in the clear on disk (not in `watchtower.db`, FEED-01; not in the hub sidecar) — only the sealed slice record waits in the hub's transport queue. When the watch expires the entries leave the slice window and the publisher deletes the record from the zone. Stopping the runner, and any time no phone is linked, drops every payload for good. `SessionChatSlice` (kind `session_chat`, record `session_chat-<session id>` or `session_chat-<session id>-<agent id>`) is an urgent kind, published after the ask kinds (asks stay first): the runner's `onChange` (a run stored a payload that differs from the last — payloads carry no clock) nudges the publisher's fast lane (`nudge(kinds: [.sessionChat])`, 1 s coalescing, 2 s spacing) and a saved or deleted record asks for the immediate send. A live chat was about 5 s behind on the 3 s tick; on file events the hub's share is about 0.25 s ("The live line on the phone" below).
 
 **Caps** (`SessionChatPayload`, I-8): FEED-02 kinds only (a tool call, thinking or a kind a newer CLI adds is dropped before the cut and not counted), newest 300 entries (`entries_more` counts the cut ones), entry text 4000 characters (`text_clipped`), titles and subagent descriptions 200, and a payload over 600 000 bytes drops the oldest entries until it fits (counted into `entries_more`; each entry is measured once and the payload is encoded once). The payload carries no clock, so an unchanged feed is byte-identical and is not uploaded again. A subagent marker carries `tool_use_id` besides `agent_id`; the phone shows no link for a marker missing either.
 
@@ -133,9 +133,9 @@ its presentation (`WorkchatLivePresentation`, `WorkchatActivityPresenter`) live 
 what reads Core's types stays in Core: `WorkchatLivePresentation.busy(_:)` and `done(from:)` over
 feed entries (`WorkchatLivePresentation+Session`) and `SessionFeedSubagent.currentStatus(of:in:)`.
 The compact `person.2` count opens a click-only popover of flat agent rows; selecting one
-opens its existing read-only chat in place. No extra panel, tool entries, database copies or mobile
-activity publishing. Permission prompts keep hiding the whole line. The existing serialized 3 s
-poll and off-screen gates are unchanged.
+opens its existing read-only chat in place. No extra panel, tool entries or database copies. Permission
+prompts keep hiding the whole line. (#2112 later published the live block to the phone and replaced the
+3 s poll with file events: "The live line on the phone" below.)
 
 `session-feed --json` adds `live`, `live_ok` and optional `live_error`; `activity` retains its exact
 old keys and open-call semantics (owner approval ask #932; design ask #933). The cursor-independent
@@ -179,7 +179,8 @@ synthetic events.
 
 The store tracks live failures separately from feed failures and invalidates pending live reads on
 idle/Stop, so an old read cannot reappear in the next turn. At 10 s without a successful snapshot,
-the line becomes `Activity out of date · Ns ago`; a failure becomes `Activity unavailable`. Retry
+the line becomes `Activity out of date · Ns ago` (since #2112 the age is compact, `40m ago`, and a
+healthy file watch keeps a quiet snapshot current); a failure becomes `Activity unavailable`. Retry
 uses the same poller. Both warnings remove elapsed clocks, disable the count and close an open
 picker; the picker projection also returns no running rows for stale/failed data. Current calls
 may pulse, Last and warnings never do, and Reduce Motion disables the pulse. The old complete
@@ -197,7 +198,7 @@ Spec: `docs/superpowers/specs/2026-11-19-workchat-agents-and-progress-design.md`
 - **Inline pastes.** `ChatComposerFieldConfig.inlinePastes` with `livePastes` (Workchat only) routes an image paste or a text paste over `PasteClassifier.longTextThreshold` (`ComposerPasteRoute`) to `WorkchatModel.paste`: the image is saved at paste time in `workchat-attachments` (a failed save inserts nothing and sets `attachmentError`), and the field gets `[Image #N]` or `[Pasted text #N +L lines]` (`PasteTokens` in `WatchtowerChatText`), plain bracketed text as in Claude Code. Numbers count up per draft past any typed one; one Backspace at a live token's end removes the whole token. A label is a token only while the draft holds it once: a copy typed beside it (same number and kind) leaves both literal and drops the payload, since the draft text cannot tell them apart; the attachment-error line then says "Pasted image #N appears twice — paste it again" ("Pasted text #N" for a text, `WorkchatModel.pasteDuplicated`). Send is a no-op while a paste's token has not landed in the field yet (`pendingPastes`), so a Return in that hop cannot strip its payload; a token the field cannot insert (the edit refused, the field gone) comes back through `onInlinePasteDropped` to `WorkchatModel.pasteNotInserted`, which lets the paste go so Send is never held for it. A payload is pruned as soon as its token leaves the draft (`draft` `didSet`), so ⌘Z brings back plain text. On send a text token expands in place and an image token becomes the quoted path; the outgoing bubble shows the expanded text, `typedText` keeps the tokenized draft and `sentPastes` the payloads, both restored on `notSent` or **Cancel**. An image gone by send time refuses with "Pasted image #N is gone — paste it again" and keeps the draft. The echo matches the expanded text: Claude Code records a bracketed paste expanded in its transcript (a user record whose `message.content` string holds the pasted text, checked on local transcripts 2026-11-19). Dropped and picked files stay chips.
 - **Open speed.** The first read is `--tail 60` (`SessionFeedStore.tailSize`), then `--after` the cursor. Scroll-to-top reads `--before <first entry> --tail 60`; `SessionChatView.pageEarlier` reads up to 20 pages that add no dialog entry (`maxPagesWithoutDialog`, counted per page, cancelled with the pane, ended early when the pane goes off screen like the poll), then shows ChatUI's "Load earlier messages" button for the next batch. A failed page has its own error bar whose Retry reads that page. Stores are kept per session (`WorkbenchesViewModel.feedStore(sessionID:)`, at most 8 `keptFeedStores`, least recently shown dropped first, a store on screen never, dropped with the session); a kept store off screen runs no CLI, and a reopen paints its entries at once and reads after the cursor. `WorkchatOpenTrace` signposts each open (subsystem `com.watchtower.desktop`, category `WorkchatOpen`).
 
-**Phone.** `WorkchatView` drops the `.subagent` entries from the drawn feed (`WorkchatAgents.dialog`) and builds `WorkchatAgents(entries:sessionID:)` from them: Working = status `running` (type, description, "Running"; no action or timer, the phone has no live snapshot), Done = `finished`, newest first. The toolbar's `WorkchatAgentsButton` shows the working count, a dimmed "✓ N" when only finished agents remain, nothing without markers; `WorkchatAgentsSheet` ("Agents", closed with ✕) lists Working and a collapsible "Done · N", open by itself when nothing works; a row with a route opens the subagent's chat. No new slice data.
+**Phone.** `WorkchatView` drops the `.subagent` entries from the drawn feed (`WorkchatAgents.dialog`) and builds `WorkchatAgents(entries:sessionID:)` from them: Working = status `running` (type, description, "Running"; no action or timer, the phone had no live snapshot until #2112, below), Done = `finished`, newest first. The toolbar's `WorkchatAgentsButton` shows the working count, a dimmed "✓ N" when only finished agents remain, nothing without markers; `WorkchatAgentsSheet` ("Agents", closed with ✕) lists Working and a collapsible "Done · N", open by itself when nothing works; a row with a route opens the subagent's chat. No new slice data.
 
 **v1 limits and contracts.**
 - A marker whose status is neither `running` nor `finished` (an unknown status, a status a newer Mac adds) shows in neither section, on the Mac and on the phone.
@@ -209,5 +210,76 @@ Spec: `docs/superpowers/specs/2026-11-19-workchat-agents-and-progress-design.md`
 - Legacy Codex ids (`L<offset>`) can repeat across a tab's conversations; a `--before` on such an id fails as ambiguous and paging ends quietly (a permanent refusal, not an error bar), as does an id no longer in the feed.
 - Paging stops by matching the Go error texts "is ambiguous" and "no such entry" (`SessionFeedStore.refusesBefore`); both sides pin them (`TestTailPage_AmbiguousBeforeIsAnError`, `TestTailPage_UnknownBeforeIsAnError`; `SessionFeedStoreTests.testEarlierPageWithAPermanentlyBadBeforeStopsPaging`).
 - A session open in a pane and in Branch review shares one store.
-- A turn longer than the live window shows the steps the window holds and counts nothing for the part it never saw. No steps on the phone.
+- A turn longer than the live window shows the steps the window holds and counts nothing for the part it never saw. (The phone got the steps in #2112.)
 - Tokens are plain text in the field, not chips. A token is one only while its number has a payload of the same kind and the draft holds its label once: the same bracket text typed by hand is neither deleted whole nor expanded, and a typed copy of a live label turns that token literal too (its payload is dropped).
+
+## The live line on the phone, reads on file events (2026-11-21, #2112)
+
+Spec: `docs/superpowers/specs/2026-11-20-phone-workchat-live-design.md` (Decisions C9–C15 record what the build
+changed). Plan: `docs/superpowers/plans/2026-11-20-phone-workchat-live.md`. Contract: FEED-05 widened (ask #1675).
+
+**Live block (FEED-05 widened).** While the session is live the `session_chat` record carries the live block under
+`activity_live` (the payload already had a `live` bool for the session's liveness), in the `session-feed --live`
+shape, plus `live_version` (always 1 from a new hub) and `live_error` (one line, omitempty). An agent record
+(`session_chat-<session>-<agent>`) carries that subagent's own sidechain snapshot. `phoneLive` copies the block with
+every summary and agent description redacted and cut at 200 runes, at most 40 steps (the current step always kept,
+the rest in `steps_more`) and 32 agents (`agents_more`), and the block is reserved first inside the 600 000-byte
+budget. A finished session carries no block; a live read that failed or hung keeps the last block with `live_error`
+while the entries still update. Old phones skip the keys; a new phone with an old hub sees no `live_version` and
+draws no line. Guards: `TestFeed05_LiveBlockSummariesOnly`, `TestFeed05_LiveBlockRedactsSecrets`
+(`docs/inventory/session-feed.md`).
+
+**Redaction.** `internal/secretredact` (moved from watchman, which now calls it) is applied twice. First in
+`sessionfeed.clipSummary`: `secretredact.TextWithin` over at most 64 KiB, before the 120-rune clip, so a secret past
+the clip is still seen whole, and a URL authority or vendor token prefix running into the 64 KiB bound is masked to
+the end. Then again in the hub's `phoneLive`, before its 200-rune cut. So the Mac's line and `session-feed` print
+redacted summaries too.
+
+**`open_id`.** Each opening of the phone's chat screen sends a new `open_id` in `session_chat_request` (its 60 s
+keep-alives repeat it); the hub's next read echoes it in the record (`OpenID`). The phone's "Loading activity…" lasts
+until a record echoing this opening's id arrives (`SessionChatViewModel.recordArrivedSinceOpen`), so a record left from
+an earlier opening never ends Loading. A record from an older hub (no `live_version`) counts as arrived.
+
+**Hub reads on events** (`internal/hub/slices/sources/chat_files.go`). Per watched chat the source holds an fsnotify
+watch on files only (kqueue opens every file of a watched directory): the conversation transcripts from `ChatRead.Paths`
+and the transcripts of the subagents the last block lists as running, at most 32. An event marks the chat dirty; it
+reads 250 ms after the last event and at most once per second while events keep coming (`ChatTiming.Debounce`,
+`MinGap`), and an event during a read gives exactly one more. The Wake loop (2 s) compares the session's agent-session
+id set (one database query) and stats files that do not exist yet; only a changed set or a missing file runs the full
+resolve and re-arms the watch, so a new conversation after `/clear` and a transcript that appears late are picked up
+without reading any transcript. The 3 s tick (`Every`) is a fallback only for: files that cannot be watched (logged
+once per chat), a live session's running agent whose transcript is not resolved or watched yet, a chat whose first read
+failed, and an agent record with nothing armed. Watchers close with the watch (expiry, no linked phone). Measured hub
+share, append → `OnChange`: median 254 ms, p90 262 ms (spec "Latency, as measured";
+`go test -tags measure ./internal/hub/slices/sources -run TestMeasure_ -v`).
+
+**Phone.** `WorkchatLiveLine` (model) feeds the shared `WorkchatLivePresentation.row`/`stepsSlot`
+(`WatchtowerChatText/Sources/WatchtowerChatText/Live/`) and `WorkchatLiveSection` draws the line above the composer,
+the steps slot above it on a tap (closed by default; closes at turn end, Stop once accepted, a card, a new
+conversation or turn; kept per chat in `WorkchatStepsMemory` while the app runs). Freshness is the tower's
+(`ReplicaFreshness`): while it sends, the snapshot is given `observedAt = now`; once stale, the heartbeat's time, so the
+line reads "Activity out of date · 40m ago" (compact age, shared with the Mac) in red (`ReplicaFreshness.tone`; orange
+stays for asks) with Retry, no timer, no pulse. Retry sends `session_chat_request` at once under a new opening. A
+subagent's chat (`SessionChatView`) draws the same line from its own record. The agents sheet and the toolbar badge
+come from the shared `agentsList`/`agentsBadge`: a Working row shows the agent's current step and timer, an agent
+finished in the block counts as done. Only one new one-second `TimelineView`, inside the line while it shows; the
+sheet's timeline runs only while a row carries a timer.
+
+**Mac Workchat on events** (`WatchtowerDesktop/Sources/WatchtowerCore/Services/TranscriptWatch.swift`).
+`SessionFeedStore` opens kqueue `DispatchSource`s from each read's `paths`, at most 32: the current conversation's
+files, their directories and its `subagents/` directory (a new file appears there), then the running agents'
+transcripts and sidecars. Same bounds as the hub (250 ms debounce, ≤ 1 read/s); the 3 s fallback runs only while the
+watch has no open source, a path failed to open or was cut by the cap, or the last read failed. A source opened after
+a read asks for one more read, so nothing between the read and the open is missed. A subagent drill-in has its own
+watch on that agent's files. Freshness follows the watch's health (`WorkchatLiveFreshness.effective`: `observedAt = now`
+while the watch is healthy), since a long quiet tool run no longer means an old read. The session's state change still
+triggers one refresh at once.
+
+**v1 limits.**
+- Latency end to end (append → record applied on the phone) and the phone's energy use were not measured on a device;
+  only the hub's share was (above).
+- A running agent whose transcript is not resolved yet (a Claude launch whose sidecar is unread, a Codex child rollout
+  not located) keeps the chat on the hub's 3 s fallback until it is.
+- Hub: only the agents the block lists (≤ 32) get a watched transcript; an agent past `agents_more` refreshes the chat
+  only through the main conversation's events. Mac: more than 32 paths cut the rest, and the pane then also reads on
+  the 3 s fallback.
