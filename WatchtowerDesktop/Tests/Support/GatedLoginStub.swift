@@ -67,9 +67,15 @@ package final class GatedLoginStub: @unchecked Sendable {
         return pid
     }
 
-    /// Lets run `pid` exit with `exitCode`.
-    package func release(_ pid: pid_t, exitCode: Int32) async {
+    /// Lets run `pid` exit with `exitCode`. With `run`, a stub that dies
+    /// before it opens its gate cannot hang the call: once `run` ends, the
+    /// gate gets a reader of ours, so the write goes through (and is unread).
+    package func release(_ pid: pid_t, exitCode: Int32, or run: Task<Void, Never>? = nil) async {
         let gate = dir.appendingPathComponent("gate-\(pid)").path
+        let spare = SpareReader()
+        let unblocker = run.map { run in
+            Task.detached { await run.value; spare.open(gate) }
+        }
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             DispatchQueue.global().async {
                 if let handle = FileHandle(forWritingAtPath: gate) {
@@ -77,6 +83,31 @@ package final class GatedLoginStub: @unchecked Sendable {
                     try? handle.close()
                 }
                 cont.resume()
+            }
+        }
+        unblocker?.cancel()
+        spare.close()
+    }
+
+    /// The gate's stand-in reader `release` opens once the run ended; held
+    /// open until the write is done, so the write never meets a closed pipe.
+    private final class SpareReader: @unchecked Sendable {
+        private let lock = NSLock()
+        private var fd: Int32 = -1
+        private var closed = false
+
+        func open(_ path: String) {
+            lock.withLock {
+                guard !closed else { return }
+                fd = Darwin.open(path, O_RDONLY | O_NONBLOCK)
+            }
+        }
+
+        func close() {
+            lock.withLock {
+                closed = true
+                if fd >= 0 { Darwin.close(fd) }
+                fd = -1
             }
         }
     }

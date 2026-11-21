@@ -14,14 +14,28 @@ final class QuickConnectionSignInCancelTests: XCTestCase {
     private var pool: DatabasePool!
 
     private func makeVM(
-        _ stub: GatedLoginStub, beforeLaunch: @escaping @Sendable () async -> Void = {}
+        _ stub: GatedLoginStub,
+        tools: CountingToolsRunner? = nil,
+        beforeLaunch: @escaping @Sendable () async -> Void = {}
     ) throws -> ExternalConnectionsViewModel {
         let (pool, path) = try TestDatabase.createPool()
         addTeardownBlock { TestDatabase.cleanup(path: path) }
         self.pool = pool
         return ExternalConnectionsViewModel(
-            dbPool: pool, makeRunner: { nil }, cliPath: { stub.path }, beforeLaunch: beforeLaunch
+            dbPool: pool, makeRunner: { tools }, cliPath: { stub.path }, beforeLaunch: beforeLaunch
         )
+    }
+
+    /// Answers every `connections tools` call with an empty list, counting them.
+    final class CountingToolsRunner: CLIRunnerProtocol, @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        var calls: Int { lock.withLock { count } }
+
+        func run(args: [String]) async throws -> Data {
+            lock.withLock { count += 1 }
+            return Data(#"{"id":3,"name":"acme-wiki","listed":true,"listed_at":"2026-01-01T00:00:00Z","explicit":false,"tools":[]}"#.utf8)
+        }
     }
 
     @MainActor
@@ -173,16 +187,62 @@ final class QuickConnectionSignInCancelTests: XCTestCase {
     /// launches, so it never signs in.
     func testCancelDuringTheLaunchStopsTheChild() async throws {
         let stub = try stub()
+        let tools = CountingToolsRunner()
         let box = VMBox()
-        let vm = try makeVM(stub) { await MainActor.run { box.vm?.cancelSignIn() } }
+        let vm = try makeVM(stub, tools: tools) { await MainActor.run { box.vm?.cancelSignIn() } }
         box.vm = vm
+        let wiki = connection(3, "acme-wiki")
+        await vm.loadTools(wiki) // a finished sign-in would list them again
 
-        let run = Task { await vm.signInAgain(connection(3, "acme-wiki")) }
-        await run.value // the stub would wait at its gate for ever without the post-launch check
+        let run = Task { await vm.signInAgain(wiki) }
+        // If the stub got as far as its gate, let it sign in (exit 0) instead
+        // of waiting for ever: a child the post-launch check missed then ends
+        // as a finished sign-in, which re-lists the tools.
+        if let pid = try? await stub.nextRun(or: run) {
+            await stub.release(pid, exitCode: 0, or: run)
+        }
+        await run.value
 
+        XCTAssertEqual(tools.calls, 1, "the child must be stopped at launch, not left to sign in")
         XCTAssertFalse(vm.isBusy)
         XCTAssertNil(vm.error)
         XCTAssertNil(vm.signInConnectionID)
+    }
+
+    /// A cancelled sign-in does not re-list the tools, so the row's
+    /// controls are free at once.
+    func testCancelLeavesTheToolsAlone() async throws {
+        let stub = try stub()
+        let tools = CountingToolsRunner()
+        let vm = try makeVM(stub, tools: tools)
+        let wiki = connection(3, "acme-wiki")
+        await vm.loadTools(wiki)
+
+        let run = Task { await vm.signInAgain(wiki) }
+        _ = try await stub.nextRun(or: run)
+        vm.cancelSignIn()
+        await run.value
+
+        XCTAssertEqual(tools.calls, 1)
+        XCTAssertFalse(vm.toolsInFlight.contains(wiki.id))
+        XCTAssertFalse(vm.isBusy)
+    }
+
+    /// The re-read after a Cancel is quiet: a failed read is `readError`,
+    /// not the pane's error.
+    func testAFailedRereadAfterCancelIsNotAnError() async throws {
+        let stub = try stub()
+        let vm = try makeVM(stub)
+        let wiki = connection(3, "acme-wiki")
+
+        let run = Task { await vm.signInAgain(wiki) }
+        _ = try await stub.nextRun(or: run)
+        try await pool.write { db in try db.execute(sql: "DROP TABLE external_connections") }
+        vm.cancelSignIn()
+        await run.value
+
+        XCTAssertNil(vm.error)
+        XCTAssertNotNil(vm.readError)
     }
 }
 
@@ -245,6 +305,20 @@ final class OutlookConnectCancelTests: XCTestCase {
         XCTAssertEqual(vm.accounts.map(\.emailAddress), ["owner@example.com"])
         XCTAssertNil(vm.error)
         XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    func testAFailedRereadAfterCancelIsNotAnError() async throws {
+        let stub = try stub()
+        let vm = try makeVM(stub, daemon: FakeDaemonRestarter())
+
+        let run = try XCTUnwrap(vm.connectOutlook())
+        _ = try await stub.nextRun(or: run)
+        try await pool.write { db in try db.execute(sql: "DROP TABLE email_accounts") }
+        vm.cancelConnect()
+        await run.value
+
+        XCTAssertNil(vm.error)
+        XCTAssertNotNil(vm.readError)
     }
 
     func testCancelAfterTheRunExitedStaysIdle() async throws {

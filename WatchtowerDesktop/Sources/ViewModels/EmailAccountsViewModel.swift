@@ -180,8 +180,20 @@ final class EmailAccountsViewModel {
             // A cancelled run: re-read what it saved. One that had exited 0
             // before the Cancel came is a finished connect and keeps its
             // daemon restart; one the Cancel killed while saving does not.
-            await self.refreshAsync()
+            await self.rereadQuietly()
             if result.exitCode == 0 { await self.daemon.restartLogging() }
+        }
+    }
+
+    /// The re-read after a Cancel: the owner asked for nothing, so a failed
+    /// read shows only as `readError`, never as the sheet's `error`.
+    private func rereadQuietly() async {
+        do {
+            accounts = try await dbPool.read { db in try EmailAccountQueries.fetchAll(db) }
+            readError = nil
+            await onAccountsChanged?()
+        } catch {
+            readError = "Failed to load accounts: \(error.localizedDescription)"
         }
     }
 

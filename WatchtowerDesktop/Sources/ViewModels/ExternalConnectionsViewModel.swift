@@ -195,12 +195,14 @@ final class ExternalConnectionsViewModel {
     }
 
     private func signIn(_ connection: ExternalConnection, fromRow: Bool) async {
-        await runAuthFlow(
+        let cancelled = await runAuthFlow(
             args: Self.oauthArgs(id: Int64(connection.id)),
             rowID: fromRow ? connection.id : nil,
             failurePrefix: "Sign in failed"
         )
-        await reloadShownTools(connection) // a sign-in re-lists the tools
+        // A sign-in re-lists the tools; a cancelled one changed nothing, and
+        // a reload would keep the row's controls disabled meanwhile.
+        if !cancelled { await reloadShownTools(connection) }
     }
 
     /// The waiting line's texts while `connection`'s sign-in waits in the
@@ -457,14 +459,16 @@ final class ExternalConnectionsViewModel {
     /// Browser-consent flow (`oauth`) — holds the detached Process in
     /// `authProcess` so `cancelSignIn()` can terminate it while this awaits.
     /// Structural copy of `SlackAccountsViewModel.runAuthFlow`.
-    private func runAuthFlow(args: [String], rowID: Int?, failurePrefix: String) async {
+    /// True when a Cancel ended the run before it had signed in.
+    @discardableResult
+    private func runAuthFlow(args: [String], rowID: Int?, failurePrefix: String) async -> Bool {
         guard !isBusy else {
             error = "Another operation is already in progress."
-            return
+            return false
         }
         guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
-            return
+            return false
         }
 
         isBusy = true
@@ -481,7 +485,7 @@ final class ExternalConnectionsViewModel {
         // running (Cancel visible); a Cancel or a newer attempt meanwhile
         // drops this launch.
         process.environment = await Constants.resolvedEnvironmentAsync()
-        guard authProcess === process else { return }
+        guard authProcess === process else { return true }
 
         // A Cancel that landed while the launch was under way found nothing
         // running to terminate: stop the child as soon as it exists.
@@ -495,13 +499,25 @@ final class ExternalConnectionsViewModel {
         // saved (all of it when it had exited 0 before the Cancel came, a
         // part when the Cancel killed it while saving).
         guard authProcess === process else {
-            await refreshAsync()
-            return
+            await rereadQuietly()
+            return result.exitCode != 0
         }
         authProcess = nil
         signInConnectionID = nil
         isBusy = false
         applyResult(result, failurePrefix: failurePrefix)
+        return false
+    }
+
+    /// The re-read after a Cancel: the owner asked for nothing, so a failed
+    /// read shows only as `readError`, never as the pane's `error`.
+    private func rereadQuietly() async {
+        do {
+            connections = try await dbPool.read { db in try ExternalConnectionQueries.fetchAll(db) }
+            readError = nil
+        } catch {
+            readError = "Failed to load connections: \(error.localizedDescription)"
+        }
     }
 
     private func runManagementCommand(args: [String], stdin: String? = nil, failurePrefix: String) async {
