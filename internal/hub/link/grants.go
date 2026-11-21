@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"slices"
 	"strings"
 	"time"
@@ -120,6 +121,10 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("link: reading the grants: %w", err)
+	}
+	if len(replaced) != c.relinks {
+		c.relinks = len(replaced)
+		log.Printf("hub link: %d linked phones read a re-link's keybox in place of their link", c.relinks)
 	}
 	if c.beforeKeys != nil {
 		c.beforeKeys()
