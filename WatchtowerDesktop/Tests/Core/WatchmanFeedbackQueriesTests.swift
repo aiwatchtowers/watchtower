@@ -125,6 +125,17 @@ final class WatchmanFeedbackQueriesTests: XCTestCase {
         XCTAssertEqual(row["feedback"], "", "Mark done is not feedback")
     }
 
+    /// Mark done takes a stall item (parked by Go's stall watch); OK and
+    /// Correct… do not — it is not a decision (tuning spec §4b).
+    func testOwnerDoneTakesAStall() throws {
+        let queue = try TestDatabase.create()
+        let stall = try queue.write { try item($0, kind: "stall", outcome: "parked") }
+        XCTAssertFalse(try queue.write { try WatchmanFeedbackQueries.ok($0, itemID: stall) })
+        XCTAssertFalse(try queue.write { try WatchmanFeedbackQueries.correct($0, itemID: stall, text: "Go on") })
+        XCTAssertTrue(try queue.write { try WatchmanFeedbackQueries.ownerDone($0, itemID: stall) })
+        XCTAssertFalse(try queue.write { try WatchmanFeedbackQueries.ownerDone($0, itemID: stall) }, "once")
+    }
+
     /// correction_sent_at is written once, and only on a corrected item.
     func testCorrectionSentOnce() throws {
         let queue = try TestDatabase.create()

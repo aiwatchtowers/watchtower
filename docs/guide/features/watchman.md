@@ -1,6 +1,6 @@
 # Watchman
 
-Watchman learns how you decide in a workbench and tests, on your own past decisions, how often a stand-in would have chosen what you chose. It is for the person who wants to hand agents a task and leave, and first wants to know whether a stand-in could be trusted. It answers only for the sessions you hand it, until you take them back.
+Watchman learns how you decide in a workbench and tests, on your own past decisions, how often a stand-in would have chosen what you chose. It answers only for the sessions you hand it, until you take them back.
 
 ## Why use it
 
@@ -17,7 +17,7 @@ kind: feature
 since: 0.29.0
 -->
 
-Watchman reads only your own decisions in one workbench: asks you answered, your comments and verdicts in diff and spec reviews, permission prompts you allowed or denied, your own lines to agents (needs **Agent analytics** on, and Start Learning turns it on), and your own commits (made with the folder's git email) and merged pull requests in the workbench folder. Automations, dismissed asks, colleagues' and agents' commits are left out. Secrets are blanked; each text is cut to 2,048 characters.
+Watchman reads your own decisions in one workbench: asks you answered, your comments and verdicts in diff and spec reviews, permission prompts you allowed or denied, your own lines to agents (needs **Agent analytics** on, and Start Learning turns it on), and your own commits (made with the folder's git email) and merged pull requests in the workbench folder. Automations, dismissed asks and others' commits are left out. Secrets are blanked.
 
 Each decision is filed under one of eight categories: design, scope, UX text, tests, code review, document review, permission and finish. Where a source does not say which, a light AI model labels it, so learning costs tokens; one it cannot place is not stored.
 
@@ -27,7 +27,7 @@ Only real decisions are tested: a line that answers nothing, and anything Watchm
 
 The backtest hides your 30 newest such decisions of a category, lets the stand-in decide each from older decisions only, and has a strong AI model grade each answer next to yours: the same, acceptable (a different path you could live with) or bad (you would have had to undo it), per question for an ask with several. Code review is measured on your review comments only. The stand-in may hand an item back only when it needs your hands (a token, a sign-in); a justified handoff lands in the **Handed** column, an unjustified one counts as bad. Each category ends as one of three:
 
-- **Strong**: at most 5 % of its decisions are bad, and none of the bad ones was taken while it was sure ("high" confidence). Matching you exactly is not required.
+- **Strong**: at most 5 % of its decisions are bad, and none of the bad ones was taken while it was sure ("high" confidence).
 - **Weak**: it was measured and missed that bar.
 - **Not measured**: fewer than 30 decisions exist, or fewer than 20 are left to score after the handed ones ("Not measured: N of 30 handed to you").
 
@@ -35,9 +35,9 @@ The verdict is **go** when at least three categories are strong and one is permi
 
 ## Using it
 
-1. Open **Settings → Profile → Watchman** and find the workbench. Before you start, it shows an estimate, such as the number of decisions and the tokens labelling will cost.
-2. Press **Start Learning**. The first pass runs up to five minutes; the daemon continues in its next cycles and the line reads "Learning… N of M".
-3. When learning is done, press **Run Backtest Now** (the daemon also reruns it weekly). The screen lists each category with its numbers, its base rate and its rating; the verdict and the cost are printed by `watchman backtest` in a terminal, which also saves a report of the grades and reasons in the workspace's `watchman` folder.
+1. Open **Settings → Profile → Watchman** and find the workbench. It first shows an estimate: the number of decisions and labelling's token cost.
+2. Press **Start Learning**. The daemon learns the workbench in one go; the line reads "Learning… N of M".
+3. When learning is done, press **Run Backtest Now** (the daemon also reruns it weekly). The screen lists each category with its numbers, its base rate and its rating; the verdict and the cost are printed by `watchman backtest` in a terminal.
 4. A run that fails shows its error with **Retry**; the last finished result stays below.
 
 ### Edit what it learned and its limits
@@ -66,11 +66,15 @@ kind: feature
 since: 0.29.0
 -->
 
-**Hand to Watchman** on a session's strip hands that session over; on a target's panel, every session under the target, also later ones; **Hand all running sessions to Watchman** in the menu bar, every running agent session. Until you press **Take back**, Watchman answers their asks and spec reviews (and permission prompts in Claude Code sessions) and reviews a session's changes before it may finish, whether you are at the Mac or not. The strip reads "Watchman · Sleep since 01:40".
+**Hand to Watchman** on a session's strip hands that session over; on a target's panel, every session under the target, also later ones; **Hand all running sessions to Watchman** in the menu bar, every running agent session. Until you press **Take back**, Watchman answers their asks and spec reviews (and permission prompts in Claude Code sessions) and reviews a session's changes before it may finish, at the Mac or away. The strip reads "Watchman · since 01:40" ("learning 42%" at first).
+
+Each hand-over takes an optional instruction Watchman follows within its limits; **Instruction…** by the chip edits it.
+
+A stopped agent is nudged after 3 minutes. Stopped again without progress after the third nudge, or with a nudge typed but unsent for 9 minutes, it waits for you in the journal. A nudge held by your unsent draft is retried.
 
 **Take back** stops new decisions; one already under way still finishes. On a session also handed over through its target, Take back on the strip removes only the direct hand-over.
 
-The first time on a workbench a sheet shows what turns on: Agent analytics and learning, with its estimate; until learning finishes, Watchman parks everything for you. It warns when main is not protected on GitHub, the git guard cannot go into a repository, or a session's folder lacks Watchman's guard (Repair the workbench, restart the session). Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
+Handing over the first session on a workbench starts its learning, the same as **Start Learning**; the sheet shows what turns on and the estimate. Questions asked until it finishes wait for it (the journal counts them) or for you; permission prompts come to you. It warns when main is not protected on GitHub, the git guard cannot go into a repository, or a session's folder lacks Watchman's guard (Repair the workbench, restart the session). Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
 
 ### Read the night's journal
 <!-- learn
@@ -83,10 +87,10 @@ kind: feature
 since: 0.29.0
 -->
 
-Everything Watchman handled lands in **Inbox → Watchman**, one night per entry from 12:00 to 12:00 the next day. Home shows last night as one line, such as "Overnight Watchman decided 14 — 2 unsure, 2 waiting for you"; click it to open the journal.
+Everything Watchman handled lands in **Inbox → Watchman**, one night per entry, noon to noon. Home shows last night as a line like "Overnight Watchman decided 14 — 2 unsure, 2 waiting for you", which opens the journal.
 
-- **WAITING FOR YOU**: what Watchman parked for you (a hard limit, a failure) or handed back because it needs your hands.
-- **Decided**: each decision with what it chose, why, the earlier decisions it leaned on and its confidence. In this version every decision is marked **Unsure**.
+- **WAITING FOR YOU**: what Watchman parked for you (a hard limit, a failure, a stopped agent) or handed back because it needs your hands.
+- **Decided**: each decision with what it chose, why, the earlier decisions it leaned on and its confidence (**Unsure** in this version).
 - **Checks nobody ran**: checks a session asked for that Watchman passed on.
 
 The night's header shows its span, when the Mac slept ("the Mac slept from 02:10 to 03:05, nothing ran") and the cost. While Watchman works, a "Deciding: …" line shows its current item; when the daemon is stopped, "Watchman is not running — the daemon is stopped" sits above the last night. A menu narrows it to one workbench.
@@ -111,7 +115,6 @@ since: 0.29.0
 - Finish looks thin: handover asks count as ordinary questions.
 - An agent's commit without its `Co-Authored-By` line can count as yours.
 - Your sleep window is a rough guess if you are rarely active.
-- A busy backtest is already running elsewhere.
 
 ## Related
 

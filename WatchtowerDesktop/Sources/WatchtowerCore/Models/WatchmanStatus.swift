@@ -73,6 +73,12 @@ package struct WatchmanStatus: Decodable, Equatable, Sendable {
         workbenches.first { $0.workbench == id }
     }
 
+    /// The learning percent of every workbench Watchman is still learning
+    /// (`WatchmanWorkbenchStatus.learningPercent`), by workbench id.
+    package var learningPercents: [Int64: Int] {
+        Dictionary(workbenches.compactMap { row in row.learningPercent.map { (row.workbench, $0) } }) { first, _ in first }
+    }
+
     /// Whether the twin decides for this session now: armed itself or under
     /// an armed target.
     package func isArmed(session id: Int64) -> Bool {
@@ -94,21 +100,25 @@ package enum WatchmanMode: String, Equatable, Sendable {
 /// One `armed_sessions` entry: `target` is the armed target whose subtree
 /// holds the session (0 = armed only by its own row; such a session goes
 /// back only with its target), `armedAt` that target's arming time, else
-/// the session row's.
+/// the session row's. `instructions` is the session row's own instruction
+/// for Watchman ("" = none, or a CLI that does not print it); the arm and
+/// edit sheets pre-fill it.
 package struct WatchmanArmedSession: Decodable, Equatable, Sendable {
     package let id: Int64
     package let target: Int64
     package let armedAt: Date?
+    package let instructions: String
 
     enum CodingKeys: String, CodingKey {
-        case id, target
+        case id, target, instructions
         case armedAt = "armed_at"
     }
 
-    package init(id: Int64, target: Int64 = 0, armedAt: Date? = nil) {
+    package init(id: Int64, target: Int64 = 0, armedAt: Date? = nil, instructions: String = "") {
         self.id = id
         self.target = target
         self.armedAt = armedAt
+        self.instructions = instructions
     }
 
     package init(from decoder: Decoder) throws {
@@ -116,6 +126,34 @@ package struct WatchmanArmedSession: Decodable, Equatable, Sendable {
         id = try container.decode(Int64.self, forKey: .id)
         target = try container.decodeIfPresent(Int64.self, forKey: .target) ?? 0
         armedAt = AutomationDates.parse(try container.decodeIfPresent(String.self, forKey: .armedAt))
+        // Tolerant: a missing or malformed key reads as no instruction.
+        instructions = (try? container.decodeIfPresent(String.self, forKey: .instructions)) ?? ""
+    }
+}
+
+/// `watchman instruct --json` (`cmd/watchman_instruct.go`, keys pinned by
+/// `TestWatchmanInstruct_JSONKeysPinned`): the stored text after Go's trim
+/// and clip.
+package struct WatchmanInstructReply: Decodable, Equatable, Sendable {
+    package let ok: Bool
+    package let instructions: String
+    package let error: String
+
+    enum CodingKeys: String, CodingKey {
+        case ok, instructions, error
+    }
+
+    package init(ok: Bool = true, instructions: String = "", error: String = "") {
+        self.ok = ok
+        self.instructions = instructions
+        self.error = error
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try container.decode(Bool.self, forKey: .ok)
+        instructions = try container.decodeIfPresent(String.self, forKey: .instructions) ?? ""
+        error = try container.decodeIfPresent(String.self, forKey: .error) ?? ""
     }
 }
 
@@ -346,6 +384,20 @@ package struct WatchmanWorkbenchStatus: Decodable, Equatable, Sendable {
     /// cannot start (the CLI refuses it).
     package var relabelLeft: Int { learning?.relabelPending ?? 0 }
     package var isRelabelling: Bool { relabelLeft > 0 }
+    /// Watchman is on for the workbench and still learning it: the first
+    /// pass is not done, or the relabel pass still sorts earlier decisions
+    /// (Go's `db.WatchmanLearningSQL`, tuning spec §3).
+    package var isStillLearning: Bool { isEnabled && (!isLearned || isRelabelling) }
+    /// The progress the strip chip and the journal's busy line show while
+    /// still learning: `min(99, written*100/estimated)` while the first pass
+    /// runs (0 without an estimate), 99 once only the relabel pass is left;
+    /// nil once learned or while Watchman is not on.
+    package var learningPercent: Int? {
+        guard isStillLearning else { return nil }
+        guard let learning, !learning.done else { return learning == nil ? 0 : 99 }
+        guard learning.estimated > 0 else { return 0 }
+        return min(99, max(0, learning.written * 100 / learning.estimated))
+    }
 }
 
 package struct WatchmanSourceProgress: Decodable, Equatable, Sendable {

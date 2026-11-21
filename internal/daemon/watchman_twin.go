@@ -18,7 +18,14 @@ type WatchmanTwin interface {
 	RunOnce(ctx context.Context) int
 	Wait()
 	DeliverHeld(ctx context.Context)
+	// CheckStalls is the stall watch's tick (spec 2026-11-21-watchman-tuning
+	// §4b): a stopped handed agent is pinged, at most 3 times, then parked.
+	CheckStalls(ctx context.Context)
 }
+
+// watchmanStallTick is how often the twin worker checks the armed sessions
+// for a stopped agent (the stall watch).
+const watchmanStallTick = 60 * time.Second
 
 // SetWatchmanTwin wires the twin worker (spec 2026-11-16-watchman-design
 // §4) over its own Answerer (its own held-line key; the hub keeps another)
@@ -26,14 +33,16 @@ type WatchmanTwin interface {
 // after SetDB. The decisions run on watchmanTwinGenerator: strong tier for
 // watchman.decide, light for the watchman.label park check. A diff review
 // reads the session's review place (LiveReviewPlace) and its PR's base
-// through gh (GHPRBase).
-func (d *Daemon) SetWatchmanTwin(a *askanswer.Answerer, start func(ctx context.Context, workbenchID, targetID int64, brief string) error) {
+// through gh (GHPRBase). live reads a session's live run from the same
+// session port the Answerer delivers through (the stall watch; nil = off).
+func (d *Daemon) SetWatchmanTwin(a *askanswer.Answerer, live func(ctx context.Context, sessionID int64) (askanswer.LiveRun, bool, error),
+	start func(ctx context.Context, workbenchID, targetID int64, brief string) error) {
 	d.watchmanTwin = watchmanact.NewTwin(watchmanact.TwinDeps{
 		DB:       d.db,
 		Answerer: a,
 		Decide: func(ctx context.Context, it watchman.Item) (watchman.Decision, error) {
 			gen, store := d.watchmanTwinGenerator(ctx), prompts.New(d.db, nil)
-			return watchmanact.LiveDecide(ctx, d.db, gen, store, watchman.NewLLMLabeler(gen, store), it)
+			return watchmanact.LiveDecide(ctx, d.db, gen, store, watchman.NewLLMLabeler(gen, store), d.logger.Printf, it)
 		},
 		Parked: func(ctx context.Context, text string) (bool, string, error) {
 			labeler := watchman.NewLLMLabeler(d.watchmanTwinGenerator(ctx), prompts.New(d.db, nil))
@@ -42,6 +51,7 @@ func (d *Daemon) SetWatchmanTwin(a *askanswer.Answerer, start func(ctx context.C
 		StartSession: start,
 		ReviewPlace:  watchmanact.LiveReviewPlace(d.db),
 		PRBase:       watchmanact.GHPRBase(watchmanact.ExecRun),
+		Live:         live,
 		Wake:         d.wakeWatchmanTwin,
 	})
 }
@@ -69,8 +79,10 @@ func (d *Daemon) watchmanTwinGenerator(ctx context.Context) digest.Generator {
 
 // startWatchmanTwin runs the twin worker beside the sync loop: once at start,
 // then on every Watchman wake (a wait point's writer) and every cycle's
-// nudge, without waiting for the cycle. The returned stop cancels it and
-// waits for the items still deciding (killed instead, their leases expire).
+// nudge, without waiting for the cycle; and every watchmanStallTick the
+// stall watch (CheckStalls) on the same goroutine, so it never overlaps a
+// pass's held-line retries. The returned stop cancels it and waits for the
+// items still deciding (killed instead, their leases expire).
 func (d *Daemon) startWatchmanTwin(ctx context.Context) (stop func()) {
 	if d.watchmanTwin == nil || d.db == nil {
 		return func() {}
@@ -83,13 +95,12 @@ func (d *Daemon) startWatchmanTwin(ctx context.Context) (stop func()) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		tick := time.NewTicker(watchmanStallTick)
+		defer tick.Stop()
 		for {
 			d.phaseWatchmanTwin(runCtx)
-			select {
-			case <-runCtx.Done():
+			if !d.awaitWatchmanTwinPass(runCtx, tick.C) {
 				return
-			case <-d.watchmanWakeCh:
-			case <-d.watchmanTwinCycle:
 			}
 		}
 	}()
@@ -97,6 +108,24 @@ func (d *Daemon) startWatchmanTwin(ctx context.Context) (stop func()) {
 		cancel()
 		<-done
 		d.watchmanTwin.Wait()
+	}
+}
+
+// awaitWatchmanTwinPass waits for the next pass's reason — a Watchman wake
+// or a cycle's nudge — running the stall watch on each tick meanwhile;
+// false once ctx ends.
+func (d *Daemon) awaitWatchmanTwinPass(ctx context.Context, tick <-chan time.Time) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-d.watchmanWakeCh:
+			return true
+		case <-d.watchmanTwinCycle:
+			return true
+		case <-tick:
+			d.watchmanTwin.CheckStalls(ctx)
+		}
 	}
 }
 

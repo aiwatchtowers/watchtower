@@ -67,7 +67,7 @@ func (j *job) permission(ctx context.Context) {
 		j.park(ctx, failedReason(j.it.Error))
 		return
 	}
-	learning, err := j.t.stillLearning(j.it.WorkbenchID)
+	learning, err := j.t.d.DB.WatchmanStillLearning(j.it.WorkbenchID)
 	if err != nil {
 		j.fail(ctx, err)
 		return
@@ -109,7 +109,7 @@ func (t *Twin) decidePermission(ctx context.Context, it db.WatchmanItem, req *db
 		return park(reasonClipped, nil), nil
 	}
 	dec, err := t.d.Decide(ctx, watchman.Item{
-		WorkbenchID: it.WorkbenchID, Category: watchman.CategoryPermission, Options: permissionOptions,
+		WorkbenchID: it.WorkbenchID, ItemID: it.ID, SessionID: it.SessionID, Category: watchman.CategoryPermission, Options: permissionOptions,
 		Situation:     watchman.Clip(watchman.Redact("Tool: "+req.ToolName+"\n"+strings.TrimSpace(req.Summary)), watchman.SituationLimit),
 		DecidedBefore: now,
 	})

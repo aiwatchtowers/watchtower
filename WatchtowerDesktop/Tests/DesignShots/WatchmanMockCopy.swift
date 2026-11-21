@@ -119,7 +119,8 @@ enum WatchmanMockCopy {
     static let stripSession = "#1826 Store window"
     static let stripPlace = "acme-api"
     static let stripBranch = "feature/store-window"
-    static let armedChip = "Watchman · Sleep since 01:40"
+    /// No mode word since the tuning spec's D8.
+    static let armedChip = "Watchman · since 01:40"
     static let takeBack = "Take back"
     static let handTo = "Hand to Watchman"
     static let workchat = "Workchat"
@@ -140,7 +141,7 @@ enum WatchmanMockCopy {
 
     static let trayStatus = "Synced 2 min ago"
     static let traySyncNow = "Sync Now"
-    static let trayWatchmanStatus = "Watchman · Sleep · 3 sessions"
+    static let trayWatchmanStatus = "Watchman · since 01:40 · 3 sessions"
     static let trayHandAll = "Hand all running sessions to Watchman"
     static let trayGoingToSleep = "Going to sleep"
     static let trayVoiceIdea = "New Voice Idea"
@@ -158,7 +159,7 @@ enum WatchmanMockCopy {
     static let targetStatus = "In progress"
     static let targetPriority = "High"
     static let targetProgress = "3 of 5 done"
-    static let targetArmed = "Watchman has this target · Sleep since 01:40"
+    static let targetArmed = "Watchman has this target · since 01:40"
     static let targetArmedCaption = "Answers for you in the 3 running sessions under #1820 and in the ones "
         + "started under it."
     static let targetUnarmedCaption = "Watchman answers for you in every session under #1820 while you sleep "

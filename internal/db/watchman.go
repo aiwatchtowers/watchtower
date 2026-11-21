@@ -685,11 +685,14 @@ type WatchmanJournalRow struct {
 
 // WatchmanJournalFeedback pages the workbench's items the owner marked OK or
 // corrected, decided_at = feedback_at. Only the Desktop writes the feedback
-// columns, so a row here is the owner's word (WATCHMAN-03).
+// columns, so a row here is the owner's word (WATCHMAN-03); only a finished
+// twin decision is read (the Desktop's own rule for writing feedback): never
+// a check, a stall, nor a parked, handed, owner-first or superseded item.
 func (db *DB) WatchmanJournalFeedback(workbenchID int64, from *WatchmanMark, older bool, limit int) ([]WatchmanJournalRow, error) {
 	q, args := wmPage(`SELECT COALESCE(strftime(`+wmAtFormat+`, i.feedback_at), '') AS wm_at, i.id AS wm_id, '' AS wm_sub,
 			i.category, i.question, i.choice, i.feedback, i.feedback_text
-		FROM watchman_items i WHERE i.workbench_id = ? AND i.feedback IN ('ok','corrected')`,
+		FROM watchman_items i WHERE i.workbench_id = ? AND i.feedback IN ('ok','corrected')
+		  AND i.state = 'done' AND i.kind NOT IN ('check', 'stall') AND i.outcome IN ('answered', 'approved', 'changes')`,
 		[]any{workbenchID}, from, older, limit)
 	rows, err := db.Query(q, args...)
 	if err != nil {

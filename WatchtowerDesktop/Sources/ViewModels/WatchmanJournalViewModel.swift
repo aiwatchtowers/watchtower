@@ -18,6 +18,9 @@ final class WatchmanJournalViewModel {
         var deciding: [WatchmanItem]
         /// What the decided items leaned on, by precedent id.
         var precedents: [Int64: String] = [:]
+        /// Queued items waiting for their workbench's learning to end, by
+        /// workbench id (`WatchmanJournalQueries.waitingForLearningByWorkbench`).
+        var waitingForLearning: [Int64: Int] = [:]
     }
 
     enum Phase: Equatable { case loading, empty, failed, journal }
@@ -45,6 +48,9 @@ final class WatchmanJournalViewModel {
         let meta: String
         let outcome: String?
         let handed: Bool
+        /// A stalled session (tuning spec §4b): its own symbol, Open session
+        /// and Mark done only.
+        var stall = false
         /// OK and Correct… are offered: a twin decision not judged yet.
         var canJudge = false
         /// What the owner said about it: OK'd, or his correction.
@@ -74,6 +80,8 @@ final class WatchmanJournalViewModel {
     /// The symbol of a superseded item's line (its ask was withdrawn), apart
     /// from the owner-answered one.
     static let supersededIcon = "arrow.uturn.backward.circle"
+    /// The symbol of a stall card (tuning spec §4b), in `Tone.warning`.
+    static let stallIcon = "pause.circle"
 
     /// The Correct… sheet's draft.
     struct CorrectDraft: Identifiable, Equatable {
@@ -161,6 +169,12 @@ final class WatchmanJournalViewModel {
     var scope: Int64?
     /// `watchman status --json`'s `daemon_running`.
     var daemon: WatchmanDaemonState = .unknown
+    /// `watchman status --json`'s learning percent of each workbench still
+    /// learning (`WatchmanStatus.learningPercents`).
+    var learningPercents: [Int64: Int] = [:]
+    /// Background AI is paused (`AppState.backgroundAI`): learning does not
+    /// run, so the busy line says so instead of a percent.
+    var backgroundAIPaused = false
     /// The Correct… sheet; nil = closed.
     var correcting: CorrectDraft?
     /// An OK or Mark done that could not be saved.
@@ -208,7 +222,8 @@ final class WatchmanJournalViewModel {
                 let nights = try WatchmanJournalQueries.nights(db, limit: Self.nightLimit, calendar: calendar)
                 let ids = Set(nights.flatMap { $0.items.flatMap(\.precedentIDs) })
                 return Snapshot(nights: nights, deciding: try WatchmanJournalQueries.liveDeciding(db),
-                                precedents: try WatchmanJournalQueries.precedentTitles(db, ids: ids))
+                                precedents: try WatchmanJournalQueries.precedentTitles(db, ids: ids),
+                                waitingForLearning: try WatchmanJournalQueries.waitingForLearningByWorkbench(db))
             }
         }, calendar: calendar, pool: pool, actions: actions)
     }
@@ -295,7 +310,7 @@ final class WatchmanJournalViewModel {
     var emptyHint: String { WatchmanJournalCopy.emptyHint }
     var emptyCopy: EmptyStateCopy {
         EmptyStateCopyTable.copy(for: WatchmanJournalCopy.emptyCopyKey, briefingHour: 0)
-            ?? EmptyStateCopy(icon: "moon.stars", title: "", landsHere: "", feature: nil, primaryAction: nil)
+            ?? EmptyStateCopy(icon: WatchmanStyle.icon, title: "", landsHere: "", feature: nil, primaryAction: nil)
     }
 
     var daemonLine: String? { daemon == .stopped ? WatchmanJournalCopy.daemonStopped : nil }
@@ -356,8 +371,9 @@ final class WatchmanJournalViewModel {
             span: WatchmanJournalCopy.nightSpan(night, live: live, calendar: calendar),
             gapLines: night.gaps.map { WatchmanJournalCopy.gapLine($0, calendar: calendar) },
             cost: WatchmanJournalCopy.cost(night.costUSD, tonight: isTonight(night)),
-            // Whatever night is open: something is being decided now.
-            busyLine: deciding.first.map { WatchmanJournalCopy.deciding($0.question) },
+            // Whatever night is open: something is being decided now, else
+            // questions wait for learning.
+            busyLine: deciding.first.map { WatchmanJournalCopy.deciding($0.question) } ?? waitingForLearningLine,
             waiting: night.waiting.map(waitingCard),
             decided: unsure.map(decidedCard),
             sureLines: sure.map(sureLine),
@@ -438,9 +454,11 @@ final class WatchmanJournalViewModel {
 
     /// Open session: the item's session (or the one its correction started)
     /// on its workbench's page; one that stopped is shown, never started.
+    /// A session whose row is gone is never opened (its id would land on
+    /// another session).
     func openSession(_ itemID: Int64) {
         guard let item = item(itemID) else { return }
-        let sessionID = startedSessions[itemID] ?? item.sessionID
+        let sessionID = startedSessions[itemID] ?? (item.sessionExists ? item.sessionID : 0)
         guard sessionID > 0 else { return }
         actions.open(WorkbenchRoute(projectID: item.workbenchID, pane: .terminal, subjectID: sessionID))
     }
@@ -569,6 +587,20 @@ final class WatchmanJournalViewModel {
         return nights.first { $0.date == selectedNight } ?? nights.first
     }
 
+    /// "Waiting for learning (42%): 3 questions" over the workbenches in
+    /// scope, at the least learned one's percent among those a status read
+    /// gave (an unknown percent is unknown, not 0; none known: no percent);
+    /// the paused line while background AI is paused; nil while nothing
+    /// waits.
+    private var waitingForLearningLine: String? {
+        let waiting = snapshot.waitingForLearning.filter { scope == nil || $0.key == scope }
+        let count = waiting.values.reduce(0, +)
+        guard count > 0 else { return nil }
+        if backgroundAIPaused { return WatchmanJournalCopy.waitingForLearningPaused }
+        let percent = waiting.keys.compactMap { learningPercents[$0] }.min()
+        return WatchmanJournalCopy.waitingForLearning(percent: percent, count: count)
+    }
+
     private func isTonight(_ night: WatchmanNight) -> Bool {
         night.date == WatchmanNight.start(of: now(), calendar: calendar)
     }
@@ -598,11 +630,25 @@ final class WatchmanJournalViewModel {
     }
 
     private func waitingCard(_ item: WatchmanItem) -> Card {
-        Card(id: item.id, place: WatchmanJournalCopy.place(item, calendar: calendar),
-             question: WatchmanJournalCopy.question(item), badge: nil,
-             reason: WatchmanJournalCopy.waitingReason(item), choice: nil, rationale: nil, precedents: [],
-             meta: WatchmanJournalCopy.meta(item), outcome: nil, handed: item.outcome == "handed",
-             canOpen: item.sessionID > 0, canMarkDone: true)
+        if item.isStall { return stallCard(item) }
+        return Card(id: item.id, place: WatchmanJournalCopy.place(item, calendar: calendar),
+                    question: WatchmanJournalCopy.question(item), badge: nil,
+                    reason: WatchmanJournalCopy.waitingReason(item), choice: nil, rationale: nil, precedents: [],
+                    meta: WatchmanJournalCopy.meta(item), outcome: nil, handed: item.outcome == "handed",
+                    canOpen: item.sessionID > 0 && item.sessionExists, canMarkDone: true)
+    }
+
+    /// A stalled session: titled by the session, the stored reason, Open
+    /// session while its row is there and Mark done (it is not a decision:
+    /// no OK, no Correct…).
+    private func stallCard(_ item: WatchmanItem) -> Card {
+        // The waiting card draws `place` as its meta line; `meta` is the
+        // decided card's.
+        Card(id: item.id, place: WatchmanJournalCopy.stallMeta(item, calendar: calendar),
+             question: WatchmanJournalCopy.stallTitle(item), badge: nil,
+             reason: WatchmanJournalCopy.stallReason(item), choice: nil, rationale: nil, precedents: [],
+             meta: "", outcome: nil, handed: false, stall: true,
+             canOpen: item.sessionID > 0 && item.sessionExists, canMarkDone: true)
     }
 
     private func decidedCard(_ item: WatchmanItem) -> Card {
@@ -614,7 +660,7 @@ final class WatchmanJournalViewModel {
              meta: WatchmanJournalCopy.meta(item), outcome: WatchmanJournalCopy.outcome(item), handed: false,
              canJudge: item.feedback.isEmpty, feedbackLine: feedbackLine(item), sendLine: sendLine(item),
              sendFailed: sendState(item).map { if case .failed = $0 { true } else { false } } ?? false,
-             canOpen: item.sessionID > 0 || startedSessions[item.id] != nil)
+             canOpen: startedSessions[item.id] != nil || (item.sessionID > 0 && item.sessionExists))
     }
 
     private func feedbackLine(_ item: WatchmanItem) -> String? {

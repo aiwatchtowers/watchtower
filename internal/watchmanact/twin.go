@@ -61,7 +61,13 @@ type TwinDeps struct {
 	// repository's default branch (GHPRBase); an error, "" or nil parks an
 	// Approve.
 	PRBase func(ctx context.Context, folder, branch string) (base, defaultBranch string, err error)
-	Clock  func() time.Time
+	// Live reads a session's live run from the session host (the same port
+	// the Answerer delivers through); nil turns the stall watch off.
+	Live func(ctx context.Context, sessionID int64) (askanswer.LiveRun, bool, error)
+	// Head reads the HEAD commit of a session's worktree folder for the
+	// stall watch's progress check; nil = GitHead over Run.
+	Head  func(ctx context.Context, folder string) (string, error)
+	Clock func() time.Time
 	// Wake asks the caller for another pass (non-blocking; nil = none): a
 	// decision ended, so a slot is free for an item left queued, or an item
 	// put back with a not_before has come due.
@@ -82,6 +88,8 @@ type Twin struct {
 	// in this process, so a pass never starts one twice.
 	mu       sync.Mutex
 	starting map[int64]bool
+	// stalls is the stall watch's memory between ticks (stallMemo).
+	stalls map[int64]*stallMemo
 }
 
 // NewTwin builds the twin worker.
@@ -91,6 +99,9 @@ func NewTwin(d TwinDeps) *Twin {
 	}
 	if d.Run == nil {
 		d.Run = ExecRun
+	}
+	if d.Head == nil {
+		d.Head = GitHead(d.Run)
 	}
 	if d.After == nil {
 		d.After = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
@@ -108,9 +119,11 @@ var twinKinds = map[string]string{"ask": "ask", "check": "ask", "handover": "ask
 // whose start is still owed (a crash between the answer and the start), then
 // leases items while fewer than MaxDeciding are deciding — only items of a
 // session that is armed now (Mode Sleep, D47; an arming read that fails
-// leases nothing, and the lease re-checks the arming, WATCHMAN-04) — and
-// decides each in its own goroutine. It returns how many it started; Wait
-// waits for them.
+// leases nothing, and the lease re-checks the arming, WATCHMAN-04) and, on a
+// workbench Watchman is still learning, only permission prompts and items
+// whose ask the owner closed himself (the rest wait queued, spec 2026-11-21
+// D5) — and decides each in its own goroutine. It returns how many it
+// started; Wait waits for them.
 func (t *Twin) RunOnce(ctx context.Context) int {
 	if ctx.Err() != nil {
 		return 0
@@ -125,6 +138,21 @@ func (t *Twin) RunOnce(ctx context.Context) int {
 	armed := make(map[int64]bool, len(sessions))
 	for _, s := range sessions {
 		armed[s.SessionID] = true
+	}
+	// Whether each workbench is still learning, read once per pass; a read
+	// that fails counts as learning (the item stays queued).
+	learningOf := map[int64]bool{}
+	learning := func(wb int64) bool {
+		l, ok := learningOf[wb]
+		if !ok {
+			var err error
+			if l, err = t.d.DB.WatchmanStillLearning(wb); err != nil {
+				log.Printf("watchman twin: %v", err)
+				l = true
+			}
+			learningOf[wb] = l
+		}
+		return l
 	}
 	eligible := func(it db.WatchmanItem) bool {
 		ref, ok := twinKinds[it.Kind]
@@ -148,8 +176,13 @@ func (t *Twin) RunOnce(ctx context.Context) int {
 				return false
 			}
 		}
-		mode, _ := watchman.Mode(now, watchman.ModeInputs{Armed: isArmed})
-		return mode == watchman.ModeSleep
+		if mode, _ := watchman.Mode(now, watchman.ModeInputs{Armed: isArmed}); mode != watchman.ModeSleep {
+			return false
+		}
+		// A permission prompt is leased while learning and parks (the agent
+		// blocks on it); every other kind waits queued for the learning to
+		// end (D5) unless the owner already closed its ask himself.
+		return it.Kind == "permission" || !learning(it.WorkbenchID) || t.ownerClosed(it)
 	}
 	started := 0
 	for {
@@ -420,8 +453,12 @@ func failedReason(lastErr string) string {
 // LiveDecide is the twin's Decide for a live item: an item with no category
 // (a question ask) is categorised first by the light-tier label call, then
 // the category's profile and the owner's instructions are read
-// (watchman.LiveContext) and the strong tier decides.
-func LiveDecide(ctx context.Context, d *db.DB, gen digest.Generator, store *prompts.Store, labeler watchman.Labeler, it watchman.Item) (watchman.Decision, error) {
+// (watchman.LiveContext), with the session's own instruction
+// (SessionInstructions), and the strong tier decides. An instruction that
+// cannot be read is logged by item id (logf; nil = not logged) and the item
+// is decided without it: the hard limits do not depend on it.
+func LiveDecide(ctx context.Context, d *db.DB, gen digest.Generator, store *prompts.Store, labeler watchman.Labeler,
+	logf func(format string, args ...any), it watchman.Item) (watchman.Decision, error) {
 	if it.Category == "" {
 		labels, err := labeler.Label(ctx, []watchman.LabelItem{{Situation: it.Situation, NeedCategory: true}})
 		if err != nil {
@@ -437,7 +474,30 @@ func LiveDecide(ctx context.Context, d *db.DB, gen digest.Generator, store *prom
 		return watchman.Decision{}, err
 	}
 	it.Profile, it.Instructions = profile, instr
+	if it.SessionID != 0 {
+		target, session, err := d.WatchmanSessionInstructions(it.SessionID)
+		if err != nil {
+			if logf != nil {
+				logf("watchman twin: item %d decided without its session instruction: %v", it.ItemID, err)
+			}
+		} else {
+			it.SessionInstructions = sessionInstructions(target, session)
+		}
+	}
 	return watchman.Decide(ctx, d, gen, store, it)
+}
+
+// sessionInstructions labels the covering target's text and the session's
+// own, in that order; empty parts are left out.
+func sessionInstructions(target, session string) string {
+	var parts []string
+	if target != "" {
+		parts = append(parts, "Target: "+target)
+	}
+	if session != "" {
+		parts = append(parts, "Session: "+session)
+	}
+	return strings.Join(parts, "\n")
 }
 
 // labelParkReason is the park reason when the label call finds a hard limit.

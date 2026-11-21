@@ -14,6 +14,7 @@ import (
 
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionstate"
 )
 
 // TestMain installs the db schema template cache: every db.Open(":memory:")
@@ -380,6 +381,150 @@ func TestAnswerer_ClosePermissionOwnerFirst(t *testing.T) {
 
 // A line of no ask goes as an answer's does, and when held never outlives
 // its Answerer (nothing of it is kept in the store).
+// SubmitLineNow (the stall ping) asks the host to hold rather than paste
+// beside a draft, and never keeps a line for later: a prompt, a draft or a
+// session gone send nothing and queue nothing (DeliverHeld types nothing).
+func TestAnswerer_SubmitLineNowNeverQueues(t *testing.T) {
+	e := newEnv(t)
+	s := e.seedAsk()
+	e.exec(`UPDATE owner_asks SET status = 'answered', answer = '{}' WHERE id = ?`, s.ask) // the stall ping goes only with no open ask
+	e.port.start(s.session)
+	e.hooksReport(s.session, "approval")
+	if got := e.a.SubmitLineNow(context.Background(), s.session, e.stopOf(s.session), "ping"); got != DeliveryHeld {
+		t.Fatalf("into a permission prompt: %q", got)
+	}
+	if n := len(e.port.lines()); n != 0 {
+		t.Fatalf("typed into a permission prompt (%d)", n)
+	}
+	e.hooksReport(s.session, "waiting")
+	stop := e.stopOf(s.session)
+	e.port.result = DeliverResult{Outcome: DeliverHeld, Reason: "prompt_has_text"}
+	if got := e.a.SubmitLineNow(context.Background(), s.session, stop, "ping"); got != DeliveryHeld {
+		t.Fatalf("beside a draft: %q", got)
+	}
+	lines := e.port.lines()
+	if len(lines) != 1 || !lines[0].HoldIfPromptText {
+		t.Fatalf("lines = %+v, want one asking the host to hold beside a draft", lines)
+	}
+	e.port.result = DeliverResult{Outcome: DeliverSubmitted}
+	e.a.DeliverHeld(context.Background())
+	if n := len(e.port.lines()); n != 1 {
+		t.Fatalf("a held line was queued and sent later (%d)", n)
+	}
+	if got := e.a.SubmitLineNow(context.Background(), s.session, stop, "ping"); got != DeliverySubmitted {
+		t.Fatalf("delivery = %q", got)
+	}
+	if got := e.a.SubmitLineNow(context.Background(), 9999, stop, "ping"); got != DeliveryNoSession {
+		t.Fatalf("no session: %q", got)
+	}
+}
+
+// stopOf is the session's current stop as the stall watch reads it.
+func (e *env) stopOf(sid int64) time.Time {
+	e.t.Helper()
+	e.port.mu.Lock()
+	live := e.port.live[sid]
+	e.port.mu.Unlock()
+	_, row, fresh := ReadState(context.Background(), e.db, sid, live, time.Now())
+	at, ok := sessionstate.StoppedSince(row)
+	if !fresh || !ok {
+		e.t.Fatalf("no stop read for session %d", sid)
+	}
+	return at
+}
+
+// C1: the stall ping goes only into the stop the caller saw. An agent that
+// went on, stopped again or asked since gets nothing typed; one that went
+// on during the pause after the paste gets no Return (the check refuses
+// it) and the caller counts nothing (DeliveryHeld).
+func TestAnswerer_SubmitLineNowOnlyIntoTheSameStop(t *testing.T) {
+	e := newEnv(t)
+	s := e.seedAsk()
+	e.exec(`UPDATE owner_asks SET status = 'answered', answer = '{}' WHERE id = ?`, s.ask)
+	e.port.start(s.session)
+	at := time.Now().Add(-10 * time.Second)
+	e.exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ? WHERE id = ?`, db.AgentStateStamp(at), s.session)
+	stop := e.stopOf(s.session)
+	ctx := context.Background()
+
+	e.exec(`UPDATE terminal_sessions SET agent_state = 'working', agent_state_at = ? WHERE id = ?`,
+		db.AgentStateStamp(at.Add(time.Second)), s.session)
+	if got := e.a.SubmitLineNow(ctx, s.session, stop, "ping"); got != DeliveryHeld {
+		t.Fatalf("into a working agent: %q", got)
+	}
+	e.exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ? WHERE id = ?`,
+		db.AgentStateStamp(at.Add(2*time.Second)), s.session)
+	if got := e.a.SubmitLineNow(ctx, s.session, stop, "ping"); got != DeliveryHeld {
+		t.Fatalf("into a later stop: %q", got)
+	}
+	if n := len(e.port.lines()); n != 0 {
+		t.Fatalf("typed %d lines into a session that moved on", n)
+	}
+
+	stop = e.stopOf(s.session)
+	e.exec(`UPDATE owner_asks SET status = 'open', answer = '' WHERE id = ?`, s.ask)
+	if got := e.a.SubmitLineNow(ctx, s.session, stop, "ping"); got != DeliveryHeld {
+		t.Fatalf("beside an open ask: %q", got)
+	}
+	if n := len(e.port.lines()); n != 0 {
+		t.Fatalf("typed %d lines beside an open ask", n)
+	}
+	e.exec(`UPDATE owner_asks SET status = 'answered', answer = '{}' WHERE id = ?`, s.ask)
+
+	// The agent goes on between the paste and the Return: the host leaves
+	// the line typed (its re-check refused the Return); it counts as typed,
+	// so the stall watch's stuck park can surface it.
+	e.port.onDeliver = func(DeliverRequest) {
+		e.exec(`UPDATE terminal_sessions SET agent_state = 'working', agent_state_at = ? WHERE id = ?`,
+			db.AgentStateStamp(at.Add(3*time.Second)), s.session)
+	}
+	e.port.result = DeliverResult{Outcome: DeliverTyped, Reason: "cannot_submit"}
+	if got := e.a.SubmitLineNow(ctx, s.session, stop, "ping"); got != DeliveryTyped {
+		t.Fatalf("went on during the pause: %q, want typed (left in the prompt)", got)
+	}
+	e.port.mu.Lock()
+	checks := append([]CheckAnswer(nil), e.port.checks...)
+	e.port.mu.Unlock()
+	if len(checks) != 1 || !checks[0].Fresh || checks[0].CanSubmit {
+		t.Fatalf("checks = %+v, want one fresh refusing the Return", checks)
+	}
+
+	// The re-check cannot read the state (the row is being deleted): no
+	// Return, the line left typed.
+	e.exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ? WHERE id = ?`,
+		db.AgentStateStamp(at.Add(3*time.Second)), s.session)
+	stop = e.stopOf(s.session)
+	e.port.onDeliver = func(DeliverRequest) {
+		e.exec(`UPDATE terminal_sessions SET delete_requested_at = ? WHERE id = ?`, db.AgentStateStamp(at), s.session)
+	}
+	if got := e.a.SubmitLineNow(ctx, s.session, stop, "ping"); got != DeliveryTyped {
+		t.Fatalf("unread re-check: %q, want typed", got)
+	}
+	e.port.mu.Lock()
+	unread := e.port.checks[len(e.port.checks)-1]
+	e.port.mu.Unlock()
+	if unread.Fresh || unread.CanSubmit {
+		t.Fatalf("check = %+v, want an unread one refusing the Return", unread)
+	}
+	e.exec(`UPDATE terminal_sessions SET delete_requested_at = NULL WHERE id = ?`, s.session)
+
+	// Still the same stop through the pause: the Return goes.
+	e.port.onDeliver = nil
+	e.exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ? WHERE id = ?`,
+		db.AgentStateStamp(at.Add(4*time.Second)), s.session)
+	stop = e.stopOf(s.session)
+	e.port.result = DeliverResult{Outcome: DeliverSubmitted}
+	if got := e.a.SubmitLineNow(ctx, s.session, stop, "ping"); got != DeliverySubmitted {
+		t.Fatalf("same stop: %q", got)
+	}
+	e.port.mu.Lock()
+	last := e.port.checks[len(e.port.checks)-1]
+	e.port.mu.Unlock()
+	if !last.CanSubmit {
+		t.Fatalf("check = %+v, want the Return allowed", last)
+	}
+}
+
 func TestAnswerer_DeliverLineHeldInMemoryOnly(t *testing.T) {
 	e := newEnv(t)
 	s := e.seedAsk()

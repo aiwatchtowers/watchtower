@@ -57,13 +57,12 @@ func TestPhaseWatchmanLearn_SkipsWhenNoWorkbench(t *testing.T) {
 	assert.Zero(t, gen.calls)
 }
 
-func TestPhaseWatchmanLearn_LearnsEnabledWorkbench(t *testing.T) {
+// A learned workbench's new decisions are the cycle phase's.
+func TestPhaseWatchmanLearn_LearnsNewDecisionsOfLearned(t *testing.T) {
 	d, database, _ := newBackfillDaemon(t)
 	gen, _ := stubWatchman(t)
-	wb, err := database.CreateWorkbench("acme", t.TempDir())
-	require.NoError(t, err)
-	require.NoError(t, database.EnableWatchmanWorkbench(wb, time.Now(), 1))
-	_, err = database.Exec(`INSERT INTO owner_asks (project_id, kind, title, payload, status, answer, answered_at)
+	wb := enabledWatchmanWorkbench(t, database, "acme")
+	_, err := database.Exec(`INSERT INTO owner_asks (project_id, kind, title, payload, status, answer, answered_at)
 		VALUES (?, 'question', 'Pick a cache',
 			'{"focus":[],"questions":[{"id":"q1","question":"Which cache?","options":[{"label":"sqlite"},{"label":"redis"}]}],"checklist":[]}',
 			'answered', '{"answers":[{"id":"q1","labels":["sqlite"],"other":""}],"checklist":[],"comments":[],"note":"","verdict":""}',
@@ -260,16 +259,17 @@ func TestPhaseWatchmanBacktest_FailedLaunchTriedOnceADay(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(logs.String(), "launching: no binary"))
 }
 
-// The pipeline run counts the rows the relabel pass flagged.
-func TestPhaseWatchmanLearn_RunCountsRelabelled(t *testing.T) {
+// The learner's pipeline run counts the rows the relabel pass flagged.
+func TestWatchmanLearner_RunCountsRelabelled(t *testing.T) {
 	d, database, _ := newBackfillDaemon(t)
 	stubWatchman(t)
+	d.SetConsent(newFakeConsent(consentAllowed).read)
 	wb, err := database.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
 	require.NoError(t, database.EnableWatchmanWorkbench(wb, time.Now(), 0))
 	seedDesignPrecedents(t, database, wb) // five unflagged asks
 
-	d.phaseWatchmanLearn(context.Background())
+	d.runWatchmanLearner(context.Background(), true)
 	var items int
 	require.NoError(t, database.QueryRow(`SELECT items_found FROM pipeline_runs WHERE pipeline = 'watchman-learn'`).Scan(&items))
 	assert.Equal(t, 5, items)

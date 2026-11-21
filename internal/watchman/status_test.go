@@ -264,12 +264,17 @@ func TestStatus_Fixture(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// The armed session has its own instruction; the covered one only its
+	// target's, which armed_sessions does not carry.
+	require.NoError(t, d.SetWatchmanInstruction("session", armed, "ship task 3 only"))
+	require.NoError(t, d.SetWatchmanInstruction("target", 4, "acme group text"))
+
 	git := func(context.Context, string, ...string) ([]byte, error) { return []byte("5\n"), nil }
 	rep, err := Status(context.Background(), d, 0, StatusOptions{Running: true, DaemonRunning: true, Git: git})
 	require.NoError(t, err)
 	// A session armed only by its row, and one covered by target 4 (its time).
 	require.Equal(t, []ArmedSession{
-		{ID: armed, Target: 0, ArmedAt: learnT0.Add(3 * time.Hour).UTC().Format(time.RFC3339)},
+		{ID: armed, Target: 0, ArmedAt: learnT0.Add(3 * time.Hour).UTC().Format(time.RFC3339), Instructions: "ship task 3 only"},
 		{ID: covered, Target: 4, ArmedAt: learnT0.Add(4 * time.Hour).UTC().Format(time.RFC3339)},
 	}, rep.ArmedSessions)
 	got, err := json.MarshalIndent(rep, "", "  ")

@@ -3764,13 +3764,22 @@ started_at TEXT NOT NULL,
 ended_at TEXT NOT NULL
 )
 
+table	watchman_instructions
+CREATE TABLE watchman_instructions (
+scope TEXT NOT NULL CHECK (scope IN ('session','target')),
+ref_id INTEGER NOT NULL, -- session or target id
+text TEXT NOT NULL, -- trimmed, at most 2000 runes
+updated_at TEXT NOT NULL, -- RFC 3339 UTC
+PRIMARY KEY (scope, ref_id)
+)
+
 table	watchman_items
 CREATE TABLE "watchman_items" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 session_id INTEGER,
 target_id INTEGER,
-kind TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard')),
+kind TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard','stall')),
 ref_kind TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),
 ref_id INTEGER NOT NULL,
 state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
@@ -3796,7 +3805,10 @@ decided_at TEXT,
 feedback TEXT NOT NULL DEFAULT '' CHECK (feedback IN ('','ok','corrected')), -- written by the Desktop only
 feedback_text TEXT NOT NULL DEFAULT '',
 feedback_at TEXT,
-check_done_at TEXT, owner_done_at TEXT, correction_sent_at TEXT, moves INTEGER,
+check_done_at TEXT,
+owner_done_at TEXT,
+correction_sent_at TEXT,
+moves INTEGER,
 UNIQUE (ref_kind, ref_id, kind)
 )
 
@@ -3836,6 +3848,18 @@ source TEXT NOT NULL,
 source_key TEXT NOT NULL,
 skipped_at TEXT NOT NULL,
 PRIMARY KEY (workbench_id, source, source_key)
+)
+
+table	watchman_stalls
+CREATE TABLE watchman_stalls (
+session_id INTEGER PRIMARY KEY REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+stopped_at TEXT NOT NULL, -- RFC 3339 UTC: when the stopped state began (the turn end, or later the end of background work)
+pings INTEGER NOT NULL DEFAULT 0, -- pings delivered since the last progress
+last_ping_at TEXT, -- RFC 3339 UTC
+head TEXT NOT NULL DEFAULT '', -- the worktree's HEAD at the last ping
+asks_seen INTEGER NOT NULL DEFAULT 0, -- the session's ask count at the last ping
+parked_at TEXT, -- the stall was journalled (kind 'stall')
+last_delivery TEXT NOT NULL DEFAULT '' -- the last counted ping: 'submitted' or 'typed'
 )
 
 table	watchman_workbenches
@@ -7308,6 +7332,12 @@ GROUP BY up.ancestor
 1	started_at	TEXT	notnull=1	dflt=NULL	pk=0
 2	ended_at	TEXT	notnull=1	dflt=NULL	pk=0
 
+## watchman_instructions
+0	scope	TEXT	notnull=1	dflt=NULL	pk=1
+1	ref_id	INTEGER	notnull=1	dflt=NULL	pk=2
+2	text	TEXT	notnull=1	dflt=NULL	pk=0
+3	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## watchman_items
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	workbench_id	INTEGER	notnull=1	dflt=NULL	pk=0
@@ -7372,6 +7402,16 @@ GROUP BY up.ancestor
 1	source	TEXT	notnull=1	dflt=NULL	pk=2
 2	source_key	TEXT	notnull=1	dflt=NULL	pk=3
 3	skipped_at	TEXT	notnull=1	dflt=NULL	pk=0
+
+## watchman_stalls
+0	session_id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	stopped_at	TEXT	notnull=1	dflt=NULL	pk=0
+2	pings	INTEGER	notnull=1	dflt=0	pk=0
+3	last_ping_at	TEXT	notnull=0	dflt=NULL	pk=0
+4	head	TEXT	notnull=1	dflt=''	pk=0
+5	asks_seen	INTEGER	notnull=1	dflt=0	pk=0
+6	parked_at	TEXT	notnull=0	dflt=NULL	pk=0
+7	last_delivery	TEXT	notnull=1	dflt=''	pk=0
 
 ## watchman_workbenches
 0	workbench_id	INTEGER	notnull=0	dflt=NULL	pk=1

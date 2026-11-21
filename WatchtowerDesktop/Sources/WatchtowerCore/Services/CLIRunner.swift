@@ -19,6 +19,9 @@ package protocol CLIRunnerProtocol {
     func run(args: [String], stdin: Data) async throws -> Data
     /// Commands with a partial-result envelope need stdout even on exit 1/3.
     func capture(args: [String], timeout: TimeInterval) async throws -> CLICapturedResult
+    /// `capture` with `stdin` written to the child's standard input (an
+    /// owner's text read from `-`, such as `watchman instruct --text-file -`).
+    func capture(args: [String], stdin: Data, timeout: TimeInterval) async throws -> CLICapturedResult
     /// The one entry for a command that calls a model (`ModelCommands`):
     /// `origin` says who started it and has no default, so every call site
     /// decides. The generic entries above refuse a model command
@@ -78,6 +81,18 @@ extension CLIRunnerProtocol {
     /// without its input.
     package func run(args: [String], stdin: Data) async throws -> Data {
         throw CLIRunnerError.launchFailed(underlying: CocoaError(.featureUnsupported))
+    }
+
+    /// Through `run(args:stdin:)`: no timeout, and a failure keeps its exit
+    /// code and stderr but not its stdout (`ProcessCLIRunner` keeps all
+    /// three and enforces the timeout).
+    package func capture(args: [String], stdin: Data, timeout: TimeInterval) async throws -> CLICapturedResult {
+        do {
+            let data = try await run(args: args, stdin: stdin)
+            return CLICapturedResult(stdout: data, exitCode: 0)
+        } catch let CLIRunnerError.nonZeroExit(code, stderr) {
+            return CLICapturedResult(stdout: Data(), exitCode: code, stderr: stderr)
+        }
     }
 
     // No default `runModel(args:origin:timeout:stdin:)` here: every
@@ -248,6 +263,12 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
         try CLIRunnerError.refuseModelCommand(args)
         return try await capture(
             args: args, environment: await Constants.resolvedEnvironmentAsync(), stdin: nil, timeout: timeout)
+    }
+
+    package func capture(args: [String], stdin: Data, timeout: TimeInterval) async throws -> CLICapturedResult {
+        try CLIRunnerError.refuseModelCommand(args)
+        return try await capture(
+            args: args, environment: await Constants.resolvedEnvironmentAsync(), stdin: stdin, timeout: timeout)
     }
 
     package func captureModel(

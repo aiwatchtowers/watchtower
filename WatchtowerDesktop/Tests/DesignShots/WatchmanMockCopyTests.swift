@@ -36,8 +36,9 @@ final class WatchmanMockCopyTests: XCTestCase {
     }
 
     /// Phase 2's arming frames render the real controls: the spec's copy is
-    /// `WatchmanArmingCopy`'s. The sheet's confirm reads Hand to Watchman
-    /// (not the mockup's Start), and the tray has no Going to sleep (D47).
+    /// `WatchmanArmingCopy`'s. The sheet's buttons are the tuning spec's
+    /// Cancel / Hand over (not the mockup's Not now / Start), and the tray
+    /// has no Going to sleep (D47).
     func testArmingFramesUseTheRealCopy() {
         typealias Real = WatchmanArmingCopy
         var utc = Calendar(identifier: .gregorian)
@@ -45,9 +46,11 @@ final class WatchmanMockCopyTests: XCTestCase {
         let since = AutomationDates.parse("2026-11-17T01:40:00Z")
         XCTAssertEqual(Copy.armedChip, Real.stripArmed(since: since, calendar: utc))
         XCTAssertEqual(Copy.targetArmed, Real.targetArmed(since: since, calendar: utc))
-        XCTAssertEqual([Copy.handTo, Copy.takeBack, Copy.notNow], [Real.handTo, Real.takeBack, Real.notNow])
+        XCTAssertEqual(Copy.trayWatchmanStatus, Real.trayStatus(WatchmanStatus(
+            workbenches: [], daemon: .running, mode: .sleep, modeSince: since,
+            armedSessions: [3, 5, 7].map { WatchmanArmedSession(id: $0) }), calendar: utc))
+        XCTAssertEqual([Copy.handTo, Copy.takeBack], [Real.handTo, Real.takeBack])
         XCTAssertEqual(Copy.armAnalytics, Real.analyticsLine)
-        XCTAssertEqual(Copy.armHistory, Real.historyLine(WatchmanEstimate(decisions: 1850, needLabels: 1200, tokens: 1_600_000)))
         XCTAssertEqual(Copy.armLimits, Real.limitsLine)
         XCTAssertEqual(Copy.trayHandAll, Real.trayHandAll)
     }
@@ -62,7 +65,7 @@ final class WatchmanMockCopyTests: XCTestCase {
 
     func testHomeAndArmingCopy() {
         XCTAssertEqual(Copy.homeRow, "Overnight Watchman decided 14 — 2 unsure, 2 waiting for you")
-        XCTAssertEqual(Copy.armedChip, "Watchman · Sleep since 01:40")
+        XCTAssertEqual(Copy.armedChip, "Watchman · since 01:40")
         XCTAssertEqual([Copy.takeBack, Copy.handTo], ["Take back", "Hand to Watchman"])
         XCTAssertEqual(Copy.armAnalytics, "Agent analytics turned on — Watchman learns from your sessions")
         XCTAssertEqual(Copy.armHistory, "Learning from your history: ~1 850 decisions, est. 1.6 M tokens")
@@ -73,8 +76,8 @@ final class WatchmanMockCopyTests: XCTestCase {
     func testTrayPanelAndInboxEntryCopy() {
         XCTAssertEqual(Copy.trayHandAll, "Hand all running sessions to Watchman")
         XCTAssertEqual(Copy.trayGoingToSleep, "Going to sleep")
-        XCTAssertEqual(Copy.trayWatchmanStatus, "Watchman · Sleep · 3 sessions")
-        XCTAssertEqual(Copy.targetArmed, "Watchman has this target · Sleep since 01:40")
+        XCTAssertEqual(Copy.trayWatchmanStatus, "Watchman · since 01:40 · 3 sessions")
+        XCTAssertEqual(Copy.targetArmed, "Watchman has this target · since 01:40")
         XCTAssertEqual(Copy.inboxWatchmanSummary, "2 waiting")
     }
 

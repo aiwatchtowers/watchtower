@@ -279,3 +279,45 @@ func TestTrustedHookAt(t *testing.T) {
 		}
 	}
 }
+
+// StoppedSince is the turn's end, or the end of the background reported
+// beside it when that came later: the 120 s grace after an agent count, the
+// shell cap after shells (the stall watch counts its 3 minutes from it).
+func TestStoppedSince(t *testing.T) {
+	t0 := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	stamp := func(at time.Time) *string { s := db.AgentStateStamp(at); return &s }
+	num := func(n int) *int { return &n }
+	waiting := "waiting"
+	base := Row{AgentState: &waiting, AgentStateAt: stamp(t0), RunStartedAt: db.AgentStateStamp(t0.Add(-time.Hour))}
+	for _, c := range []struct {
+		name string
+		edit func(r *Row)
+		want time.Time
+		ok   bool
+	}{
+		{"no background", func(*Row) {}, t0, true},
+		{"agent count lowered later", func(r *Row) {
+			r.AgentBackground, r.AgentBackgroundAt = num(0), stamp(t0.Add(time.Hour))
+		}, t0.Add(time.Hour + backgroundGrace), true},
+		{"shells reported", func(r *Row) {
+			r.AgentBackground, r.AgentBackgroundShells, r.AgentBackgroundAt = num(0), num(1), stamp(t0)
+		}, t0.Add(BackgroundShellCap), true},
+		{"background ended before the stop", func(r *Row) {
+			r.AgentBackground, r.AgentBackgroundAt = num(0), stamp(t0.Add(-time.Hour))
+		}, t0, true},
+		{"unreadable background stamp", func(r *Row) {
+			bad := "x"
+			r.AgentBackground, r.AgentBackgroundAt = num(0), &bad
+		}, t0, true},
+		{"no trusted hook", func(r *Row) { r.AgentStateAt = stamp(t0.Add(-2 * time.Hour)) }, time.Time{}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := base
+			c.edit(&r)
+			got, ok := StoppedSince(r)
+			if ok != c.ok || !got.Equal(c.want) {
+				t.Fatalf("StoppedSince = %v, %v; want %v, %v", got, ok, c.want, c.ok)
+			}
+		})
+	}
+}

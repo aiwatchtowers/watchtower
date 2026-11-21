@@ -30,7 +30,8 @@ struct WorkbenchSessionStrip: View {
                 .layoutPriority(-1)
             if let watchman = vm.watchman, vm.session(sessionID, projectID: project.id)?.kind.isAgent == true {
                 // Only an agent session can be handed over (the CLI refuses a shell).
-                WatchmanArmControl(center: watchman, scope: .session(sessionID), workbench: project.name, style: .strip)
+                WatchmanArmControl(center: watchman, scope: .session(sessionID), workbench: project.name, style: .strip,
+                                   workbenchID: project.id)
             }
             modeButton()
                 // The button never truncates; the session name and the crumbs do.

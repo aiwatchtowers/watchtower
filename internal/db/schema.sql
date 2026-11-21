@@ -4096,7 +4096,7 @@ CREATE TABLE IF NOT EXISTS watchman_items (
     workbench_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     session_id    INTEGER,
     target_id     INTEGER,
-    kind          TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard')),
+    kind          TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard','stall')),  -- 'stall': a handed agent that stopped and did not go on after 3 pings (00212)
     ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),  -- 'guard': a guard hook denial, ref_id its own number (00205)
     ref_id        INTEGER NOT NULL,
     state         TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
@@ -4132,6 +4132,20 @@ CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not
 CREATE INDEX IF NOT EXISTS idx_watchman_items_wb ON watchman_items(workbench_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_watchman_items_created ON watchman_items(created_at);
 
+-- The stall watch's count per handed session (00212), written only by the
+-- twin worker and pruned with the arming: pings since the last progress (a
+-- new ask, a finish, the worktree HEAD moved), at most 3, then a 'stall' item.
+CREATE TABLE IF NOT EXISTS watchman_stalls (
+    session_id   INTEGER PRIMARY KEY REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    stopped_at   TEXT NOT NULL,                -- RFC 3339 UTC: when the stopped state began (the turn end, or later the end of background work)
+    pings        INTEGER NOT NULL DEFAULT 0,   -- pings delivered since the last progress
+    last_ping_at TEXT,                         -- RFC 3339 UTC
+    head         TEXT NOT NULL DEFAULT '',     -- the worktree's HEAD at the last ping
+    asks_seen    INTEGER NOT NULL DEFAULT 0,   -- the session's ask count at the last ping
+    parked_at    TEXT,                         -- the stall was journalled (kind 'stall')
+    last_delivery TEXT NOT NULL DEFAULT ''     -- the last counted ping: 'submitted' or 'typed'
+);
+
 CREATE TABLE IF NOT EXISTS watchman_gaps (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,
@@ -4144,4 +4158,14 @@ CREATE TABLE IF NOT EXISTS watchman_extra_limits (
     pattern    TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (kind, pattern)
+);
+
+-- The owner's instruction for a handed session or target (00211): apart from
+-- watchman_arming, so Take back keeps it. The twin reads it only for an armed scope.
+CREATE TABLE IF NOT EXISTS watchman_instructions (
+    scope      TEXT NOT NULL CHECK (scope IN ('session','target')),
+    ref_id     INTEGER NOT NULL,          -- session or target id
+    text       TEXT NOT NULL,             -- trimmed, at most 2000 runes
+    updated_at TEXT NOT NULL,             -- RFC 3339 UTC
+    PRIMARY KEY (scope, ref_id)
 );
