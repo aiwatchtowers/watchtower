@@ -99,7 +99,8 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
                         "FloatingButtonLabel"]
         case .selection: ["SegmentedToggleStyle", "KitSegmentedPicker", "KitSegment", "segmentCapsule"]
         case .inputs: ["kit"]
-        case .display: ["Chip", "CountBadge", "OutlineTag", "MenuLabel", "SectionHeader", "TowerRowState"]
+        case .display: ["Chip", "CountBadge", "OutlineTag", "MenuLabel", "SectionHeader", "TowerRowState",
+                        "SignInWaitLine", "SignInWaitText", "SignInWaitCancel"]
         case .containers: ["card", "kitRow"]
         case .artifacts: ["ArtifactView", "ArtifactCardBody", "ArtifactRenderMode", "ArtifactEnvironment",
                           "artifactEnvironment", "ArtifactRefHooks", "ArtifactTargetButton", "ArtifactTargetButtonState",
