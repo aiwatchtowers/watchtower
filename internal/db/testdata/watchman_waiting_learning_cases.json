@@ -223,5 +223,27 @@
       {"id": 7, "workbench_id": 1, "session_id": 10, "kind": "check", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:03:00Z"}
     ],
     "want": 2
+  },
+  {
+    "name": "a stall item, queued or done, never waits for learning",
+    "workbench_id": 1,
+    "projects": [{"id": 1, "name": "acme", "folder_path": "/tmp/acme"}],
+    "terminal_sessions": [
+      {"id": 10, "project_id": 1, "kind": "claude", "claude_session_id": "uuid", "title": "New session", "folder_path": "/tmp/acme"},
+      {"id": 11, "project_id": 1, "kind": "claude", "claude_session_id": "uuid-2", "title": "New session", "folder_path": "/tmp/acme"}
+    ],
+    "owner_asks": [{"id": 1, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which store?", "status": "open"}],
+    "watchman_arming": [
+      {"scope": "session", "ref_id": 10, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"},
+      {"scope": "session", "ref_id": 11, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"}
+    ],
+    "watchman_workbenches": [{"workbench_id": 1, "enabled_at": "2026-11-20T08:00:00Z", "learned_through": null}],
+    "watchman_precedents": [],
+    "watchman_items": [
+      {"id": 1, "workbench_id": 1, "session_id": 10, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"},
+      {"id": 2, "workbench_id": 1, "session_id": 10, "kind": "stall", "ref_kind": "session", "ref_id": 10, "state": "done", "outcome": "parked", "park_reason": "The agent stopped and did not go on after 3 pings", "created_at": "2026-11-20T09:01:00Z"},
+      {"id": 3, "workbench_id": 1, "session_id": 11, "kind": "stall", "ref_kind": "session", "ref_id": 11, "state": "queued", "created_at": "2026-11-20T09:02:00Z"}
+    ],
+    "want": 1
   }
 ]

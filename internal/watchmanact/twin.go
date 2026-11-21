@@ -61,7 +61,13 @@ type TwinDeps struct {
 	// repository's default branch (GHPRBase); an error, "" or nil parks an
 	// Approve.
 	PRBase func(ctx context.Context, folder, branch string) (base, defaultBranch string, err error)
-	Clock  func() time.Time
+	// Live reads a session's live run from the session host (the same port
+	// the Answerer delivers through); nil turns the stall watch off.
+	Live func(ctx context.Context, sessionID int64) (askanswer.LiveRun, bool, error)
+	// Head reads the HEAD commit of a session's worktree folder for the
+	// stall watch's progress check; nil = GitHead over Run.
+	Head  func(ctx context.Context, folder string) (string, error)
+	Clock func() time.Time
 	// Wake asks the caller for another pass (non-blocking; nil = none): a
 	// decision ended, so a slot is free for an item left queued, or an item
 	// put back with a not_before has come due.
@@ -91,6 +97,9 @@ func NewTwin(d TwinDeps) *Twin {
 	}
 	if d.Run == nil {
 		d.Run = ExecRun
+	}
+	if d.Head == nil {
+		d.Head = GitHead(d.Run)
 	}
 	if d.After == nil {
 		d.After = func(d time.Duration, f func()) { time.AfterFunc(d, f) }

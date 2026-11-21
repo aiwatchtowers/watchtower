@@ -323,7 +323,36 @@ func TestWATCHMAN04_NothingActsOnUnarmedSession(t *testing.T) {
 				t.Fatal("Decide ran for an unarmed session")
 			}
 		})
+		// The stall watch pings no unarmed or taken-back session (spec
+		// 2026-11-21-watchman-tuning §4b), however long it has been stopped.
+		t.Run(c.name+"/no stall ping", func(t *testing.T) {
+			e := newTwinEnv(t)
+			stall := e.stallTwin()
+			c.unarm(e)
+			stall.CheckStalls(context.Background())
+			if n := e.port.delivered(); n != 0 {
+				t.Fatalf("pinged an unarmed session (%d lines)", n)
+			}
+		})
 	}
+	// The control: the same stopped session, armed, is pinged.
+	e := newTwinEnv(t)
+	e.stallTwin().CheckStalls(context.Background())
+	if n := e.port.delivered(); n != 1 {
+		t.Fatalf("armed stopped session: %d pings, want 1", n)
+	}
+}
+
+// stallTwin is a twin whose clock runs past StallAfter after the session's
+// stop (its `waiting` stamped at setup), with the live reader and a fixed
+// HEAD, for the stall watch.
+func (e *twinEnv) stallTwin() *Twin {
+	later := func() time.Time { return time.Now().Add(StallAfter + time.Minute) }
+	return NewTwin(TwinDeps{
+		DB: e.db, Answerer: askanswer.New(askanswer.Deps{DB: e.db, Sessions: e.port, Clock: later}),
+		Live: e.port.Live, Clock: later,
+		Head: func(context.Context, string) (string, error) { return "c0ffee", nil },
+	})
 }
 
 func TestTwin_ActsWhileOwnerPresent(t *testing.T) {

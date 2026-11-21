@@ -270,6 +270,33 @@ func BackgroundShells(r Row, now time.Time) int {
 	return *r.AgentBackgroundShells
 }
 
+// StoppedSince is when a session Resolve reads as stopped became stopped:
+// the stamp of its trusted hook state (the turn's end), or the end of its
+// background when that came later — backgroundGrace after the agent count's
+// report, BackgroundShellCap after it when shells were reported beside it.
+// false when no hook state of this run is trusted.
+func StoppedSince(r Row) (time.Time, bool) {
+	at, ok := db.ParseAgentStateStamp(TrustedHookAt(r))
+	if !ok {
+		return time.Time{}, false
+	}
+	if r.AgentBackground == nil || r.AgentBackgroundAt == nil {
+		return at, true
+	}
+	reported, ok := db.ParseAgentStateStamp(*r.AgentBackgroundAt)
+	if !ok {
+		return at, true
+	}
+	end := reported.Add(backgroundGrace)
+	if r.AgentBackgroundShells != nil && *r.AgentBackgroundShells > 0 {
+		end = reported.Add(BackgroundShellCap)
+	}
+	if end.After(at) {
+		at = end
+	}
+	return at, true
+}
+
 // backgroundReport is the row's agent_background_at; false when absent,
 // unreadable or in the future.
 func backgroundReport(r Row, now time.Time) (time.Time, bool) {

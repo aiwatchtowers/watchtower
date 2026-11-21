@@ -11,7 +11,9 @@ import (
 // WatchmanWaitingClause is the WHERE clause of a watchman item that waits
 // for the owner (alias-free columns): parked or handed back with no
 // feedback, or an answered handover whose next session failed to start for
-// good — and not marked done by the owner. The Desktop's
+// good — and not marked done by the owner. A stall item (the stall watch's
+// stopped agent, done/parked with no feedback) waits by the first rule until
+// Mark done. The Desktop's
 // `WatchmanItem.waitsForOwner` is the same rule on one item.
 const WatchmanWaitingClause = `state = 'done' AND owner_done_at IS NULL AND ((outcome IN ('parked', 'handed') AND feedback = '')` +
 	` OR (kind = 'handover' AND outcome = 'answered' AND error != '' AND error NOT IN ('` +

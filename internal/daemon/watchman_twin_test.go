@@ -16,9 +16,9 @@ import (
 
 // fakeTwin counts the worker's passes.
 type fakeTwin struct {
-	runs, held atomic.Int32
-	waited     atomic.Bool
-	gen        atomic.Value // the routing generation the last pass saw
+	runs, held, stalls atomic.Int32
+	waited             atomic.Bool
+	gen                atomic.Value // the routing generation the last pass saw
 }
 
 type routingGenKey struct{}
@@ -32,6 +32,7 @@ func (f *fakeTwin) RunOnce(ctx context.Context) int {
 }
 func (f *fakeTwin) Wait()                       { f.waited.Store(true) }
 func (f *fakeTwin) DeliverHeld(context.Context) { f.held.Add(1) }
+func (f *fakeTwin) CheckStalls(context.Context) { f.stalls.Add(1) }
 
 // A wait point's wake runs a pass at once — the scan queues what no writer
 // queued, then the lease — with no sync cycle; stopping waits for the items.
@@ -139,6 +140,33 @@ func TestWatchmanTwinPhase_TwinWakeRunsAPass(t *testing.T) {
 		synctest.Wait()
 		require.Equal(t, int32(1), twin.runs.Load())
 		d.wakeWatchmanTwin()
+		synctest.Wait()
+		require.Equal(t, int32(2), twin.runs.Load())
+		stop()
+	})
+}
+
+// The stall watch runs every minute on the twin's goroutine (spec
+// 2026-11-21-watchman-tuning §4b), apart from the passes: a tick is no pass.
+func TestWatchmanTwinPhase_StallTickEveryMinute(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d, _, _ := newBackfillDaemon(t)
+		twin := &fakeTwin{}
+		d.watchmanTwin = twin
+		stop := d.startWatchmanTwin(context.Background())
+		synctest.Wait()
+		require.Equal(t, int32(0), twin.stalls.Load(), "no check at start")
+		time.Sleep(watchmanStallTick - time.Second)
+		synctest.Wait()
+		require.Equal(t, int32(0), twin.stalls.Load())
+		time.Sleep(time.Second)
+		synctest.Wait()
+		require.Equal(t, int32(1), twin.stalls.Load(), "one check a minute")
+		time.Sleep(2 * watchmanStallTick)
+		synctest.Wait()
+		require.Equal(t, int32(3), twin.stalls.Load())
+		require.Equal(t, int32(1), twin.runs.Load(), "a tick runs no pass")
+		d.nudgeWatchmanTwin() // a pass still runs between the ticks
 		synctest.Wait()
 		require.Equal(t, int32(2), twin.runs.Load())
 		stop()
