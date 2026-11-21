@@ -153,7 +153,7 @@ The twin worker gets a 60 s tick for armed sessions with a live run (the session
 
 ## Mockups
 
-`docs/design/mockups/watchman-tuning/` (`DesignShotFixtures+WatchmanTuning.swift`, design only, strings pinned by `WatchmanTuningMockCopyTests`; light and dark; sample data only):
+`docs/design/mockups/watchman-tuning/` (light and dark; sample data only). After the implementation the frames are rendered from the real views (`DesignShotsTests`); only the strings that tests pin stay in `WatchmanTuningMockCopy` (`WatchmanTuningMockCopyTests`). The frames below match what ships:
 
 - [`arm-short`](../../design/mockups/watchman-tuning/arm-short-light.png) — the short sheet, empty field (placeholder); [`arm-short-filled`](../../design/mockups/watchman-tuning/arm-short-filled-light.png) — with text; [`arm-short-saving`](../../design/mockups/watchman-tuning/arm-short-saving-light.png) — busy (spinner, disabled); [`arm-short-error`](../../design/mockups/watchman-tuning/arm-short-error-light.png) — `Could not save: …` with **Retry**; [`arm-short-near-limit`](../../design/mockups/watchman-tuning/arm-short-near-limit-light.png) — a long instruction with the counter.
 - [`arm-first-time`](../../design/mockups/watchman-tuning/arm-first-time-light.png) — the first hand-over with the field and the new learning line.
@@ -170,3 +170,15 @@ The twin worker gets a 60 s tick for armed sessions with a live run (the session
 - Away mode, the phone, the sleep window as a gate (phase 3).
 - Learning from repository files (CLAUDE.md, specs' Decisions): the owner's workbench Instructions already reach the twin; a later spec if decisions show the gap.
 - Telling the agent about the session instruction (it is Watchman's brief, not the agent's).
+
+## Implementation notes
+
+Deviations from the text above, recorded in the plan ledger while the tasks landed:
+
+- The stall watch has a second park reason: `The agent stopped and Watchman could not get a ping through for 9 minutes` (`StallStuckReason`), used when the last counted ping was only typed into the prompt and no later ping gets through for `StallStuckAfter` (9 min). `StallReason` stays for three pings without progress.
+- The learning busy line has no percent when none is known: `Waiting for learning: <n> questions` (with a percent, `Waiting for learning (<p>%): <n> questions`).
+- The stall card shows **Open session** and **Mark done** on its meta line, not in a separate action row.
+- The first-time arm sheet keeps today's title and body; the instruction field sits under the body.
+- The Desktop reads `watchman_instructions` through GRDB (`WatchmanInstructionQueries.text`) for the pre-fill instead of a CLI read.
+- The 3 minutes of a stall are counted from the end of background work (`sessionstate.StoppedSince`), not from the hook's stop stamp alone.
+- A ping typed into the prompt (not submitted) also counts; a held one does not.

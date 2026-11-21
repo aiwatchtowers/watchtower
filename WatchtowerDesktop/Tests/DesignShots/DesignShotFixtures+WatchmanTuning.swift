@@ -94,7 +94,6 @@ enum WatchmanTuningMockCopy {
     static let stripLearning = "Watchman · learning 42%"
     static let instructionButton = "Instruction…"
     static let takeBack = "Take back"
-    static let tonight = "Tonight"
     static let waitingLearning = "Waiting for learning (42%): 3 questions"
     static let waitingHeader = "WAITING FOR YOU"
     static let stallTitle = "#41 Ship task 3 of the billing plan"

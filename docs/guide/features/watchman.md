@@ -17,7 +17,7 @@ kind: feature
 since: 0.29.0
 -->
 
-Watchman reads only your own decisions in one workbench: asks you answered, your comments and verdicts in diff and spec reviews, permission prompts you allowed or denied, your own lines to agents (needs **Agent analytics** on, and Start Learning turns it on), and your own commits (made with the folder's git email) and merged pull requests in the workbench folder. Automations, dismissed asks, colleagues' and agents' commits are left out. Secrets are blanked; each text is cut to 2,048 characters.
+Watchman reads your own decisions in one workbench: asks you answered, your comments and verdicts in diff and spec reviews, permission prompts you allowed or denied, your own lines to agents (needs **Agent analytics** on, and Start Learning turns it on), and your own commits (made with the folder's git email) and merged pull requests in the workbench folder. Automations, dismissed asks and others' commits are left out. Secrets are blanked.
 
 Each decision is filed under one of eight categories: design, scope, UX text, tests, code review, document review, permission and finish. Where a source does not say which, a light AI model labels it, so learning costs tokens; one it cannot place is not stored.
 
@@ -37,7 +37,7 @@ The verdict is **go** when at least three categories are strong and one is permi
 
 1. Open **Settings → Profile → Watchman** and find the workbench. It first shows an estimate: the number of decisions and labelling's token cost.
 2. Press **Start Learning**. The daemon learns the workbench in one go; the line reads "Learning… N of M".
-3. When learning is done, press **Run Backtest Now** (the daemon also reruns it weekly). The screen lists each category with its numbers, its base rate and its rating; the verdict and the cost are printed by `watchman backtest` in a terminal, which also saves a report in the workspace's `watchman` folder.
+3. When learning is done, press **Run Backtest Now** (the daemon also reruns it weekly). The screen lists each category with its numbers, its base rate and its rating; the verdict and the cost are printed by `watchman backtest` in a terminal.
 4. A run that fails shows its error with **Retry**; the last finished result stays below.
 
 ### Edit what it learned and its limits
@@ -70,11 +70,11 @@ since: 0.29.0
 
 Each hand-over takes an optional instruction Watchman follows within its limits; **Instruction…** by the chip edits it.
 
-An agent idle with nothing running is nudged after 3 minutes, three times at most, then parked.
+An agent stopped with nothing running is nudged after 3 minutes, three times at most. After the third nudge, or when none gets through for 9 minutes, it waits for you in the journal with **Open session** and **Mark done**.
 
 **Take back** stops new decisions; one already under way still finishes. On a session also handed over through its target, Take back on the strip removes only the direct hand-over.
 
-The first time on a workbench the sheet shows what turns on: Agent analytics and learning, with its estimate. Questions asked until it finishes wait for it (the journal counts them) or for you; permission prompts come to you. It warns when main is not protected on GitHub, the git guard cannot go into a repository, or a session's folder lacks Watchman's guard (Repair the workbench, restart the session). Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
+Handing over the first session on a workbench starts its learning, the same as **Start Learning**; the sheet shows what turns on and the estimate. Questions asked until it finishes wait for it (the journal counts them) or for you; permission prompts come to you. It warns when main is not protected on GitHub, the git guard cannot go into a repository, or a session's folder lacks Watchman's guard (Repair the workbench, restart the session). Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
 
 ### Read the night's journal
 <!-- learn
@@ -89,7 +89,7 @@ since: 0.29.0
 
 Everything Watchman handled lands in **Inbox → Watchman**, one night per entry, noon to noon. Home shows last night as a line like "Overnight Watchman decided 14 — 2 unsure, 2 waiting for you", which opens the journal.
 
-- **WAITING FOR YOU**: what Watchman parked for you (a hard limit, a failure, an agent idle after three nudges) or handed back because it needs your hands.
+- **WAITING FOR YOU**: what Watchman parked for you (a hard limit, a failure, a stopped agent) or handed back because it needs your hands.
 - **Decided**: each decision with what it chose, why, the earlier decisions it leaned on and its confidence (**Unsure** in this version).
 - **Checks nobody ran**: checks a session asked for that Watchman passed on.
 
@@ -115,7 +115,6 @@ since: 0.29.0
 - Finish looks thin: handover asks count as ordinary questions.
 - An agent's commit without its `Co-Authored-By` line can count as yours.
 - Your sleep window is a rough guess if you are rarely active.
-- A busy backtest is already running elsewhere.
 
 ## Related
 
