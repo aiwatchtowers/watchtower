@@ -55,6 +55,10 @@ type LearnStats struct {
 	Unlabelled int
 	Skipped    int
 	Relabelled int
+	// RelabelFailed: the relabel pass stopped on an error (logged, not
+	// returned; its rows stay pending). The daemon's learner then waits
+	// for the next cycle instead of retrying on every wake.
+	RelabelFailed bool
 }
 
 // flagNeed is which flags the labeller is asked for an item.
@@ -128,8 +132,10 @@ func Learn(ctx context.Context, d *db.DB, workbenchID int64, o LearnOptions) (Le
 		}
 		if err != nil {
 			// Never fails the pass nor touches learned_through: the
-			// backtest waits on the pending count alone. The error may
-			// quote a reply or a folder: only its fingerprint (FILES-01).
+			// backtest waits on the pending count alone; RelabelFailed
+			// tells the caller. The error may quote a reply or a folder:
+			// only its fingerprint (FILES-01).
+			st.RelabelFailed = true
 			left, _ := d.WatchmanFlagsPending(workbenchID) // best effort: the line is informational
 			log.Printf("watchman learn: %v", logredact.Errorf("workbench %d: the relabel pass stopped after %d precedents, %d left for the next cycle: %s",
 				workbenchID, n, left, logredact.Text(err.Error())))

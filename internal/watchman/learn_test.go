@@ -509,6 +509,7 @@ func TestLearn_RelabelErrorDoesNotStopSources(t *testing.T) {
 	require.NoError(t, err, "a relabel error never fails the pass")
 	assert.Equal(t, 2, st.Written)
 	assert.Zero(t, st.Relabelled)
+	assert.True(t, st.RelabelFailed, "the caller learns the relabel pass failed")
 	at, _ := learnedThrough(t, d, wb)
 	assert.Equal(t, learnT0.Format(time.RFC3339), at, "learned_through as before")
 	assert.Equal(t, 3, pendingOf(t, d, wb), "the earlier rows stay pending")

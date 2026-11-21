@@ -12,7 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/watchman"
 )
 
@@ -43,6 +45,9 @@ func (s *batchSource) Next(_ context.Context, _ *db.DB, wb int64, cursor string,
 	}
 	if s.stuck {
 		return nil, cursor, false, nil // no progress: the pass ends, the workbench still learning
+	}
+	if i >= s.total {
+		return nil, cursor, true, nil // caught up
 	}
 	if s.after != nil {
 		defer s.after(i + 1)
@@ -211,6 +216,45 @@ func TestWatchmanLearner_WakeAndCycleRunPasses(t *testing.T) {
 		stop()
 		stopWakes()
 	})
+}
+
+// failingLabelGen fails every label call while fail is set.
+type failingLabelGen struct {
+	fail  atomic.Bool
+	calls atomic.Int32
+}
+
+func (g *failingLabelGen) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	g.calls.Add(1)
+	if g.fail.Load() {
+		return "", nil, "", errors.New("provider limit")
+	}
+	return `[{"category": "scope", "decision": true, "parked": false}]`, &digest.Usage{}, "", nil
+}
+
+// A relabel batch that fails (Learn only logs it) is a failed pass too: a
+// wake skips the workbench, the next cycle retries the relabel.
+func TestLearner_RelabelFailureRetriedOnNextCycleOnly(t *testing.T) {
+	d, database, wb, src, _ := learnerEnv(t, 1)
+	gen := &failingLabelGen{}
+	gen.fail.Store(true)
+	prev := watchmanGeneratorFactory
+	watchmanGeneratorFactory = func(*config.Config) digest.Generator { return gen }
+	t.Cleanup(func() { watchmanGeneratorFactory = prev })
+	seedDesignPrecedents(t, database, wb) // five unflagged asks for the relabel pass
+
+	d.runWatchmanLearner(context.Background(), true)
+	require.Equal(t, int32(1), src.calls.Load(), "the sources are done")
+	failed := gen.calls.Load()
+	require.Positive(t, failed, "the relabel pass called the labeller")
+	require.True(t, stillLearning(t, database, wb), "relabel still pending")
+
+	d.runWatchmanLearner(context.Background(), false) // a wake
+	assert.Equal(t, failed, gen.calls.Load(), "a wake skips the workbench")
+
+	gen.fail.Store(false)
+	d.runWatchmanLearner(context.Background(), true) // the next cycle
+	assert.False(t, stillLearning(t, database, wb), "relabelled on the cycle")
 }
 
 // A workbench whose pass failed is retried on the next cycle, not on a

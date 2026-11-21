@@ -106,7 +106,8 @@ func (d *Daemon) runWatchmanLearner(ctx context.Context, cycle bool) {
 // pool (watchmanTwinGenerator, one call at a time), so a busy cycle never
 // times a batch out waiting for a slot. Done, the twin is nudged: the
 // questions that waited for the learning are leased now. ok is false when
-// the pass failed (not on a shutdown, a pause or a held lock).
+// the pass failed — a source or the relabel pass (LearnStats.RelabelFailed)
+// — not on a shutdown, a pause or a held lock.
 func (d *Daemon) learnWorkbench(ctx context.Context, wb int64, allowed func() bool) (ok bool) {
 	unlock, locked, err := watchman.TryLearnLock(d.config.WorkspaceDir(), wb)
 	if err != nil {
@@ -132,6 +133,8 @@ func (d *Daemon) learnWorkbench(ctx context.Context, wb int64, allowed func() bo
 			err = nil
 		case err != nil:
 			d.logger.Printf("watchman learner: workbench %d: %v, retried next cycle", wb, err) // source errors are fingerprinted (FILES-01)
+			ok = false
+		case st.RelabelFailed: // logged by Learn
 			ok = false
 		}
 		return pipelineRunStats{items: st.Written + st.Relabelled, err: err}
