@@ -49,8 +49,9 @@ package protocol ConnectServiceDriving: AnyObject {
 package protocol ConnectCompanyDriving: ConnectServiceDriving {
     /// The `company_draft` read as JSON (`ConnectCompanyDraft`). The
     /// controller re-encodes it through `ConnectCompanyDraft`, so a key the
-    /// shape does not name (a secret) never leaves.
-    func draftView() -> Data
+    /// shape does not name (a secret) never leaves. It reads the stored
+    /// draft first; a draft it cannot read is an error, never an empty one.
+    func draftView() async -> Result<Data, ConnectDriverError>
     func saveDraft(vendor: String, fields: [String: String]) async -> Result<Void, ConnectDriverError>
     /// `company check <vendor>`; a Google or Atlassian check opens a sign-in.
     /// Success is `ConnectCompanyChecked`.
@@ -77,6 +78,10 @@ package protocol ConnectSecretConfirming: AnyObject {
     /// The customer's answer to that card: yes runs the change and returns
     /// the verb's JSON; no drops it (nothing changed, the result is unused).
     func answerSecretConfirm(kind: String, yes: Bool) async -> Result<Data, ConnectDriverError>
+    /// The card went unanswered (the run ended, the step timed out, or the
+    /// read finished after the run ended): drop what waits on it (the token,
+    /// the shown changes). A no-op when nothing waits.
+    func secretConfirmDropped(kind: String)
 }
 
 /// A driver that can check Slack Live (`slack live probe --provider <p> --json`).
@@ -212,14 +217,23 @@ package struct ConnectPending: Codable, Equatable, Sendable {
 
 /// `company_draft`'s read (Go `CompanyDraft`): no secret, only whether each is set.
 package struct ConnectCompanyDraft: Codable, Equatable, Sendable {
+    /// One vendor: its non-secret values, whether its secret is set, whether
+    /// its check passed for these values or the customer skipped it; Slack
+    /// (no check) says instead whether its app is `ready` on this Mac.
     package struct Vendor: Codable, Equatable, Sendable {
         package var clientID: String?
+        package var tenantID: String?
         package var site: String?
         package let clientSecretSet: Bool
+        package let checked: Bool
+        package let skipped: Bool
+        /// Absent for every vendor but Slack (Go `*bool`).
+        package var ready: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
         private enum CodingKeys: String, CodingKey {
-            case site
+            case site, checked, skipped, ready
             case clientID = "client_id"
+            case tenantID = "tenant_id"
             case clientSecretSet = "client_secret_set"
         }
     }

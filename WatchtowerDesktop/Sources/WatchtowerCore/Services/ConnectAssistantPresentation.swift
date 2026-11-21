@@ -242,7 +242,8 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
         case .slackPKCE:
             ("Turn on PKCE for the Slack app?", "This can't be undone.")
         case let .slackUpdate(changes, pkce):
-            ("Update the company's Slack app?", slackUpdateDetail(changes, pkce: pkce))
+            (changes.isEmpty ? "No changes; adopt this app?" : "Update the company's Slack app?",
+             slackUpdateDetail(changes, pkce: pkce))
         case .ownGoogleClient:
             ("Use your own Google project to sign in?", "Watchtower will trust the client you created.")
         case .quickConnection(let name):

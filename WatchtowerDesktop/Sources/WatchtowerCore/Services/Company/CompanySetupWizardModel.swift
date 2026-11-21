@@ -1035,6 +1035,52 @@ package final class CompanySetupWizardModel {
         return String(id)
     }
 
+    // MARK: The connect assistant's Slack step (agent connect spec §5.4, F3 relaxed)
+
+    /// The Slack step's first run with the token in `slackToken`: a create,
+    /// or the read of the app the settings link named. Only on the Slack
+    /// step's token form; false when nothing started.
+    package func startSlackStep() -> Bool {
+        guard current == .vendor(.slack), phase(.slack) == .create, slackDiff == nil, slackProblem == nil,
+              !slack.isRunning else { return false }
+        startSlackRun()
+        return slack.isRunning
+    }
+
+    /// **Update the app** for exactly the app and changes the customer
+    /// confirmed in the panel; false (nothing runs) when the Slack step no
+    /// longer shows that diff (the page moved on, or another run replaced it).
+    package func updateSlackApp(appID: String, lines: [String]) -> Bool {
+        guard current == .vendor(.slack), let diff = slackDiff, diff.appID == appID, diff.lines == lines,
+              !slack.isRunning else { return false }
+        startSlackRun()
+        return slack.isRunning
+    }
+
+    /// The assistant's Slack step ended without an update (declined, or the
+    /// card dropped): the token goes, and a shown diff with it; the step
+    /// opens at its choice again. A running Slack run keeps its own copy.
+    package func abandonSlackStep() {
+        slackToken = ""
+        guard slackAttempt, !slack.isRunning else { return }
+        slackAttempt = false
+        slackConfirming = false
+        slack.resetForm()
+        phases[.slack] = nil
+        if current == .vendor(.slack) { enter(current) }
+    }
+
+    /// The company name from the connect assistant, kept in the draft like
+    /// a check's: before any check stored the company (no slug) it becomes
+    /// the draft's name; once stored, the name is fixed and the new one is
+    /// only Publish's display name (as the page's Company name field).
+    package func setCompanyName(_ name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        touched = true
+        publishName = name
+        if draft.slug.isEmpty { draft.company = name }
+    }
+
     private func startSlackRun() {
         let token = slackToken.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty, !slack.isRunning else { return }

@@ -59,7 +59,7 @@ final class CompanyConnectDriverTests: XCTestCase {
 
     func testDraftViewNeverCarriesSecrets() async throws {
         let (driver, _) = await resume(bothSecrets)
-        let view = driver.draftView()
+        let view = try await driver.draftView().get()
         let text = Self.text(view)
         XCTAssertFalse(text.contains("google-sample-secret"))
         XCTAssertFalse(text.contains("atlassian-sample-secret"))
@@ -87,7 +87,8 @@ final class CompanyConnectDriverTests: XCTestCase {
 
         _ = await driver.submitSecret(kind: "atlassian_client_secret", value: "atlassian-new-secret")
         XCTAssertEqual(wizard.draft.atlassian?.clientSecret, "atlassian-new-secret")
-        XCTAssertFalse(Self.text(driver.draftView()).contains("new-secret"))
+        let read = await driver.draftView()
+        XCTAssertFalse(Self.text(read).contains("new-secret"))
 
         let unknown = await driver.submitSecret(kind: "imap_password", value: "x")
         XCTAssertEqual(unknown, .failure(.badArgs("kind imap_password is not a company secret")))
@@ -109,7 +110,7 @@ final class CompanyConnectDriverTests: XCTestCase {
 
         // A field typed on the sheet shows in the panel's read.
         wizard.setField(.linear, .clientID, "lin_client_1")
-        let draft = try JSONDecoder().decode(ConnectCompanyDraft.self, from: driver.draftView())
+        let draft = try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
         XCTAssertEqual(draft.vendors["linear"]?.clientID, "lin_client_1")
         XCTAssertEqual(draft.company, "Acme")
     }
@@ -168,7 +169,7 @@ final class CompanyConnectDriverTests: XCTestCase {
         let create = cli.calls(["slack", "app", "create"]).first
         XCTAssertEqual(create?.input, token + "\n", "the token on stdin only")
         XCTAssertFalse(create?.args.contains(token) ?? true)
-        let draft = try? JSONDecoder().decode(ConnectCompanyDraft.self, from: driver.draftView())
+        let draft = try? JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
         XCTAssertEqual(draft?.vendors["slack"]?.clientID, "1111.2222", "the Client ID comes from the setup record")
     }
 
@@ -216,6 +217,106 @@ final class CompanyConnectDriverTests: XCTestCase {
         XCTAssertFalse(wizard.slackAppReady)
         let late = await driver.answerSecretConfirm(kind: "slack_config_token", yes: true)
         XCTAssertEqual(late, .failure(.failed(Driver.updateGone)))
+    }
+
+    /// The update card was up while the customer moved the wizard: yes
+    /// updates nothing and never presses another step's action.
+    func testApprovalAfterWizardMovedRunsNothing() async {
+        let cli = CompanyScriptedCLI()
+        let (driver, wizard) = make(cli)
+        _ = await driver.saveDraft(vendor: "slack", fields: ["settings_link": "https://api.slack.com/apps/A0ACME"])
+        cli.on(["slack", "app", "adopt"], [confirmApp])
+        _ = await driver.submitSecret(kind: "slack_config_token", value: token)
+        wizard.goTo(.services)
+        let calls = cli.calls.count
+        let answer = await driver.answerSecretConfirm(kind: "slack_config_token", yes: true)
+        XCTAssertEqual(answer, .failure(.failed(Driver.updateGone)))
+        XCTAssertEqual(cli.calls.count, calls, "no adopt, no Publish, no save")
+        XCTAssertEqual(wizard.current, .services)
+        XCTAssertEqual(wizard.slackToken, "", "the token goes")
+        XCTAssertNil(driver.secretConfirm(kind: "slack_config_token"))
+    }
+
+    func testDroppedCardClearsTokenAndDiff() async {
+        let cli = CompanyScriptedCLI()
+        let (driver, wizard) = make(cli)
+        _ = await driver.saveDraft(vendor: "slack", fields: ["settings_link": "https://api.slack.com/apps/A0ACME"])
+        cli.on(["slack", "app", "adopt"], [confirmApp])
+        _ = await driver.submitSecret(kind: "slack_config_token", value: token)
+        XCTAssertEqual(wizard.slackToken, token)
+        XCTAssertNotNil(wizard.slackDiff)
+        driver.secretConfirmDropped(kind: "slack_config_token")
+        XCTAssertEqual(wizard.slackToken, "")
+        XCTAssertNil(wizard.slackDiff)
+        XCTAssertNil(driver.secretConfirm(kind: "slack_config_token"))
+        XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).count, 1)
+    }
+
+    func testLinkOfAnotherAppWhileOneIsReadyIsRefused() async {
+        let cli = CompanyScriptedCLI()
+        cli.setups = acmeSetup
+        let (driver, wizard) = await resume(publishDraft, checked: ["atlassian"], cli: cli)
+        XCTAssertTrue(wizard.slackAppReady)
+        let other = await driver.saveDraft(vendor: "slack", fields: ["settings_link": "https://api.slack.com/apps/A0OTHER"])
+        XCTAssertEqual(Self.error(other), .failed(Driver.otherSlackApp("A0ACME")))
+        XCTAssertEqual(wizard.draft.slack.appID, "A0ACME")
+        XCTAssertEqual(wizard.current, .publish, "the page did not move")
+        let same = await driver.saveDraft(vendor: "slack", fields: ["settings_link": "https://api.slack.com/apps/A0ACME"])
+        XCTAssertNil(Self.error(same))
+    }
+
+    func testCompanyNameKeptInTheDraft() async {
+        let cli = CompanyScriptedCLI()
+        let (driver, wizard) = make(cli)
+        _ = await driver.saveDraft(vendor: "linear", fields: ["company": "Acme"])
+        XCTAssertEqual(wizard.draft.company, "Acme")
+        XCTAssertEqual(savedDrafts(cli).last?["company"] as? String, "Acme", "a restart keeps it")
+
+        // Once a check stored the company, its name is fixed: the new one is Publish's display name only.
+        let (stored, storedWizard) = await resume(publishDraft)
+        _ = await stored.saveDraft(vendor: "slack", fields: ["company": "Acme Corp"])
+        XCTAssertEqual(storedWizard.draft.company, "Acme")
+        XCTAssertEqual(storedWizard.publishName, "Acme Corp")
+    }
+
+    func testUnreadableDraftIsAnError() async {
+        let cli = CompanyScriptedCLI()
+        cli.on(["company", "draft", "show"], [], exit: 1)
+        let (driver, _) = make(cli)
+        let read = await driver.draftView()
+        XCTAssertEqual(Self.error(read), .failed(CompanySetupWizardModel.draftReadFailed))
+    }
+
+    func testRefusedSaveChangesNothing() async {
+        let cli = CompanyScriptedCLI()
+        let (driver, wizard) = await resume(bothSecrets, cli: cli)
+        cli.hold(["company", "check", "google"])
+        let check = Task { await driver.check(vendor: "google") }
+        await cli.waitFor(["company", "check", "google"])
+        let saves = cli.calls(["company", "draft", "save"]).count
+        let busy = await driver.saveDraft(vendor: "google", fields: ["company": "Other", "deny_hosts": "a.example.com",
+                                                                     "client_id": "new-client"])
+        XCTAssertEqual(Self.error(busy), .busy)
+        XCTAssertEqual(wizard.publishName, "Acme")
+        XCTAssertEqual(wizard.draft.denyHosts, [])
+        XCTAssertEqual(cli.calls(["company", "draft", "save"]).count, saves)
+        cli.release(["company", "check", "google"], [#"{"result":"network","message":"offline"}"#])
+        _ = await check.value
+    }
+
+    func testDraftReadCarriesTenantChecksAndSlackReady() async throws {
+        let cli = CompanyScriptedCLI()
+        cli.setups = acmeSetup
+        let draft = #"{"company":"Acme","services":["slack","linear","microsoft"],"step":"publish","#
+            + #""slack":{"app_id":"A0ACME"},"microsoft":{"client_id":"ms-client","tenant_id":"acme-tenant"},"#
+            + #""linear":{"client_id":"lin_client_1"},"skipped":["linear"]}"#
+        let (driver, _) = await resume(draft, checked: ["microsoft"], cli: cli)
+        let read = try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
+        XCTAssertEqual(read.vendors["microsoft"]?.tenantID, "acme-tenant")
+        XCTAssertEqual(read.vendors["microsoft"]?.checked, true)
+        XCTAssertEqual(read.vendors["linear"]?.skipped, true)
+        XCTAssertEqual(read.vendors["slack"]?.ready, true)
+        XCTAssertNil(read.vendors["microsoft"]?.ready, "ready is Slack's alone")
     }
 
     func testSlackProblemIsTheWizardsLine() async {

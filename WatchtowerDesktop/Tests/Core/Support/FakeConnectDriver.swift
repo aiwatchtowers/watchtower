@@ -171,7 +171,7 @@ class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
         confirms["company_publish"] = .companyPublish(company: "Acme")
     }
 
-    func draftView() -> Data { draft }
+    func draftView() async -> Result<Data, ConnectDriverError> { .success(draft) }
 
     func saveDraft(vendor: String, fields: [String: String]) async -> Result<Void, ConnectDriverError> { .success(()) }
 
@@ -213,6 +213,33 @@ final class FakeConfirmingCompanyDriver: FakeCompanyDriver, ConnectSecretConfirm
         confirmAnswers.append(yes)
         secretConfirms[kind] = nil
         return .success(Data(#"{"result":"ok"}"#.utf8))
+    }
+
+    private(set) var dropped: [String] = []
+
+    func secretConfirmDropped(kind: String) {
+        dropped.append(kind)
+    }
+
+    /// The next submitted secret's read waits until `releaseSubmit`.
+    var holdSubmit = false
+    private var heldSubmit: CheckedContinuation<Void, Never>?
+    var isSubmitting: Bool { heldSubmit != nil }
+
+    func releaseSubmit() {
+        heldSubmit?.resume()
+        heldSubmit = nil
+    }
+
+    override func submitSecret(kind: String, value: String) async -> Result<Data, ConnectDriverError> {
+        if holdSubmit {
+            holdSubmit = false
+            await withCheckedContinuation {
+                heldSubmit = $0
+                changed()
+            }
+        }
+        return await super.submitSecret(kind: kind, value: value)
     }
 }
 

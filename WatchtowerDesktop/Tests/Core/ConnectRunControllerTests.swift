@@ -284,6 +284,76 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(company.confirmAnswers, [true, false], "the driver hears the decline and drops the update")
     }
 
+    /// The update card up: a held `request_secret` and the card, after the token went in.
+    private func updateCardUp(_ company: FakeConfirmingCompanyDriver, _ controller: ConnectRunController) async
+        -> Task<String, Never> {
+        let held = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
+        await clock.sleepers(1)
+        company.secretConfirms["slack_config_token"] = .slackUpdate(changes: [], pkce: false)
+        controller.sendSecret("xoxe-sample")
+        await untilObserved { controller.pendingCard == .confirm(.slackUpdate(changes: [], pkce: false)) }
+        return held
+    }
+
+    func testUpdateCardBlocksOtherCards() async {
+        let company = FakeConfirmingCompanyDriver()
+        let controller = makeController(company)
+        let held = await updateCardUp(company, controller)
+        let publish = await call(controller, "company_publish")
+        XCTAssertEqual(publish, "error:busy", "the customer has a card open")
+        let other = await call(controller, "request_secret", #"{"kind":"google_client_secret","label":"Secret"}"#)
+        XCTAssertEqual(other, "error:busy")
+        controller.answerConfirm(false)
+        _ = await held.value
+    }
+
+    func testRunEndDropsTheUpdateCard() async {
+        let company = FakeConfirmingCompanyDriver()
+        let controller = makeController(company)
+        let held = await updateCardUp(company, controller)
+        controller.end()
+        let answer = await held.value
+        XCTAssertEqual(answer, "error:closed")
+        XCTAssertEqual(company.dropped, ["slack_config_token"], "the driver drops the token and the shown changes")
+        XCTAssertTrue(company.confirmAnswers.isEmpty)
+    }
+
+    func testTimeoutDropsTheUpdateCard() async {
+        let company = FakeConfirmingCompanyDriver()
+        let controller = makeController(company)
+        let held = await updateCardUp(company, controller)
+        clock.advance(by: ConnectWire.waitBudget)
+        var answer = await held.value
+        // Re-calls spend the card's own budget until it times out.
+        for _ in 0...ConnectRunController.maxCallsPerStep where answer == waiting {
+            let next = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
+            await clock.sleepers(1)
+            clock.advance(by: ConnectWire.waitBudget)
+            answer = await next.value
+        }
+        XCTAssertEqual(answer, timeout)
+        XCTAssertNil(controller.pendingCard)
+        XCTAssertEqual(company.dropped, ["slack_config_token"])
+    }
+
+    func testReadFinishedAfterEndIsDropped() async {
+        let company = FakeConfirmingCompanyDriver()
+        let controller = makeController(company)
+        let held = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
+        await clock.sleepers(1)
+        company.holdSubmit = true
+        company.secretConfirms["slack_config_token"] = .slackUpdate(changes: [], pkce: false)
+        controller.sendSecret("xoxe-sample")
+        await company.until { company.isSubmitting }
+        controller.end()
+        _ = await held.value
+        let before = company.dropped.count
+        company.releaseSubmit()
+        await untilTurn { company.dropped.count > before }
+        XCTAssertEqual(company.dropped.last, "slack_config_token", "nobody can answer the card: the driver drops it")
+        XCTAssertNil(controller.pendingCard)
+    }
+
     func testCompanyPublishWithoutSlackNeedsNoToken() async {
         let company = FakeCompanyDriver()
         company.publishNeedsToken = false
@@ -398,8 +468,9 @@ final class ConnectRunControllerTests: XCTestCase {
         let company = FakeCompanyDriver()
         company.draft = Data("""
         {"company":"Acme","vendors":{
-          "google":{"client_id":"acme.apps.googleusercontent.com","client_secret":"g-secret-sample","client_secret_set":true},
-          "atlassian":{"client_id":"acme-client","site":"acme.atlassian.net","client_secret":"a-secret-sample","client_secret_set":true}}}
+          "google":{"client_id":"acme.apps.googleusercontent.com","client_secret":"g-secret-sample","client_secret_set":true,"checked":true,"skipped":false},
+          "atlassian":{"client_id":"acme-client","site":"acme.atlassian.net","client_secret":"a-secret-sample",
+            "client_secret_set":true,"checked":false,"skipped":false}}}
         """.utf8)
         let controller = makeController(company)
         let read = await call(controller, "company_draft")

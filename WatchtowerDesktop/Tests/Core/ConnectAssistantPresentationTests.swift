@@ -121,6 +121,7 @@ struct ConnectAssistantPresentationTests {
         else { Issue.record("no update card"); return }
         #expect(update.question == "Update the company's Slack app?")
         #expect(update.detail == "Add scopes: reactions:read. Turn on PKCE sign-in. PKCE can't be turned off again.")
+        #expect(same.question == "No changes; adopt this app?")
         #expect(same.detail == "Its settings already match Watchtower's.")
     }
 

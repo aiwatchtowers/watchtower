@@ -160,8 +160,12 @@ package final class ConnectRunController {
                 guard let self else { return }
                 // The verb only read so far (the company Slack update): the
                 // customer confirms its changes on the same step.
-                if case .success = sent, !ended, cardStep === step, step.outcome == nil,
-                   let confirm = (driver as? any ConnectSecretConfirming)?.secretConfirm(kind: kind) {
+                if case .success = sent, let confirming = driver as? any ConnectSecretConfirming,
+                   let confirm = confirming.secretConfirm(kind: kind) {
+                    guard !ended, cardStep === step, step.outcome == nil else {
+                        // The run ended or the step timed out during the read: nobody can answer.
+                        return confirming.secretConfirmDropped(kind: kind)
+                    }
                     step.resetBudget()
                     pendingCard = .confirm(confirm)
                     return
@@ -169,6 +173,13 @@ package final class ConnectRunController {
                 finish(step, Self.sent(sent))
             }
         }
+    }
+
+    /// A secret step leaves without its confirm answered: the driver drops
+    /// what waits on it (a no-op when nothing does).
+    private func dropSecretConfirm(_ step: Step) {
+        guard case let .secret(kind) = step.purpose, let confirming = driver as? any ConnectSecretConfirming else { return }
+        confirming.secretConfirmDropped(kind: kind)
     }
 
     /// The confirm card a secret's verb asked for: yes runs the change, no
@@ -196,6 +207,7 @@ package final class ConnectRunController {
         pendingCard = nil
         waitingStep = nil
         flowStep?.work?.cancel()  // only the wait on the flow, never the flow
+        if let card = cardStep { dropSecretConfirm(card) }
         for step in [cardStep, flowStep, checkStep].compactMap(\.self) {
             step.wakeAll(.closed)
         }
@@ -457,7 +469,12 @@ package final class ConnectRunController {
     private func companyCall(_ tool: String, _ args: [String: Any], _ company: any ConnectCompanyDriving) async -> Reply {
         switch tool {
         case "company_draft":
-            guard let rawFields = args["fields"] else { return Self.draftRead(company.draftView()) }
+            guard let rawFields = args["fields"] else {
+                switch await company.draftView() {
+                case let .success(view): return Self.draftRead(view)
+                case let .failure(error): return Self.reply(error)
+                }
+            }
             guard let vendor = args["vendor"] as? String, let fields = rawFields as? [String: String] else {
                 return .error(.badArgs, "company_draft save needs a vendor and string fields")
             }
@@ -582,11 +599,14 @@ package final class ConnectRunController {
             return reply
         }
         // The run shows the error with Retry: no card stays open behind it.
+        let cardShowing = pendingCard != nil
         pendingCard = nil
-        if let card = cardStep, card !== step, card.work == nil {  // still unanswered
+        if let card = cardStep, card !== step, cardShowing {  // still unanswered
             finish(card, reply)
             _ = consume(card)
+            dropSecretConfirm(card)
         }
+        if step === cardStep { dropSecretConfirm(step) }
         let abandonedFlow = step === flowStep ? step.flowID : nil
         if step === flowStep || step === checkStep {
             step.work?.cancel()
