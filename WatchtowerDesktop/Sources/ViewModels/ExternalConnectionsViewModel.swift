@@ -46,13 +46,17 @@ final class ExternalConnectionsViewModel {
     /// The running `connections import` command (`cancelImport()` cancels it).
     private var importTask: Task<Data, Error>?
     private var authProcess: Process?
+    /// The CLI the sign-in runs (tests pass a stand-in script).
+    private let cliPath: () -> String?
 
     init(dbPool: DatabasePool,
          makeRunner: @escaping () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() },
-         importSignIn: ((ExternalConnection) async -> Void)? = nil) {
+         importSignIn: ((ExternalConnection) async -> Void)? = nil,
+         cliPath: @escaping () -> String? = Constants.findCLIPath) {
         self.dbPool = dbPool
         self.makeRunner = makeRunner
         self.importSignIn = importSignIn
+        self.cliPath = cliPath
     }
 
     // MARK: - Refresh
@@ -429,18 +433,20 @@ final class ExternalConnectionsViewModel {
     /// `authProcess` so `cancelSignIn()` can terminate it while this awaits.
     /// Structural copy of `SlackAccountsViewModel.runAuthFlow`.
     private func runAuthFlow(args: [String], failurePrefix: String) async {
+        // Reset before the guards: a sign-in that never starts was not
+        // cancelled, and an earlier one's Cancel must not hide its error.
+        lastSignInCancelled = false
         guard !isBusy else {
             error = "Another operation is already in progress."
             return
         }
-        guard let cliPath = Constants.findCLIPath() else {
+        guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
             return
         }
 
         isBusy = true
         error = nil
-        lastSignInCancelled = false
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)

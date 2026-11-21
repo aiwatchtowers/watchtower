@@ -382,6 +382,9 @@ final class JiraAccountsViewModel {
     private func runAuthFlow(
         args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy, picksSite: Bool = false
     ) async -> AuthFlowEnd {
+        // A flow that never starts wrote nothing: reset before the guards,
+        // so an early return leaves no earlier flow's success behind.
+        lastAuthFlowWroteAccount = false
         guard !isConnecting else {
             error = "Another connection is already in progress."
             return .finished
@@ -395,7 +398,6 @@ final class JiraAccountsViewModel {
         error = nil
         lastAuthFlowCancelled = false
         lastAuthFlowTimedOut = false
-        lastAuthFlowWroteAccount = false
         siteChoiceDeclined = false
         siteAnswered = false
 

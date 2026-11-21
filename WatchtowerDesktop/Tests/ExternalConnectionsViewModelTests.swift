@@ -12,6 +12,36 @@ final class ExternalConnectionsViewModelTests: XCTestCase {
         return manager.dbPool
     }
 
+    // MARK: - sign-in flags
+
+    /// A sign-in turned away as busy was not cancelled: an earlier sign-in's
+    /// Cancel must not stand next to the busy error (the connect driver
+    /// would report the Cancel instead).
+    func testBusySignInAfterACancelledOneIsNotCancelled() async throws {
+        let pool = try makePool()
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO external_connections (id, name, kind, url) VALUES (1, 'notes', 'http', 'https://notes.example.com/mcp')")
+        }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let cli = dir.appendingPathComponent("watchtower")
+        try "#!/bin/sh\nexit 15\n".write(to: cli, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+        let vm = ExternalConnectionsViewModel(dbPool: pool, makeRunner: { FakeCLIRunner() }, cliPath: { cli.path })
+        await vm.refreshAsync()
+        let row = try XCTUnwrap(vm.connections.first)
+
+        await vm.signIn(row)
+        XCTAssertTrue(vm.lastSignInCancelled, "exit 15 is a Cancel")
+        XCTAssertNil(vm.error)
+
+        vm.isBusy = true
+        await vm.signIn(row)
+        XCTAssertEqual(vm.error, "Another operation is already in progress.")
+        XCTAssertFalse(vm.lastSignInCancelled)
+    }
+
     // MARK: - refresh
 
     func testRefreshPopulatesConnectionsFromDB() async throws {

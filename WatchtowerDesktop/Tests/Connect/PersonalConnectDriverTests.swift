@@ -645,6 +645,9 @@ final class PersonalConnectDriverTests: XCTestCase {
         XCTAssertEqual(cancelled, .failed(reason: "the sign-in was cancelled: docs is added but not signed in"))
         let reloadFailed = try await outcome(signInError: nil, cancels: false)
         XCTAssertEqual(reloadFailed, .failed(reason: reloadError))
+        // A cancel flag still standing next to a real error: the error wins.
+        let busy = try await outcome(signInError: "Another operation is already in progress.", cancels: true)
+        XCTAssertEqual(busy, .failed(reason: "Another operation is already in progress."))
     }
 
     func testQuickConnectionCancelDuringAddOpensNoSignIn() async throws {

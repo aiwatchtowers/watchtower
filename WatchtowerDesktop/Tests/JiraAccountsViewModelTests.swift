@@ -415,6 +415,29 @@ extension JiraAccountsViewModelTests {
         XCTAssertFalse(interrupted.lastAuthFlowWroteAccount)
     }
 
+    /// The early returns ("already in progress", "CLI not found") start no
+    /// flow: an earlier flow's success does not stand for them.
+    func testEarlyReturnsLeaveNoEarlierSuccessBehind() async throws {
+        let pool = try makePool()
+        var path: String? = "/usr/bin/true"
+        let vm = JiraAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter()) { path }
+        await vm.addAccount(daemonPolicy: .deferred)
+        XCTAssertTrue(vm.lastAuthFlowWroteAccount)
+
+        vm.isConnecting = true
+        await vm.addAccount(daemonPolicy: .deferred)
+        XCTAssertEqual(vm.error, "Another connection is already in progress.")
+        XCTAssertFalse(vm.lastAuthFlowWroteAccount)
+        vm.isConnecting = false
+
+        await vm.addAccount(daemonPolicy: .deferred)
+        XCTAssertTrue(vm.lastAuthFlowWroteAccount)
+        path = nil
+        await vm.addAccount(daemonPolicy: .deferred)
+        XCTAssertEqual(vm.error, "Watchtower CLI not found")
+        XCTAssertFalse(vm.lastAuthFlowWroteAccount)
+    }
+
     // MARK: - Board step (#572)
 
     func testBoardStepRestartsOnceAfterTheStepUnderRestart() async throws {
