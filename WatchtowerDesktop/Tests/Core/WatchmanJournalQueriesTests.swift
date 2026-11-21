@@ -328,6 +328,31 @@ final class WatchmanJournalQueriesTests: XCTestCase {
         XCTAssertEqual(WatchmanJournalCopy.stallTitle(waiting), "Session 41")
     }
 
+    /// A stall whose session is being deleted (PROJ-17: `delete_requested_at`
+    /// set) reads as gone too: the item stays, with no title and no session.
+    func testStallWithSessionBeingDeleted() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let wb = try TestDatabase.insertWorkbench(db, name: "acme-api")
+            try db.execute(sql: """
+                INSERT INTO terminal_sessions (id, project_id, kind, claude_session_id, title, folder_path,
+                    delete_requested_at)
+                VALUES (41, ?, 'claude', 'uuid-41', 'Ship task 3 of the billing plan', '/tmp/acme',
+                        '2026-11-16T02:00:00Z')
+                """, arguments: [wb])
+            try db.execute(sql: """
+                INSERT INTO watchman_items (workbench_id, session_id, kind, ref_kind, ref_id, state, outcome,
+                    question, park_reason, created_at)
+                VALUES (?, 41, 'stall', 'session', 41, 'done', 'parked', '',
+                        'The agent stopped and did not go on after 3 pings', '2026-11-16T01:14:00Z')
+                """, arguments: [wb])
+        }
+        let waiting = try XCTUnwrap(nights(queue).first?.waiting.first, "the item stays")
+        XCTAssertFalse(waiting.sessionExists)
+        XCTAssertEqual(waiting.sessionTitle, "")
+        XCTAssertEqual(WatchmanJournalCopy.stallTitle(waiting), "Session 41")
+    }
+
     /// The observation covers the tables the Desktop writes that the
     /// journal reads: an ask answered here, a session renamed or deleted.
     func testObservedTables() {
