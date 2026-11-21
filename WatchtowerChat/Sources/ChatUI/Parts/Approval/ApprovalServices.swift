@@ -115,9 +115,10 @@ public struct ChatApprovalServices {
     public var approveAll: ((_ turnID: String) -> Void)?
     /// Re-consents a Slack account whose token lacks the send grant; says how it ended.
     public var reconnectSlack: ((Int64) async -> SlackReconnectOutcome)?
-    /// What the card draws in place of Reconnect Slack while its sign-in waits for the browser: the Mac's waiting line,
-    /// whose Cancel ends the sign-in (`reconnectSlack` then returns `.cancelled`). Nil keeps a spinner by the button.
-    public var reconnectSlackWaiting: (() -> AnyView)?
+    /// What the card draws in place of Reconnect Slack while its sign-in for an account waits for the browser: the
+    /// Mac's waiting line, whose Cancel ends that account's sign-in (`reconnectSlack` then returns `.cancelled`). Nil
+    /// keeps a spinner by the button.
+    public var reconnectSlackWaiting: ((Int64) -> AnyView)?
     /// Follows an applied action to what it produced, in the app (`AgentActionDestination`); nil hides **Open →**.
     public var openDestination: ((AgentActionDestination) -> Void)?
     /// A session-applied call: whether the live chat session that proposed it still waits on it. Nil: it does not.
@@ -140,7 +141,7 @@ public struct ChatApprovalServices {
         dismiss: ((ChatAgentAction) -> Void)? = nil,
         approveAll: ((_ turnID: String) -> Void)? = nil,
         reconnectSlack: ((Int64) async -> SlackReconnectOutcome)? = nil,
-        reconnectSlackWaiting: (() -> AnyView)? = nil,
+        reconnectSlackWaiting: ((Int64) -> AnyView)? = nil,
         openDestination: ((AgentActionDestination) -> Void)? = nil,
         sessionHoldsCall: ((ChatAgentAction) -> Bool)? = nil,
         title: ((ChatAgentAction) -> String?)? = nil,

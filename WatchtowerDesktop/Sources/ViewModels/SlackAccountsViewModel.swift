@@ -20,10 +20,10 @@ final class SlackAccountsViewModel {
     /// when none is, or the waiting one is a new workspace (`slack add`).
     /// Its row shows the waiting line with Cancel in place of Re-login.
     private(set) var signInAccountID: Int?
-    /// The browser sign-in that returned last was ended by `cancelConnect`
-    /// and wrote nothing. Read right after `relogin` returns, it tells a
-    /// Cancel from a sign-in that ran to its end (`AppState.reconnectSlack`).
-    @ObservationIgnored private(set) var lastRunCancelled = false
+    /// Test seams: the Re-login route's `slack accounts --json` read, and a
+    /// hold between the sign-in child's exit and its completion.
+    @ObservationIgnored var routeDocumentRead: (() async -> Result<SlackAccountsDocument, RouteReadError>)?
+    @ObservationIgnored var afterAuthExit: (() async -> Void)?
     /// The last account read failed; nil once one succeeds. Only the read:
     /// an action's failure stays in `error` (the Connections tab's
     /// "Couldn't read accounts" reads this).
@@ -169,9 +169,10 @@ final class SlackAccountsViewModel {
     /// Connects a new Slack workspace via `watchtower slack add --app-return`.
     /// The OAuth consent happens in the loopback browser; the detached Process
     /// is held in `authProcess` so `cancelConnect()` can terminate it mid-flow.
-    func addAccount(daemonPolicy: DaemonRestartPolicy = .restart) async {
-        await runAuthFlow(args: Self.addArgs, accountID: nil, failurePrefix: "Connect failed",
-                          daemonPolicy: daemonPolicy)
+    @discardableResult
+    func addAccount(daemonPolicy: DaemonRestartPolicy = .restart) async -> SignInOutcome {
+        guard let mine = beginAttempt(accountID: nil) else { return .failed(error ?? "") }
+        return await runAuthFlow(mine, args: Self.addArgs, failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
     }
 
     // MARK: - Re-login
@@ -186,44 +187,60 @@ final class SlackAccountsViewModel {
     /// without the CLI, where Re-login keeps `slack login`.
     @ObservationIgnored weak var connectFlow: SlackConnectFlowModel?
 
+    /// How one sign-in attempt ended, as its own caller sees it — never read
+    /// off the VM's shared state, which a newer attempt may own by then.
+    enum SignInOutcome: Equatable {
+        /// The built-in sign-in ran to its end.
+        case signedIn
+        /// The sign-in continues on the connect flow (`.flow`) or its connect
+        /// section (`.connectSection`).
+        case handedOff(SlackReloginRoute)
+        /// The owner cancelled it; nothing to show.
+        case cancelled
+        /// Nothing started, or the sign-in failed: why (also in `error`).
+        case failed(String)
+    }
+
     /// Re-consents `account` by its route in `slack accounts --json` (plan B
     /// A7): the build's own app re-runs `watchtower slack login --account <id>
     /// --app-return`; a workspace app goes through the connect flow on the
     /// Desktop's running listener (a `slack login` would bind 18551, which
     /// that listener holds); no app to sign in with opens the connect section.
-    /// Returns the route taken; nil when nothing started (`error` says why).
+    /// The attempt is cancellable from its start, the route read included.
     @discardableResult
-    func relogin(_ account: SlackAccount) async -> SlackReloginRoute? {
+    func relogin(_ account: SlackAccount) async -> SignInOutcome {
+        guard let mine = beginAttempt(accountID: account.id) else { return .failed(error ?? "") }
+        let loginArgs = Self.loginArgs(for: account)
         guard let flow = connectFlow else {
-            await runAuthFlow(args: Self.loginArgs(for: account), accountID: account.id,
-                              failurePrefix: "Re-login failed", daemonPolicy: .restart)
-            return .builtin
+            return await runAuthFlow(mine, args: loginArgs, failurePrefix: "Re-login failed", daemonPolicy: .restart)
         }
+        let read = await readRoute(accountID: Int64(account.id))
+        guard isCurrent(mine) else { return await cancelledAttemptEnded() }
         let route: SlackReloginRoute
-        switch await reloginRoute(accountID: Int64(account.id)) {
+        switch read {
         case let .failure(failure):
-            error = failure.message
-            return nil
+            return failAttempt(failure.message)
         case let .success(found):
             route = found
         }
         guard route == .builtin else {
-            guard flow.reconnect(route) else {
-                error = "Another connection is already in progress."
-                return nil
-            }
+            endAttempt()
+            guard flow.reconnect(route) else { return failAttempt("Another connection is already in progress.") }
             error = nil // handed off: an earlier failure no longer applies
-            return route
+            return .handedOff(route)
         }
         // One flow at a time: the built-in sign-in waits for the connect flow
         // and a company chain (#1887) too.
         guard !flow.isRunning, !flow.companyRunning() else {
-            error = "Another connection is already in progress."
-            return nil
+            return failAttempt("Another connection is already in progress.")
         }
-        await runAuthFlow(args: Self.loginArgs(for: account), accountID: account.id,
-                          failurePrefix: "Re-login failed", daemonPolicy: .restart)
-        return route
+        return await runAuthFlow(mine, args: loginArgs, failurePrefix: "Re-login failed", daemonPolicy: .restart)
+    }
+
+    private func failAttempt(_ message: String) -> SignInOutcome {
+        endAttempt()
+        error = message
+        return .failed(message)
     }
 
     /// The route of account `accountID` from `slack accounts --json`, or why
@@ -232,11 +249,18 @@ final class SlackAccountsViewModel {
     func reloginRoute(accountID: Int64) async -> Result<SlackReloginRoute, RouteReadError> {
         guard !isConnecting else { return .failure(RouteReadError("Another connection is already in progress.")) }
         isConnecting = true
+        let result = await readRoute(accountID: accountID)
+        isConnecting = false
+        return result
+    }
+
+    /// Reads account `accountID`'s route; the read is the freshest answer, so
+    /// the row's button follows it.
+    private func readRoute(accountID: Int64) async -> Result<SlackReloginRoute, RouteReadError> {
         flagReads += 1
         let read = flagReads
-        let result = await readAccountsDocument()
-        isConnecting = false
-        // The route's read is the freshest answer: the row's button follows it.
+        let result: Result<SlackAccountsDocument, RouteReadError>
+        if let routeDocumentRead { result = await routeDocumentRead() } else { result = await readAccountsDocument() }
         if case let .success(doc) = result { applyFlags(doc, read: read) }
         return result.map { SlackReloginRoute.route(accountID: accountID, in: $0) }
     }
@@ -251,24 +275,6 @@ final class SlackAccountsViewModel {
     /// a finished `slack login` does (onboarding defers the restart).
     func connectFlowWroteAccount(daemonPolicy: DaemonRestartPolicy) {
         applyResult((0, "", ""), failurePrefix: "", daemonPolicy: daemonPolicy)
-    }
-
-    /// Ends the waiting browser sign-in at once and silently: the busy state
-    /// resets here, no error is set, and the run's own completion, finding
-    /// another process (or none) current, writes nothing.
-    func cancelConnect() {
-        if let process = authProcess, process.isRunning {
-            process.terminate()
-        }
-        authProcess = nil
-        isConnecting = false
-        signInAccountID = nil
-    }
-
-    /// The waiting line's texts for account `id`'s row; nil when its
-    /// sign-in is not the one waiting.
-    func signInWait(forAccount id: Int) -> SignInWaitCopy? {
-        signInAccountID == id ? .slack : nil
     }
 
     // MARK: - Enable / Disable
@@ -325,29 +331,24 @@ final class SlackAccountsViewModel {
 
     // MARK: - Flow helpers
 
-    /// Browser-consent flow (`add`/`login`) — holds the detached Process in
-    /// `authProcess` so `cancelConnect()` can terminate it while this awaits.
-    /// `accountID` is the account a `login` re-consents (nil for `add`).
+    /// Browser-consent flow (`add`/`login`) of attempt `mine`, already
+    /// begun (`beginAttempt`): holds the detached Process in `authProcess`
+    /// so a Cancel can terminate it while this awaits.
     ///
-    /// A run `cancelConnect` ended finds another process (or none) current:
-    /// its state was reset by the Cancel and a newer run may own it, so it
-    /// touches nothing, except wiring in an account change that finished
-    /// before the Cancel landed (the Jira precedent).
+    /// An attempt a Cancel ended is no longer current: its state was reset by
+    /// the Cancel and a newer attempt may own it, so it touches nothing but a
+    /// refresh-only re-read of the accounts (whatever the CLI saved before it
+    /// was killed shows) — except an account change that finished before the
+    /// Cancel landed, wired in like a finished one (the Jira precedent).
     private func runAuthFlow(
-        args: [String], accountID: Int?, failurePrefix: String, daemonPolicy: DaemonRestartPolicy
-    ) async {
-        lastRunCancelled = false
-        guard !isConnecting else {
-            error = "Another connection is already in progress."
-            return
-        }
+        _ mine: Int, args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy
+    ) async -> SignInOutcome {
         guard let cliPath = cliPath() else {
+            endAttempt()
             error = "Watchtower CLI not found"
-            return
+            return .failed("Watchtower CLI not found")
         }
-
-        isConnecting = true
-        signInAccountID = accountID
+        signInAccountID = attempt?.accountID
         error = nil
 
         let process = Process()
@@ -357,39 +358,101 @@ final class SlackAccountsViewModel {
         authProcess = process
 
         // The login environment is awaited with the flow already shown as
-        // running (Cancel visible); a Cancel or a newer attempt meanwhile
-        // drops this launch.
+        // running (Cancel visible); a Cancel meanwhile drops this launch.
         process.environment = await loginEnvironment()
-        guard authProcess === process else {
-            lastRunCancelled = true
-            return
-        }
+        guard isCurrent(mine) else { return await cancelledAttemptEnded() }
 
         // A Cancel that landed while the launch was under way found nothing
         // running to terminate: stop the child as soon as it exists.
         let onLaunch: @Sendable (Process) -> Void = { [weak self] launched in
             Task { @MainActor in
-                if self?.authProcess !== launched { launched.terminate() }
+                if self?.isCurrent(mine) != true { launched.terminate() }
             }
         }
         let result = await ProcessPipes.run(process, onLaunch: onLaunch).trimmed
-        guard authProcess === process else {
-            // It may still have finished before the Cancel landed: the
-            // account change happened, so wire it in like a finished one.
-            guard result.exitCode == 0 else {
-                lastRunCancelled = true
-                return
-            }
-            lastRunCancelled = false
-            refresh()
+        await afterAuthExit?()
+        guard isCurrent(mine) else {
+            guard result.exitCode == 0 else { return await cancelledAttemptEnded() }
+            await refreshAsync()
             daemonRestartTask = daemonPolicy.apply(using: daemon)
-            return
+            return .signedIn
         }
-        lastRunCancelled = false
+        endAttempt()
+        applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
+        switch result.exitCode {
+        case 0: return .signedIn
+        case 15, 9: return .cancelled // SIGTERM/SIGKILL from outside: no error shown
+        default: return .failed(error ?? "\(failurePrefix) (exit \(result.exitCode))")
+        }
+    }
+
+    // MARK: - Sign-in attempts
+
+    /// One sign-in (`addAccount`, `relogin`) from its start to its end: what
+    /// a Cancel ends. `accountID` is the account a Re-login re-consents.
+    private struct Attempt {
+        let id: Int
+        let accountID: Int?
+    }
+
+    @ObservationIgnored private var attempt: Attempt?
+    @ObservationIgnored private var attempts = 0
+
+    /// Starts an attempt and marks the VM connecting; nil (with `error` set)
+    /// when another command runs.
+    private func beginAttempt(accountID: Int?) -> Int? {
+        guard !isConnecting else {
+            error = "Another connection is already in progress."
+            return nil
+        }
+        attempts += 1
+        attempt = Attempt(id: attempts, accountID: accountID)
+        isConnecting = true
+        return attempts
+    }
+
+    private func isCurrent(_ mine: Int) -> Bool {
+        attempt?.id == mine
+    }
+
+    /// The current attempt ended: the VM is idle again.
+    private func endAttempt() {
+        attempt = nil
         authProcess = nil
         isConnecting = false
         signInAccountID = nil
-        applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
+    }
+
+    /// The end of an attempt a Cancel ended: a refresh-only re-read of the
+    /// accounts, never a daemon restart.
+    private func cancelledAttemptEnded() async -> SignInOutcome {
+        await refreshAsync()
+        return .cancelled
+    }
+
+    /// Ends the current sign-in attempt at once and silently: the busy state
+    /// resets here, no error is set, and the attempt's own completion, no
+    /// longer current, only re-reads the accounts. Nothing to cancel (no
+    /// attempt, or a management command running) leaves the state as it is.
+    func cancelConnect() {
+        guard attempt != nil else { return }
+        if let process = authProcess, process.isRunning {
+            process.terminate()
+        }
+        endAttempt()
+    }
+
+    /// Cancels the attempt re-consenting account `accountID` only (an agent
+    /// card's Cancel); another Slack sign-in on this VM keeps running.
+    func cancelConnect(accountID: Int) {
+        guard attempt?.accountID == accountID else { return }
+        cancelConnect()
+    }
+
+    /// The waiting line's texts for account `id`'s row; nil when its
+    /// sign-in is not the one waiting.
+    func signInWait(forAccount id: Int) -> SignInWaitCopy? {
+        signInAccountID == id ? .slack : nil
     }
 
     /// Non-browser management command (`enable`/`disable`/`remove`) — a plain

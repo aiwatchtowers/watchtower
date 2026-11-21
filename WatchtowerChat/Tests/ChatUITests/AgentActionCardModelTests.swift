@@ -224,9 +224,14 @@ final class AgentActionCardModelTests: XCTestCase {
         var withoutLine = ChatApprovalServices()
         withoutLine.reconnectSlack = { _ in .cancelled }
         var withLine = withoutLine
-        withLine.reconnectSlackWaiting = { AnyView(Text("waiting")) }
-        XCTAssertNotNil(AgentActionCard.reconnectWaitLine(reconnecting: true, services: withLine))
-        XCTAssertNil(AgentActionCard.reconnectWaitLine(reconnecting: false, services: withLine))
-        XCTAssertNil(AgentActionCard.reconnectWaitLine(reconnecting: true, services: withoutLine))
+        var asked: [Int64] = []
+        withLine.reconnectSlackWaiting = { id in
+            asked.append(id)
+            return AnyView(Text("waiting"))
+        }
+        XCTAssertNotNil(AgentActionCard.reconnectWaitLine(reconnecting: true, accountID: 7, services: withLine))
+        XCTAssertEqual(asked, [7], "the line is the card's own account's")
+        XCTAssertNil(AgentActionCard.reconnectWaitLine(reconnecting: false, accountID: 7, services: withLine))
+        XCTAssertNil(AgentActionCard.reconnectWaitLine(reconnecting: true, accountID: 7, services: withoutLine))
     }
 }

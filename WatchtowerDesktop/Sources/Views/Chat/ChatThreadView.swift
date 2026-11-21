@@ -97,7 +97,7 @@ struct ChatThreadView: View {
         let chatVM = chatVM
         return .mac(feed: chatVM.actionFeed, highlighted: { chatVM.reviewedActionIDs.contains($0.id) },
                     reconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
-                    cancelReconnectSlack: { appState.cancelCardSlackSignIn() },
+                    cancelReconnectSlack: { appState.cancelCardSlackSignIn(accountID: $0) },
                     sessionHolds: chatVM.holdsSessionCall)
     }
 }

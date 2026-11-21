@@ -414,7 +414,8 @@ struct SlackConnectionDetail: View {
             }
             Spacer()
             Circle()
-                .fill(slackAccountStatusColor(account))
+                // Grey while its sign-in waits (the row-waiting mockup).
+                .fill(signInWait == nil ? slackAccountStatusColor(account) : Tone.status("gray"))
                 .frame(width: IconSize.stateDot, height: IconSize.stateDot)
                 .help(accountStatusHelp(account))
             Toggle("Enabled", isOn: Binding(
@@ -427,7 +428,7 @@ struct SlackConnectionDetail: View {
             .controlSize(.mini)
             .disabled(vm.isConnecting || account.isPurged)
             if let signInWait {
-                SignInWaitCancel(cancelTitle: signInWait.cancelTitle) { vm.cancelConnect() }
+                SignInWaitCancel(cancelTitle: signInWait.cancelTitle) { vm.cancelConnect(accountID: account.id) }
             } else if let action = status?.action {
                 // A company's account: Re-login runs through the company's app; a
                 // changed or unknown app asks for the company's code (A20: Slack's
