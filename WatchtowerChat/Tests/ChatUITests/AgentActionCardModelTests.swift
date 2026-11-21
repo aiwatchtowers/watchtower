@@ -233,4 +233,21 @@ final class AgentActionCardModelTests: XCTestCase {
         XCTAssertNil(AgentActionCard.reconnectWaitLine(accountID: 7, services: withLine), "ended: the button again")
         XCTAssertNil(AgentActionCard.reconnectWaitLine(accountID: 7, services: withoutLine))
     }
+
+    /// #2132 S2: while the card's sign-in waits, the waiting line is its one action — the decision row (Retry) is
+    /// hidden, and comes back when the wait ends; a card whose account has no running sign-in keeps it.
+    func testWaitingSignInHidesTheDecisionRow() {
+        let scope = action(tool: SlackSendProposal.tool, args: Self.slackArgs, status: "failed",
+                           error: "not granted — " + SlackSendProposal.scopeHint)
+        var services = ChatApprovalServices(retry: { _ in }, reconnectSlack: { _ in .cancelled })
+        var running: Set<Int64> = [3]
+        services.reconnectSlackWaiting = { id in running.contains(id) ? AnyView(Text("waiting")) : nil }
+        XCTAssertTrue(AgentActionCard.signInWaits(scope, services: services))
+        running = []
+        XCTAssertFalse(AgentActionCard.signInWaits(scope, services: services), "ended: Retry again")
+        running = [3]
+        XCTAssertFalse(AgentActionCard.signInWaits(action(), services: services), "a card with no Slack account to reconnect")
+        services.reconnectSlack = nil
+        XCTAssertFalse(AgentActionCard.signInWaits(scope, services: services), "no Reconnect Slack on this screen")
+    }
 }

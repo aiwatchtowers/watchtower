@@ -286,6 +286,38 @@ final class SlackSignInCancelTests: XCTestCase {
         _ = await run.value
     }
 
+    /// The waiting row in Connections → Slack: the two lines under its name and Cancel alone in its trailing slot
+    /// (no Enabled switch, Rename… or Remove), as the row-waiting mockup; Cancel ends the sign-in and the row's
+    /// controls come back.
+    func testWaitingRowShowsOnlyCancel() async throws {
+        let rig = try makeRig()
+        let appState = AppState.isolated()
+        let path = rig.stub.path
+        appState.initSlackAccounts(dbPool: rig.pool) { path }
+        let vm = try XCTUnwrap(appState.slackAccountsViewModel)
+        vm.loginEnvironment = { [:] }
+        await vm.refreshAsync()
+        let account = try XCTUnwrap(vm.accounts.first)
+        func pane() -> some View {
+            SlackConnectionDetail(config: appState.sharedConfig, flow: appState.slackAuthFlow).environment(appState)
+        }
+        XCTAssertNoThrow(try pane().inspect().find(button: "Rename…"))
+
+        let run = Task { await vm.relogin(account) }
+        let live = try await rig.stub.started(1, unlessEnded: run)
+        let waiting = try pane().inspect()
+        XCTAssertNoThrow(try waiting.find(text: SignInWaitCopy.slack.line))
+        XCTAssertThrowsError(try waiting.find(button: "Rename…"))
+        XCTAssertThrowsError(try waiting.find(button: "Remove"))
+        XCTAssertThrowsError(try waiting.find(ViewType.Toggle.self) { try $0.labelView().text().string() == "Enabled" })
+        try waiting.find(button: SignInWaitCopy.slack.cancelTitle).tap()
+        XCTAssertFalse(vm.isConnecting)
+
+        await live.exited()
+        _ = await run.value
+        XCTAssertNoThrow(try pane().inspect().find(button: "Rename…"))
+    }
+
     func testAddWaitsWithoutARow() async throws {
         let rig = try makeRig()
         let vm = rig.vm

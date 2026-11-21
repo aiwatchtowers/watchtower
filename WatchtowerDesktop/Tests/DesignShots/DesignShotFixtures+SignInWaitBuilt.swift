@@ -26,8 +26,15 @@ enum SignInWaitBuiltShots {
         case chatCard = "chat-card"
         case wizardCheck = "wizard-check"
 
-        /// A zero height means "as tall as the content".
-        var size: NSSize { NSSize(width: self == .narrow ? 420 : 680, height: 0) }
+        /// A zero height means "as tall as the content". The Jira pane scrolls, so its shot keeps the top: the
+        /// sites and Add an account (the sections below read the live CLI, which a test process has none of).
+        var size: NSSize {
+            switch self {
+            case .narrow: NSSize(width: 420, height: 0)
+            case .jiraRow: NSSize(width: 680, height: 300)
+            default: NSSize(width: 680, height: 0)
+            }
+        }
     }
 
     static var shots: [DesignShot] { Frame.allCases.map(shot) }

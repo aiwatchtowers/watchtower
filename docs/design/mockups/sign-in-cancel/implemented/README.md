@@ -18,17 +18,15 @@ The Google places G1–G4 (account row, Connect Google Calendar, the Calendar ba
 
 ## What matches
 
-Every place shows the spinner, the line and the hint from `SignInWaitCopy`, and a visible **Cancel**. A waiting row's dot is grey, never red. The place's own start button (Re-login, Sign in again, Grant Confluence access, Connect, Connect the rest) is gone or disabled while the sign-in waits.
+Every place shows the spinner, the line and the hint from `SignInWaitCopy`, and a visible **Cancel**. A waiting row's dot is grey, never red. A waiting row (Slack, Jira, Quick Connections) shows only the spinner and Cancel in its trailing slot, as the mockup does; the place's own start button (Re-login, Sign in again, Grant Confluence access, Connect, Connect the rest) is gone or disabled while the sign-in waits. **Remove** is red on the Slack, Jira, Google and Quick Connections rows, as in the mockups. The chat card shows no Retry while its sign-in waits; Retry comes back when the wait ends.
 
 ## Differences from the mockups, and why
 
-- **Slack row keeps its controls.** The Slack row shows **Cancel** after its **Enabled** switch and keeps **Rename…** and **Remove**, disabled; the mockup's waiting row shows only Cancel. Jira and Quick Connections hide the row's other controls, as the mockup does. The disabled controls are the connector's existing "busy" state, which the spec keeps.
-- **Remove is blue on Slack and Jira.** The mockups now draw **Remove** red (`KitQuietButtonStyle(label: Tone.error)`), as Quick Connections does; the Slack and Jira rows still use the plain quiet style.
-- **Slack at 420 pt.** Cancel stays visible, as the spec asks, but the row's trailing controls (dot, Enabled switch, Cancel, Rename…, Remove) leave the title column a few characters wide: the workspace name, its domain and the two waiting lines wrap almost word by word. The mockup row, with only Cancel in its trailing slot, wraps cleanly.
-- **Chat card keeps Retry.** The failed send's card shows **Retry** under the waiting line; the mockup draws no Retry. Retry is the card's own action and was there before.
+- **The other row at 420 pt.** The waiting Slack row reads normally at 420 pt. The idle row above it keeps its Enabled switch, Reconnect, Rename… and Remove, which leave its domain line a few characters wide (`acme.s lack.-com`); that is the row's idle layout, not the waiting state, and the mockup draws no idle row at this width.
 - **Confluence puts the line first.** The waiting line sits at the top of the section, above the consent text, so it stays when a reload switches the section's content; the mockup draws it under the explanation.
 - **Own Google project and the wizard check are whole steps.** They show the step's guide and the dropped client file above the line, and **Connect** disabled; the mockups draw the line on its own.
 - **Company card** shows **Connect the rest** disabled at the trailing edge, which the mockup leaves out.
+- **The Jira shot is cropped** to the sites and Add an account: the sections below read the live CLI, which the shots' test process does not have.
 
 Render them again with:
 

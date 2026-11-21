@@ -128,6 +128,13 @@ public struct AgentActionCard: View {
         services.reconnectSlackWaiting.flatMap { $0(accountID) }
     }
 
+    /// Whether the screen's Reconnect Slack sign-in for this card's account waits in the browser: the card then shows
+    /// the waiting line and hides its decision row (Retry) until the wait ends.
+    static func signInWaits(_ action: ChatAgentAction, services: ChatApprovalServices) -> Bool {
+        guard let accountID = reconnectAccount(action, services: services) else { return false }
+        return reconnectWaitLine(accountID: accountID, services: services) != nil
+    }
+
     /// The shared human name (`ActionToolCatalog`) — the same words the Inbox cheat sheet and Settings use.
     static func title(for action: ChatAgentAction) -> String {
         ActionToolCatalog.title(for: action.tool)
@@ -231,7 +238,11 @@ public struct AgentActionCard: View {
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("agentAction.slackMessage")
             }
-            decision(connector: connector)
+            // While the card's Reconnect Slack waits in the browser, its waiting line is the one action: no Retry
+            // under it until the wait ends (the chat-card-waiting mockup).
+            if !Self.signInWaits(action, services: services) {
+                decision(connector: connector)
+            }
         }), outlined: outlined)
     }
 
