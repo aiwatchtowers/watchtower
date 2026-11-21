@@ -15,8 +15,9 @@ struct ConnectAssistantPanel: View {
 
     let presentation: ConnectAssistantPresentation
     let lines: [ConnectAssistantLine]
-    var harnesses: [ConnectAssistantHarness] = ConnectAssistantHarness.allCases
-    var onHarness: (ConnectAssistantHarness) -> Void = { _ in }
+    /// The offered harnesses (`ConnectHarnessCatalog.offered`), for the header's picker.
+    var harnesses: [ConnectHarness] = []
+    var onHarness: (ConnectHarness) -> Void = { _ in }
     var onAction: (ConnectAssistantPresentation.Action) -> Void = { _ in }
     /// The secret card's value: handed to the Desktop flow, never to the chat.
     var onSecret: (String) -> Void = { _ in }

@@ -2,6 +2,7 @@ import AppKit
 import DesignKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
 /// The connect assistant spec's entry points beyond the overview (#2133,
@@ -15,10 +16,10 @@ enum ConnectAssistantScreenFixtures {
     static var shots: [DesignShot] {
         [
             DesignShot(name: "connect-detail-add-account", size: NSSize(width: 860, height: 0)) {
-                AnyView(GoogleDetailAgentMock(harness: .claude))
+                AnyView(GoogleDetailAgentMock(harness: .fixture("claude")))
             },
             DesignShot(name: "connect-onboarding-step", size: NSSize(width: 860, height: 0)) {
-                AnyView(OnboardingConnectAgentMock(harness: .claude))
+                AnyView(OnboardingConnectAgentMock(harness: .fixture("claude")))
             }
         ]
     }
@@ -38,7 +39,7 @@ private struct AgentConnectButton: View {
 /// Design only: the Google detail pane with two accounts and **Add an
 /// account** offering the assistant beside today's Google buttons.
 private struct GoogleDetailAgentMock: View {
-    let harness: ConnectAssistantHarness
+    let harness: ConnectHarness
 
     private typealias Pres = CompanyConnectionsPresentation
 
@@ -105,7 +106,7 @@ private struct GoogleDetailAgentMock: View {
 /// source row and today's **Connect** second; **Continue** stays the one
 /// prominent button.
 private struct OnboardingConnectAgentMock: View {
-    let harness: ConnectAssistantHarness
+    let harness: ConnectHarness
 
     private static let sources: [(letter: String, title: String, subtitle: String)] = [
         ("S", "Slack", "Messages, mentions, threads · for work communication"),

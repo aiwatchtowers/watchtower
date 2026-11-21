@@ -2,6 +2,7 @@ import AppKit
 import DesignKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
 /// The connect assistant spec's mockups (#2133,
@@ -37,7 +38,8 @@ enum ConnectAssistantShotFixtures {
             Line(.assistant, "I'll connect Slack with you. Start?"), Line(.customer, "Start"), created
         ]),
         ("busy", slack(.busy), []),
-        ("narrow", Pres(service: "Slack", harness: .codex, mode: .browser, browserAvailable: false, state: .empty), []),
+        ("narrow", Pres(service: "Slack", harness: .fixture("codex"), mode: .browser, browserAvailable: false,
+                        state: .empty), []),
         ("secret", slack(.secret(label: "Slack configuration token")), [
             created,
             Line(.assistant, "Copy the configuration token shown on the page into the field below. "
@@ -56,7 +58,7 @@ enum ConnectAssistantShotFixtures {
     ]
 
     private static func slack(_ state: ConnectAssistantState) -> Pres {
-        Pres(service: "Slack", harness: .claude, mode: .browser, state: state)
+        Pres(service: "Slack", harness: .fixture("claude"), mode: .browser, state: state)
     }
 
     private static var panelShots: [DesignShot] {
@@ -89,11 +91,11 @@ enum ConnectAssistantShotFixtures {
     /// The overview with the assistant open on Google, in the panel slot on the right.
     private static func overview() -> some View {
         HStack(spacing: 0) {
-            ConnectOverviewAgentMock(summaries: summaries, harness: .claude)
+            ConnectOverviewAgentMock(summaries: summaries, harness: .fixture("claude"))
                 .detailBackground()
             Rectangle().fill(.separator).frame(width: Stroke.hairline)
             ConnectAssistantPanel(
-                presentation: Pres(service: "Google", harness: .claude, mode: .browser, state: .empty), lines: [])
+                presentation: Pres(service: "Google", harness: .fixture("claude"), mode: .browser, state: .empty), lines: [])
         }
         .controlSize(.small)
     }
@@ -104,7 +106,7 @@ enum ConnectAssistantShotFixtures {
 /// banner and the Companies zone, today's **Connect** beside it.
 private struct ConnectOverviewAgentMock: View {
     let summaries: [ConnectionSummary]
-    let harness: ConnectAssistantHarness
+    let harness: ConnectHarness
 
     private typealias Company = CompanyConnectionsPresentation
 

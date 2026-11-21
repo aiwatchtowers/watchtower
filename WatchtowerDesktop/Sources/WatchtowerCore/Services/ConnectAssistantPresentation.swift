@@ -1,18 +1,5 @@
 import Foundation
 
-/// The harness the connect assistant runs on (agent connect spec §5.2):
-/// the base harness from onboarding, switchable among the allowed ones.
-package enum ConnectAssistantHarness: String, CaseIterable, Sendable {
-    case claude, codex
-
-    package var name: String {
-        switch self {
-        case .claude: "Claude"
-        case .codex: "Codex"
-        }
-    }
-}
-
 /// Whether the agent drives the browser itself or tells the customer each step (§5.2).
 package enum ConnectAssistantMode: Equatable, Sendable {
     case browser
@@ -27,6 +14,8 @@ package enum ConnectAssistantFailure: Equatable, Sendable {
     case quota
     /// The harness CLI is not installed or does not start.
     case harnessMissing
+    /// The customer did not finish a browser step within the run's wait.
+    case timedOut
 }
 
 /// A step only the customer may press (§5.3, §5.4): the model cannot.
@@ -152,15 +141,16 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
 
     /// - Parameters:
     ///   - service: the connector's display name ("Slack").
-    ///   - browserAvailable: false when the harness cannot drive the browser (no extension, §10 S1/S3);
-    ///     the panel then runs in words only.
+    ///   - browserAvailable: false when the harness's browser is not detected (no extension, §10 S1);
+    ///     the panel then runs in words only. A harness whose capability is not `.browser` never has one.
     package init(
         service: String,
-        harness: ConnectAssistantHarness,
+        harness: ConnectHarness,
         mode: ConnectAssistantMode,
         browserAvailable: Bool = true,
         state: ConnectAssistantState
     ) {
+        let browserAvailable = browserAvailable && harness.capability == .browser
         let words = mode == .words || !browserAvailable
         title = "Connect \(service)"
         self.harness = harness.name
@@ -208,25 +198,27 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
         self.actions = actions
     }
 
-    package static func modeLine(harness: ConnectAssistantHarness, words: Bool) -> String {
+    package static func modeLine(harness: ConnectHarness, words: Bool) -> String {
         words ? "I'll tell you each step" : "Using \(harness.name) in Chrome"
     }
 
     /// The secret card's footnote: the value never reaches the model (§5.3, §6).
-    package static func secretFootnote(_ harness: ConnectAssistantHarness) -> String {
+    package static func secretFootnote(_ harness: ConnectHarness) -> String {
         "Goes straight to Watchtower — \(harness.name) doesn't see it"
     }
 
-    private static func noBrowser(_ harness: ConnectAssistantHarness) -> String {
-        switch harness {
-        case .claude: "Claude in Chrome isn't connected, so I can't use your browser."
-        case .codex: "Codex can't use your browser yet."
+    /// Why the run is in words: a browser harness whose browser is not
+    /// detected, or a harness that cannot drive one.
+    private static func noBrowser(_ harness: ConnectHarness) -> String {
+        switch harness.capability {
+        case .browser: "\(harness.name) in Chrome isn't connected, so I can't use your browser."
+        case .words, .none: "\(harness.name) can't use your browser yet."
         }
     }
 
     private static func failure(
         _ failure: ConnectAssistantFailure,
-        harness: ConnectAssistantHarness,
+        harness: ConnectHarness,
         service: String
     ) -> String {
         switch failure {
@@ -237,6 +229,8 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
             return "\(harness.name) has reached its usage limit. Retry later or switch the assistant above."
         case .harnessMissing:
             return "\(harness.name) isn't installed on this Mac. Switch the assistant above or set up by hand."
+        case .timedOut:
+            return "I stopped waiting after 15 minutes. Press Retry when you're ready."
         }
     }
 

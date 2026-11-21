@@ -74,3 +74,20 @@ package extension BackgroundAIConsentCopy.Agent {
         return Self(name: row.display_name, subscription: row.subscription)
     }
 }
+
+/// The connect assistant's harnesses as the fixture catalog offers them:
+/// the Go-written rows' display names and `connect` column, every provider
+/// ready and allowed, never a Swift copy of the table.
+package extension ConnectHarness {
+    @MainActor
+    static func fixture(_ id: String) -> Self {
+        let providers = ProviderCatalogFixture.providers()
+        let offered = ConnectHarnessCatalog.offered(
+            providers: providers, allowed: nil, ready: Set(providers.map(\.id)), base: id
+        ).harnesses
+        guard let harness = offered.first(where: { $0.id == id }) else {
+            fatalError("ProviderCatalogFixture: \(id) offers no connect assistant")
+        }
+        return harness
+    }
+}
