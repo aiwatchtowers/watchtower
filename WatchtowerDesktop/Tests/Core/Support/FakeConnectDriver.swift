@@ -169,6 +169,10 @@ class FakeConnectDriver: ConnectServiceDriving {
 
     func policyAllows() -> Bool { allowed }
 
+    /// `secretDestination(kind:)`'s answers, by kind.
+    var destinations: [String: String] = [:]
+    func secretDestination(kind: String) -> String? { destinations[kind] }
+
     private(set) var runEnds = 0
     func runEnded() { runEnds += 1 }
 }
@@ -189,7 +193,10 @@ class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
 
     func draftView() async -> Result<Data, ConnectDriverError> { .success(draft) }
 
-    func saveDraft(vendor: String, fields: [String: String]) async -> Result<Void, ConnectDriverError> { .success(()) }
+    func saveDraft(vendor: String, fields: [String: String]) async -> Result<Void, ConnectDriverError> {
+        saves.append(fields)
+        return .success(())
+    }
 
     var isChecking: Bool { heldCheck != nil }
 
@@ -206,13 +213,17 @@ class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
         heldCheck = nil
     }
 
-    func publish(token: String) async -> Result<Data, ConnectDriverError> {
+    /// As the real driver: publishes only the approved revision.
+    func publish(token: String, approvedRevision: String) async -> Result<Data, ConnectDriverError> {
+        guard publishRevision == approvedRevision else { return .failure(.failed("the setup changed")) }
         published.append(token)
         return .success(Data(#"{"published":true}"#.utf8))
     }
 
     var publishNeedsToken = true
     var publishBlockedReason: String?
+    var publishRevision = "draft-1"
+    private(set) var saves: [[String: String]] = []
 }
 
 /// A company driver whose Slack token first reads the app, then the panel
@@ -271,8 +282,24 @@ final class FakeProbingDriver: FakeConnectDriver, ConnectLiveProbing {
     private(set) var probes: [String] = []
     var probeResult: Result<Data, ConnectDriverError> = .success(Data(#"{"status":"ok"}"#.utf8))
 
+    /// With `holdProbe`, a probe holds (`isProbing`) until `endProbe()`.
+    var holdProbe = false
+    private var heldProbe: CheckedContinuation<Void, Never>?
+    var isProbing: Bool { heldProbe != nil }
+
+    func endProbe() {
+        heldProbe?.resume()
+        heldProbe = nil
+    }
+
     func liveProbe(provider: String) async -> Result<Data, ConnectDriverError> {
         probes.append(provider)
+        if holdProbe {
+            await withCheckedContinuation {
+                heldProbe = $0
+                changed()
+            }
+        }
         return probeResult
     }
 }

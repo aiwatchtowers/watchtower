@@ -25,10 +25,20 @@ package enum ConnectAssistantConfirm: Equatable, Sendable {
     /// The company Slack step updates an app the company already has:
     /// `changes` are the wizard's diff lines; `pkce` when one turns on PKCE.
     case slackUpdate(changes: [String], pkce: Bool)
-    case ownGoogleClient
-    case quickConnection(name: String)
-    case companyPublish(company: String)
+    /// `clientID`: the Client ID the agent read (`connect_start` `own_client`).
+    case ownGoogleClient(clientID: String)
+    /// `server`: what turning it on runs or calls, as the row stores it.
+    case quickConnection(name: String, server: ConnectAssistantServer)
+    /// `services`: the services the setup publishes, by display name.
+    case companyPublish(company: String, services: [String] = [])
     case companyReplace(company: String)
+}
+
+/// What a Quick Connection's `enable` turns on: the stdio command line it
+/// runs, or the http server it calls.
+package enum ConnectAssistantServer: Equatable, Sendable {
+    case command(String)
+    case url(String)
 }
 
 /// One state of the connect assistant panel (§7).
@@ -47,7 +57,9 @@ package enum ConnectAssistantState: Equatable, Sendable {
     /// Another connect of this service runs elsewhere.
     case busy
     /// The secure field card; `label` is the agent's (≤ 80 characters, §5.3).
-    case secret(label: String)
+    /// `destination` is where the driver sends the value, fixed when the card
+    /// opened (nil when it goes to a fixed place: the vendor or Watchtower).
+    case secret(label: String, destination: String? = nil)
     case confirm(ConnectAssistantConfirm)
     /// `accounts` is the service's connected-account count after the run.
     case done(accounts: Int, noun: ConnectAssistantAccountNoun)
@@ -113,6 +125,9 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
         /// What to close before Send on a page that shows the secret (§10,
         /// "Pages that show a secret"), e.g. "Close Google's dialog, then Send."
         package var closeFirst: String?
+        /// Where the value goes ("Sends it to imap.example.com:993 as …"),
+        /// fixed when the card opened; nil when it goes to a fixed place.
+        package var destination: String?
         package var placeholder = "Paste it here"
         package let footnote: String
         package var send = "Send"
@@ -124,6 +139,9 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
     package struct ConfirmCard: Equatable, Sendable {
         package let question: String
         package let detail: String
+        /// Exactly what the confirm applies to (the command, URL, Client ID
+        /// or services), fixed when the card opened.
+        package var subject: String?
         package let footnote: String
         package var confirm = "Confirm"
         package var cancel = Action.cancel.title
@@ -208,12 +226,13 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
         case .busy:
             status = Status(kind: .problem, text: "\(service) is already connecting in another window")
             actions = [.openIt]
-        case .secret(let label):
+        case let .secret(label, destination):
             card = .secret(SecretCard(label: label, closeFirst: secretKind.flatMap(Self.closeFirst(kind:)),
+                                      destination: destination.map(Self.secretDestination),
                                       footnote: Self.secretFootnote(harness)))
         case .confirm(let confirm):
             let (question, detail) = Self.confirm(confirm)
-            card = .confirm(ConfirmCard(question: question, detail: detail,
+            card = .confirm(ConfirmCard(question: question, detail: detail, subject: Self.confirmSubject(confirm),
                                         footnote: "Only you can press this — \(harness.name) can't."))
         case let .done(accounts, noun):
             status = Status(kind: .success, text: "\(service) is connected — \(noun.counted(accounts))")
@@ -231,6 +250,31 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
     /// The secret card's footnote: the value never reaches the model (§5.3, §6).
     package static func secretFootnote(_ harness: ConnectHarness) -> String {
         "Goes straight to Watchtower — \(harness.name) doesn't see it"
+    }
+
+    /// The secret card's destination line: the host, URL or server the
+    /// driver sends the value to, as it stood when the card opened.
+    package static func secretDestination(_ destination: String) -> String {
+        "Sends it to \(destination)"
+    }
+
+    /// A driver's destination (`secretDestination(kind:)`): a mail server.
+    package static func mailDestination(host: String, port: Int, security: String, username: String) -> String {
+        "\(host):\(port) (\(security)) as \(username)"
+    }
+
+    /// A CalDAV server.
+    package static func calendarDestination(url: String, username: String) -> String {
+        "\(url) as \(username)"
+    }
+
+    /// A Quick Connection's key: an http header or a stdio variable.
+    package static func headerDestination(header: String, url: String) -> String {
+        "the \(header) header of \(url)"
+    }
+
+    package static func variableDestination(variable: String, commandLine: String) -> String {
+        "the \(variable) variable of \(commandLine)"
     }
 
     /// The secret card's "close it first" line (§10, "Pages that show a
@@ -310,12 +354,32 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
              slackUpdateDetail(changes, pkce: pkce))
         case .ownGoogleClient:
             ("Use your own Google project to sign in?", "Watchtower will trust the client you created.")
-        case .quickConnection(let name):
-            ("Turn on the \(name) connection?", "The assistant will be able to use its tools.")
-        case .companyPublish(let company):
+        case let .quickConnection(name, .command):
+            ("Turn on the \(name) connection?",
+             "Watchtower will run this command, and the assistant will be able to use its tools.")
+        case let .quickConnection(name, .url):
+            ("Turn on the \(name) connection?",
+             "Watchtower will connect to this server, and the assistant will be able to use its tools.")
+        case let .companyPublish(company, _):
             ("Publish the setup for \(company)?", "Everyone at \(company) will see the Slack app's new About text.")
         case .companyReplace(let company):
             ("Replace the stored setup for \(company)?", "Accounts on the old apps will need to sign in again.")
+        }
+    }
+
+    /// The confirm card's subject line: exactly what the confirm applies to.
+    private static func confirmSubject(_ confirm: ConnectAssistantConfirm) -> String? {
+        switch confirm {
+        case let .ownGoogleClient(clientID):
+            "Client ID: \(clientID)"
+        case let .quickConnection(_, .command(line)):
+            "Runs: \(line)"
+        case let .quickConnection(_, .url(url)):
+            "Connects to: \(url)"
+        case let .companyPublish(_, services) where !services.isEmpty:
+            "Publishes: " + services.joined(separator: ", ")
+        case .slackPKCE, .slackUpdate, .companyPublish, .companyReplace:
+            nil
         }
     }
 

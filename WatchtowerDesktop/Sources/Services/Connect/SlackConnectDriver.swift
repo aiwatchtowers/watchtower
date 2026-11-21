@@ -354,7 +354,14 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
     /// The run ended (panel closed) while a sign-in it started still runs:
     /// the flow goes on as today's (spec §8), so its sheet and **Cancel**
     /// show again. A reopened panel still finds it through `status`/`wait`.
+    ///
+    /// A confirmed PKCE update still waiting for its token is no sign-in:
+    /// the confirm belonged to this run, so it ends with it (failed). A later
+    /// run asks the customer again, and its starts are not `busy` behind it.
     func runEnded() {
+        for (id, flow) in flows where flow.outcome == nil {
+            if case .update(running: false) = flow.kind { flows[id]?.outcome = .failed(reason: Self.updateDropped) }
+        }
         guard let flow = connectFlow, flow.startedByAssistant, flow.isRunning else { return }
         flow.handToSheet()
     }
@@ -404,7 +411,7 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
             flows[updateID]?.kind = .update(running: true)
             setup.prepareUpdate()
             setup.startAdopt(token: token, appID: nil)
-            var result = await finishRun()
+            var result = Self.hiding(token, in: await finishRun())
             let outcome = await updateOutcome(result)
             if result.result == "ok" {
                 // The update signs nobody in: connected only when an account
@@ -419,7 +426,7 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
         // The create's admin connect needs the connect flow free.
         guard !busy else { return .failure(.busy) }
         setup.startCreate(token: token)
-        return .success(Self.json(await finishRun()))
+        return .success(Self.json(Self.hiding(token, in: await finishRun())))
     }
 
     /// Waits for the run `startCreate`/`startAdopt` began and reads how it ended.
@@ -497,6 +504,15 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
         return !["false", "0"].contains(value.lowercased())
     }
 
+    /// The result with every copy of the token hidden from its text: a
+    /// problem line may quote what Slack echoed back.
+    static func hiding(_ token: String, in result: SlackConfigTokenResult) -> SlackConfigTokenResult {
+        var result = result
+        result.message = ConnectSecret.scrub(result.message, token)
+        result.workspace = result.workspace.map { ConnectSecret.scrub($0, token) }
+        return result
+    }
+
     private static func json(_ result: SlackConfigTokenResult) -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -504,6 +520,8 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
     }
 
     static let cancelled = "the sign-in was cancelled"
+    static let updateDropped = "the run ended before the configuration token came; the PKCE update needs the customer's "
+        + "confirm again (connect_start with pkce)"
     static let unknownFlow = "this Slack sign-in is no longer running; call connect_status"
     static let signInEnded = "the Slack sign-in ended without connecting"
     static let signInFailed = "Slack did not finish the sign-in"

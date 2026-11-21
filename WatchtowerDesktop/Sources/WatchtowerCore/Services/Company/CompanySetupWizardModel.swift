@@ -1369,7 +1369,10 @@ package final class CompanySetupWizardModel {
     /// Packs the bundle and writes the link to the Slack app's About page.
     /// The token goes on stdin only. Failures keep the setup (Go keeps the
     /// draft and the stored bundle).
-    package func publish(token: String?) async {
+    /// `approved` (the connect assistant's Publish card): checked right
+    /// after the draft is saved, with no suspension before the verb starts;
+    /// false publishes nothing and leaves `publishRefusal` set.
+    package func publish(token: String?, approved: (@MainActor () -> Bool)? = nil) async {
         guard publishBlockedReason == nil, publishState != .running, !discarding else { return }
         let token = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if isActive(.slack), token.isEmpty { return }
@@ -1378,6 +1381,12 @@ package final class CompanySetupWizardModel {
         publishSteps = Self.publishStepLines(slack: isActive(.slack))
         guard await saveDraft() else {
             publishState = .failed(Self.draftSaveFailed)
+            return
+        }
+        // The saved draft is what Go publishes: it must be the approved one.
+        if let approved, !approved() {
+            publishState = .ready
+            publishRefusal = Self.publishChangedLine
             return
         }
         struct Input: Encodable {

@@ -580,6 +580,21 @@ final class ConnectRunServerTests: XCTestCase {
         XCTAssertNotEqual(fcntl(fd, F_GETFL) & O_NONBLOCK, 0)
     }
 
+    /// A call that ended before it was tracked is never kept.
+    func testCallEndedBeforeTrackIsNotKept() async {
+        let peer = ConnectRunPeer(fd: -1) { _ in }
+        let done = Task<Void, Never> {}
+        await done.value
+        peer.untrack(1)
+        peer.track(done, key: 1)
+        XCTAssertEqual(peer.runningCalls, 0)
+        let held = Task<Void, Never> {}
+        peer.track(held, key: 2)
+        XCTAssertEqual(peer.runningCalls, 1)
+        peer.untrack(2)
+        XCTAssertEqual(peer.runningCalls, 0)
+    }
+
     /// Only an empty peek (EOF) or a real error is a hang-up; nothing to read
     /// yet is a live peer.
     func testHungUpOnlyOnEOF() {

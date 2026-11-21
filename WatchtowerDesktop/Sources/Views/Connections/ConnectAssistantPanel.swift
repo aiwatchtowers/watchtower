@@ -171,6 +171,12 @@ struct ConnectAssistantPanel: View {
                     .help(secretCard.dismiss)
                     .accessibilityLabel(secretCard.dismiss)
                 }
+                if let destination = secretCard.destination {
+                    Text(destination)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let closeFirst = secretCard.closeFirst {
                     Text(closeFirst)
                         .font(.caption)
@@ -196,6 +202,12 @@ struct ConnectAssistantPanel: View {
                 Text(confirmCard.question)
                     .font(.callout.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
+                if let subject = confirmCard.subject {
+                    Text(subject)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Label(confirmCard.detail, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(Tone.warning)

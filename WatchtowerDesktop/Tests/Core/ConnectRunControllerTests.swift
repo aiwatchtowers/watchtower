@@ -137,8 +137,11 @@ final class ConnectRunControllerTests: XCTestCase {
                              ("company_publish", "{}"), ("slack_live_probe", #"{"provider":"claude"}"#)] {
             _ = await call(controller, tool, args)
         }
-        // A second connect_start re-attaches to the same card.
-        let second = hold(controller, "connect_start", #"{"confirm":true}"#)
+        // A start with other options never gets this card's answer.
+        let other = await call(controller, "connect_start", #"{"confirm":true}"#)
+        XCTAssertEqual(other, "error:busy")
+        // The same connect_start again re-attaches to the same card.
+        let second = hold(controller, "connect_start", #"{"pkce":true}"#)
         try await whenHeld(second, sleepers: 2)
         XCTAssertEqual(controller.pendingCard, .confirm(.slackPKCE))
         XCTAssertTrue(driver.starts.isEmpty)
@@ -625,6 +628,147 @@ final class ConnectRunControllerTests: XCTestCase {
         }
         XCTAssertTrue(driver.fields.isEmpty)
         XCTAssertNil(controller.pendingCard)
+    }
+
+    // MARK: - What the customer approves is what runs (final review A, B2)
+
+    /// The card shows where the value goes; set_fields cannot move it while
+    /// the card is open, and fields are free again once it is answered.
+    func testSecretCardFixesItsDestination() async throws {
+        let driver = FakeConnectDriver(service: "email", secretKinds: ["imap_password"])
+        driver.destinations["imap_password"] = "imap.example.com:993 (ssl) as alice@example.com"
+        let controller = makeController(driver)
+        let held = hold(controller, "request_secret", #"{"kind":"imap_password","label":"Password"}"#)
+        try await whenHeld(held)
+        XCTAssertEqual(controller.pendingCard, .secret(kind: "imap_password", label: "Password",
+                                                       destination: "imap.example.com:993 (ssl) as alice@example.com"))
+        XCTAssertEqual(controller.state, .secret(label: "Password",
+                                                 destination: "imap.example.com:993 (ssl) as alice@example.com"))
+        let moved = await call(controller, "set_fields", #"{"host":"imap.attacker.example"}"#)
+        XCTAssertEqual(moved, "error:busy")
+        XCTAssertTrue(driver.fields.isEmpty)
+
+        controller.sendSecret("hunter22pw")
+        let answer = await held.value
+        XCTAssertEqual(answer, #"{"result":{"stage":"install"},"state":"sent"}"#)
+        XCTAssertEqual(driver.secrets.map(\.kind), ["imap_password"])
+        let after = await call(controller, "set_fields", #"{"host":"imap.example.com"}"#)
+        XCTAssertEqual(after, "{}")
+    }
+
+    /// A destination that changed anyway (another writer) is refused at Send:
+    /// the value goes nowhere.
+    func testSecretRefusedWhenDestinationChanged() async throws {
+        let driver = FakeConnectDriver(service: "calendar", secretKinds: ["caldav_password"])
+        driver.destinations["caldav_password"] = "https://dav.example.com/ as alice"
+        let controller = makeController(driver)
+        let held = hold(controller, "request_secret", #"{"kind":"caldav_password","label":"Password"}"#)
+        try await whenHeld(held)
+        driver.destinations["caldav_password"] = "https://dav.attacker.example/ as alice"
+        controller.sendSecret("hunter22pw")
+        let answer = await held.value
+        XCTAssertEqual(answer, "error:failed")
+        XCTAssertTrue(driver.secrets.isEmpty)
+        XCTAssertNil(controller.pendingCard)
+    }
+
+    /// A confirm card locks the fields too: the start runs what the card showed.
+    func testConfirmCardLocksFields() async throws {
+        let driver = pkceDriver()
+        let controller = makeController(driver)
+        let held = hold(controller, "connect_start", #"{"pkce":true}"#)
+        try await whenHeld(held)
+        let fields = await call(controller, "set_fields", #"{"url":"https://other.example.com"}"#)
+        XCTAssertEqual(fields, "error:busy")
+        XCTAssertTrue(driver.fields.isEmpty)
+        controller.answerConfirm(false)
+        _ = await held.value
+    }
+
+    /// No draft save while the Publish card or its token card is open, and a
+    /// draft that changed anyway publishes nothing.
+    func testPublishIsBoundToTheApprovedDraft() async throws {
+        let company = FakeCompanyDriver()
+        let controller = makeController(company)
+        let save = #"{"vendor":"google","fields":{"client_id":"other"}}"#
+
+        let first = hold(controller, "company_publish")
+        try await whenHeld(first)
+        let onConfirm = await call(controller, "company_draft", save)
+        XCTAssertEqual(onConfirm, "error:busy")
+        company.publishRevision = "draft-2"  // the customer edited the page
+        controller.answerConfirm(true)
+        let firstAnswer = await first.value
+        XCTAssertEqual(firstAnswer, "error:failed")
+        XCTAssertNil(controller.pendingCard)
+
+        let second = hold(controller, "company_publish")
+        try await whenHeld(second)
+        controller.answerConfirm(true)
+        XCTAssertEqual(controller.pendingCard, .secret(kind: "slack_config_token", label: ConnectRunController.publishTokenLabel))
+        let onToken = await call(controller, "company_draft", save)
+        XCTAssertEqual(onToken, "error:busy")
+        company.publishRevision = "draft-3"
+        controller.sendSecret("xoxe-sample")
+        let secondAnswer = await second.value
+        XCTAssertEqual(secondAnswer, "error:failed")
+        XCTAssertTrue(company.published.isEmpty)
+        XCTAssertTrue(company.saves.isEmpty)
+
+        // A change between Send and the publish task: the driver refuses it.
+        company.publishRevision = "draft-4"
+        let third = hold(controller, "company_publish")
+        try await whenHeld(third)
+        controller.answerConfirm(true)
+        controller.sendSecret("xoxe-sample")
+        company.publishRevision = "draft-5"  // lands before the publish task runs
+        let thirdAnswer = await third.value
+        XCTAssertEqual(thirdAnswer, "error:failed")
+        XCTAssertTrue(company.published.isEmpty)
+
+        let read = await call(controller, "company_draft")
+        XCTAssertNotEqual(read, "error:busy", "a read is never locked")
+        let saved = await call(controller, "company_draft", save)
+        XCTAssertEqual(saved, "{}")
+    }
+
+    /// The Live probe answers waiting within the call budget; a repeat
+    /// re-attaches to the running probe, another provider is busy meanwhile.
+    func testLiveProbeIsAHeldStep() async throws {
+        let prober = FakeProbingDriver()
+        prober.holdProbe = true
+        let controller = makeController(prober)
+        let first = hold(controller, "slack_live_probe", #"{"provider":"claude"}"#)
+        try await whenHeld(first)
+        clock.advance(by: ConnectWire.waitBudget)
+        let firstAnswer = await first.value
+        XCTAssertEqual(firstAnswer, waiting)
+
+        let other = await call(controller, "slack_live_probe", #"{"provider":"codex"}"#)
+        XCTAssertEqual(other, "error:busy")
+        let second = hold(controller, "slack_live_probe", #"{"provider":"claude"}"#)
+        try await whenHeld(second)
+        XCTAssertEqual(prober.probes, ["claude"], "the repeat re-attached; no second probe")
+        prober.endProbe()
+        let secondAnswer = await second.value
+        XCTAssertEqual(secondAnswer, #"{"status":"ok"}"#)
+
+        prober.holdProbe = false
+        let fresh = await call(controller, "slack_live_probe", #"{"provider":"codex"}"#)
+        XCTAssertEqual(fresh, #"{"status":"ok"}"#)
+        XCTAssertEqual(prober.probes, ["claude", "codex"])
+    }
+
+    func testLiveProbeHeldCallClosedOnEnd() async throws {
+        let prober = FakeProbingDriver()
+        prober.holdProbe = true
+        let controller = makeController(prober)
+        let held = hold(controller, "slack_live_probe", #"{"provider":"claude"}"#)
+        try await whenHeld(held)
+        controller.end()
+        let answer = await held.value
+        XCTAssertEqual(answer, "error:closed")
+        prober.endProbe()
     }
 
     func testCompanyCheckThatReplacesNeedsConfirm() async throws {

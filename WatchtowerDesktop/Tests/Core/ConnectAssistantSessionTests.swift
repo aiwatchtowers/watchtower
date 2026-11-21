@@ -373,6 +373,27 @@ final class ConnectAssistantSessionTests: XCTestCase {
         XCTAssertNotEqual(socket(second), socket(first))
     }
 
+    /// Each run's socket is bound to that run's controller: after Retry, a
+    /// late call of the old run answers `closed` and never opens a card on
+    /// the new one.
+    func testLateCallOfAnEndedRunNeverReachesTheNext() async throws {
+        let session = make(wordsHarness)
+        _ = await startRun(session)
+        let first = try XCTUnwrap(session.controller)
+        let firstSocket = session.handler(for: first)
+        session.retry()
+        await session.prepared()
+        await session.engine?.started()
+        let second = try XCTUnwrap(session.controller)
+        XCTAssertFalse(first === second)
+
+        let late = await firstSocket(request("request_secret", #"{"kind":"slack_config_token","label":"Token"}"#))
+        XCTAssertEqual(late.error?.code, .closed)
+        XCTAssertNil(second.pendingCard, "the new run never saw the old run's call")
+        let current = await session.handler(for: second)(request("connect_status"))
+        XCTAssertNil(current.error, "the new run's own socket still serves")
+    }
+
     func testOneSessionPerService() {
         var made: [String] = []
         let center = ConnectAssistantCenter { [self] service in

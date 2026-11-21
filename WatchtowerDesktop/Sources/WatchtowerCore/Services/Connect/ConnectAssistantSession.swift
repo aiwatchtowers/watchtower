@@ -92,7 +92,7 @@ package final class ConnectAssistantSession {
 
     package var presentation: ConnectAssistantPresentation {
         var secretKind: String?
-        if case let .secret(kind, _) = controller?.pendingCard { secretKind = kind }
+        if case let .secret(kind, _, _) = controller?.pendingCard { secretKind = kind }
         return ConnectAssistantPresentation(service: displayName, harness: harness, mode: mode,
                                             browserAvailable: browserAvailable, state: state, secretKind: secretKind)
     }
@@ -111,13 +111,7 @@ package final class ConnectAssistantSession {
         // Each run asks again: an extension connected since the last run counts.
         browserAvailable = true
         let controller = ConnectRunController(driver: driver)
-        // Weak: the server's handlers must not keep the run alive (Task 8).
-        let server = ConnectRunServer(service: service) { [weak self] request in
-            guard let self else {
-                return ConnectWireResponse(id: request.id, error: .closed, message: Self.runEndedMessage)
-            }
-            return await handle(request)
-        }
+        let server = ConnectRunServer(service: service, handler: handler(for: controller))
         self.controller = controller
         phase = .starting
         do {
@@ -138,6 +132,24 @@ package final class ConnectAssistantSession {
     /// probe`), so a call then is out of place, and it never reaches the
     /// controller.
     package func handle(_ request: ConnectWireRequest) async -> ConnectWireResponse {
+        await handle(request, on: controller)
+    }
+
+    /// The run socket's handler: every call goes to `controller`, the run's
+    /// own, never to a later run's (after Retry an ended controller answers
+    /// `closed`). Weak: the handler must not keep the run alive (Task 8).
+    package func handler(
+        for controller: ConnectRunController
+    ) -> @MainActor (ConnectWireRequest) async -> ConnectWireResponse {
+        { [weak self, weak controller] request in
+            guard let self else {
+                return ConnectWireResponse(id: request.id, error: .closed, message: Self.runEndedMessage)
+            }
+            return await handle(request, on: controller)
+        }
+    }
+
+    private func handle(_ request: ConnectWireRequest, on controller: ConnectRunController?) async -> ConnectWireResponse {
         guard !probing, let controller else {
             return ConnectWireResponse(id: request.id, error: .closed,
                                        message: probing ? Self.probingMessage : Self.runEndedMessage)

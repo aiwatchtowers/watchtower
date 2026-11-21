@@ -54,8 +54,11 @@ package final class OwnGoogleProjectConnectDriver: ConnectServiceDriving {
         return ConnectStatus(service: service, accounts: accounts(), policyLocked: !policyAllows(), flow: flow)
     }
 
+    /// The card shows the Client ID the start will use: the controller hands
+    /// the start exactly the options the card was opened with.
     package func confirmNeeded(tool: String, options: [String: String]) -> ConnectAssistantConfirm? {
-        tool == "connect_start" && options[Self.clientOption] != nil ? .ownGoogleClient : nil
+        guard tool == "connect_start", let clientID = options[Self.clientOption] else { return nil }
+        return .ownGoogleClient(clientID: clientID.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     package func submitSecret(kind: String, value: String) async -> Result<Data, ConnectDriverError> {

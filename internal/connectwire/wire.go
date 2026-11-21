@@ -24,7 +24,7 @@ const ProtocolVersion = 1
 
 // WaitBudget is how long the Desktop holds a call that waits on the
 // customer or a flow (connect_wait, request_secret, a confirm-gated call,
-// company_check) before it answers {"state":"waiting"}; the agent then calls
+// company_check, slack_live_probe) before it answers {"state":"waiting"}; the agent then calls
 // again and re-attaches to the same step (spec §5.3). The Desktop (Tasks 8
 // and 9) uses this value, never CallTimeout.
 const WaitBudget = 45 * time.Second

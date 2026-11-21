@@ -134,11 +134,12 @@ func TestWire_CasesCoverTheContract(t *testing.T) {
 		assert.True(t, codes[code], "no error case for %s", code)
 	}
 	want := map[string][]string{
-		"connect_wait":    {"connected", "failed", "waiting", "timeout"},
-		"request_secret":  {"sent", "waiting", "cancelled", "timeout"},
-		"connect_start":   {"waiting", "declined", "timeout"},
-		"company_publish": {"waiting", "declined", "cancelled", "timeout"},
-		"company_check":   {"waiting", "timeout"},
+		"connect_wait":     {"connected", "failed", "waiting", "timeout"},
+		"request_secret":   {"sent", "waiting", "cancelled", "timeout"},
+		"connect_start":    {"waiting", "declined", "timeout"},
+		"company_publish":  {"waiting", "declined", "cancelled", "timeout"},
+		"company_check":    {"waiting", "timeout"},
+		"slack_live_probe": {"waiting"},
 	}
 	for tool, ss := range want {
 		for _, s := range ss {
@@ -523,10 +524,10 @@ func TestCall_NotSentTimeoutKeepsTheConnection(t *testing.T) {
 // After a transport timeout only a re-attach tool is told to call again;
 // a tool that may have started something is told to check connect_status.
 func TestCall_TimeoutMessagePerToolKind(t *testing.T) {
-	for _, tool := range []string{"connect_status", "connect_wait", "request_secret"} {
+	for _, tool := range []string{"connect_status", "connect_wait", "request_secret", "slack_live_probe"} {
 		assert.True(t, strings.HasSuffix(noAnswer(tool), "call it again"), tool)
 	}
-	for _, tool := range []string{"connect_start", "company_publish", "company_check", "set_fields", "connect_cancel", "choose", "company_draft", "slack_live_probe"} {
+	for _, tool := range []string{"connect_start", "company_publish", "company_check", "set_fields", "connect_cancel", "choose", "company_draft"} {
 		msg := noAnswer(tool)
 		assert.NotContains(t, msg, "call it again", tool)
 		assert.Contains(t, msg, "outcome is unknown: call connect_status before repeating it", tool)

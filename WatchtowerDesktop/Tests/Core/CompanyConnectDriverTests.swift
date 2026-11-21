@@ -425,16 +425,62 @@ final class CompanyConnectDriverTests: XCTestCase {
         XCTAssertEqual(unused, .failure(.badArgs("google is not among the company's services")))
     }
 
+    /// The revision the Publish card binds to moves with the name and any
+    /// draft value, never with the page the wizard shows.
+    func testPublishRevisionFollowsTheValues() async {
+        let cli = CompanyScriptedCLI()
+        cli.setups = acmeSetup
+        let (driver, wizard) = await resume(publishDraft, checked: ["atlassian"], cli: cli)
+        _ = driver.confirmNeeded(tool: "company_publish", options: [:])
+        let approved = driver.publishRevision
+        wizard.publishName = "Acme Corp"
+        XCTAssertNotEqual(driver.publishRevision, approved, "another name is another publish")
+        wizard.publishName = "Acme"
+        XCTAssertEqual(driver.publishRevision, approved)
+        _ = await driver.saveDraft(vendor: "atlassian", fields: ["site": "other.atlassian.net"])
+        XCTAssertNotEqual(driver.publishRevision, approved, "an edited draft is another publish")
+    }
+
+    /// The revision is a digest: the client secret the draft holds never
+    /// sits in the controller's step.
+    func testPublishRevisionHoldsNoSecret() async {
+        let draft = #"{"company":"Acme","services":["google"],"step":"publish","slack":{},"google":{"client_id":"x","#
+            + #""client_secret":"s3cret-client-value"}}"#
+        let (driver, _) = await resume(draft)
+        let revision = driver.publishRevision
+        XCTAssertFalse(revision.contains("s3cret"))
+        XCTAssertFalse(revision.contains("Acme"))
+        XCTAssertEqual(revision.count, 64)
+        XCTAssertTrue(revision.allSatisfy(\.isHexDigit))
+    }
+
+    /// A stale approval publishes nothing: checked before the save, and
+    /// again once the draft Go publishes is saved.
+    func testPublishRefusesAStaleApproval() async {
+        let cli = CompanyScriptedCLI()
+        cli.setups = acmeSetup
+        let (driver, wizard) = await resume(publishDraft, checked: ["atlassian"], cli: cli)
+        _ = driver.confirmNeeded(tool: "company_publish", options: [:])
+        cli.on(["company", "publish"], [#"{"result":"ok","slug":"acme","link":"l","code":"c"}"#])
+        let stale = await driver.publish(token: token, approvedRevision: "0000")
+        XCTAssertEqual(stale, .failure(.failed(CompanySetupWizardModel.publishChangedLine)))
+        await wizard.publish(token: token) { false }
+        XCTAssertEqual(wizard.publishRefusal, CompanySetupWizardModel.publishChangedLine)
+        XCTAssertEqual(wizard.publishState, .ready)
+        XCTAssertTrue(cli.calls(["company", "publish"]).isEmpty, "nothing reached company publish")
+    }
+
     func testPublishNeedsConfirm() async throws {
         let cli = CompanyScriptedCLI()
         cli.setups = acmeSetup
         let (driver, wizard) = await resume(publishDraft, checked: ["atlassian"], cli: cli)
-        XCTAssertEqual(driver.confirmNeeded(tool: "company_publish", options: [:]), .companyPublish(company: "Acme"))
+        XCTAssertEqual(driver.confirmNeeded(tool: "company_publish", options: [:]),
+                       .companyPublish(company: "Acme", services: ["Slack", "Atlassian"]))
         XCTAssertTrue(driver.publishNeedsToken, "Slack is part of it: the token card follows the confirm")
         XCTAssertTrue(cli.calls(["company", "publish"]).isEmpty, "the card alone publishes nothing")
 
         cli.on(["company", "publish"], [#"{"result":"ok","slug":"acme","link":"l","code":"c"}"#])
-        let published = await driver.publish(token: token)
+        let published = await driver.publish(token: token, approvedRevision: driver.publishRevision)
         XCTAssertEqual(Self.text(published), #"{"result":"ok","slug":"acme"}"#)
         XCTAssertEqual(cli.calls(["company", "publish"]).first?.input, #"{"company":"Acme","config_token":"\#(token)"}"#)
         XCTAssertEqual(wizard.current, .publish, "the link and code wait on the wizard's Publish page")
@@ -456,7 +502,7 @@ final class CompanyConnectDriverTests: XCTestCase {
         let (driver, _) = await resume(draft, cli: cli)
         XCTAssertFalse(driver.publishNeedsToken)
         cli.on(["company", "publish"], [#"{"result":"no_slack","slug":"acme","link":"l","code":"c"}"#])
-        let published = await driver.publish(token: "")
+        let published = await driver.publish(token: "", approvedRevision: driver.publishRevision)
         XCTAssertEqual(Self.text(published), #"{"result":"no_slack","slug":"acme"}"#)
         XCTAssertEqual(cli.calls(["company", "publish"]).first?.input, #"{"company":"Acme"}"#)
     }
@@ -480,7 +526,7 @@ final class CompanyConnectDriverTests: XCTestCase {
 
     func testOwnGoogleClientNeedsConfirm() async throws {
         let (driver, model, cli) = ownDriver([.init(lines: [Self.ownOK])])
-        XCTAssertEqual(driver.confirmNeeded(tool: "connect_start", options: ["own_client": "5678-own"]), .ownGoogleClient)
+        XCTAssertEqual(driver.confirmNeeded(tool: "connect_start", options: ["own_client": "5678-own"]), .ownGoogleClient(clientID: "5678-own"))
         XCTAssertNil(driver.confirmNeeded(tool: "connect_wait", options: [:]))
 
         let early = await driver.start(options: ["own_client": "5678-own"])

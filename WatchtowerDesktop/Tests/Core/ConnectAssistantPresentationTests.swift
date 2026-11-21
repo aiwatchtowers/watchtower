@@ -180,6 +180,48 @@ struct ConnectAssistantPresentationTests {
         #expect(same.detail == "Its settings already match Watchtower's.")
     }
 
+    @Test("a secret card names where the value goes; a fixed place shows no line")
+    func secretDestination() {
+        guard case .secret(let mail) = slack(.secret(label: "Password",
+                                                     destination: "imap.example.com:993 (ssl) as alice@example.com")).card,
+              case .secret(let fixed) = slack(.secret(label: "Token")).card
+        else { Issue.record("no secret card"); return }
+        #expect(mail.destination == "Sends it to imap.example.com:993 (ssl) as alice@example.com")
+        #expect(fixed.destination == nil)
+        #expect(Pres.mailDestination(host: "imap.example.com", port: 993, security: "ssl", username: "alice@example.com")
+            == "imap.example.com:993 (ssl) as alice@example.com")
+        #expect(Pres.calendarDestination(url: "https://dav.example.com/", username: "alice")
+            == "https://dav.example.com/ as alice")
+        #expect(Pres.headerDestination(header: "X-Api-Key", url: "https://mcp.example.com/mcp")
+            == "the X-Api-Key header of https://mcp.example.com/mcp")
+        #expect(Pres.variableDestination(variable: "API_KEY", commandLine: "npx -y acme-mcp")
+            == "the API_KEY variable of npx -y acme-mcp")
+    }
+
+    @Test("a confirm card shows exactly what it applies to")
+    func confirmSubject() {
+        func card(_ confirm: ConnectAssistantConfirm) -> Pres.ConfirmCard? {
+            guard case .confirm(let card) = slack(.confirm(confirm)).card else { return nil }
+            return card
+        }
+        let command = card(.quickConnection(name: "docs", server: .command("npx -y acme-mcp --read-only")))
+        #expect(command?.question == "Turn on the docs connection?")
+        #expect(command?.subject == "Runs: npx -y acme-mcp --read-only")
+        #expect(command?.detail == "Watchtower will run this command, and the assistant will be able to use its tools.")
+        let url = card(.quickConnection(name: "docs", server: .url("https://mcp.example.com/mcp")))
+        #expect(url?.subject == "Connects to: https://mcp.example.com/mcp")
+        #expect(url?.detail
+            == "Watchtower will connect to this server, and the assistant will be able to use its tools.")
+        let google = card(.ownGoogleClient(clientID: "1234-acme.apps.googleusercontent.com"))
+        #expect(google?.subject == "Client ID: 1234-acme.apps.googleusercontent.com")
+        #expect(google?.question == "Use your own Google project to sign in?")
+        let publish = card(.companyPublish(company: "Acme", services: ["Slack", "Google Workspace"]))
+        #expect(publish?.subject == "Publishes: Slack, Google Workspace")
+        #expect(card(.companyPublish(company: "Acme"))?.subject == nil)
+        #expect(card(.slackPKCE)?.subject == nil)
+        #expect(card(.companyReplace(company: "Acme"))?.subject == nil)
+    }
+
     @Test("done counts the service's accounts in its own word")
     func done() {
         #expect(slack(.done(accounts: 2, noun: .workspace)).status

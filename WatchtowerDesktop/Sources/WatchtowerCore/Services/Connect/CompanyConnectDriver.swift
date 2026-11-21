@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The company setup's connect driver (agent connect spec §5.4): the
@@ -18,7 +19,8 @@ import Foundation
 /// whether it is set). The Slack configuration token reaches the wizard's
 /// token field for one Slack step (create, or the update of an app whose
 /// settings link was saved) and is cleared when the step ends; Publish gets
-/// its own token from the controller's card.
+/// its own token from the controller's card. Every failure line that goes
+/// back with a secret's result passes `ConnectSecret.failure` first.
 @MainActor
 package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretConfirming {
     package let service = "company"
@@ -234,7 +236,9 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
         if wizard.isRunning(v) { return .failure(.busy) }
         if !wizard.ticked.contains(v) { wizard.toggle(v) }
         wizard.setField(v, .clientSecret, secret)
-        guard await wizard.saveNow() else { return .failure(.failed(wizard.storageProblem ?? openFailed)) }
+        guard await wizard.saveNow() else {
+            return .failure(ConnectSecret.failure(wizard.storageProblem, secret: secret, fallback: openFailed))
+        }
         return .success(Self.json(["result": "saved", "vendor": v.rawValue]))
     }
 
@@ -262,7 +266,7 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
         wizard.slackToken = token
         guard wizard.startSlackStep() else {
             wizard.slackToken = ""
-            return .failure(.failed(wizard.slackProblem ?? Self.slackDidNotStart))
+            return .failure(ConnectSecret.failure(wizard.slackProblem, secret: token, fallback: Self.slackDidNotStart))
         }
         await wizard.slack.runTask?.value
         if let diff = wizard.slackDiff {
@@ -276,8 +280,11 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
     /// How the Slack step's last run ended; the token goes either way.
     private func slackAnswer() -> Result<Data, ConnectDriverError> {
         shownUpdate = nil
+        let token = wizard.slackToken
         wizard.slackToken = ""
-        if let problem = wizard.slackProblem { return .failure(.failed(problem)) }
+        if let problem = wizard.slackProblem {
+            return .failure(ConnectSecret.failure(problem, secret: token, fallback: Self.slackStopped))
+        }
         guard wizard.slackAppReady else { return .failure(.failed(Self.slackStopped)) }
         return .success(Self.json(["result": "ok", "app_id": wizard.draft.slack.appID]))
     }
@@ -335,7 +342,8 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             // company name and makes the sheet show its token field.
             wizard.preparePublish()
             guard publishBlockedReason == nil else { return nil }
-            return .companyPublish(company: publishName)
+            return .companyPublish(company: publishName,
+                                   services: wizard.ticked.filter(wizard.isActive).map(CompanyVendorGuide.name))
         case "company_check":
             // A check found the company stored with another app: replacing it needs the customer (§2.12).
             guard let v = options["vendor"].flatMap(CompanyVendor.init(rawValue:)), wizard.checks[v] == .replaceNeeded else {
@@ -380,6 +388,22 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
 
     package var publishNeedsToken: Bool { wizard.isActive(.slack) }
 
+    /// The name Publish uses and every draft value, without where the
+    /// wizard's page stands (`step`, `startedAt`): moving between pages is
+    /// no change to what gets published; any edit, here or on the page, is.
+    /// Only its SHA-256 leaves: the draft holds client secrets.
+    package var publishRevision: String {
+        var draft = wizard.draft
+        draft.step = ""
+        draft.startedAt = nil
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        var values = Data(publishName.utf8)
+        values.append(0x0A)
+        values.append((try? encoder.encode(draft)) ?? Data())
+        return SHA256.hash(data: values).map { String(format: "%02x", $0) }.joined()
+    }
+
     package var publishBlockedReason: String? {
         guard wizard.load == .ready else { return Self.notOpen }
         if wizard.publishState == .running { return Self.publishRunning }
@@ -387,12 +411,18 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
         return wizard.publishBlockedReason
     }
 
-    package func publish(token: String) async -> Result<Data, ConnectDriverError> {
+    package func publish(token: String, approvedRevision: String) async -> Result<Data, ConnectDriverError> {
         guard await ensureOpen() else { return .failure(.failed(openFailed)) }
         if let reason = publishBlockedReason { return .failure(.failed(reason)) }
+        guard publishRevision == approvedRevision else {
+            return .failure(.failed(CompanySetupWizardModel.publishChangedLine))
+        }
         let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if publishNeedsToken, token.isEmpty { return .failure(.failed(CompanySetupWizardModel.publishNeedsTokenLine)) }
-        await wizard.publish(token: publishNeedsToken ? token : nil)
+        // Checked again once the draft Go publishes is saved, before the verb.
+        await wizard.publish(token: publishNeedsToken ? token : nil) { [weak self] in
+            self?.publishRevision == approvedRevision
+        }
         switch wizard.publishState {
         case let .done(published):
             wizard.showPublished()
@@ -400,9 +430,10 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
         case .tokenExpired:
             return .failure(.failed(CompanySetupWizardModel.publishTokenExpiredLine))
         case let .failed(line):
-            return .failure(.failed(line))
+            return .failure(ConnectSecret.failure(line, secret: token, fallback: Self.publishStopped))
         case .ready, .running:
-            return .failure(.failed(wizard.publishRefusal ?? wizard.publishBlockedReason ?? Self.publishStopped))
+            let line = wizard.publishRefusal ?? wizard.publishBlockedReason ?? Self.publishStopped
+            return .failure(ConnectSecret.failure(line, secret: token, fallback: Self.publishStopped))
         }
     }
 

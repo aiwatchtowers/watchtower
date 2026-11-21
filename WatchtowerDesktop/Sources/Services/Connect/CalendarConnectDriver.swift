@@ -80,6 +80,15 @@ final class CalendarConnectDriver: ConnectServiceDriving {
         return .success(ConnectSecretResult.data(state: "connected", account: ConnectSecret.scrub(name, value)))
     }
 
+    /// The CalDAV server and login `caldav add` would use. nil for an ICS
+    /// address (the secret is the place itself) and before url and username
+    /// are set (the Send then refuses as `submitSecret` does).
+    func secretDestination(kind: String) -> String? {
+        guard kind == "caldav_password", let url = fields["url"], !url.isEmpty,
+              let username = fields["username"], !username.isEmpty else { return nil }
+        return ConnectAssistantPresentation.calendarDestination(url: url, username: username)
+    }
+
     func choose(kind: String, select: [String]?) async -> Result<[ConnectChoice], ConnectDriverError> {
         .failure(.badArgs("calendar has nothing to choose"))
     }
