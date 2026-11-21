@@ -196,7 +196,8 @@ final class CompanySetupCheckCancelTests: XCTestCase {
         let (model, cli, run) = await waiting(holdExit: true)
         model.cancelCheck(.atlassian)
         XCTAssertNil(model.checks[.atlassian], "Cancel is immediate")
-        for _ in 0..<20 { await Task.yield() }
+        // The cancelled run now waits for its child's exit; the re-read waits for that run.
+        await cli.exitAwaited(check)
         XCTAssertEqual(cli.calls(["company", "draft", "show"]).count, 1, "no re-read before the child exited")
 
         cli.releaseExit(check)

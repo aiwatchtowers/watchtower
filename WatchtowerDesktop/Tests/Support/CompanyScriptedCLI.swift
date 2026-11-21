@@ -109,7 +109,7 @@ package final class CompanyScriptedCLI: CLILineStreaming, @unchecked Sendable {
     package func oneShot(args: [String], stdin: Data?) -> any CLILineSession {
         let gate = lock.withLock { () -> ExitGate? in
             guard let index = exitHolds.firstIndex(where: { Array(args.prefix($0.count)) == $0 }) else { return nil }
-            let gate = ExitGate()
+            let gate = ExitGate { [signal] in signal.changed() }
             exitGates.append((exitHolds.remove(at: index), gate))
             return gate
         }
@@ -120,6 +120,13 @@ package final class CompanyScriptedCLI: CLILineStreaming, @unchecked Sendable {
     /// (its lines end as usual): a child killed but not yet reaped.
     package func holdExit(_ prefix: [String]) {
         lock.withLock { exitHolds.append(prefix) }
+    }
+
+    /// Returns once the held run waits for its exit (its lines ended).
+    package func exitAwaited(_ prefix: [String]) async {
+        await signal.until { [self] in
+            lock.withLock { exitGates.contains { $0.prefix == prefix && $0.gate.isAwaited } }
+        }
     }
 
     package func releaseExit(_ prefix: [String]) {
@@ -159,6 +166,13 @@ private final class ExitGate: @unchecked Sendable {
     private let lock = NSLock()
     private var opened = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private let onWait: @Sendable () -> Void
+
+    init(onWait: @escaping @Sendable () -> Void) {
+        self.onWait = onWait
+    }
+
+    var isAwaited: Bool { lock.withLock { !waiters.isEmpty } }
 
     func open() {
         let woken = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
@@ -175,7 +189,7 @@ private final class ExitGate: @unchecked Sendable {
                 if !opened { waiters.append(waiter) }
                 return opened
             }
-            if ready { waiter.resume() }
+            if ready { waiter.resume() } else { onWait() }
         }
     }
 }
