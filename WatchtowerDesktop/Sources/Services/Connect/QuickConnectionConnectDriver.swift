@@ -129,15 +129,19 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
             self?.signingIn = id
             await model.signIn(row)
             self?.signingIn = nil
+            // The sign-in's own result, read before the reload can overwrite
+            // `error`. Only the model's word that the sign-in was interrupted
+            // counts: a Cancel that came after it finished changed nothing.
+            let signInError = model.error
+            let signInCancelled = model.lastSignInCancelled
             // The sign-in only schedules its reload: read the row back before
             // answering, so connect_status shows what the sign-in wrote.
             await model.refreshAsync()
-            if let error = model.error { return .failed(reason: error) }
-            // Only the model's word that the sign-in was interrupted counts:
-            // a Cancel that came after it finished changed nothing.
-            if model.lastSignInCancelled {
+            if signInCancelled {
                 return .failed(reason: "the sign-in was cancelled: \(row.name) is added but not signed in")
             }
+            // A failed reload speaks only when the sign-in itself succeeded.
+            if let error = signInError ?? model.error { return .failed(reason: error) }
             return .connected(account: row.name)
         })
     }

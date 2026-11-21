@@ -42,6 +42,10 @@ final class JiraAccountsViewModel {
     @ObservationIgnored private var boardStepClosed = false
     /// The last browser flow ended in a user Cancel (SIGTERM/SIGKILL).
     @ObservationIgnored private var lastAuthFlowCancelled = false
+    /// The last browser flow ended on its own with the CLI's success: it
+    /// wrote the account. False after a Cancel, a declined site list or a
+    /// failure, whatever the account list reads afterwards.
+    @ObservationIgnored private(set) var lastAuthFlowWroteAccount = false
     /// The last browser flow timed out (`jira add`'s stable exit code).
     @ObservationIgnored private var lastAuthFlowTimedOut = false
     /// The running consent's stdout so far (`noteAuthOutput`).
@@ -391,6 +395,7 @@ final class JiraAccountsViewModel {
         error = nil
         lastAuthFlowCancelled = false
         lastAuthFlowTimedOut = false
+        lastAuthFlowWroteAccount = false
         siteChoiceDeclined = false
         siteAnswered = false
 
@@ -447,6 +452,7 @@ final class JiraAccountsViewModel {
             error = nil
             return .finished
         }
+        lastAuthFlowWroteAccount = result.exitCode == 0
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
         return .finished
     }

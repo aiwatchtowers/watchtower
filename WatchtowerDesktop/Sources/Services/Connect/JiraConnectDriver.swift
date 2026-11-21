@@ -12,6 +12,9 @@ protocol JiraConnectModel: AnyObject {
     var accounts: [JiraAccount] { get }
     /// The running flow's site question, while it waits for an answer.
     var siteChoices: [JiraSiteChoice]? { get }
+    /// The last `addAccount` that ended `.finished` saved its site (the CLI
+    /// succeeded); false after an interrupted or failed one.
+    var lastAuthFlowWroteAccount: Bool { get }
     /// The driver passes `.deferred` and restarts the daemon itself: the
     /// sheet's held restart (`addAccountHoldingRestart`/`finishBoardStep`)
     /// stays the sheet's alone.
@@ -137,15 +140,17 @@ final class JiraConnectDriver: ConnectServiceDriving {
                 withConfluence: withConfluence, company: company, site: site, daemonPolicy: .deferred)
             self?.dropPendingSite(of: id)
             let addError = model.error
+            let wrote = end == .finished && addError == nil && model.lastAuthFlowWroteAccount
             await model.refreshAsync()
             let reloadFailed = model.error != nil && model.error != addError
             let added = model.accounts.contains { !before.contains($0.id) }
             // The restart follows what the add wrote, not the reload or a
             // late Cancel: a site was saved when the list shows a new one,
-            // when the Cancel came after the save, or when the add succeeded
-            // but the list could not be re-read. Its restart waits for the
-            // board pick, unless no board step follows or the run is over.
-            if added || end == .cancelledAfterConnecting || (end == .finished && addError == nil && reloadFailed) {
+            // when the Cancel came after the save, or when the add reports
+            // the CLI's success but the list could not be re-read. Its
+            // restart waits for the board pick, unless no board step follows
+            // or the run is over.
+            if added || end == .cancelledAfterConnecting || (wrote && reloadFailed) {
                 self?.siteAdded(boardStepFollows: end == .finished)
             }
             if end == .cancelled, !added { return .failed(reason: ConnectFlowBook.cancelled) }

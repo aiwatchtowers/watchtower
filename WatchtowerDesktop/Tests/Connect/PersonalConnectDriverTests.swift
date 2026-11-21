@@ -578,6 +578,24 @@ final class PersonalConnectDriverTests: XCTestCase {
         XCTAssertEqual(daemon.restartCount, 1)
     }
 
+    /// The auth process was interrupted before it saved anything and the
+    /// reload then failed: nothing was written, so no restart is queued.
+    func testJiraInterruptedAddWithAFailedReloadQueuesNoRestart() async throws {
+        let model = FakeJiraModel()
+        model.interruptedBeforeSave = true
+        model.reloadFails = true
+        let daemon = FakeDaemonRestarter()
+        let driver = JiraConnectDriver(
+            model: model, steps: FakeJiraSteps(), policy: Self.open, companySlug: Self.noCompany, daemon: daemon)
+        let flowID = try await driver.start(options: [:]).get()
+        model.gate.open()
+        await driver.flows.finished(flowID)
+        _ = await driver.wait(flowID: flowID)
+        driver.runEnded()
+        XCTAssertNil(driver.restartTask)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
     /// A Cancel that lands after the CLI saved the site: no board step
     /// follows, so the restart runs at once.
     func testJiraLateCancelAfterSaveRestarts() async throws {
@@ -602,6 +620,31 @@ final class PersonalConnectDriverTests: XCTestCase {
         XCTAssertEqual(model.events.suffix(2), ["signIn", "refresh"])
         let outcome = await driver.wait(flowID: flowID)
         XCTAssertEqual(outcome, .connected(account: "docs"))
+    }
+
+    /// The reload after the sign-in fails: it never hides the sign-in's own
+    /// error or its Cancel, and speaks only for a sign-in that succeeded.
+    func testQuickConnectionReloadErrorNeverHidesTheSignInResult() async throws {
+        let reloadError = "Failed to load connections: disk I/O error"
+        func outcome(signInError: String?, cancels: Bool) async throws -> ConnectWaitOutcome {
+            let model = FakeQuickModel()
+            model.signInError = signInError
+            model.signInCancels = cancels
+            model.reloadErrorAfterSignIn = reloadError
+            let driver = QuickConnectionConnectDriver(model: model, policy: Self.open)
+            let fields = ["name": "docs", "kind": "http", "url": "https://mcp.example.com", "oauth": "true"]
+            _ = try await driver.setFields(fields).get()
+            let flowID = try await driver.start(options: [:]).get()
+            await driver.flows.finished(flowID)
+            XCTAssertEqual(model.events.suffix(2), ["signIn", "refresh"])
+            return await driver.wait(flowID: flowID)
+        }
+        let failed = try await outcome(signInError: "OAuth failed: invalid_client", cancels: false)
+        XCTAssertEqual(failed, .failed(reason: "OAuth failed: invalid_client"))
+        let cancelled = try await outcome(signInError: nil, cancels: true)
+        XCTAssertEqual(cancelled, .failed(reason: "the sign-in was cancelled: docs is added but not signed in"))
+        let reloadFailed = try await outcome(signInError: nil, cancels: false)
+        XCTAssertEqual(reloadFailed, .failed(reason: reloadError))
     }
 
     func testQuickConnectionCancelDuringAddOpensNoSignIn() async throws {
@@ -801,6 +844,11 @@ private final class FakeJiraModel: JiraConnectModel {
     var reloadFails = false
     /// The Cancel lands after the CLI saved the site.
     var cancelLate = false
+    /// The auth process is interrupted before anything is saved: the add
+    /// ends `.finished` with no error and no site (exit 15/9, or a declined
+    /// site list).
+    var interruptedBeforeSave = false
+    var lastAuthFlowWroteAccount = false
 
     func addAccount(
         withConfluence: Bool, company: String?, site: String?, daemonPolicy: DaemonRestartPolicy
@@ -810,7 +858,10 @@ private final class FakeJiraModel: JiraConnectModel {
         isConnecting = true
         await gate.wait()
         isConnecting = false
+        lastAuthFlowWroteAccount = false
         guard connects else { return .cancelled }
+        if interruptedBeforeSave { return .finished }
+        lastAuthFlowWroteAccount = true
         if reloadFails { return .finished }
         accounts.append(JiraAccount(row: ["id": accounts.count + 1, "site_name": "acme", "enabled": true]))
         return cancelLate ? .cancelledAfterConnecting : .finished
@@ -925,6 +976,10 @@ private final class FakeQuickModel: QuickConnectionConnectModel {
     var onAdd: (() async -> Void)?
     var onSignInDone: (() async -> Void)?
     var events: [String] = []
+    /// The sign-in's own failure (`connections oauth` exited non-zero).
+    var signInError: String?
+    /// The reload after the sign-in fails with this error.
+    var reloadErrorAfterSignIn: String?
 
     func addConnection(
         name: String, kind: String, command: String, args: [String], url: String, secretJSON: String?, useOAuth: Bool
@@ -941,6 +996,7 @@ private final class FakeQuickModel: QuickConnectionConnectModel {
         signIns.append(connection.name)
         events.append("signIn")
         lastSignInCancelled = signInCancels
+        error = signInError
         await onSignInDone?()
     }
 
@@ -962,5 +1018,6 @@ private final class FakeQuickModel: QuickConnectionConnectModel {
 
     func refreshAsync() async {
         events.append("refresh")
+        if !signIns.isEmpty, let reloadErrorAfterSignIn { error = reloadErrorAfterSignIn }
     }
 }
