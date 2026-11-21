@@ -1759,7 +1759,7 @@ final class AppState {
                 await jira.reloginWithConfluenceWrite(accountID: Int(id))
                 return jira.error
             },
-            onCancelReconsent: { [weak self] _ in self?.jiraAccountsViewModel?.cancelConnect() },
+            onCancelReconsent: { [weak self] id in self?.jiraAccountsViewModel?.cancelConfluenceGrant(accountID: Int(id)) },
             // Best-effort, the tray's Sync Now: on a failure the daemon's next poll picks the space up.
             onSelected: syncNow ?? { [weak self] in await self?.daemonManager.syncNow() }
         )

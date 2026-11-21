@@ -4,11 +4,11 @@ import XCTest
 
 /// A stand-in `watchtower` for an Atlassian browser sign-in that waits for
 /// the owner. Run N records its pid and arguments, says it started on the
-/// pipe `started-N` (`started(N)` reads it), then blocks on the pipe
+/// pipe `started-N` (`started(N, of:)` reads it), then blocks on the pipe
 /// `gate-N` until `release(N, exitCode:)` writes the exit code to it. With
 /// `ignoresTerm` it ignores SIGTERM, so a Cancel's terminate leaves it
 /// running until its gate opens (a late end after a restart). No clock:
-/// every step is a pipe. `tearDown` kills every run still alive.
+/// every step is a pipe. Teardown kills every run still alive.
 final class AtlassianSignInStub {
     let cli: String
     private let dir: URL
@@ -44,10 +44,27 @@ final class AtlassianSignInStub {
         }
     }
 
-    /// Returns once run `run` is up (it wrote to its `started` pipe).
-    func started(_ run: Int) async {
-        let url = dir.appendingPathComponent("started-\(run)")
-        await Task.detached { _ = try? FileHandle(forReadingFrom: url).readToEnd() }.value
+    /// Returns once run `run` is up (it wrote to its `started` pipe). If
+    /// the flow ends first (the stub never launched), the test fails
+    /// instead of hanging: the flow's end writes the pipe itself.
+    func started<T>(_ run: Int, of flow: Task<T, Never>, file: StaticString = #filePath, line: UInt = #line) async {
+        let path = dir.appendingPathComponent("started-\(run)").path
+        _ = Task.detached {
+            _ = await flow.value
+            // Non-blocking: with no reader left (the stub started) this fails at once.
+            let fd = open(path, O_WRONLY | O_NONBLOCK)
+            guard fd >= 0 else { return }
+            _ = "ended\n".withCString { write(fd, $0, strlen($0)) }
+            close(fd)
+        }
+        let said = await Task.detached {
+            (try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)).readToEnd()).flatMap {
+                String(bytes: $0, encoding: .utf8)
+            } ?? ""
+        }.value
+        if !said.hasPrefix("started") {
+            XCTFail("run \(run) ended before the stub started", file: file, line: line)
+        }
     }
 
     /// Lets run `run` end with `exitCode` (a non-zero one prints an error).
@@ -66,13 +83,30 @@ final class AtlassianSignInStub {
         return text.split(separator: "\n").map(String.init)
     }
 
-    /// Every run still alive (a stub blocked on its gate) is killed: the
-    /// stub runs no children (`read` is a shell builtin), so its pid is its
-    /// whole tree.
+    /// Every run still alive (a stub blocked on its gate) is killed. The
+    /// view model owns the `Process` and reaps it (each test awaits its flow,
+    /// which ends only after the process exits); this is the backstop for a
+    /// failed test. A recorded pid is killed only while it is still this
+    /// stub (its command names this directory), never a reused pid. The stub
+    /// runs no children (`read` is a shell builtin), so its pid is its whole
+    /// tree.
     private static func killAll(in dir: URL) {
         let text = (try? String(contentsOf: dir.appendingPathComponent("pids"), encoding: .utf8)) ?? ""
-        for pid in text.split(separator: "\n").compactMap({ pid_t($0) }) {
+        for pid in text.split(separator: "\n").compactMap({ pid_t($0) }) where isStub(pid, in: dir) {
             kill(pid, SIGKILL)
         }
+    }
+
+    private static func isStub(_ pid: pid_t, in dir: URL) -> Bool {
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-o", "command=", "-p", String(pid)]
+        let out = Pipe()
+        ps.standardOutput = out
+        ps.standardError = FileHandle.nullDevice
+        guard (try? ps.run()) != nil else { return false }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        ps.waitUntilExit()
+        return String(bytes: data, encoding: .utf8)?.contains(dir.path) == true
     }
 }

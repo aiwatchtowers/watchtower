@@ -17,10 +17,24 @@ import WatchtowerCore
 final class JiraAccountsViewModel {
     private(set) var accounts: [JiraAccount] = []
     var isConnecting = false
+    /// The account sign-in that waits in the browser, nil while none runs
+    /// (`jira add` names no account yet).
+    private(set) var waitingSignIn: WaitingSignIn?
     /// The account whose Re-login waits in the browser (its row shows the
-    /// waiting line and Cancel); nil while no Re-login runs. The Confluence
-    /// grants of an account show their wait in the Confluence section instead.
-    private(set) var signInAccountID: Int?
+    /// waiting line and Cancel). A Confluence grant shows its wait in the
+    /// Confluence section instead.
+    var signInAccountID: Int? {
+        if case .relogin(let id) = waitingSignIn { return id }
+        return nil
+    }
+
+    /// Which account sign-in a running browser flow is.
+    enum WaitingSignIn: Equatable {
+        /// The row's Re-login.
+        case relogin(Int)
+        /// Grant Confluence access or Allow editing (`--with-confluence[-write]`).
+        case confluenceGrant(Int)
+    }
     var error: String?
     /// The last account read failed (the error's own text); nil once one
     /// succeeds. Only the read: an action's failure stays in `error` (the
@@ -263,7 +277,7 @@ final class JiraAccountsViewModel {
     /// account's status is "error"/"revoked" and needs a fresh grant.
     func relogin(_ account: JiraAccount) async {
         await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart,
-                          signInAccountID: account.id)
+                          waiting: .relogin(account.id))
     }
 
     /// Connections → Jira → Confluence "Grant Confluence access": the same
@@ -273,7 +287,8 @@ final class JiraAccountsViewModel {
         await runAuthFlow(
             args: Self.loginArgs(accountID: accountID, withConfluence: true),
             failurePrefix: "Granting Confluence access failed",
-            daemonPolicy: .restart
+            daemonPolicy: .restart,
+            waiting: .confluenceGrant(accountID)
         )
     }
 
@@ -284,7 +299,8 @@ final class JiraAccountsViewModel {
         await runAuthFlow(
             args: Self.loginArgs(accountID: accountID, withConfluenceWrite: true),
             failurePrefix: "Allowing Confluence editing failed",
-            daemonPolicy: .restart
+            daemonPolicy: .restart,
+            waiting: .confluenceGrant(accountID)
         )
     }
 
@@ -295,9 +311,17 @@ final class JiraAccountsViewModel {
         }
         authProcess = nil
         isConnecting = false
-        signInAccountID = nil
+        waitingSignIn = nil
         connectStatus = nil
         siteChoices = nil
+    }
+
+    /// The Confluence section's Cancel: ends the running flow only when it is
+    /// still that account's Confluence grant, so a stale Cancel (its flow
+    /// already ended elsewhere) never stops another sign-in.
+    func cancelConfluenceGrant(accountID: Int) {
+        guard isConnecting, waitingSignIn == .confluenceGrant(accountID) else { return }
+        cancelConnect()
     }
 
     // MARK: - Enable / Disable
@@ -363,15 +387,15 @@ final class JiraAccountsViewModel {
     /// touches nothing after its process exits, except wiring in an account
     /// change that finished before the Cancel landed.
     ///
-    /// `signInAccountID` names the account a Re-login signs in again; it is
-    /// published while the flow runs.
+    /// `waiting` names the account sign-in the flow is; it is published
+    /// while the flow runs.
     @discardableResult
     private func runAuthFlow(
         args: [String],
         failurePrefix: String,
         daemonPolicy: DaemonRestartPolicy,
         picksSite: Bool = false,
-        signInAccountID: Int? = nil
+        waiting: WaitingSignIn? = nil
     ) async -> AuthFlowEnd {
         guard !isConnecting else {
             error = "Another connection is already in progress."
@@ -383,7 +407,7 @@ final class JiraAccountsViewModel {
         }
 
         isConnecting = true
-        self.signInAccountID = signInAccountID
+        waitingSignIn = waiting
         error = nil
         lastAuthFlowCancelled = false
         lastAuthFlowTimedOut = false
@@ -427,14 +451,19 @@ final class JiraAccountsViewModel {
         guard authProcess === process else {
             // It may still have finished before the Cancel landed (F9): the
             // account change happened, so wire it in like a finished one.
-            guard result.exitCode == 0 else { return .cancelled }
+            guard result.exitCode == 0 else {
+                // Killed, maybe part-way through saving: re-read the
+                // accounts so whatever landed shows (no daemon restart).
+                await refreshAsync()
+                return .cancelled
+            }
             refresh()
             daemonRestartTask = daemonPolicy.apply(using: daemon)
             return .cancelledAfterConnecting
         }
         authProcess = nil
         isConnecting = false
-        self.signInAccountID = nil
+        waitingSignIn = nil
         connectStatus = nil
         siteChoices = nil
         if siteChoiceDeclined {

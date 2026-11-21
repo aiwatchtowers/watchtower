@@ -346,7 +346,8 @@ final class ConfluenceSpacesViewModel {
     }
 
     /// The waiting line's Cancel: ends the login flow and puts the section
-    /// back as it was, with no error. The cancelled run's end is ignored.
+    /// back as it was, with no error. The cancelled run writes no result; it
+    /// only re-reads the section once its flow has ended (`runReconsent`).
     func cancelReconsent() {
         guard isWaitingForSignIn else { return }
         reconsentRun += 1
@@ -366,7 +367,13 @@ final class ConfluenceSpacesViewModel {
         isWaitingForSignIn = true
         reconsentError = nil
         let error = await flow(accountID)
-        guard run == reconsentRun else { return }
+        guard run == reconsentRun else {
+            // Cancelled, maybe while the CLI was saving: re-read the access
+            // and spaces so whatever landed shows, with no reconsent error.
+            // A newer run re-reads at its own end.
+            if !isReconsenting { await load() }
+            return
+        }
         isWaitingForSignIn = false
         reconsentError = error
         await load()

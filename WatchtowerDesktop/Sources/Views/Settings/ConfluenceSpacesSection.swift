@@ -38,6 +38,9 @@ struct ConfluenceSpacesSection: View {
             if featureOff {
                 featureOffContent
             } else if let vm = appState.confluenceSpacesViewModels[accountID] {
+                // Above the branches: a reload while the sign-in waits may
+                // switch them, and Cancel must stay.
+                if vm.isWaitingForSignIn { signInWait(vm) }
                 if vm.needsConsent {
                     consentContent(vm)
                 } else {
@@ -105,9 +108,7 @@ struct ConfluenceSpacesSection: View {
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
         }
-        if vm.isWaitingForSignIn {
-            signInWait(vm)
-        } else {
+        if !vm.isWaitingForSignIn {
             Button("Grant Confluence access") {
                 vm.reconsent()
             }
@@ -201,9 +202,7 @@ struct ConfluenceSpacesSection: View {
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
             }
-            if vm.isWaitingForSignIn {
-                signInWait(vm)
-            } else {
+            if !vm.isWaitingForSignIn {
                 Button("Allow editing") {
                     vm.allowEditing()
                 }

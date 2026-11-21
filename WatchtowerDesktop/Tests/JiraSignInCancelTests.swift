@@ -14,6 +14,9 @@ import XCTest
 final class JiraSignInCancelTests: XCTestCase {
     private let copy = SignInWaitCopy.atlassian
 
+    /// Account re-reads after the first one (`onAccountsChanged`).
+    private var rereads = 0
+
     private func make(ignoresTerm: Bool = false) async throws
         -> (JiraAccountsViewModel, AtlassianSignInStub, JiraAccount, DatabasePool) {
         let (pool, path) = try TestDatabase.createPool()
@@ -26,6 +29,7 @@ final class JiraSignInCancelTests: XCTestCase {
         let vm = JiraAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter()) { stub.cli }
         await vm.refreshAsync()
         let account = try XCTUnwrap(vm.accounts.first)
+        vm.onAccountsChanged = { [weak self] in self?.rereads += 1 }
         return (vm, stub, account, pool)
     }
 
@@ -35,7 +39,7 @@ final class JiraSignInCancelTests: XCTestCase {
     func testCancelEndsTheReloginSilently() async throws {
         let (vm, stub, account, _) = try await make()
         let run = Task { await vm.relogin(account) }
-        await stub.started(1)
+        await stub.started(1, of: run)
         XCTAssertTrue(vm.isConnecting)
         XCTAssertEqual(vm.signInAccountID, account.id)
 
@@ -47,6 +51,7 @@ final class JiraSignInCancelTests: XCTestCase {
         await run.value
         XCTAssertFalse(vm.isConnecting)
         XCTAssertNil(vm.error, "a Cancel is not an error")
+        XCTAssertEqual(rereads, 1, "the Cancel re-read the accounts once")
         XCTAssertEqual(stub.argv, ["jira login --account \(account.id) --app-return"])
     }
 
@@ -54,7 +59,7 @@ final class JiraSignInCancelTests: XCTestCase {
     func testCancelAsTheReloginEndsIsSilent() async throws {
         let (vm, stub, account, _) = try await make()
         let run = Task { await vm.relogin(account) }
-        await stub.started(1)
+        await stub.started(1, of: run)
         await stub.release(1, exitCode: 0)
         vm.cancelConnect()
 
@@ -69,16 +74,17 @@ final class JiraSignInCancelTests: XCTestCase {
     func testStaleReloginEndKeepsTheNewRunBusy() async throws {
         let (vm, stub, account, _) = try await make(ignoresTerm: true)
         let first = Task { await vm.relogin(account) }
-        await stub.started(1)
+        await stub.started(1, of: first)
         vm.cancelConnect()
 
         let second = Task { await vm.relogin(account) }
-        await stub.started(2)
+        await stub.started(2, of: second)
         await stub.release(1, exitCode: 1)
         await first.value
         XCTAssertTrue(vm.isConnecting, "the first run's end did not reset the second")
         XCTAssertEqual(vm.signInAccountID, account.id)
         XCTAssertNil(vm.error)
+        XCTAssertEqual(rereads, 1, "the cancelled run re-read the accounts")
 
         vm.cancelConnect()
         await stub.release(2, exitCode: 1)
@@ -101,7 +107,7 @@ final class JiraSignInCancelTests: XCTestCase {
         XCTAssertThrowsError(try idle.inspect().find(text: copy.line))
 
         let run = Task { await vm.relogin(account) }
-        await stub.started(1)
+        await stub.started(1, of: run)
         let waiting = JiraConnectionDetail().environment(appState)
         XCTAssertNoThrow(try waiting.inspect().find(text: copy.line))
         XCTAssertNoThrow(try waiting.inspect().find(text: copy.hint))
@@ -121,7 +127,7 @@ final class JiraSignInCancelTests: XCTestCase {
     func testConfluenceGrantDoesNotMarkTheRow() async throws {
         let (vm, stub, account, _) = try await make()
         let run = Task { await vm.reloginWithConfluence(accountID: account.id) }
-        await stub.started(1)
+        await stub.started(1, of: run)
         XCTAssertTrue(vm.isConnecting)
         XCTAssertNil(vm.signInAccountID)
         vm.cancelConnect()

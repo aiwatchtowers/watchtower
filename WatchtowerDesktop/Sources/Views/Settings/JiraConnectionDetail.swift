@@ -149,13 +149,15 @@ struct JiraConnectionDetail: View {
     private func accountRow(_ vm: JiraAccountsViewModel, account: JiraAccount, ref: AccountRef) -> some View {
         let status = appState.companyRowStatus(ref)
         let waiting = vm.isConnecting && vm.signInAccountID == account.id
+        // While its Re-login waits, the row's status gives way to the waiting
+        // lines under a grey dot.
         return CompanyAccountRow(
             title: account.displayName,
             tag: CompanyConnectionsPresentation.tag(ref),
-            status: status,
+            status: waiting ? nil : status,
             line: CompanyConnectionsPresentation.jiraRowLine(ref, title: account.displayName, enabled: account.enabled,
                                                              email: account.ownerEmail),
-            dot: statusColor(account),
+            dot: waiting ? Tone.status("gray") : statusColor(account),
             extra: AnyView(rowExtra(account, hasStatus: status != nil, waiting: waiting))
         ) {
             if waiting {
@@ -218,7 +220,7 @@ struct JiraConnectionDetail: View {
     /// status says it), the purge line, and the waiting sign-in's two lines.
     @ViewBuilder
     private func rowExtra(_ account: JiraAccount, hasStatus: Bool, waiting: Bool) -> some View {
-        if !hasStatus, !account.isOK, !account.error.isEmpty {
+        if !hasStatus, !waiting, !account.isOK, !account.error.isEmpty {
             Text(account.error)
                 .font(.caption)
                 .foregroundStyle(Tone.error)
