@@ -349,13 +349,18 @@ func (a *Answerer) lineCheck(sessionID int64, live LiveRun) func(ctx context.Con
 
 // SubmitLineNow types a line that answers no ask into sessionID only when
 // the session can take it now (the twin's stall ping): the PROJ-12 gates as
-// for an answer's line, and the host holds it rather than paste it beside
-// the owner's draft (HoldIfPromptText). Nothing is ever kept for later — a
-// line the session cannot take now returns DeliveryHeld (a failed read, a
-// permission prompt, the owner's draft), DeliveryNoSession or
-// DeliveryCannotType and is not queued; the caller tries again itself.
-// DeliverySubmitted is the only outcome that reached the agent.
-func (a *Answerer) SubmitLineNow(ctx context.Context, sessionID int64, line string) string {
+// for an answer's line, the session still stopped by the same stop the
+// caller saw (sessionstate.StoppedSince = stoppedSince, read right before
+// the paste and again after the pause), and the host holds it rather than
+// paste it beside the owner's draft (HoldIfPromptText). Nothing is ever kept
+// for later — a line the session cannot take now returns DeliveryHeld (a
+// failed read, a permission prompt, the owner's draft, an agent that went on
+// or asked since), DeliveryNoSession or DeliveryCannotType and is not
+// queued; the caller tries again itself. An agent that went on during the
+// pause gets no Return: the line stays typed and DeliveryHeld is returned
+// (the caller counts nothing). DeliverySubmitted is the only outcome that
+// reached the agent.
+func (a *Answerer) SubmitLineNow(ctx context.Context, sessionID int64, stoppedSince time.Time, line string) string {
 	live, ok, err := a.d.Sessions.Live(ctx, sessionID)
 	if err != nil {
 		return DeliveryHeld
@@ -363,12 +368,36 @@ func (a *Answerer) SubmitLineNow(ctx context.Context, sessionID int64, line stri
 	if !ok || live.Exited {
 		return DeliveryNoSession
 	}
-	if s, _, fresh := ReadState(ctx, a.d.DB, sessionID, live, a.d.Clock()); !fresh || sessionstate.NeedsApproval(s) {
+	sameStop := func(s sessionstate.State, r sessionstate.Row) bool {
+		if s != sessionstate.StateStopped {
+			return false
+		}
+		at, ok := sessionstate.StoppedSince(r)
+		return ok && at.Equal(stoppedSince)
+	}
+	if s, r, fresh := ReadState(ctx, a.d.DB, sessionID, live, a.d.Clock()); !fresh || !sameStop(s, r) {
 		return DeliveryHeld
+	}
+	var mu sync.Mutex
+	moved := false
+	lineCheck := a.lineCheck(sessionID, live)
+	check := func(ctx context.Context) CheckAnswer {
+		ans := lineCheck(ctx)
+		if !ans.Fresh {
+			return ans
+		}
+		s, r, fresh := ReadState(ctx, a.d.DB, sessionID, live, a.d.Clock())
+		if fresh && !sameStop(s, r) {
+			mu.Lock()
+			moved = true
+			mu.Unlock()
+			ans.CanSubmit = false
+		}
+		return ans
 	}
 	res, err := a.d.Sessions.Deliver(ctx, DeliverRequest{
 		SessionID: sessionID, Run: live.Run, Text: line, HoldIfPromptText: true, Settle: SubmitSettle,
-		Check: a.lineCheck(sessionID, live),
+		Check: check,
 	})
 	if err != nil {
 		return DeliveryNoSession
@@ -380,6 +409,11 @@ func (a *Answerer) SubmitLineNow(ctx context.Context, sessionID int64, line stri
 		}
 		return DeliverySubmitted
 	case DeliverTyped:
+		mu.Lock()
+		defer mu.Unlock()
+		if moved {
+			return DeliveryHeld
+		}
 		return DeliveryTyped
 	case DeliverHeld:
 		return DeliveryHeld

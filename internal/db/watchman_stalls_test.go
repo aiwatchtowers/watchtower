@@ -318,3 +318,81 @@ func TestMigration00212_StallKindRebuildKeepsRows(t *testing.T) {
 	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'watchman_stalls'`).Scan(&n))
 	assert.Zero(t, n)
 }
+
+// A session's own item queued or being decided — any kind — is pending;
+// a done one, or another session's, is not.
+func TestWatchmanSessionItemsPending(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	other := newTestSession(t, d, wb)
+	pending := func() bool {
+		t.Helper()
+		yes, err := d.WatchmanSessionItemsPending(s)
+		require.NoError(t, err)
+		return yes
+	}
+	insert := func(session int64, kind, refKind string, ref int64, state string) int64 {
+		t.Helper()
+		res, err := d.Exec(`INSERT INTO watchman_items (workbench_id, session_id, kind, ref_kind, ref_id, state, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, wb, session, kind, refKind, ref, state, wmTime(time.Now()))
+		require.NoError(t, err)
+		id, _ := res.LastInsertId()
+		return id
+	}
+	assert.False(t, pending(), "no items")
+	insert(s, "stall", "session", s, "done")
+	insert(other, "review_code", "round", 7, "queued")
+	assert.False(t, pending(), "a done item, another session's queued one")
+	review := insert(s, "review_code", "round", 8, "queued")
+	assert.True(t, pending(), "its code review queued")
+	_, err := d.Exec(`UPDATE watchman_items SET state = 'deciding' WHERE id = ?`, review)
+	require.NoError(t, err)
+	assert.True(t, pending(), "its code review deciding")
+	_, err = d.Exec(`UPDATE watchman_items SET state = 'done' WHERE id = ?`, review)
+	require.NoError(t, err)
+	assert.False(t, pending(), "decided")
+	insert(s, "ask", "ask", 9, "queued")
+	assert.True(t, pending(), "a question queued")
+}
+
+// Fix 8: a session ArmWatchmanSet newly arms — directly or under a target
+// it arms — starts its stall count afresh (Take back and re-arm before the
+// daemon's prune); one already armed keeps its row, and a re-arm that
+// inserts nothing changes no stall row.
+func TestArmWatchmanSet_ClearsStallsOfNewlyArmed(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	target := insertWorkbenchTargetRow(t, d, wb, "board item")
+	kept := newTestSession(t, d, wb)
+	retaken := newTestSession(t, d, wb)
+	underTarget := newTestSession(t, d, wb)
+	_, err := d.Exec(`UPDATE terminal_sessions SET target_id = ? WHERE id = ?`, target, underTarget)
+	require.NoError(t, err)
+	wmArmSession(t, d, kept)
+	for _, s := range []int64{kept, retaken, underTarget} {
+		require.NoError(t, d.UpsertWatchmanStall(WatchmanStallRow{SessionID: s, StoppedAt: time.Now(), Pings: 3}))
+	}
+	has := func(s int64) bool {
+		t.Helper()
+		st, err := d.WatchmanStall(s)
+		require.NoError(t, err)
+		return st != nil
+	}
+	now := time.Now()
+	inserted, err := d.ArmWatchmanSet([]WatchmanArming{{Scope: "session", RefID: kept, ArmedAt: now, ArmedBy: "cli"}}, nil)
+	require.NoError(t, err)
+	assert.False(t, inserted)
+	assert.True(t, has(kept), "a re-arm of an armed session keeps its count")
+
+	inserted, err = d.ArmWatchmanSet([]WatchmanArming{
+		{Scope: "session", RefID: kept, ArmedAt: now, ArmedBy: "cli"},
+		{Scope: "session", RefID: retaken, ArmedAt: now, ArmedBy: "cli"},
+		{Scope: "target", RefID: target, ArmedAt: now, ArmedBy: "cli"},
+	}, nil)
+	require.NoError(t, err)
+	assert.True(t, inserted)
+	assert.True(t, has(kept), "already armed: kept")
+	assert.False(t, has(retaken), "newly armed: afresh")
+	assert.False(t, has(underTarget), "newly armed under the target: afresh")
+}

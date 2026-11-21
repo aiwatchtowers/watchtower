@@ -129,6 +129,18 @@ func (db *DB) WatchmanSessionAskCount(sessionID int64) (int, error) {
 	return n, nil
 }
 
+// WatchmanSessionItemsPending reports whether sessionID has a Watchman item
+// still queued or being decided (any kind: a code review, a question, a
+// handover): the session waits on Watchman, not stalled.
+func (db *DB) WatchmanSessionItemsPending(sessionID int64) (bool, error) {
+	var yes bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM watchman_items
+		WHERE session_id = ? AND state IN ('queued','deciding'))`, sessionID).Scan(&yes); err != nil {
+		return false, fmt.Errorf("reading the pending watchman items of session %d: %w", sessionID, err)
+	}
+	return yes, nil
+}
+
 // WatchmanStallItemDone reports whether sessionID's stall item exists and
 // the owner marked it done (owner_done_at, the Desktop's Mark done): the
 // stall watch then counts its pings again.

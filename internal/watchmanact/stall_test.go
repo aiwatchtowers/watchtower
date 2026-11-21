@@ -996,3 +996,65 @@ func TestStall_RecoveredHeadIsProgress(t *testing.T) {
 		t.Fatalf("row = %+v, want reset by the recovered HEAD and pinged once", st)
 	}
 }
+
+// I1: an agent whose finish waits on Watchman's own code review (a queued
+// or deciding review_code item) is not stopped for the stall watch: no
+// ping, no park, no count — however long the review takes. Once the item
+// is done, a stop is pinged as usual.
+func TestStall_WaitingOnWatchmanReviewNotPinged(t *testing.T) {
+	e := newStallEnv(t)
+	res, err := e.db.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, state, created_at)
+		VALUES (?, ?, ?, 'review_code', 'round', 41, 'queued', ?)`, e.wb, e.session, e.target, stallT0.Format(time.RFC3339Nano))
+	e.must(err)
+	item, _ := res.LastInsertId()
+	at := stallT0
+	for i := 0; i < 2*StallMaxPings; i++ {
+		at = e.pingCycle(at.Add(time.Minute))
+		if i == StallMaxPings {
+			_, err = e.db.Exec(`UPDATE watchman_items SET state = 'deciding' WHERE id = ?`, item)
+			e.must(err)
+		}
+	}
+	if n := e.check(at.Add(StallStuckAfter + time.Hour)); n != 0 {
+		t.Fatalf("pinged %d times while Watchman reviews", n)
+	}
+	if e.row() != nil || len(e.stallItems()) != 0 {
+		t.Fatal("a stall row or item while Watchman reviews")
+	}
+	_, err = e.db.Exec(`UPDATE watchman_items SET state = 'done', outcome = 'approved' WHERE id = ?`, item)
+	e.must(err)
+	if n := len(e.port.delivered()); n != 0 {
+		t.Fatal("pinged before the review was done")
+	}
+	e.pingCycle(at.Add(time.Minute))
+	if n := len(e.port.delivered()); n != 1 {
+		t.Fatalf("pings after the review = %d, want 1", n)
+	}
+}
+
+// I1: a question queued while the workbench is learning (its item waits
+// for the end of learning) keeps the session waiting on Watchman, not
+// stopped; a ping already counted is kept, not raised.
+func TestStall_QueuedAskWhileLearningNotPinged(t *testing.T) {
+	e := newStallEnv(t)
+	at := e.pingCycle(stallT0)
+	if n := len(e.port.delivered()); n != 1 {
+		t.Fatalf("first ping = %d", n)
+	}
+	_, err := e.db.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, state, not_before, created_at)
+		VALUES (?, ?, ?, 'ask', 'ask', 77, 'queued', ?, ?)`, e.wb, e.session, e.target,
+		at.Add(24*time.Hour).Format(time.RFC3339Nano), at.Format(time.RFC3339Nano))
+	e.must(err)
+	for i := 0; i < 2*StallMaxPings; i++ {
+		at = e.pingCycle(at.Add(time.Minute))
+	}
+	if n := len(e.port.delivered()); n != 1 {
+		t.Fatalf("pings while the question waits = %d, want 1", n)
+	}
+	if st := e.row(); st == nil || st.Pings != 1 || st.ParkedAt != nil {
+		t.Fatalf("row = %+v, want the count kept at 1, not parked", st)
+	}
+	if len(e.stallItems()) != 0 {
+		t.Fatal("parked while the question waits")
+	}
+}

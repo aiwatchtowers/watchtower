@@ -138,10 +138,16 @@ func (db *DB) PruneWatchmanInstructions() (n int64, err error) {
 // ArmWatchmanSet arms every row (ArmWatchman each: a row already there keeps
 // its armed_at) and, when text is not nil, sets each row's instruction to
 // it — all in one transaction, so a failure on any row arms nothing and
-// changes no text. A nil text keeps the stored instructions. inserted
-// reports whether any row was new.
+// changes no text. A nil text keeps the stored instructions. Every session
+// this newly arms (directly or under a target) loses its stall row, so a
+// Take back and a re-arm before the daemon's prune starts its stall count
+// afresh. inserted reports whether any row was new.
 func (db *DB) ArmWatchmanSet(rows []WatchmanArming, text *string) (inserted bool, err error) {
 	err = db.WithTx(func(tx *sql.Tx) error {
+		before, err := armedSessionIDs(tx)
+		if err != nil {
+			return err
+		}
 		for _, a := range rows {
 			ins, err := armWatchman(tx, a)
 			if err != nil {
@@ -154,10 +160,47 @@ func (db *DB) ArmWatchmanSet(rows []WatchmanArming, text *string) (inserted bool
 				}
 			}
 		}
+		if !inserted {
+			return nil
+		}
+		after, err := armedSessionIDs(tx)
+		if err != nil {
+			return err
+		}
+		for id := range after {
+			if before[id] {
+				continue
+			}
+			if _, err := tx.Exec(`DELETE FROM watchman_stalls WHERE session_id = ?`, id); err != nil {
+				return fmt.Errorf("clearing the watchman stall of session %d: %w", id, err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return false, err
 	}
 	return inserted, nil
+}
+
+// armedSessionIDs is the set of sessions the twin acts for now (the arming
+// rule of armedSessionsFrom), read inside tx.
+func armedSessionIDs(tx *sql.Tx) (map[int64]bool, error) {
+	rows, err := tx.Query(`SELECT id FROM (` + armedSessionsFrom + `)`)
+	if err != nil {
+		return nil, fmt.Errorf("listing the armed sessions: %w", err)
+	}
+	defer rows.Close()
+	ids := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("listing the armed sessions: %w", err)
+		}
+		ids[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing the armed sessions: %w", err)
+	}
+	return ids, nil
 }
