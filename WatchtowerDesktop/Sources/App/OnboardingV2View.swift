@@ -16,6 +16,19 @@ struct OnboardingV2View: View {
     }
 
     var body: some View {
+        HStack(spacing: 0) {
+            steps
+            // The connect assistant (agent connect #2133 §7) beside the
+            // Connect step. Leaving the step only hides it: its run goes on
+            // and shows again on the way back; only Close ends it.
+            if appState.onboarding.currentStep == .connect, let session = appState.connectAssistantPanelSession {
+                Rectangle().fill(Stroke.hairlineColor).frame(width: Stroke.hairline)
+                ConnectAssistantHost(session: session)
+            }
+        }
+    }
+
+    private var steps: some View {
         VStack(spacing: 20) {
             BannerImage(maxWidth: 200)
             OnboardingStepIndicator(

@@ -56,6 +56,25 @@ final class SlackConnectFlowModelTests: XCTestCase {
         XCTAssertEqual(rig.sent, [], "nothing goes to the child before the owner acts")
     }
 
+    /// The connect assistant's start shows no sheet (its panel does); once it
+    /// goes idle, an incoming link asks through the sheet again (#2133).
+    func testAssistantStartShowsNoSheetAndALinkDoes() async {
+        let rig = await makeRig()
+        XCTAssertTrue(rig.model.start(target, byAssistant: true))
+        XCTAssertTrue(rig.model.startedByAssistant)
+        XCTAssertFalse(rig.model.showsSheet)
+        rig.emit(.browser(flow: "f1"))
+        XCTAssertFalse(rig.model.showsSheet, "the browser step stays the panel's")
+        rig.model.cancel()
+        XCTAssertEqual(rig.model.step, .idle)
+        XCTAssertFalse(rig.model.startedByAssistant, "idle clears the owner")
+
+        rig.emit(.link(flow: "f9", teamID: "T0ACME", clientID: "1111.2222"))
+        XCTAssertEqual(rig.model.step, .confirming(flow: "f9", target: target))
+        XCTAssertFalse(rig.model.startedByAssistant)
+        XCTAssertTrue(rig.model.showsSheet, "a link's confirm is the sheet's")
+    }
+
     func testWaitingLineAfterFiveMinutes() async {
         let rig = await makeRig()
         inBrowser(rig)

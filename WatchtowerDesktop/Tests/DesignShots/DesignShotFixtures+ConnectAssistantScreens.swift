@@ -8,37 +8,31 @@ import WatchtowerTestSupport
 /// The connect assistant spec's entry points beyond the overview (#2133,
 /// §7): a service detail's **Add an account** (`connect-detail-add-account`)
 /// and the onboarding Connect step (`connect-onboarding-step`), each with
-/// **Connect with Claude** first and today's controls beside it. Design-only
-/// copies of `GoogleConnectionDetail` and `OnboardingConnectStepView`; sample
-/// data only (`acme`, `example.com`).
+/// **Connect with Claude** first and today's controls beside it. Built from
+/// the screens' own parts (`CompanyAccountsSections`,
+/// `OnboardingConnectSourceRow`); sample data only (`acme`, `example.com`).
 @MainActor
 enum ConnectAssistantScreenFixtures {
     static var shots: [DesignShot] {
         [
             DesignShot(name: "connect-detail-add-account", size: NSSize(width: 860, height: 0)) {
-                AnyView(GoogleDetailAgentMock(harness: .fixture("claude")))
+                AnyView(GoogleDetailAgentScene(harness: .fixture("claude")))
             },
             DesignShot(name: "connect-onboarding-step", size: NSSize(width: 860, height: 0)) {
-                AnyView(OnboardingConnectAgentMock(harness: .fixture("claude")))
+                AnyView(OnboardingConnectAgentScene(harness: .fixture("claude")))
+            },
+            // The step beside the 380 pt panel in the 800 pt minimum window: the pair stacks.
+            DesignShot(name: "connect-onboarding-step-narrow", size: NSSize(width: 420, height: 0)) {
+                AnyView(OnboardingConnectAgentScene(harness: .fixture("claude")))
             }
         ]
     }
 }
 
-/// The sparkles button that opens the assistant (spec §7): secondary, never
-/// the screen's prominent one.
-private struct AgentConnectButton: View {
-    let title: String
-
-    var body: some View {
-        Button {} label: { Label(title, systemImage: "sparkles") }
-            .buttonStyle(.kitSecondary)
-    }
-}
-
-/// Design only: the Google detail pane with two accounts and **Add an
-/// account** offering the assistant beside today's Google buttons.
-private struct GoogleDetailAgentMock: View {
+/// The Google detail's accounts half (the real `CompanyAccountsSections`)
+/// with two accounts and **Add an account** offering the assistant first,
+/// over the detail's sync settings.
+private struct GoogleDetailAgentScene: View {
     let harness: ConnectHarness
 
     private typealias Pres = CompanyConnectionsPresentation
@@ -52,16 +46,19 @@ private struct GoogleDetailAgentMock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.large) {
-            CompanyAccountGroups(
-                groups: Pres.groups(vendor: .google, accounts: Self.accounts, companies: Self.companies) { _ in false },
-                connect: CompanyGroupConnect { _, _ in }
-            ) { ref in row(ref) }
-            SettingsSection(title: Pres.addAccountTitle) {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: Spacing.regular) { addButtons }
-                    VStack(alignment: .leading, spacing: Spacing.regular) { addButtons }
-                }
-            }
+            CompanyAccountsSections(
+                vendor: .google,
+                banner: nil,
+                list: .groups(Pres.groups(vendor: .google, accounts: Self.accounts, companies: Self.companies) { _ in false }),
+                emptyActions: Pres.detailActions(.google, companies: Self.companies, empty: true),
+                addActions: Pres.detailActions(.google, companies: Self.companies, empty: false),
+                connect: CompanyGroupConnect { _, _ in },
+                agent: ConnectAgentEntry(harness: { _ in harness }, open: { _ in }),
+                perform: { _ in },
+                bannerAction: { _ in },
+                tryAgain: {},
+                row: row
+            )
             SettingsSection(title: "Google Calendar") {
                 Toggle("Enable calendar sync", isOn: .constant(true))
                 Picker("Sync days ahead", selection: .constant(7)) {
@@ -79,17 +76,6 @@ private struct GoogleDetailAgentMock: View {
         .detailBackground()
     }
 
-    @ViewBuilder private var addButtons: some View {
-        AgentConnectButton(title: "Connect with \(harness.name)")
-        ForEach(Pres.detailActions(.google, companies: Self.companies, empty: false)) { action in
-            if action.emphasis == .quiet {
-                Button(action.title) {}.buttonStyle(.kitQuiet)
-            } else {
-                Button(action.title) {}.buttonStyle(.kitSecondary)
-            }
-        }
-    }
-
     private func row(_ ref: AccountRef) -> some View {
         CompanyAccountRow(
             title: ref.label,
@@ -102,10 +88,10 @@ private struct GoogleDetailAgentMock: View {
     }
 }
 
-/// Design only: onboarding step 2 with **Connect with Claude** first on every
-/// source row and today's **Connect** second; **Continue** stays the one
-/// prominent button.
-private struct OnboardingConnectAgentMock: View {
+/// Onboarding step 2 from its own rows (`OnboardingConnectSourceRow`):
+/// **Connect with Claude** first on every source and today's **Connect**
+/// second; **Continue** stays the one prominent button.
+private struct OnboardingConnectAgentScene: View {
     let harness: ConnectHarness
 
     private static let sources: [(letter: String, title: String, subtitle: String)] = [
@@ -126,10 +112,13 @@ private struct OnboardingConnectAgentMock: View {
                     .foregroundStyle(.secondary)
             }
             VStack(spacing: Spacing.small) {
-                ForEach(Self.sources, id: \.title) { row($0) }
+                ForEach(Self.sources, id: \.title) { source in
+                    OnboardingConnectSourceRow(
+                        letter: source.letter, title: source.title, subtitle: source.subtitle,
+                        connect: {}, agent: (harness, {}))
+                }
             }
-            Label("Everything stays on your Mac. \(harness.name) walks you through each sign-in; "
-                  + "Connect opens the same sheet as in Settings.", systemImage: "lock")
+            Label(ConnectAssistantPresentation.onboardingFootnote(harness), systemImage: "lock")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
@@ -149,24 +138,5 @@ private struct OnboardingConnectAgentMock: View {
         .padding(.vertical, 28)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(Surface.window)
-    }
-
-    private func row(_ source: (letter: String, title: String, subtitle: String)) -> some View {
-        HStack(spacing: Spacing.medium) {
-            Text(source.letter)
-                .fontWeight(.bold)
-                .frame(width: 34, height: 34)
-                .background(RoundedRectangle(cornerRadius: Radius.control).fill(Fill.hover))
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                Text(source.title).fontWeight(.semibold)
-                Text(source.subtitle).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            AgentConnectButton(title: "Connect with \(harness.name)")
-            Button("Connect") {}.buttonStyle(.kitQuiet)
-        }
-        .padding(.horizontal, Spacing.medium)
-        .padding(.vertical, Spacing.regular)
-        .card()
     }
 }

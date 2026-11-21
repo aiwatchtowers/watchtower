@@ -1,6 +1,6 @@
 # Connect your own Google project with the assistant
 
-Press **Connect with Claude** (or Codex) beside **Use my own Google project** in **Connections → Google** and the assistant builds a Google Cloud project of your own for Gmail and Calendar, then connects your account through it. It works in Google Cloud Console; you make the one click that shows the client secret, type it into a secure card it never sees, and sign in. This page is the assistant's script: **Agent** steps are its own, **You** steps are yours, **You only** steps are clicks it must leave to you.
+Open **Use my own Google project** in **Connections → Google** and press **Connect with Claude** (or Codex) beside **Connect**: the assistant builds a Google Cloud project of your own for Gmail and Calendar, then connects your account through it. It works in Google Cloud Console; you make the one click that shows the client secret, type it into a secure card it never sees, and sign in. This page is the assistant's script: **Agent** steps are its own, **You** steps are yours, **You only** steps are clicks it must leave to you.
 
 ## What you get
 

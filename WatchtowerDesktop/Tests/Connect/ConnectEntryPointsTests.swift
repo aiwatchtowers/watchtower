@@ -265,7 +265,7 @@ final class ConnectEntryPointsTests: XCTestCase {
         state.openConnectAssistant(service: "company")
         let session = try XCTUnwrap(state.connectAssistants.loaded("company"))
         XCTAssertEqual(session.harness.id, "codex")
-        let turn = await startRun(session, ai: ai)
+        let turn = try await startRun(session, ai: ai)
         ai.emit(.failure(ChatSessionError(turnID: "t", code: .rateLimit, message: "You've hit your usage limit",
                                           retryable: false, reason: "quota_exhausted")), call: turn)
         ai.finish(call: turn)
@@ -301,7 +301,7 @@ final class ConnectEntryPointsTests: XCTestCase {
         install(ai: ai, in: state)
         state.openConnectAssistant(service: "google_own_project")
         let own = try XCTUnwrap(state.connectAssistants.loaded("google_own_project"))
-        _ = await startRun(own, ai: ai)
+        _ = try await startRun(own, ai: ai)
         XCTAssertNotEqual(own.state, .empty)
 
         state.connectAssistantService = "google"
@@ -325,7 +325,7 @@ final class ConnectEntryPointsTests: XCTestCase {
         install(ai: ai, in: state, connects: true)
         state.openConnectAssistant(service: "company")
         let session = try XCTUnwrap(state.connectAssistants.loaded("company"))
-        let turn = await startRun(session, ai: ai)
+        let turn = try await startRun(session, ai: ai)
         _ = await session.handle(ConnectWireRequest(id: 1, tool: "connect_start", args: Data("{}".utf8)))
         _ = await session.handle(ConnectWireRequest(id: 2, tool: "connect_wait", args: Data("{}".utf8)))
         await untilObserved { if case .done = session.state { true } else { false } }
@@ -352,6 +352,211 @@ final class ConnectEntryPointsTests: XCTestCase {
         XCTAssertTrue(state.connectAssistantPanelSession === state.connectAssistants.loaded("company"))
     }
 
+    // MARK: - Details, onboarding, company entries (Task 15)
+
+    /// A detail's Add an account row: **Connect with <harness>** first; the
+    /// Jira empty state's **Set up for my company** has its agent button
+    /// beside it; the buttons wait while the detail's own sign-in runs.
+    func testDetailAddAccountHasAgentItem() throws {
+        var opened: [String] = []
+        let agent = ConnectAgentEntry(harness: { _ in .fixture("claude") }, open: { opened.append($0) })
+        let acme = CompanyRef(slug: "acme", name: "Acme", personal: false, vendors: [.google: ""])
+        let accounts = [AccountRef(vendor: .google, accountID: 1, label: "alice@example.com", companySlug: "acme",
+                                   status: "ok", error: "")]
+        let groups = CompanyConnectionsPresentation.groups(vendor: .google, accounts: accounts, companies: [acme]) { _ in false }
+        let google = sections(.google, list: .groups(groups), companies: [acme], agent: agent)
+        XCTAssertEqual(try buttonTitles(google).first, "Connect with Claude")
+        try google.inspect().find(button: "Connect with Claude").tap()
+        XCTAssertEqual(opened, ["google"])
+
+        let jira = sections(.atlassian, list: .empty("No Jira site yet"), companies: [], agent: agent)
+        let titles = try buttonTitles(jira)
+        XCTAssertEqual(titles.first, "Connect with Claude")
+        let setUp = try XCTUnwrap(titles.firstIndex(of: CompaniesZoneState.Action.setUpForCompany.title))
+        XCTAssertEqual(titles[setUp + 1], "Set up for my company with Claude")
+        try jira.inspect().find(button: "Set up for my company with Claude").tap()
+        try jira.inspect().find(button: "Connect with Claude").tap()
+        XCTAssertEqual(opened, ["google", "company", "jira"])
+
+        let busy = sections(.atlassian, list: .empty("No Jira site yet"), companies: [], agent: agent, busy: true)
+        XCTAssertTrue(try busy.inspect().find(button: "Connect with Claude").isDisabled())
+        XCTAssertTrue(try busy.inspect().find(button: "Set up for my company with Claude").isDisabled())
+
+        // The other details' button reads the app state: Slack once its view model loads.
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let state = appState()
+        XCTAssertThrowsError(try agentButton(in: state), "no driver yet: no button")
+        state.initSlackAccounts(dbPool: pool)
+        let before = state.selectedDestination
+        state.selectedDestination = .targets
+        try agentButton(in: state).tap()
+        XCTAssertEqual(state.connectAssistantService, "slack")
+        XCTAssertEqual(state.selectedDestination, .connections)
+        state.selectedDestination = before
+    }
+
+    /// Onboarding: each source row offers the agent first and today's
+    /// Connect as the quiet link; the panel opens beside the step (no tab is
+    /// chosen), Set up by hand comes back as the step's own sheet, and the
+    /// drivers' daemon restart stays deferred.
+    func testOnboardingOffersAgentFirst() throws {
+        var agentPressed = 0
+        var connectPressed = 0
+        let row = OnboardingConnectSourceRow(
+            letter: "J", title: "Jira", subtitle: "Issues and boards · for tasks",
+            connect: { connectPressed += 1 }, agent: (.fixture("claude"), { agentPressed += 1 }))
+        XCTAssertEqual(Array(try buttonTitles(row).prefix(2)), ["Connect with Claude", "Connect"])
+        try row.inspect().find(button: "Connect with Claude").tap()
+        try row.inspect().find(button: "Connect").tap()
+        XCTAssertEqual([agentPressed, connectPressed], [1, 1])
+        let connected = OnboardingConnectSourceRow(
+            letter: "J", title: "Jira", subtitle: "", connected: "acme.atlassian.net", connect: {},
+            agent: (.fixture("claude"), {}))
+        XCTAssertThrowsError(try connected.inspect().find(button: "Connect with Claude"), "a connected source adds nothing")
+
+        XCTAssertEqual(OnboardingConnectStepView.connectService(.jira), .jira)
+        XCTAssertEqual(OnboardingConnectStepView.addRequestSheet(.google), .google)
+        XCTAssertEqual(OnboardingConnectStepView.addRequestSheet(.slack), .slack)
+        XCTAssertNil(OnboardingConnectStepView.addRequestSheet(.email), "the step has no Email sheet")
+
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let state = appState()
+        state.needsOnboarding = true
+        state.initGoogleAccounts(dbPool: pool)
+        XCTAssertEqual(state.accountDaemonPolicy, .deferred, "a connect during onboarding leaves the daemon to its finish")
+        let destination = state.selectedDestination
+        XCTAssertEqual(state.connectAssistantButton(for: "google")?.name, "Claude")
+        state.openConnectAssistant(service: "google")
+        XCTAssertEqual(state.connectAssistantService, "google")
+        XCTAssertEqual(state.selectedDestination, destination, "the panel shows beside the step")
+        state.connectAssistantSetUpByHand(service: "google")
+        XCTAssertNil(state.connectAssistantService, "the panel closes")
+        XCTAssertEqual(state.connectionAddRequest, .google, "the step opens its Google sheet")
+        XCTAssertNil(state.selectedConnection, "no Connections detail behind onboarding")
+    }
+
+    /// Leaving the onboarding Connect step (Back, Continue) only hides the
+    /// panel: the run goes on and shows again on the way back.
+    func testOnboardingStepLeftKeepsTheRun() async throws {
+        let state = appState(ready: ["codex"])  // words only: no browser probe turn to answer
+        state.needsOnboarding = true
+        let ai = ScriptedAIService()
+        install(ai: ai, in: state)
+        state.openConnectAssistant(service: "slack")
+        let session = try XCTUnwrap(state.connectAssistantPanelSession)
+        let turn = try await startRun(session, ai: ai)
+        XCTAssertEqual(session.engine?.isBusy, true)
+
+        state.onboarding.goTo(.purpose)
+        XCTAssertEqual(session.engine?.isBusy, true, "leaving the step stops nothing")
+        state.onboarding.goTo(.connect)
+        state.openConnectAssistant(service: "slack")
+        XCTAssertTrue(state.connectAssistantPanelSession === session, "the same run shows again")
+        XCTAssertEqual(session.engine?.isBusy, true)
+        ai.finish(call: turn)
+    }
+
+    /// The own Google project page offers the assistant beside Connect
+    /// until it is done; the app state offers it under the policy only.
+    func testOwnGoogleOffersAgent() throws {
+        var pressed = 0
+        let model = OwnGoogleProjectModel { nil }
+        let page = OwnGoogleProjectPage(model: model, agent: (.fixture("claude"), { pressed += 1 }))
+        try page.inspect().find(button: "Connect with Claude").tap()
+        XCTAssertEqual(pressed, 1)
+
+        let state = appState()
+        XCTAssertEqual(state.connectAssistantButton(for: AppState.ownGoogleProjectConnectService)?.name, "Claude")
+        state.openConnectAssistant(service: AppState.ownGoogleProjectConnectService)
+        XCTAssertEqual(state.connectAssistantService, AppState.ownGoogleProjectConnectService)
+        XCTAssertEqual(state.connectAssistantPanelSession?.displayName, "your Google project")
+        let locked = appState(policy: ["AllowOwnGoogleProject": false])
+        XCTAssertNil(locked.connectAssistantButton(for: AppState.ownGoogleProjectConnectService))
+    }
+
+    /// No harness: every Task 15 surface is today's screen, unchanged.
+    func testNoAgentEntriesWhenNoHarness() throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let none = appState(ready: [])
+        none.initSlackAccounts(dbPool: pool)
+        none.initGoogleAccounts(dbPool: pool)
+        for service in ["slack", "google", "jira", "linear", "company", AppState.ownGoogleProjectConnectService] {
+            XCTAssertNil(none.connectAgentEntry.harness(service), service)
+        }
+        XCTAssertThrowsError(try agentButton(in: none))
+
+        let jira = sections(.atlassian, list: .empty("No Jira site yet"), companies: [], agent: none.connectAgentEntry)
+        XCTAssertFalse(try buttonTitles(jira).contains { $0.hasSuffix("with Claude") })
+        XCTAssertTrue(try buttonTitles(jira).contains(CompaniesZoneState.Action.setUpForCompany.title))
+
+        let row = OnboardingConnectSourceRow(letter: "S", title: "Slack", subtitle: "") {}
+        XCTAssertEqual(try buttonTitles(row), ["Connect"])
+        XCTAssertEqual(Pres.onboardingFootnote(nil),
+                       "Everything stays on your Mac. Connect opens the same sheet as in Settings.")
+
+        let page = OwnGoogleProjectPage(model: OwnGoogleProjectModel { nil })
+        XCTAssertThrowsError(try page.inspect().find(button: "Connect with Claude"))
+    }
+
+    /// A source the organization blocks: its detail offers no agent button,
+    /// not even **Set up for my company with <harness>** (spec §6). The
+    /// Slack add row offers the agent only where it offers Add.
+    func testBlockedDetailAndHiddenSlackAddOfferNoAgent() throws {
+        let agent = ConnectAgentEntry(harness: { _ in .fixture("claude") }, open: { _ in })
+        let blocked = sections(.atlassian, list: .empty("No Jira site yet"), companies: [], agent: agent, blocked: true)
+        let titles = try buttonTitles(blocked)
+        XCTAssertFalse(titles.contains { $0.hasSuffix("with Claude") }, "\(titles)")
+        XCTAssertTrue(titles.contains(CompaniesZoneState.Action.setUpForCompany.title), "today's button stays")
+
+        var pressed = 0
+        let slack = SlackWorkspacesAddRow(section: nil, agent: (.fixture("claude"), { pressed += 1 }), add: {}, openFold: {})
+        XCTAssertEqual(try buttonTitles(slack), ["Connect with Claude", "Add Slack Workspace"])
+        try slack.inspect().find(button: "Connect with Claude").tap()
+        XCTAssertEqual(pressed, 1)
+        let noAdd = SlackModePresentation.ConnectSection(
+            display: .off, portBusy: false, expanded: true, organizationApps: [], accounts: [], builtinApp: false)
+        XCTAssertFalse(noAdd.showsAddAccount)
+        let hidden = SlackWorkspacesAddRow(section: noAdd, agent: (.fixture("claude"), {}), add: {}, openFold: {})
+        XCTAssertFalse(try buttonTitles(hidden).contains("Connect with Claude"))
+        // Full without a built-in app: no Add, but the connect section is the
+        // manual path (the code/link flow the driver runs), so the agent shows.
+        let fullNoApp = SlackModePresentation.ConnectSection(
+            display: .full, portBusy: false, expanded: false, organizationApps: [], accounts: [], builtinApp: false)
+        let full = SlackWorkspacesAddRow(section: fullNoApp, agent: (.fixture("claude"), {}), add: {}, openFold: {})
+        XCTAssertEqual(try buttonTitles(full), ["Connect with Claude", fullNoApp.foldButton])
+    }
+
+    private func sections(
+        _ vendor: CompanyVendor,
+        list: AccountsListState,
+        companies: [CompanyRef],
+        agent: ConnectAgentEntry,
+        busy: Bool = false,
+        blocked: Bool = false
+    ) -> CompanyAccountsSections<EmptyView> {
+        CompanyAccountsSections(
+            vendor: vendor, banner: nil, list: list,
+            emptyActions: CompanyConnectionsPresentation.detailActions(vendor, companies: companies, empty: true),
+            addActions: CompanyConnectionsPresentation.detailActions(vendor, companies: companies, empty: false),
+            connect: CompanyGroupConnect { _, _ in }, blocked: blocked, busy: busy, agent: agent,
+            perform: { _ in }, bannerAction: { _ in }, tryAgain: {}, row: { _ in EmptyView() })
+    }
+
+    /// A detail's Slack agent button over `state`.
+    private func agentButton(in state: AppState) throws -> InspectableView<ViewType.Button> {
+        try ConnectAgentDetailButton(service: .slack).environment(state).inspect().find(button: "Connect with Claude")
+    }
+
+    /// The titles of a view's buttons, in order.
+    private func buttonTitles(_ view: some View) throws -> [String] {
+        try view.inspect().findAll(ViewType.Button.self).compactMap { button in
+            try? button.labelView().find(ViewType.Text.self).string()
+        }
+    }
+
     // MARK: - Helpers
 
     /// The app state's sessions over a scripted AI and a one-flow driver:
@@ -368,7 +573,14 @@ final class ConnectEntryPointsTests: XCTestCase {
         addTeardownBlock { @MainActor in state.connectAssistant.closeAll() }
     }
 
-    private func startRun(_ session: ConnectAssistantSession, ai: ScriptedAIService) async -> Int {
+    /// Starts a words-only run. A browser harness would first run a probe
+    /// turn that the scripted AI never answers, so `prepared()` would wait
+    /// forever: such a test fails here instead of hanging.
+    private func startRun(_ session: ConnectAssistantSession, ai: ScriptedAIService) async throws -> Int {
+        guard session.harness.capability != .browser else {
+            XCTFail("startRun needs a words-only harness (codex): \(session.harness.id) probes its browser first")
+            throw CancellationError()
+        }
         session.start()
         await session.prepared()
         await session.engine?.started()

@@ -167,7 +167,11 @@ package final class SlackConnectFlowModel {
     }
 
     package private(set) var step: Step = .idle {
-        didSet { settleRun() }
+        didSet {
+            if case .confirming = step { startedByAssistant = false } // a link: the sheet asks
+            if step == .idle { startedByAssistant = false }
+            settleRun()
+        }
     }
     /// The connect section's field.
     package var pasteText = "" {
@@ -226,8 +230,21 @@ package final class SlackConnectFlowModel {
     /// The paste field, MDM rows and Reconnect may start a flow now.
     package var canStart: Bool { !isRunning && !externalBusy() }
 
-    /// The flow sheet is up (every step but idle).
-    package var showsSheet: Bool { step != .idle }
+    /// The flow sheet is up (every step but idle), except for a flow the
+    /// connect assistant started: its panel shows that run's progress,
+    /// cards and Cancel, and a sheet over it would hide them (#2133).
+    package var showsSheet: Bool { step != .idle && !startedByAssistant }
+
+    /// The current flow was started by the connect assistant (its Slack
+    /// driver); a link, a manual start or the step going idle clears it.
+    package private(set) var startedByAssistant = false
+
+    /// The assistant's run ended (its panel closed) with this flow still on:
+    /// the flow keeps today's behaviour (spec §8), so its sheet (with
+    /// **Cancel**, then **Done**) shows again in Connections and onboarding.
+    package func handToSheet() {
+        startedByAssistant = false
+    }
 
     // MARK: - Starting
 
@@ -256,10 +273,12 @@ package final class SlackConnectFlowModel {
     }
 
     /// Starts a flow without the confirm (paste, MDM, Reconnect, the setup's
-    /// admin connect). False when one already runs: nothing is sent.
+    /// admin connect, the connect assistant with `byAssistant`). False when
+    /// one already runs: nothing is sent.
     @discardableResult
-    package func start(_ target: SlackConnectTarget) -> Bool {
+    package func start(_ target: SlackConnectTarget, byAssistant: Bool = false) -> Bool {
         guard canStart else { return false }
+        startedByAssistant = byAssistant
         host.ensureRunning()
         step = .starting(target)
         if !host.send(.start(teamID: target.teamID, clientID: target.clientID, accountID: target.accountID)) {

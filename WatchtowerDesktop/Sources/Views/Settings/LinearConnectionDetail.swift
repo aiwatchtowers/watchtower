@@ -101,6 +101,7 @@ struct LinearConnectionDetail: View {
                     .textSelection(.enabled)
             }
             HStack(spacing: Spacing.regular) {
+                ConnectAgentDetailButton(service: .linear, disabled: vm.isBusy)
                 Button("Add Linear Workspace") { showAddSheet = true }
                     .buttonStyle(.kitSecondary)
                     .managedByOrganization(sourceBlocked)

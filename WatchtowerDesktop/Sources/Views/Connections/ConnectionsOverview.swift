@@ -10,10 +10,7 @@ struct ConnectionsOverview: View {
 
     var body: some View {
         let openService: (ConnectionService) -> Void = { appState.openConnections($0) }
-        let agent = ConnectAgentEntry(
-            harness: { appState.connectAssistantButton(for: $0) },
-            open: { appState.openConnectAssistant(service: $0) }
-        )
+        let agent = appState.connectAgentEntry
         ConnectionsOverviewContent(
             summaries: appState.connectionSummaries,
             companies: CompaniesZone(state: appState.companiesZoneState, model: appState.companiesZone,
@@ -154,6 +151,25 @@ struct ConnectAgentButton: View {
     var body: some View {
         Button(action: action) { Label(title, systemImage: "sparkles") }
             .buttonStyle(.kitSecondary)
+    }
+}
+
+/// A service detail's **Connect with <harness>** in its Add an account row
+/// (spec §7): nothing when the app state offers no button for the service
+/// (blocked, no harness, no driver yet). `disabled` while the detail's own
+/// sign-in runs, as its other Add buttons are.
+struct ConnectAgentDetailButton: View {
+    @Environment(AppState.self) private var appState
+    let service: ConnectionService
+    var disabled = false
+
+    var body: some View {
+        if let harness = appState.connectAssistantButton(for: service.rawValue) {
+            ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(harness)) {
+                appState.openConnectAssistant(service: service.rawValue)
+            }
+            .disabled(disabled)
+        }
     }
 }
 

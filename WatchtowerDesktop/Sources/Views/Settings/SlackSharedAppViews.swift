@@ -85,11 +85,29 @@ struct SlackWorkspacesAddRow: View {
     let section: SlackModePresentation.ConnectSection?
     var blocked = false
     var addDisabled = false
+    /// The connect assistant's **Connect with <harness>** (agent connect
+    /// spec §7), first and only where a manual add path is offered: the
+    /// agent offers no more than the manual path. It waits while a sign-in
+    /// runs.
+    var agent: (harness: ConnectHarness, open: () -> Void)?
     let add: () -> Void
     let openFold: () -> Void
 
+    /// A manual way to add a workspace is on screen: **Add Slack
+    /// Workspace** (a build with its own app), or Full's connect section
+    /// (**Connect another workspace…**, folded or open) — the code/link
+    /// flow the assistant's Slack driver also runs.
+    var offersManualAdd: Bool {
+        guard let section else { return true }
+        return section.showsAddAccount || section.showsFoldButton
+    }
+
     var body: some View {
         HStack(spacing: Spacing.regular) {
+            if offersManualAdd, let agent {
+                ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(agent.harness), action: agent.open)
+                    .disabled(addDisabled)
+            }
             if section?.showsAddAccount ?? true {
                 Button("Add Slack Workspace", action: add)
                     .buttonStyle(.kitSecondary)
