@@ -195,7 +195,7 @@ func TestAIModels_JSONCarriesCapabilities(t *testing.T) {
 		require.NotEmpty(t, p.Capabilities, p.ID)
 		var keys map[string]any
 		require.NoError(t, json.Unmarshal(p.Capabilities, &keys))
-		assert.Len(t, keys, 15, "%s: every capability key", p.ID)
+		assert.Len(t, keys, 16, "%s: every capability key", p.ID)
 		rows = append(rows, row(p))
 	}
 	got, err := json.MarshalIndent(map[string]any{"providers": rows}, "", "  ")

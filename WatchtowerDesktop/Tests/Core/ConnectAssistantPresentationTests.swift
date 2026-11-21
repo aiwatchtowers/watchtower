@@ -1,17 +1,27 @@
 import Testing
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 @Suite("ConnectAssistantPresentation")
+@MainActor
 struct ConnectAssistantPresentationTests {
     private typealias Pres = ConnectAssistantPresentation
 
+    /// The catalog's rows (`ai_models_capabilities.json`): Claude drives the
+    /// browser, Codex guides in words.
+    private let claude = ConnectHarness.fixture("claude")
+    private let codex = ConnectHarness.fixture("codex")
+    /// A browser harness named Codex: the mode line once a second harness
+    /// drives the browser.
+    private let codexBrowser = ConnectHarness(id: "codex", name: "Codex", capability: .browser)
+
     private func slack(
         _ state: ConnectAssistantState,
-        harness: ConnectAssistantHarness = .claude,
+        harness: ConnectHarness? = nil,
         mode: ConnectAssistantMode = .browser,
         browser: Bool = true
     ) -> Pres {
-        Pres(service: "Slack", harness: harness, mode: mode, browserAvailable: browser, state: state)
+        Pres(service: "Slack", harness: harness ?? claude, mode: mode, browserAvailable: browser, state: state)
     }
 
     @Test("header and mode line name the harness, or say words mode")
@@ -19,7 +29,7 @@ struct ConnectAssistantPresentationTests {
         #expect(slack(.empty).title == "Connect Slack")
         #expect(slack(.empty).harness == "Claude")
         #expect(slack(.empty).modeLine == "Using Claude in Chrome")
-        #expect(slack(.empty, harness: .codex).modeLine == "Using Codex in Chrome")
+        #expect(slack(.empty, harness: codexBrowser).modeLine == "Using Codex in Chrome")
         #expect(slack(.empty, mode: .words).modeLine == "I'll tell you each step")
         #expect(slack(.empty, browser: false).modeLine == "I'll tell you each step")
         #expect(slack(.empty).composerPlaceholder == "Ask a question…")
@@ -41,8 +51,8 @@ struct ConnectAssistantPresentationTests {
         #expect(claude.intro == "I'll connect Slack with you. Claude in Chrome isn't connected, so I can't use "
             + "your browser. I'll tell you each step and check it. Start?")
         #expect(claude.actions == [.start, .setUpByHand])
-        let codex = slack(.empty, harness: .codex, browser: false)
-        #expect(codex.intro == "I'll connect Slack with you. Codex can't use your browser yet. "
+        let words = slack(.empty, harness: codex, browser: false)
+        #expect(words.intro == "I'll connect Slack with you. Codex can't use your browser yet. "
             + "I'll tell you each step and check it. Start?")
     }
 
@@ -63,8 +73,16 @@ struct ConnectAssistantPresentationTests {
         #expect(slack(.failed(.agent(reason: nil))).status?.text == "Claude stopped before Slack was connected.")
         #expect(slack(.failed(.agent(reason: "the page didn't load."))).status?.text
             == "Claude stopped: the page didn't load.")
-        #expect(slack(.failed(.harnessMissing), harness: .codex).status?.text
+        #expect(slack(.failed(.harnessMissing), harness: codex).status?.text
             == "Codex isn't installed on this Mac. Switch the assistant above or set up by hand.")
+    }
+
+    @Test("a run that waited too long says so and offers Retry")
+    func testTimedOutCopy() {
+        let timedOut = slack(.failed(.timedOut))
+        #expect(timedOut.status == .init(kind: .problem,
+                                         text: "I stopped waiting after 15 minutes. Press Retry when you're ready."))
+        #expect(timedOut.actions == [.retry, .setUpByHand])
     }
 
     @Test("busy points at the other window")
@@ -82,7 +100,7 @@ struct ConnectAssistantPresentationTests {
         #expect(card.placeholder == "Paste it here")
         #expect(card.footnote == "Goes straight to Watchtower — Claude doesn't see it")
         #expect(card.send == "Send")
-        #expect(Pres.secretFootnote(.codex) == "Goes straight to Watchtower — Codex doesn't see it")
+        #expect(Pres.secretFootnote(codex) == "Goes straight to Watchtower — Codex doesn't see it")
     }
 
     @Test("confirm cards: the customer presses them, never the model")
@@ -102,7 +120,7 @@ struct ConnectAssistantPresentationTests {
     func done() {
         #expect(slack(.done(accounts: 2, noun: .workspace)).status
             == .init(kind: .success, text: "Slack is connected — 2 workspaces"))
-        let jira = Pres(service: "Jira", harness: .codex, mode: .browser, state: .done(accounts: 1, noun: .site))
+        let jira = Pres(service: "Jira", harness: codex, mode: .browser, state: .done(accounts: 1, noun: .site))
         #expect(jira.status?.text == "Jira is connected — 1 site")
         #expect(jira.actions.isEmpty)
     }

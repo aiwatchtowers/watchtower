@@ -39,6 +39,7 @@ final class ProviderCapabilitiesTests: XCTestCase {
         XCTAssertFalse(ollama.readsFolder)
         XCTAssertTrue(ollama.hasTools)
         XCTAssertEqual(ollama.reservePeer, "")
+        XCTAssertEqual([claude.connect, codex.connect, ollama.connect], ["browser", "words", "none"])
     }
 
     /// The catalog reads the same rows from `ai models --json`; the reserve
@@ -80,5 +81,17 @@ final class ProviderCapabilitiesTests: XCTestCase {
             return XCTFail("not a session_ready")
         }
         XCTAssertNil(none)
+    }
+
+    /// A row from a CLI older than the connect column decodes, and offers no
+    /// connect assistant.
+    func testRowWithoutConnectDecodesAsNone() throws {
+        let row = #"{"tools":"none","tool_events":false,"text_stream":"final","usage":"none","cost_reported":false,"#
+            + #""images":false,"pdfs":false,"web_search":false,"read_folder":"none","turn_cap":"none","#
+            + #""interrupt":"kill_turn","warm_session":false,"claude_ai_tools":false,"reserve_peer":"","quota":false}"#
+        let caps = try JSONDecoder().decode(ProviderCapabilities.self, from: Data(row.utf8))
+        XCTAssertEqual(caps.connect, "none")
+        XCTAssertEqual(caps.connectMode, ConnectCapability.none)
+        XCTAssertEqual(caps, .none)
     }
 }
