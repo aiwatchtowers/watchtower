@@ -166,7 +166,9 @@ private struct InstructionSheetMock: View {
                     }
                 }
                 if let count {
-                    Text(Copy.counter(count)).font(.caption).foregroundStyle(.secondary)
+                    Text(Copy.counter(count))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 if state == .failed {
@@ -218,7 +220,8 @@ private struct StripMock: View {
                 Spacer(minLength: Spacing.regular)
                 Chip(text: learning ? Copy.stripLearning : Copy.stripArmed, color: watchmanTone, dot: true).fixedSize()
                 Button {} label: { Label(Copy.instructionButton, systemImage: "text.quote") }
-                    .buttonStyle(.kitSecondary).fixedSize()
+                    .buttonStyle(.kitSecondary)
+                    .fixedSize()
                     .help(Copy.sampleInstruction.components(separatedBy: "\n").first ?? "")
                 Button(Copy.takeBack) {}.buttonStyle(.kitSecondary).fixedSize()
             }
