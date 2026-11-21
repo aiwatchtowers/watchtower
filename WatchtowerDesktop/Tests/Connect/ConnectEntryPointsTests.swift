@@ -336,6 +336,15 @@ final class ConnectEntryPointsTests: XCTestCase {
         XCTAssertTrue(state.connectAssistants.loaded("company") === session, "the live chat is kept")
         XCTAssertEqual(session.engine?.isBusy, true, "the answer goes on")
 
+        // Away and back (review rules: a run survives leaving the tab): the
+        // answer keeps streaming and the panel shows the same session.
+        state.selectedDestination = .targets
+        XCTAssertEqual(session.engine?.isBusy, true, "leaving Connections stops nothing")
+        state.selectedDestination = .connections
+        state.openConnectAssistant(service: "company")
+        XCTAssertTrue(state.connectAssistantPanelSession === session)
+        XCTAssertEqual(session.engine?.isBusy, true, "the same answer still streams")
+
         ai.finish(call: turn)
         await untilObserved { session.engine?.isBusy == false && session.engine?.isFinishing == false }
         state.openConnectAssistant(service: "company")
