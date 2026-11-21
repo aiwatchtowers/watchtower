@@ -860,18 +860,226 @@ func TestALinkLeftOpenByAnEarlierRunIsClosedAtTheNextBuild(t *testing.T) {
 	r := newCKRig(t)
 	r.issueCK()
 	next := r.ckCenter(DefaultSweep)
-	if err := next.CloseLink(r.ctx, r.s, CloseRestart); err != nil {
+	if err := next.CloseOnStart(r.ctx, r.s); err != nil {
 		t.Fatal(err)
 	}
 	if r.s.isOpen() {
 		t.Error("left open")
 	}
 	r.s.takeCalls()
-	if err := next.CloseLink(r.ctx, r.s, CloseRestart); err != nil {
+	if err := next.CloseOnStart(r.ctx, r.s); err != nil {
 		t.Fatal(err)
 	}
 	if calls := r.s.takeCalls(); len(calls) != 0 {
 		t.Errorf("a closed link needs no share call: %v", calls)
+	}
+}
+
+// A code issued before the start's close ran (a pairing that came first)
+// is this run's: the start's close leaves its public link open, the code on
+// screen and the sweep marked, so its own close (or the stop's) closes it.
+func TestTheStartsCloseLeavesACodeThisRunIssued(t *testing.T) {
+	r := newCKRig(t)
+	p := r.issueCK()
+	r.s.takeCalls()
+	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if calls := r.s.takeCalls(); len(calls) != 0 {
+		t.Errorf("the start's close made share calls: %v", calls)
+	}
+	if !r.s.isOpen() || !r.c.LinkUrgent() || r.sweepMark() != "1" {
+		t.Fatalf("open %v urgent %v mark %q: the start's close shut this run's code", r.s.isOpen(), r.c.LinkUrgent(), r.sweepMark())
+	}
+	if err := r.c.CloseOnStop(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() {
+		t.Errorf("the stop left code %s's link open", p.Nonce)
+	}
+}
+
+// This run's first code got no share URLs (EnsureShares failed: a
+// private-only QR): the public link is still the earlier run's, so the
+// start's close shuts it and sweeps, while the code stays on screen.
+func TestTheStartsCloseShutsAnInheritedLinkThisRunsCodeDidNotOpen(t *testing.T) {
+	r := newCKRig(t)
+	r.issueCK() // the earlier run's code: its public link open, the sweep marked
+	r.c = r.ckCenter(DefaultSweep)
+	r.s.setFailing("ensure_shares")
+	p := r.issueCK()
+	r.s.setFailing()
+	if p.DataShare != nil || !r.s.isOpen() {
+		t.Fatalf("share URLs %v, open %v: want a private-only code over the inherited open link", p.DataShare, r.s.isOpen())
+	}
+	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() || r.sweepMark() != "0" {
+		t.Errorf("open %v mark %q: the inherited public link outlived the start's close", r.s.isOpen(), r.sweepMark())
+	}
+	if !r.c.LinkUrgent() {
+		t.Error("the start's close took this run's code off screen")
+	}
+	if got, err := r.ckHello(newPhone(t), p.Nonce); err != nil || got.Code == "" {
+		t.Errorf("this run's code no longer links: %+v %v", got, err)
+	}
+}
+
+// A start's close cut short while an issue holds the center (the worker's
+// context ended) leaves a deferred sweep due, so the earlier run's link is
+// still closed by a later pass.
+func TestAStartsCloseCutShortLeavesTheSweepDue(t *testing.T) {
+	r := newCKRig(t)
+	r.issueCK()
+	r.c = r.ckCenter(DefaultSweep)
+	r.c.issueSem <- struct{}{} // an issue in flight
+	ctx, cancel := context.WithCancel(r.ctx)
+	cancel()
+	if err := r.c.CloseOnStart(ctx, r.s); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CloseOnStart: %v", err)
+	}
+	<-r.c.issueSem
+	if !r.s.isOpen() {
+		t.Fatal("closed without the start's close")
+	}
+	r.advance(sweepRetryDelays[0])
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() || r.sweepMark() != "0" {
+		t.Errorf("open %v mark %q: nothing retried the start's close", r.s.isOpen(), r.sweepMark())
+	}
+}
+
+// After a code of this run, the start's close still refuses the requests
+// the earlier run left waiting (not_confirmed, as CloseRestart did), and
+// only those: a request under this run's code keeps waiting.
+func TestTheStartsCloseRefusesOnlyTheEarlierRunsWaitingRequests(t *testing.T) {
+	r := newCKRig(t)
+	old := r.issueCK()
+	a := newPhone(t)
+	if got, err := r.ckHello(a, old.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("not waiting: %+v %v", got, err)
+	}
+	r.c = r.ckCenter(DefaultSweep)
+	code := r.issueCK()
+	b := newPhone(t)
+	if got, err := r.ckHello(b, code.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("not waiting: %+v %v", got, err)
+	}
+	pairEvents(r.c) // this run's code's own events
+	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	// A pair stream with no phone bound yet ends at any refused event (the
+	// CLI's hub pair): the earlier run's refusals never reach this run's.
+	if evs := pairEvents(r.c); evs[EventRefused] != 0 {
+		t.Errorf("the earlier run's refusal reached this run's pair streams: %v", evs)
+	}
+	if kb := r.mustKeybox(a); refusal(kb) != wire.RefusedNotConfirmed || kb.Keys != nil {
+		t.Errorf("the earlier run's request: %+v", kb.Grant)
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(b)) {
+		t.Errorf("pending %v, want only this run's request", ids)
+	}
+	if !r.s.isOpen() {
+		t.Error("the start's close shut this run's public link")
+	}
+}
+
+// Before any code of this run (a pair stream may already wait for its
+// issue behind the start's close), the earlier run's requests are refused
+// in their keyboxes without a pair event, and its link is closed.
+func TestTheStartsCloseRefusesTheEarlierRunsRequestsSilently(t *testing.T) {
+	r := newCKRig(t)
+	old := r.issueCK()
+	a := newPhone(t)
+	if got, err := r.ckHello(a, old.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("not waiting: %+v %v", got, err)
+	}
+	r.c = r.ckCenter(DefaultSweep)
+	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if evs := pairEvents(r.c); evs[EventRefused] != 0 {
+		t.Errorf("the earlier run's refusal reached this run's pair streams: %v", evs)
+	}
+	if kb := r.mustKeybox(a); refusal(kb) != wire.RefusedNotConfirmed || kb.Keys != nil {
+		t.Errorf("the earlier run's request: %+v", kb.Grant)
+	}
+	if ids := pendingIDs(t, r.c); len(ids) != 0 {
+		t.Errorf("pending %v", ids)
+	}
+	if r.s.isOpen() || r.sweepMark() != "0" {
+		t.Errorf("open %v mark %q: the earlier run's link outlived the start's close", r.s.isOpen(), r.sweepMark())
+	}
+}
+
+// A relay code issued while the start's close runs (Issue takes no
+// issueSem) is this run's too: a request under it is never refused as the
+// earlier run's.
+func TestTheStartsCloseKeepsARequestUnderACodeIssuedMeanwhile(t *testing.T) {
+	r := newCKRig(t)
+	r.issueCK() // the earlier run's code
+	r.c = r.ckCenter(DefaultSweep)
+	r.issueCK()
+	b := newPhone(t)
+	r.c.beforeStartRefusal = func() {
+		relay := r.issue()
+		if got, err := r.ckHello(b, relay.Nonce); err != nil || got.Code == "" {
+			t.Fatalf("not waiting: %+v %v", got, err)
+		}
+	}
+	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(b)) {
+		t.Errorf("pending %v: the request under the code issued meanwhile was refused", ids)
+	}
+}
+
+// The own codes are kept only until the start's close ran or gave up: a
+// hub issuing codes for days keeps no growing set.
+func TestTheOwnCodesAreDroppedOnceTheStartsCloseRan(t *testing.T) {
+	ownCodes := func(c *Center) int {
+		c.ck.mu.Lock()
+		defer c.ck.mu.Unlock()
+		return len(c.ck.ownCodes)
+	}
+	r := newCKRig(t)
+	r.issueCK()
+	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	r.issueCK()
+	r.issue()
+	if n := ownCodes(r.c); n != 0 {
+		t.Errorf("%d own codes kept after the start's close", n)
+	}
+	// Given up (the worker's context ended while an issue held the center).
+	gaveUp := r.ckCenter(DefaultSweep)
+	r.c = gaveUp
+	r.issue()
+	gaveUp.issueSem <- struct{}{}
+	ctx, cancel := context.WithCancel(r.ctx)
+	cancel()
+	_ = gaveUp.CloseOnStart(ctx, r.s)
+	<-gaveUp.issueSem
+	r.issue()
+	if n := ownCodes(gaveUp); n != 0 {
+		t.Errorf("%d own codes kept after the start's close gave up", n)
+	}
+	// Skipped: a run with no CloudKit shares (the relay transport) never
+	// runs the start's close.
+	relayRun := r.ckCenter(DefaultSweep)
+	r.c = relayRun
+	r.issue()
+	relayRun.SkipStartClose()
+	r.issue()
+	r.issue()
+	if n := ownCodes(relayRun); n != 0 {
+		t.Errorf("%d own codes kept on a run without the start's close", n)
 	}
 }
 

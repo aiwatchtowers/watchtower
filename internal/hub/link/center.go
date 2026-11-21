@@ -183,9 +183,12 @@ type Center struct {
 	shareTimeout time.Duration
 	// Test seams (cloudkit.go): beforeIssueStore runs before a CloudKit code
 	// is stored (an error fails the store); afterSweep runs after a deferred
-	// sweep returned, before its outcome is recorded.
-	beforeIssueStore func() error
-	afterSweep       func()
+	// sweep returned, before its outcome is recorded; beforeStartRefusal
+	// runs in CloseOnStart between its read of the own codes and the
+	// refusal of the earlier run's requests.
+	beforeIssueStore   func() error
+	afterSweep         func()
+	beforeStartRefusal func()
 	// drawConfirm fills a confirm nonce (hello.go decideHello); nil is
 	// crypto/rand. A test seam: it counts and names the draws.
 	drawConfirm func([]byte) error
