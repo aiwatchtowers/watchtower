@@ -63,11 +63,21 @@ struct CalendarEventsView: View {
     }
 
     var body: some View {
-        Group {
-            if hasCalendarSource, !google.isRunning, let calVM = appState.calendarViewModel {
-                meetingsSplitView(calVM)
-            } else {
-                notConnectedView
+        VStack(spacing: 0) {
+            if signInWaitSpot == .top, let vm = appState.googleAccountsViewModel {
+                // G4 (#2132): a Google sign-in no account banner carries waits here.
+                signInWaitLine(vm)
+                    .padding(Spacing.cozy)
+                    .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.row))
+                    .padding(.horizontal)
+                    .padding(.top, Spacing.medium)
+            }
+            Group {
+                if hasCalendarSource, !google.isRunning, let calVM = appState.calendarViewModel {
+                    meetingsSplitView(calVM)
+                } else {
+                    notConnectedView
+                }
             }
         }
         .task {
@@ -76,6 +86,33 @@ struct CalendarEventsView: View {
                 try? await Task.sleep(for: .seconds(15))
             }
         }
+    }
+
+    /// Where Calendar shows a waiting Google sign-in (#2132 G3/G4).
+    enum SignInWaitSpot: Equatable {
+        /// No sign-in runs.
+        case none
+        /// The account-error banner (or screen) of the account it signs in.
+        case account
+        /// The line at the top: a section-level or legacy sign-in, or one for
+        /// an account no banner shows.
+        case top
+    }
+
+    /// Pure: where `signIn` waits, given the banner `health` shows.
+    static func signInWaitSpot(_ signIn: GoogleAccountsViewModel.SignInPlace?, health: CalendarSyncHealth) -> SignInWaitSpot {
+        guard let signIn else { return .none }
+        if case .accountError(let account) = health, signIn == .account(account.id) { return .account }
+        return .top
+    }
+
+    private var signInWaitSpot: SignInWaitSpot {
+        Self.signInWaitSpot(appState.googleAccountsViewModel?.signIn, health: syncHealth)
+    }
+
+    private func signInWaitLine(_ vm: GoogleAccountsViewModel) -> some View {
+        let copy = SignInWaitCopy.google
+        return SignInWaitLine(line: copy.line, hint: copy.hint, cancelTitle: copy.cancelTitle) { vm.cancelConnect() }
     }
 
     private func refreshSyncHealth() async {
@@ -729,7 +766,8 @@ struct CalendarEventsView: View {
             healthBanner(
                 icon: "exclamationmark.triangle",
                 text: accountErrorText(account),
-                error: appState.googleAccountsViewModel?.error
+                error: appState.googleAccountsViewModel?.error,
+                signInWait: signInWaitSpot == .account ? appState.googleAccountsViewModel : nil
             ) {
                 reconnectButton(account)
             }
@@ -753,6 +791,7 @@ struct CalendarEventsView: View {
         icon: String?,
         text: String,
         error: String?,
+        signInWait: GoogleAccountsViewModel? = nil,
         @ViewBuilder action: () -> Action
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -767,6 +806,10 @@ struct CalendarEventsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 action()
+            }
+            if let signInWait {
+                // G3 (#2132): its Reconnect waits on the browser.
+                signInWaitLine(signInWait)
             }
             if let error {
                 Text(error)
@@ -785,14 +828,15 @@ struct CalendarEventsView: View {
         return "Google Calendar for \(account.displayName) can't sync\(reason). Reconnect if it keeps failing."
     }
 
+    /// Reconnect, gone while its own sign-in waits (the waiting line has the
+    /// Cancel) and disabled while another Google sign-in or command runs.
     @ViewBuilder
     private func reconnectButton(_ account: GoogleAccount) -> some View {
-        if appState.googleAccountsViewModel?.isConnecting == true {
-            ProgressView().controlSize(.small)
-        } else {
+        if signInWaitSpot != .account {
             Button("Reconnect") {
                 appState.googleAccountsViewModel?.relogin(account, daemonPolicy: appState.accountDaemonPolicy)
             }
+            .disabled(appState.googleAccountsViewModel?.isConnecting == true)
         }
     }
 
@@ -840,8 +884,14 @@ struct CalendarEventsView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
-            reconnectButton(account)
-                .controlSize(.large)
+            if signInWaitSpot == .account, let vm = appState.googleAccountsViewModel {
+                signInWaitLine(vm)
+                    .frame(maxWidth: PaneWidth.narrowPage)
+                    .padding(.horizontal)
+            } else {
+                reconnectButton(account)
+                    .controlSize(.large)
+            }
             if let err = appState.googleAccountsViewModel?.error {
                 Text(err)
                     .font(.caption)
@@ -880,6 +930,8 @@ struct CalendarEventsView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .padding(.top, 4)
+                // One Google sign-in at a time: not beside the accounts model's (#2132 G4).
+                .disabled(appState.googleAccountsViewModel?.isConnecting == true)
 
                 Button {
                     showAddCalendarAccountSheet = true

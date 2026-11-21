@@ -17,6 +17,19 @@ import WatchtowerCore
 final class GoogleAccountsViewModel {
     private(set) var accounts: [GoogleAccount] = []
     var isConnecting = false
+    /// Where a browser sign-in waits for the owner (`SignInWaitLine`): the
+    /// detail's add section (a new account, or Calendar's legacy re-login)
+    /// or one account's row. Nil while none runs — `isConnecting` alone
+    /// also covers a remove.
+    enum SignInPlace: Equatable {
+        case section
+        case account(Int)
+    }
+    private(set) var signIn: SignInPlace?
+    /// The account whose row waits; nil for a section-level (or legacy) sign-in.
+    var signInAccountID: Int? {
+        if case .account(let id) = signIn { id } else { nil }
+    }
     var error: String?
     /// The last account read failed (the error's own text); nil once one
     /// succeeds. Only the read: an action's failure stays in `error` (the
@@ -34,9 +47,10 @@ final class GoogleAccountsViewModel {
     /// The restart the last successful account change kicked off under
     /// `.restart` (nil under `.deferred`) — held so tests can await it.
     @ObservationIgnored private(set) var daemonRestartTask: Task<Void, Never>?
-    /// The in-flight `addAccount` connect — held so tests can await the
+    /// The in-flight browser sign-in (`addAccount`, `relogin`,
+    /// `reloginLegacyCalendar`) — held so tests can await the
     /// fire-and-forget flow.
-    @ObservationIgnored private(set) var addTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var signInTask: Task<Void, Never>?
 
     private let dbPool: DatabasePool
     private let daemon: any DaemonRestarting
@@ -77,7 +91,11 @@ final class GoogleAccountsViewModel {
     /// The awaitable body of `refresh()`, split out so tests can call it
     /// directly and observe `accounts` deterministically instead of racing a
     /// detached `Task`.
-    func refreshAsync() async {
+    ///
+    /// `quiet` (the re-read after a Cancel) reports a failed read through
+    /// `readError` only, never `error`: a Cancel stays silent, and a newer
+    /// attempt's result is never overwritten.
+    func refreshAsync(quiet: Bool = false) async {
         do {
             let rows = try await dbPool.read { db in try GoogleAccountQueries.fetchAll(db) }
             self.accounts = rows
@@ -85,7 +103,7 @@ final class GoogleAccountsViewModel {
             hasRead = true
             await onAccountsChanged?()
         } catch {
-            self.error = "Failed to load accounts: \(error.localizedDescription)"
+            if !quiet { self.error = "Failed to load accounts: \(error.localizedDescription)" }
             readError = error.localizedDescription
             hasRead = true
             return
@@ -142,47 +160,14 @@ final class GoogleAccountsViewModel {
             return false
         }
 
-        isConnecting = true
-        error = nil
-
         let hasCustomClient = !clientID.isEmpty
-        let args = Self.addArgs(calendar: calendar, gmail: gmail, hasCustomClient: hasCustomClient, clientID: clientID)
-
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: cliPath)
-        process.arguments = args
-        process.currentDirectoryURL = Constants.processWorkingDirectory()
+        process.arguments = Self.addArgs(calendar: calendar, gmail: gmail, hasCustomClient: hasCustomClient, clientID: clientID)
         if hasCustomClient {
             process.standardInput = Pipe()
         }
-        authProcess = process
-
-        let environment = loginEnvironment
-        addTask = Task.detached {
-            // The login environment is awaited here, off the main actor; a
-            // Cancel (or a newer attempt) while it resolves drops this launch.
-            process.environment = await environment()
-            guard await MainActor.run(body: { self.authProcess === process }) else { return }
-            let result = await Self.runProcess(process, stdin: hasCustomClient ? clientSecret + "\n" : nil)
-            await MainActor.run {
-                self.authProcess = nil
-                self.isConnecting = false
-                if result.exitCode == 0 {
-                    self.error = nil
-                    self.refresh()
-                    // Re-wire the daemon so the new account's first sync runs
-                    // now (unless onboarding defers it — `DaemonRestartPolicy`).
-                    self.daemonRestartTask = daemonPolicy.apply(using: self.daemon)
-                } else if result.exitCode == 15 || result.exitCode == 9 {
-                    // SIGTERM/SIGKILL — user cancelled
-                    self.error = nil
-                } else {
-                    self.error = result.stderr.isEmpty
-                        ? "Connect failed (exit \(result.exitCode))"
-                        : String(result.stderr.prefix(200))
-                }
-            }
-        }
+        startSignIn(process, cliPath: cliPath, place: .section, stdin: hasCustomClient ? clientSecret + "\n" : nil,
+                    failure: "Connect failed", daemonPolicy: daemonPolicy)
         return true
     }
 
@@ -212,40 +197,107 @@ final class GoogleAccountsViewModel {
             return
         }
 
-        isConnecting = true
-        error = nil
-
-        let args = Self.loginArgs(for: account)
-
         let process = Process()
+        process.arguments = Self.loginArgs(for: account)
+        startSignIn(process, cliPath: cliPath, place: .account(account.id), failure: "Re-login failed",
+                    daemonPolicy: daemonPolicy)
+    }
+
+    /// The `calendar login` args of the revoked-calendar alert when it names
+    /// no account that exists: the CLI resolves account #1 itself.
+    static let legacyCalendarLoginArgs = ["calendar", "login", "--app-return"]
+
+    /// The revoked-calendar alert's Reconnect with no account to point at
+    /// (`AppState.reconnectGoogleCalendar`): today's `calendar login
+    /// --app-return`, under this model's one Google busy flag so it never
+    /// runs beside another Google sign-in and offers the same Cancel.
+    func reloginLegacyCalendar(daemonPolicy: DaemonRestartPolicy = .restart) {
+        guard !isConnecting else {
+            error = "Another connection is already in progress."
+            return
+        }
+        guard let cliPath = cliPath() else {
+            error = "Watchtower CLI not found"
+            return
+        }
+        let process = Process()
+        process.arguments = Self.legacyCalendarLoginArgs
+        startSignIn(process, cliPath: cliPath, place: .section, failure: "Login failed", daemonPolicy: daemonPolicy)
+    }
+
+    /// Runs one browser sign-in. Cancel (`cancelConnect`) and the run's
+    /// completion both end it; the completion writes only while its process
+    /// is still the current one, so a cancelled run's late exit never resets
+    /// an attempt started after it.
+    private func startSignIn(
+        _ process: Process,
+        cliPath: String,
+        place: SignInPlace,
+        stdin: String? = nil,
+        failure: String,
+        daemonPolicy: DaemonRestartPolicy
+    ) {
+        isConnecting = true
+        signIn = place
+        error = nil
         process.executableURL = URL(fileURLWithPath: cliPath)
-        process.arguments = args
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
 
         let environment = loginEnvironment
-        Task.detached {
+        signInTask = Task.detached {
             // The login environment is awaited here, off the main actor; a
             // Cancel (or a newer attempt) while it resolves drops this launch.
             process.environment = await environment()
             guard await MainActor.run(body: { self.authProcess === process }) else { return }
-            let result = await Self.runProcess(process)
-            await MainActor.run {
-                self.authProcess = nil
-                self.isConnecting = false
-                if result.exitCode == 0 {
-                    self.error = nil
-                    self.refresh()
-                    self.daemonRestartTask = daemonPolicy.apply(using: self.daemon)
-                } else if result.exitCode == 15 || result.exitCode == 9 {
-                    // SIGTERM/SIGKILL — user cancelled
-                    self.error = nil
-                } else {
-                    self.error = result.stderr.isEmpty
-                        ? "Re-login failed (exit \(result.exitCode))"
-                        : String(result.stderr.prefix(200))
+            // A Cancel that landed while the launch was under way found
+            // nothing running to terminate: stop the child once it exists.
+            let onLaunch: @Sendable (Process) -> Void = { launched in
+                Task { @MainActor in
+                    if self.authProcess !== launched { launched.terminate() }
                 }
             }
+            let result = await ProcessPipes.run(process, stdin: stdin, onLaunch: onLaunch).trimmed
+            await self.finishSignIn(process, result: result, failure: failure, daemonPolicy: daemonPolicy)
+        }
+    }
+
+    /// The end of a sign-in run. Cancelled or superseded, it leaves the
+    /// state to Cancel and the newer run: a CLI that had already exited 0
+    /// is a finished connect (re-read and the daemon policy); one killed,
+    /// maybe part-way through saving, gets a quiet re-read so whatever
+    /// landed shows — a half-saved account as one that needs Re-login.
+    private func finishSignIn(
+        _ process: Process,
+        result: (exitCode: Int32, stdout: String, stderr: String),
+        failure: String,
+        daemonPolicy: DaemonRestartPolicy
+    ) async {
+        guard authProcess === process else {
+            if result.exitCode == 0 {
+                refresh()
+                daemonRestartTask = daemonPolicy.apply(using: daemon)
+            } else {
+                await refreshAsync(quiet: true)
+            }
+            return
+        }
+        authProcess = nil
+        isConnecting = false
+        signIn = nil
+        if result.exitCode == 0 {
+            error = nil
+            refresh()
+            // Re-wire the daemon so the account's first sync runs now
+            // (unless onboarding defers it — `DaemonRestartPolicy`).
+            daemonRestartTask = daemonPolicy.apply(using: daemon)
+        } else if result.exitCode == 15 || result.exitCode == 9 {
+            // SIGTERM/SIGKILL from outside the app — no failure to show.
+            error = nil
+        } else {
+            error = result.stderr.isEmpty
+                ? "\(failure) (exit \(result.exitCode))"
+                : String(result.stderr.prefix(200))
         }
     }
 
@@ -257,12 +309,16 @@ final class GoogleAccountsViewModel {
         daemonRestartTask = daemonPolicy.apply(using: daemon)
     }
 
+    /// Cancel of a waiting sign-in: silent (no error), the state resets at
+    /// once; the killed run's end only re-reads the accounts
+    /// (`finishSignIn`), never restarts the daemon.
     func cancelConnect() {
         if let process = authProcess, process.isRunning {
             process.terminate()
         }
         authProcess = nil
         isConnecting = false
+        signIn = nil
     }
 
     // MARK: - Rename

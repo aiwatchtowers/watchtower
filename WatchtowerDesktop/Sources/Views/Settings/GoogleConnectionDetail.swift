@@ -107,6 +107,7 @@ struct GoogleConnectionDetail: View {
             blocked: sourceBlocked,
             busy: appState.companyDetailBusy(.google),
             error: vm?.error,
+            signInWait: vm?.signIn == .section ? SignInWait(copy: .google) { vm?.cancelConnect() } : nil,
             locks: appState.companyLocks,
             perform: perform,
             bannerAction: { action in
@@ -132,15 +133,32 @@ struct GoogleConnectionDetail: View {
 
     private func accountRow(_ vm: GoogleAccountsViewModel, account: GoogleAccount, ref: AccountRef) -> some View {
         let status = appState.companyRowStatus(ref)
+        let waiting = vm.signInAccountID == account.id
         return CompanyAccountRow(
             title: account.displayName,
             tag: CompanyConnectionsPresentation.tag(ref),
             status: status,
             line: CompanyConnectionsPresentation.googleRowLine(ref, calendar: account.calendarEnabled,
                                                                gmail: account.gmailEnabled),
-            dot: statusColor(account),
-            extra: AnyView(rowExtra(account, hasStatus: status != nil))
+            dot: waiting ? Tone.status("gray") : statusColor(account),
+            extra: AnyView(rowExtra(account, hasStatus: status != nil, waiting: waiting))
         ) {
+            if waiting {
+                // G1 (#2132): its Re-login waits on the browser; Cancel is the way out.
+                SignInWaitCancel(cancelTitle: SignInWaitCopy.google.cancelTitle) { vm.cancelConnect() }
+            } else {
+                accountActions(vm, account: account, ref: ref, status: status)
+            }
+        }
+    }
+
+    private func accountActions(
+        _ vm: GoogleAccountsViewModel,
+        account: GoogleAccount,
+        ref: AccountRef,
+        status: RowStatus?
+    ) -> some View {
+        Group {
             if appState.companyRowStoppedByPolicy(ref) {
                 // §5.4: Go refuses its sign-in; the data stays, nothing to press.
                 EmptyView()
@@ -179,11 +197,13 @@ struct GoogleConnectionDetail: View {
         }
     }
 
-    /// The row's own lines under its status: the account's error (when no
-    /// §4.3 status says it) and the purge line.
+    /// The row's own lines under its status: the waiting sign-in's lines, or
+    /// the account's error (when no §4.3 status says it); then the purge line.
     @ViewBuilder
-    private func rowExtra(_ account: GoogleAccount, hasStatus: Bool) -> some View {
-        if !hasStatus, !account.isOK, !account.error.isEmpty {
+    private func rowExtra(_ account: GoogleAccount, hasStatus: Bool, waiting: Bool) -> some View {
+        if waiting {
+            SignInWaitText(line: SignInWaitCopy.google.line, hint: SignInWaitCopy.google.hint)
+        } else if !hasStatus, !account.isOK, !account.error.isEmpty {
             Text(account.error)
                 .font(.caption)
                 .foregroundStyle(Tone.error)

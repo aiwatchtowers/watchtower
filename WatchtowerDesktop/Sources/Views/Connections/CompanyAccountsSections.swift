@@ -20,6 +20,9 @@ struct CompanyAccountsSections<Row: View>: View {
     var busy = false
     /// The last command's failure, under the buttons.
     var error: String?
+    /// A browser sign-in started from these buttons waits (#2132): the
+    /// waiting line with Cancel in place of the spinner.
+    var signInWait: SignInWait?
     /// The policy locks in force: their groups end with the lock card.
     var locks: Set<LockKey> = []
     let perform: (DetailAction.Kind) -> Void
@@ -65,6 +68,10 @@ struct CompanyAccountsSections<Row: View>: View {
             HStack(spacing: Spacing.regular) { buttonRow(actions) }
             VStack(alignment: .leading, spacing: Spacing.regular) { buttonRow(actions) }
         }
+        if let signInWait {
+            SignInWaitLine(line: signInWait.copy.line, hint: signInWait.copy.hint,
+                           cancelTitle: signInWait.copy.cancelTitle, onCancel: signInWait.cancel)
+        }
     }
 
     private func errorCaption(_ text: String) -> some View {
@@ -80,8 +87,14 @@ struct CompanyAccountsSections<Row: View>: View {
         ForEach(actions) { action in
             DetailActionButton(action: action, disabled: busy, blocked: blocked) { perform(action.kind) }
         }
-        if busy { ProgressView().controlSize(.small) }
+        if busy && signInWait == nil { ProgressView().controlSize(.small) }
     }
+}
+
+/// A section-level browser sign-in that waits: whose sign-in it is and its Cancel.
+struct SignInWait {
+    let copy: SignInWaitCopy
+    let cancel: () -> Void
 }
 
 /// One empty-state or add-section button in its emphasis.

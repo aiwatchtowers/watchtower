@@ -125,12 +125,6 @@ struct MainNavigationView: View {
     @Environment(\.openWindow) private var openWindow
     /// The full menu (true) or the icon rail ⌘B folds it into, kept across launches.
     @AppStorage("sidebar.menuExpanded") private var showMenu = true
-    /// Reuses `GoogleConnectFlow.shared.calendar` (rather than a locally-
-    /// constructed `GoogleAuthService()`) so this reconnect flow gets its
-    /// DB-derived `isConnected` from the same wiring — `AppState.
-    /// initGoogleAccounts` calls `GoogleConnectFlow.shared.configure(dbPool:)`
-    /// — instead of a second instance with no DB access.
-    private let googleAuth = GoogleConnectFlow.shared.calendar
     @State private var dismissedAuthTimestamp: String = UserDefaults.standard.string(forKey: "dismissedCalendarAuthAt") ?? ""
 
     /// Show the reconnect popup when the daemon has flagged the calendar auth as broken
@@ -233,8 +227,7 @@ struct MainNavigationView: View {
             )
         ) {
             Button("Reconnect") {
-                appState.selectedDestination = .calendar
-                reconnectGoogleCalendar()
+                appState.reconnectGoogleCalendar(accountID: appState.calendarViewModel?.authState?.accountID)
             }
             Button("Later", role: .cancel) {}
         } message: {
@@ -309,18 +302,6 @@ struct MainNavigationView: View {
         ) {
             appState.selectedDestination = fallback
         }
-    }
-
-    /// Runs the OAuth flow and, on success, restarts the daemon so the in-memory
-    /// refresh token is replaced with the freshly saved one. Targets the
-    /// SPECIFIC account `authState` flagged as broken (N2) — without this,
-    /// `connect()` falls back to the CLI's generic "account #1" alias, which
-    /// in a multi-account workspace may be a completely different, healthy
-    /// account, leaving the actually-broken one (and the alert) stuck forever.
-    private func reconnectGoogleCalendar() {
-        // A successful connect restarts the daemon itself
-        // (`GoogleAuthService`, on the start queue).
-        googleAuth.connect(accountID: appState.calendarViewModel?.authState?.accountID)
     }
 
     @ViewBuilder

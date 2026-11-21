@@ -62,7 +62,7 @@ final class GoogleConnectionDetailTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(text: Pres.addAccountTitle), "the empty state holds the buttons")
 
         try view.inspect().find(button: Pres.connectCalendar).tap()
-        await vm.addTask?.value
+        await vm.signInTask?.value
         let args = try String(contentsOf: cli.log, encoding: .utf8)
         XCTAssertEqual(args.trimmingCharacters(in: .whitespacesAndNewlines), "google add --app-return --calendar",
                        "the shared app is asked for Calendar only")

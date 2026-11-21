@@ -211,7 +211,7 @@ extension GoogleAccountsViewModelTests {
             vm.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: "")
         }
         XCTAssertTrue(started)
-        await vm.addTask?.value
+        await vm.signInTask?.value
     }
 
     /// Board #592: a Cancel while the login environment resolves (the flow
@@ -224,7 +224,7 @@ extension GoogleAccountsViewModelTests {
         XCTAssertTrue(vm.isConnecting, "spinner and Cancel before the environment resolves")
         vm.cancelConnect()
         gate.release()
-        await vm.addTask?.value
+        await vm.signInTask?.value
         XCTAssertFalse(vm.isConnecting)
         XCTAssertNil(vm.error)
         XCTAssertNil(vm.daemonRestartTask)
