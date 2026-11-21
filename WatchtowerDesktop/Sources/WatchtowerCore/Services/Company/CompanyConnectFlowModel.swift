@@ -176,7 +176,7 @@ package final class CompanyConnectFlowModel {
         }
     }
 
-    /// The vendor the chain waits for (the Companies card's "Connecting… Google").
+    /// The vendor the chain waits for (the Companies card's waiting sign-in).
     package var currentVendor: CompanyVendor? {
         guard phase == .chain else { return nil }
         return rows.first { $0.state == .waiting }?.vendor

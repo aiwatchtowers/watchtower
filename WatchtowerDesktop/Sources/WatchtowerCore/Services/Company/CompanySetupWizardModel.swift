@@ -198,6 +198,23 @@ package final class CompanySetupWizardModel {
     private var touched = false
     /// Bumped by Discard: a check of the discarded setup lands nowhere.
     @ObservationIgnored private var generation = 0
+    /// Each running check's run: Cancel ends its stream, and a run that is
+    /// no longer its vendor's (cancelled, or a new check started) writes nothing.
+    @ObservationIgnored private var checkRuns: [CompanyVendor: CheckRun] = [:]
+
+    /// The draft re-read that the last `cancelCheck` started.
+    @ObservationIgnored package private(set) var rereadAfterCancel: Task<Void, Never>?
+    /// Bumped by every check start and Cancel: a re-read after Cancel lands
+    /// only while no newer check started (it must not release the name a
+    /// running check signs in under).
+    @ObservationIgnored private var checkEpoch = 0
+
+    private final class CheckRun {
+        let values: [String]
+        var task: Task<String?, Never>?
+
+        init(values: [String]) { self.values = values }
+    }
 
     package convenience init(streamer: (any CLILineStreaming)?, slack: SlackAppSetupModel, now: @escaping () -> Date = Date.init) {
         self.init(makeStreamer: { streamer }, slack: slack, now: now)
@@ -274,6 +291,11 @@ package final class CompanySetupWizardModel {
 
     /// The values a vendor's check uses (Go `checkValues`); nil: none yet.
     func checkValues(_ v: CompanyVendor) -> [String]? {
+        Self.checkValues(v, in: draft)
+    }
+
+    /// The values a vendor's check runs with, in a given draft.
+    private static func checkValues(_ v: CompanyVendor, in draft: CompanyDraft) -> [String]? {
         switch v {
         case .slack: draft.slack.appID.isEmpty ? nil : [draft.slack.appID]
         case .google: draft.google.map { [$0.clientID, $0.clientSecret] }
@@ -843,15 +865,21 @@ package final class CompanySetupWizardModel {
             return
         }
         checks[v] = .running
+        checkEpoch += 1
+        let run = CheckRun(values: values)
+        checkRuns[v] = run
+        defer { if checkRuns[v] === run { checkRuns[v] = nil } }
         let started = generation
-        guard await saveDraft(), generation == started else {
-            if generation == started { checks[v] = .failed(Self.draftSaveFailed) }
+        guard await saveDraft(), generation == started, checkRuns[v] === run else {
+            if generation == started, checkRuns[v] === run { checks[v] = .failed(Self.draftSaveFailed) }
             return
         }
-        let line = await lastJSONLine(args, stdin: stdin)
-        // Discarded meanwhile: Go kept what the sign-in stored (the bundle,
-        // the account); this setup's state is gone, so nothing lands here.
-        guard generation == started else { return }
+        let task = Task { [args, stdin] in await lastJSONLine(args, stdin: stdin) }
+        run.task = task
+        let line = await task.value
+        // Discarded or cancelled meanwhile: Go kept what the sign-in stored
+        // (the bundle, the account); this run's state is gone, so nothing lands here.
+        guard generation == started, checkRuns[v] === run else { return }
         guard let line, let result = try? JSONDecoder().decode(CompanyCheckResult.self, from: Data(line.utf8)) else {
             checks[v] = .failed(Self.checkStopped)
             releaseUnstoredName()
@@ -859,6 +887,54 @@ package final class CompanySetupWizardModel {
         }
         await finishCheck(v, result, values: values)
         if checks[v] != .passed { releaseUnstoredName() }
+    }
+
+    /// **Cancel** on a sign-in check's waiting line (#2132 C2): ends the run
+    /// (its stream's task is cancelled, and `CLILineStream` kills the process
+    /// group) and puts the step back to not-run, with no failed line. A run
+    /// killed while Go saved may have stored the company, or even marked the
+    /// step: the draft is re-read once (refresh only, silent on failure) and
+    /// what landed is kept — the slug, and Go's check mark while the values
+    /// are the ones the run checked. The name is released only when nothing
+    /// was stored. A check started before the re-read answers wins: the
+    /// answer then changes nothing.
+    package func cancelCheck(_ v: CompanyVendor) {
+        guard checks[v] == .running, let run = checkRuns.removeValue(forKey: v) else { return }
+        run.task?.cancel()
+        checks[v] = nil
+        checkEpoch += 1
+        let epoch = checkEpoch
+        let started = generation
+        rereadAfterCancel = Task { [self] in
+            let line = await lastJSONLine(["company", "draft", "show", "--json"], stdin: nil)
+            guard generation == started, checkEpoch == epoch else { return }
+            if let line, let show = try? JSONDecoder().decode(CompanyDraftShow.self, from: Data(line.utf8)),
+               show.state == "ok", let read = show.draft {
+                landed(v, read: read, checked: show.checkedVendors.contains(v.rawValue), values: run.values)
+            }
+            // Another vendor's check may still sign in under the name.
+            if checkRuns.isEmpty { releaseUnstoredName() }
+        }
+    }
+
+    /// What a cancelled sign-in stored before it was killed.
+    private func landed(_ v: CompanyVendor, read: CompanyDraft, checked: Bool, values: [String]) {
+        if draft.slug.isEmpty, !read.slug.isEmpty { draft.slug = read.slug }
+        // As `apply(_:)` takes Go's marks on open, and only for the values the
+        // run checked: on disk (Go saved them before it marked) and in the form.
+        guard checked, Self.checkValues(v, in: read) == values, checkValues(v) == values, ticked.contains(v) else {
+            return
+        }
+        checkedValues[v] = values
+        // This session's sign-in, as a finished check: its checklist is still to tick.
+        if v == .atlassian { atlassianNeedsConfirm = true }
+    }
+
+    /// The waiting line of a running check that signs in through the
+    /// browser (Google, Atlassian); nil for the dry checks and when idle.
+    package func checkWait(_ v: CompanyVendor) -> SignInWaitCopy? {
+        guard checks[v] == .running, v == .google || v == .atlassian else { return nil }
+        return SignInWaitCopy(vendor: v)
     }
 
     /// The name a check stores the company under: the draft's (a check ran

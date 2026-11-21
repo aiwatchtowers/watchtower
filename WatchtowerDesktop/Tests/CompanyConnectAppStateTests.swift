@@ -99,6 +99,48 @@ final class CompanyConnectAppStateTests: XCTestCase {
         XCTAssertEqual(company?.phase, .idle)
     }
 
+    // MARK: - The card's waiting sign-in (#2132 C1)
+
+    /// A chain left running behind a closed sheet: the card names the vendor
+    /// it waits on, and its Cancel is the chain's Stop; the chain's end
+    /// re-reads the companies once — no problem shows and the card's line goes.
+    func testCardCancelStopsTheHiddenChain() async throws {
+        let (appState, host, fake) = wired()
+        let zoneCLI = FakeCLILineStream(replies: Array(repeating: .init(lines: [], exitCode: 1), count: 4))
+        appState.companiesZone = CompaniesZoneModel { zoneCLI }
+        let lists = { zoneCLI.invocations.filter { $0.args.starts(with: ["company", "list"]) }.count }
+        host.ensureRunning()
+        let child = await fake.session(number: 1)
+        child.emit(#"{"event":"listening","port":18551}"#)
+        await untilObserved { host.state == .listening }
+        let flow = try XCTUnwrap(appState.companyConnect)
+        fake.enqueue(inspect)
+        host.onCompanyEvent?(.companyLink(flow: "f1", bundle: "eyJ2IjoxfQ"))
+        await untilObserved { flow.phase == .confirm }
+        fake.enqueue(.init(lines: [#"{"result":"stored","slug":"acme","marked":[]}"#]))
+        await flow.connect()
+        XCTAssertEqual(flow.phase, .chain)
+        await zoneCLI.signal.until { lists() >= 1 } // the store's own re-read
+        host.onCompanyEvent?(.companyVendor(CompanyVendorStep(flow: "f1", vendor: .slack, state: .waiting, label: "", message: "")))
+        XCTAssertNil(appState.companyConnecting, "the open sheet shows the chain itself")
+
+        flow.close()
+        XCTAssertEqual(appState.companyConnecting?.slug, "acme")
+        XCTAssertEqual(appState.companyConnecting?.vendor, .slack)
+
+        let before = lists()
+        appState.companiesZoneActions.stopChain()
+        XCTAssertEqual(child.writtenLines.last, #"{"cmd":"company_stop","flow":"f1"}"#)
+        fake.enqueue(inspect)
+        host.onCompanyEvent?(.companyDone(flow: "f1", states: [.slack: .skipped]))
+        await zoneCLI.signal.until { lists() >= before + 1 }
+        XCTAssertEqual(lists(), before + 1, "the chain's end re-reads the companies once")
+        XCTAssertEqual(flow.phase, .done)
+        XCTAssertFalse(flow.showsSheet, "a stop from the card brings no sheet back")
+        XCTAssertNil(appState.companyConnecting)
+        XCTAssertNil(flow.connectError)
+    }
+
     // MARK: - Connect this Mac after Publish (#1887 Task 22)
 
     /// A wizard model over a scripted CLI: Linear only (checked, so Connect
