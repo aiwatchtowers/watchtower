@@ -14,6 +14,7 @@ private final class FakeSlackAccounts: SlackAccountsConnecting {
     var accounts: [SlackAccount] = []
     var isConnecting = false
     var error: String?
+    var lastAuthEnd: SlackAuthRunEnd?
     var builtinApp = true
     private(set) var addCalls = 0
     private(set) var cancelCalls = 0
@@ -22,21 +23,23 @@ private final class FakeSlackAccounts: SlackAccountsConnecting {
     func addAccount(daemonPolicy _: DaemonRestartPolicy) async {
         addCalls += 1
         isConnecting = true
+        lastAuthEnd = nil
         await withCheckedContinuation { addWaiter = $0 }
         isConnecting = false
     }
 
-    /// `slack add` ended: an account written, or an error.
-    func finishAdd(account: SlackAccount? = nil, error: String? = nil) {
+    /// `slack add` ended as `end`, an account written or not.
+    func finishAdd(_ end: SlackAuthRunEnd, account: SlackAccount? = nil) {
         if let account { accounts.append(account) }
-        self.error = error
+        if case let .failed(message) = end { error = message } else { error = nil }
+        lastAuthEnd = end
         addWaiter?.resume()
         addWaiter = nil
     }
 
     func cancelConnect() {
         cancelCalls += 1
-        finishAdd()
+        finishAdd(.cancelled)
     }
 
     func refreshAsync() async {}
@@ -77,7 +80,9 @@ final class SlackConnectDriverTests: XCTestCase {
         let child = await listenerCLI.session(number: 1)
         child.emit(#"{"event":"listening","port":18551}"#)
         await untilObserved { host.state == .listening }
-        let setupCLI = FakeCLILineStream(replies: replies)
+        // Strict: an unscripted `slack app` call fails the test instead of hanging it.
+        let setupCLI = FakeCLILineStream(replies: replies, strict: true)
+        setupCLI.onUnscripted = { args in XCTFail("unscripted CLI call: \(args)") }
         let setup = SlackAppSetupModel(streamer: setupCLI)
         let accounts = FakeSlackAccounts()
         var next = 0
@@ -124,8 +129,8 @@ final class SlackConnectDriverTests: XCTestCase {
         XCTAssertEqual(rig.accounts.addCalls, 0)
         rig.setupCLI.enqueue(noSetups)  // `slack app status` answers; an unscripted run would never end
         let status = await rig.driver.status()
-        XCTAssertEqual(status.flow, ConnectStatus.Flow(id: SlackConnectDriver.runningFlowID, state: "starting"),
-                       "the paste's flow shows, so the agent can wait for it or cancel it")
+        XCTAssertEqual(status.flow, ConnectStatus.Flow(id: "flow-1", state: "starting"),
+                       "the paste's flow shows under its own id, so the agent can wait for it or cancel it")
     }
 
     func testSecondStartIsBusyWhileOurFlowRuns() async {
@@ -154,17 +159,13 @@ final class SlackConnectDriverTests: XCTestCase {
         XCTAssertFalse(rig.setupCLI.invocations.contains { $0.args.contains("create") || $0.args.contains("adopt") })
     }
 
-    func testOrganizationSlackAppsPinTheWorkspaceApp() async {
+    func testOrganizationSlackAppsRowIsTheNoOptionStart() async {
         var policy = ManagedPolicy()
         policy.managed = true
         policy.slackApps = [ManagedPolicy.SlackApp(teamID: "T0ACME", clientID: "9999.8888")]
         let rig = await makeRig(policy: policy)
 
         XCTAssertTrue(rig.driver.policyAllows(), "SlackApps provisions apps; it does not block Slack")
-        let otherApp = await rig.driver.start(options: ["code": code])
-        XCTAssertEqual(otherApp, .failure(.policy), "a code for the workspace through another app is refused")
-        XCTAssertEqual(rig.child.writtenLines, [])
-
         let orgRow = await rig.driver.start(options: [:])
         XCTAssertEqual(orgRow, .success("flow-1"), "no option: the organization's app, as its row in the connect section")
         await untilObserved { rig.flow.isRunning }
@@ -243,10 +244,72 @@ final class SlackConnectDriverTests: XCTestCase {
         await untilObserved { rig.accounts.isConnecting }
         XCTAssertEqual(rig.accounts.addCalls, 1)
         async let outcome = rig.driver.wait(flowID: "flow-1")
-        rig.accounts.finishAdd(account: account(id: 2, team: "T0ACME", name: "Acme"))
+        rig.accounts.finishAdd(.succeeded, account: account(id: 2, team: "T0ACME", name: "Acme"))
         let waited = await outcome
         XCTAssertEqual(waited, .connected(account: "Acme"))
         XCTAssertEqual(rig.child.writtenLines, [])
+    }
+
+    func testCancelledAddWorkspaceIsNeverConnected() async {
+        let rig = await makeRig()
+        _ = await rig.driver.start(options: [:])
+        await untilObserved { rig.accounts.isConnecting }
+        // Cancelled in the Connections UI, not through connect_cancel: `error` stays nil.
+        rig.accounts.finishAdd(.cancelled)
+        let cancelled = await rig.driver.wait(flowID: "flow-1")
+        XCTAssertEqual(cancelled, .failed(reason: SlackConnectDriver.cancelled))
+
+        _ = await rig.driver.start(options: [:])
+        await untilObserved { rig.accounts.isConnecting }
+        rig.accounts.finishAdd(.succeeded)
+        let nothingWritten = await rig.driver.wait(flowID: "flow-2")
+        XCTAssertEqual(nothingWritten, .failed(reason: SlackConnectDriver.signInEnded),
+                       "no new or re-bound account: never a made-up name")
+    }
+
+    func testAuthRunEndFromTheExitStatus() {
+        XCTAssertEqual(SlackAccountsViewModel.authEnd(exitCode: 0, error: nil), .succeeded)
+        XCTAssertEqual(SlackAccountsViewModel.authEnd(exitCode: 15, error: nil), .cancelled)
+        XCTAssertEqual(SlackAccountsViewModel.authEnd(exitCode: 9, error: nil), .cancelled)
+        XCTAssertEqual(SlackAccountsViewModel.authEnd(exitCode: 1, error: "denied"), .failed("denied"))
+    }
+
+    func testCancelBeforeTheChildAnswersEndsTheFlow() async {
+        let rig = await makeRig()
+        _ = await rig.driver.start(options: ["code": code])
+        await rig.driver.cancel(flowID: "flow-1")
+        XCTAssertTrue(rig.flow.isRunning, "the start is still unanswered")
+        async let outcome = rig.driver.wait(flowID: "flow-1")
+        rig.emit(.browser(flow: "f1"))  // the child answers: the model cancels f1
+        let waited = await outcome
+        XCTAssertEqual(waited, .failed(reason: SlackConnectDriver.cancelled))
+        XCTAssertEqual(rig.child.writtenLines.last, #"{"cmd":"cancel","flow":"f1"}"#)
+        let next = await rig.driver.start(options: ["code": code])
+        XCTAssertEqual(next, .success("flow-2"), "a later start is no longer busy")
+    }
+
+    func testEachForeignSignInHasItsOwnID() async {
+        let rig = await makeRig()
+        rig.flow.pasteText = code
+        rig.flow.connectPasted()
+        rig.setupCLI.enqueue(noSetups)
+        let first = await rig.driver.status().flow?.id
+        XCTAssertEqual(first, "flow-1")
+        rig.emit(.browser(flow: "f1"))
+        rig.emit(.connected(SlackConnectedAccount(flow: "f1", accountID: 3, teamID: "T0ACME", teamName: "Acme", reboundFrom: "")))
+        let ended = await rig.driver.wait(flowID: "flow-1")
+        XCTAssertEqual(ended, .connected(account: "Acme"))
+        let again = await rig.driver.wait(flowID: "flow-1")
+        XCTAssertEqual(again, .connected(account: "Acme"), "an ended foreign flow keeps its final outcome")
+
+        rig.flow.dismiss()
+        rig.flow.pasteText = code
+        rig.flow.connectPasted()
+        rig.setupCLI.enqueue(noSetups)
+        let second = await rig.driver.status().flow?.id
+        XCTAssertEqual(second, "flow-2", "a new attempt gets a new id")
+        await rig.driver.cancel(flowID: "flow-1")
+        XCTAssertTrue(rig.flow.isRunning, "the old id cancels nothing")
     }
 
     func testNoBuiltinAppNeedsTheCode() async {
@@ -346,7 +409,10 @@ final class SlackConnectDriverTests: XCTestCase {
 
         let sent = await rig.driver.submitSecret(kind: "slack_config_token", value: token)
         let data = try XCTUnwrap(success(sent))
-        XCTAssertEqual(try result(data)["result"] as? String, "ok")
+        let json = try result(data)
+        XCTAssertEqual(json["result"] as? String, "ok")
+        XCTAssertEqual(json["connected"] as? Bool, false, "the update signs nobody in")
+        XCTAssertEqual(json["message"] as? String, SlackConnectDriver.updatedNotConnected)
         let adopt = try XCTUnwrap(rig.setupCLI.invocations.first { $0.args.contains("adopt") })
         XCTAssertEqual(adopt.args, ["slack", "app", "adopt", "--json", "--enable-pkce"],
                        "the token's workspace; --enable-pkce only after the confirm card")
@@ -356,6 +422,20 @@ final class SlackConnectDriverTests: XCTestCase {
         let outcome = await rig.driver.wait(flowID: "flow-1")
         XCTAssertEqual(outcome, .failed(reason: SlackConnectDriver.updatedNotConnected),
                        "updated, but no account of the workspace is connected yet")
+    }
+
+    func testUpdateWithTheWorkspaceConnectedSaysSo() async throws {
+        let adopted = #"{"result":"ok","team_id":"T0ACME","team_name":"Acme","app_id":"A0APP","client_id":"1111.2222","link_written":true}"#
+        let rig = await makeRig(replies: [FakeCLILineStream.Reply(lines: [adopted]), noSetups])
+        rig.accounts.accounts = [account(id: 1, team: "T0ACME", name: "Acme")]
+        _ = await rig.driver.start(options: ["pkce": "1"])
+        let sent = await rig.driver.submitSecret(kind: "slack_config_token", value: token)
+        let json = try result(try XCTUnwrap(success(sent)))
+        XCTAssertEqual(json["result"] as? String, "ok")
+        XCTAssertEqual(json["connected"] as? Bool, true)
+        XCTAssertEqual(json["message"] as? String, SlackConnectDriver.updated)
+        let outcome = await rig.driver.wait(flowID: "flow-1")
+        XCTAssertEqual(outcome, .connected(account: "Acme"))
     }
 
     func testDeclinedOrCancelledUpdateNeverAdopts() async throws {

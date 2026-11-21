@@ -2,6 +2,13 @@ import Foundation
 import GRDB
 import WatchtowerCore
 
+/// How a browser sign-in (`slack add`, `slack login`) ended.
+enum SlackAuthRunEnd: Equatable {
+    case succeeded
+    case cancelled
+    case failed(String)
+}
+
 /// Drives the multi-workspace Slack connections shown in Connections → Slack and
 /// the add-workspace sheet. Each row is a DB-backed `slack_accounts` record —
 /// any number of Slack workspaces side by side, each independently granting
@@ -25,6 +32,10 @@ final class SlackAccountsViewModel {
     /// non-blocking notice, cleared by the next management command
     /// (enable, disable, remove).
     private(set) var revokeNotice: String?
+    /// How the last `slack add`/`slack login` this VM ran ended; nil while
+    /// one runs (or before any). The connect assistant reads it: `error` is
+    /// nil both after a success and after a Cancel.
+    private(set) var lastAuthEnd: SlackAuthRunEnd?
 
     /// The restart the last successful account change kicked off under
     /// `.restart` (nil under `.deferred`) — held so tests can await it.
@@ -313,11 +324,13 @@ final class SlackAccountsViewModel {
         }
         guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
+            lastAuthEnd = .failed(error ?? "")
             return
         }
 
         isConnecting = true
         error = nil
+        lastAuthEnd = nil
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
@@ -329,12 +342,26 @@ final class SlackAccountsViewModel {
         // running (Cancel visible); a Cancel or a newer attempt meanwhile
         // drops this launch.
         process.environment = await loginEnvironment()
-        guard authProcess === process else { return }
+        guard authProcess === process else {
+            lastAuthEnd = .cancelled
+            return
+        }
 
         let result = await Self.runProcess(process)
         authProcess = nil
         isConnecting = false
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
+        lastAuthEnd = Self.authEnd(exitCode: result.exitCode, error: error)
+    }
+
+    /// How a sign-in child ended: 0 succeeded, SIGTERM/SIGKILL cancelled
+    /// (`cancelConnect`), anything else failed with `error`'s text.
+    static func authEnd(exitCode: Int32, error: String?) -> SlackAuthRunEnd {
+        switch exitCode {
+        case 0: .succeeded
+        case 15, 9: .cancelled
+        default: .failed(error ?? "the sign-in failed (exit \(exitCode))")
+        }
     }
 
     /// Non-browser management command (`enable`/`disable`/`remove`) — a plain

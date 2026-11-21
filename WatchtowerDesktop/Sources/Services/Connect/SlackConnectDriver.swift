@@ -10,6 +10,8 @@ protocol SlackAccountsConnecting: AnyObject {
     var accounts: [SlackAccount] { get }
     var isConnecting: Bool { get }
     var error: String? { get }
+    /// How the last `slack add`/`slack login` ended; nil while one runs.
+    var lastAuthEnd: SlackAuthRunEnd? { get }
     /// `builtin_app` of `slack accounts --json`: the build signs in through its own app.
     var builtinApp: Bool { get }
     func addAccount(daemonPolicy: DaemonRestartPolicy) async
@@ -28,8 +30,9 @@ extension SlackAccountsViewModel: SlackAccountsConnecting {}
 ///   (the `slack connect serve` child, the Slack `Registry`'s one flow). The
 ///   panel's **Start** is the customer's press (SLACKFULL-01, ask #1721), so
 ///   the start skips the flow's confirm, as a pasted code does. With no
-///   option it is the organization's `SlackApps` row the connect section
-///   offers, else the build's own **Add workspace** (`slack add`).
+///   option it is the organization's first open `SlackApps` row, as the
+///   connect section offers it, else the build's own **Add workspace**
+///   (`slack add`).
 /// - `connect_start` with `pkce` waits behind the `.slackPKCE` confirm card;
 ///   once confirmed, the next `slack_config_token` runs the update
 ///   (`slack app adopt --enable-pkce` through `SlackAppSetupModel`), which
@@ -38,27 +41,31 @@ extension SlackAccountsViewModel: SlackAccountsConnecting {}
 /// - The token reaches the CLI on stdin only (SLACKFULL-02,
 ///   `SlackAppSetupModel`); it is never kept here, logged or returned.
 ///
-/// Flows live on this driver: a flow another driver or the app started is
-/// reported as `runningFlowID` while it runs, and its end is read off the
-/// models it ran on.
+/// Flows live on this driver. A sign-in it did not start (a paste, a clicked
+/// link, a Reconnect, **Add workspace**) gets its own id the first time
+/// `status()` sees it; its end is read off the model it ran on.
 @MainActor
 @Observable
 final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
     static let configTokenKind = "slack_config_token"
-    /// The flow id `status()` gives a sign-in this driver did not start.
-    static let runningFlowID = "slack-running"
     static let startOptions: Set<String> = ["pkce", "code"]
 
     let service = "slack"
     let secretKinds: Set<String> = [configTokenKind]
 
     private enum Kind {
-        /// Our start on the connect flow model.
-        case connect
+        /// Our start on the connect flow model, for this workspace app.
+        case connect(SlackConnectTarget)
         /// Our `slack add` (the build's own app).
         case add
         /// A confirmed PKCE update: waits for the token, then the adopt runs.
         case update(running: Bool)
+        /// A sign-in someone else started: on the connect flow, or `slack add`.
+        case foreign(onFlow: Bool)
+
+        var isOurs: Bool {
+            if case .foreign = self { false } else { true }
+        }
     }
 
     private struct Flow {
@@ -109,22 +116,23 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
             service: service,
             accounts: live.map { ConnectStatus.Account(name: $0.displayName, status: $0.status) },
             policyLocked: !policyAllows(),
-            flow: currentFlow,
+            flow: currentFlow(),
             setup: setupStage.map(ConnectStatus.Setup.init(stage:)))
     }
 
-    /// Our running flow, else a sign-in someone else started.
-    private var currentFlow: ConnectStatus.Flow? {
+    /// Our running flow, else the sign-in someone else runs (its id minted
+    /// the first time it is seen).
+    private func currentFlow() -> ConnectStatus.Flow? {
         if let active = activeFlow {
             return ConnectStatus.Flow(id: active.id, state: Self.state(active.flow.kind, connectFlow?.step))
         }
         guard let state = foreignState else { return nil }
-        return ConnectStatus.Flow(id: Self.runningFlowID, state: state)
+        return ConnectStatus.Flow(id: foreignFlowID(), state: state)
     }
 
     private static func state(_ kind: Kind, _ step: SlackConnectFlowModel.Step?) -> String {
         switch kind {
-        case .connect: if case .browser = step { "browser" } else { "starting" }
+        case .connect, .foreign: if case .browser = step { "browser" } else { "starting" }
         case .add: "browser"
         case let .update(running): running ? "updating" : "waiting_for_token"
         }
@@ -134,7 +142,7 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
     /// a Reconnect, a paste) or `slack add`. The setup's own admin connect is
     /// the setup's (`setup` stage `running`).
     private var foreignState: String? {
-        guard !setup.isRunning else { return nil }
+        guard !setup.isRunning, activeFlow == nil else { return nil }
         if let flow = connectFlow, flow.isRunning {
             return switch flow.step {
             case .confirming: "confirming"
@@ -143,6 +151,35 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
             }
         }
         return accounts.isConnecting ? "browser" : nil
+    }
+
+    /// The running foreign sign-in's id: the one already watched, else a new
+    /// one, watched until that sign-in ends.
+    private func foreignFlowID() -> String {
+        if let watched = flows.first(where: { !$0.value.kind.isOurs && $0.value.outcome == nil }) {
+            return watched.key
+        }
+        let onFlow = connectFlow?.isRunning == true
+        let id = begin(.foreign(onFlow: onFlow))
+        let before = accounts.accounts
+        Task { [weak self] in
+            await ObservedWait { [weak self] in self?.foreignRunning(onFlow: onFlow) != true }.wait()
+            self?.foreignEnded(id, onFlow: onFlow, before: before)
+        }
+        return id
+    }
+
+    private func foreignRunning(onFlow: Bool) -> Bool {
+        onFlow ? connectFlow?.isRunning == true : accounts.isConnecting
+    }
+
+    private func foreignEnded(_ id: String, onFlow: Bool, before: [SlackAccount]) {
+        guard let flow = flows[id], flow.outcome == nil else { return }
+        if onFlow, let step = connectFlow?.step {
+            flows[id]?.outcome = Self.outcome(step, cancelled: flow.cancelled)
+        } else {
+            flows[id]?.outcome = authOutcome(before: before, cancelled: flow.cancelled)
+        }
     }
 
     /// The setup's stage folded into one: `running` while a create or update
@@ -176,7 +213,6 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
             guard let target = SlackConnectTarget.parse(code) else {
                 return .failure(.badArgs(SlackConnectFlowModel.pasteInvalid))
             }
-            guard organizationAllows(target) else { return .failure(.policy) }
             return startConnect(target)
         }
         if let target = openOrganizationApp { return startConnect(target) }
@@ -195,15 +231,8 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
         return !flow.canStart || flow.companyRunning()
     }
 
-    /// The organization's `SlackApps` (MDM) names the app of a workspace:
-    /// a link or code for that workspace through another app is refused.
-    private func organizationAllows(_ target: SlackConnectTarget) -> Bool {
-        guard let apps = policy().slackApps, let app = apps.first(where: { $0.teamID == target.teamID }) else { return true }
-        return app.clientID == target.clientID
-    }
-
-    /// The connect section's first `SlackApps` row: an app the organization
-    /// set up whose workspace is not connected through it yet.
+    /// The connect section's first `SlackApps` (MDM) row: an app the
+    /// organization set up whose workspace is not connected through it yet.
     private var openOrganizationApp: SlackConnectTarget? {
         let live = accounts.accounts.filter { !$0.isGone }
         let open = (policy().slackApps ?? []).first { app in
@@ -212,9 +241,9 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
         return open.map { SlackConnectTarget(teamID: $0.teamID, clientID: $0.clientID) }
     }
 
-    /// The flow this driver runs now (one at a time).
+    /// The flow this driver started and runs now (one at a time).
     private var activeFlow: (id: String, flow: Flow)? {
-        flows.first { $0.value.outcome == nil }.map { ($0.key, $0.value) }
+        flows.first { $0.value.kind.isOurs && $0.value.outcome == nil }.map { ($0.key, $0.value) }
     }
 
     private func begin(_ kind: Kind) -> String {
@@ -226,8 +255,10 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
     private func startConnect(_ target: SlackConnectTarget) -> Result<String, ConnectDriverError> {
         guard let flow = connectFlow else { return .failure(.failed(Self.listenerMissing)) }
         guard flow.start(target) else { return .failure(.busy) }
-        let id = begin(.connect)
+        let id = begin(.connect(target))
         Task { [weak self] in
+            // `isRunning` stays true after a Cancel until the child answers
+            // the start (observed: `cancelAfterStart`).
             await ObservedWait { !flow.isRunning }.wait()
             self?.connectEnded(id, step: flow.step)
         }
@@ -236,90 +267,83 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
 
     private func connectEnded(_ id: String, step: SlackConnectFlowModel.Step) {
         guard let flow = flows[id], flow.outcome == nil else { return }
-        let outcome: ConnectWaitOutcome = switch step {
+        flows[id]?.outcome = Self.outcome(step, cancelled: flow.cancelled)
+    }
+
+    /// How a connect flow ended, read off the step it left.
+    private static func outcome(_ step: SlackConnectFlowModel.Step, cancelled: Bool) -> ConnectWaitOutcome {
+        switch step {
         case let .connected(workspace): .connected(account: workspace)
-        case .failed: .failed(reason: SlackConnectSheetContent(step: step)?.body ?? Self.signInFailed)
-        default: .failed(reason: flow.cancelled ? Self.cancelled : Self.signInEnded)
+        case .failed: .failed(reason: SlackConnectSheetContent(step: step)?.body ?? signInFailed)
+        default: .failed(reason: cancelled ? Self.cancelled : signInEnded)
         }
-        flows[id]?.outcome = outcome
     }
 
     private func startAdd() -> String {
         let id = begin(.add)
-        let before = Set(accounts.accounts.map(\.id))
+        let before = accounts.accounts
         Task { [weak self, accounts, daemonPolicy] in
             await accounts.addAccount(daemonPolicy: daemonPolicy())
             await accounts.refreshAsync()
-            self?.addEnded(id, before: before)
+            guard let self, let flow = flows[id], flow.outcome == nil else { return }
+            flows[id]?.outcome = authOutcome(before: before, cancelled: flow.cancelled)
         }
         return id
     }
 
-    private func addEnded(_ id: String, before: Set<Int>) {
-        guard let flow = flows[id], flow.outcome == nil else { return }
-        if flow.cancelled {
-            flows[id]?.outcome = .failed(reason: Self.cancelled)
-        } else if let error = accounts.error {
-            flows[id]?.outcome = .failed(reason: error)
-        } else {
-            let added = accounts.accounts.last { !before.contains($0.id) && !$0.isGone }
-            flows[id]?.outcome = .connected(account: added?.displayName ?? "Slack")
+    /// How the accounts VM's last sign-in ended: connected only on a
+    /// success that added or re-bound an account.
+    private func authOutcome(before: [SlackAccount], cancelled: Bool) -> ConnectWaitOutcome {
+        switch accounts.lastAuthEnd {
+        case .succeeded:
+            let changed = accounts.accounts.last { !$0.isGone && !before.contains($0) }
+            return changed.map { .connected(account: $0.displayName) } ?? .failed(reason: Self.signInEnded)
+        case .cancelled:
+            return .failed(reason: Self.cancelled)
+        case let .failed(message):
+            return .failed(reason: message)
+        case nil:
+            return .failed(reason: cancelled ? Self.cancelled : (accounts.error ?? Self.signInEnded))
         }
     }
 
     // MARK: - Wait and cancel
 
     func wait(flowID: String) async -> ConnectWaitOutcome {
-        if flowID == Self.runningFlowID { return await waitForeign() }
         guard let flow = flows[flowID] else { return .failed(reason: Self.unknownFlow) }
         if let outcome = flow.outcome { return outcome }
         await ObservedWait { [weak self] in self?.flows[flowID]?.outcome != nil }.wait()
         return flows[flowID]?.outcome ?? .waiting
     }
 
-    /// A sign-in someone else started: its end, read off the model it ran on.
-    private func waitForeign() async -> ConnectWaitOutcome {
-        guard foreignState != nil else { return .failed(reason: Self.unknownFlow) }
-        let onFlow = connectFlow?.isRunning == true
-        await ObservedWait { [weak self] in self?.foreignState == nil }.wait()
-        if Task.isCancelled { return .waiting }
-        guard onFlow, let step = connectFlow?.step else {
-            if let error = accounts.error { return .failed(reason: error) }
-            return .connected(account: accounts.accounts.last { !$0.isGone }?.displayName ?? "Slack")
-        }
-        switch step {
-        case let .connected(workspace): return .connected(account: workspace)
-        case .failed: return .failed(reason: SlackConnectSheetContent(step: step)?.body ?? Self.signInFailed)
-        default: return .failed(reason: Self.signInEnded)
-        }
-    }
-
     func cancel(flowID: String) async {
-        if flowID == Self.runningFlowID {
-            cancelForeign()
-            return
-        }
         guard let flow = flows[flowID], flow.outcome == nil else { return }
-        flows[flowID]?.cancelled = true
         switch flow.kind {
-        case .connect:
-            // Our start is the flow's one run until it ends.
-            if connectFlow?.isRunning == true { connectFlow?.cancel() }
+        case let .connect(target):
+            // Only while the flow model still runs this start.
+            guard let model = connectFlow, model.isRunning, Self.target(of: model.step) == target else { return }
+            flows[flowID]?.cancelled = true
+            model.cancel()
         case .add:
+            guard accounts.isConnecting else { return }
+            flows[flowID]?.cancelled = true
             accounts.cancelConnect()
         case .update(running: false):
             flows[flowID]?.outcome = .failed(reason: Self.cancelled)
         case .update(running: true):
             break  // the update runs to its end: Slack's side may already have changed
+        case let .foreign(onFlow):
+            guard foreignRunning(onFlow: onFlow) else { return }
+            flows[flowID]?.cancelled = true
+            if onFlow { connectFlow?.cancel() } else { accounts.cancelConnect() }
         }
     }
 
-    private func cancelForeign() {
-        guard foreignState != nil else { return }
-        if let flow = connectFlow, flow.isRunning {
-            flow.cancel()
-        } else if accounts.isConnecting {
-            accounts.cancelConnect()
+    /// The app a running step works on; nil off a running step.
+    private static func target(of step: SlackConnectFlowModel.Step) -> SlackConnectTarget? {
+        switch step {
+        case let .starting(target), let .browser(_, target, _), let .confirming(_, target): target
+        case .idle, .connected, .failed: nil
         }
     }
 
@@ -336,8 +360,16 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
             flows[updateID]?.kind = .update(running: true)
             setup.prepareUpdate()
             setup.startAdopt(token: token, appID: nil)
-            let result = await finishRun()
-            flows[updateID]?.outcome = await updateOutcome(result)
+            var result = await finishRun()
+            let outcome = await updateOutcome(result)
+            if result.result == "ok" {
+                // The update signs nobody in: connected only when an account
+                // of the workspace already is.
+                let connected = if case .connected = outcome { true } else { false }
+                result.connected = connected
+                result.message = connected ? Self.updated : Self.updatedNotConnected
+            }
+            flows[updateID]?.outcome = outcome
             return .success(Self.json(result))
         }
         // The create's admin connect needs the connect flow free.
@@ -428,6 +460,7 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
     static let signInEnded = "the Slack sign-in ended without connecting"
     static let signInFailed = "Slack did not finish the sign-in"
     static let listenerMissing = "Watchtower's connect listener is not running; reopen Connections → Slack and try again"
+    static let updated = "The app is updated, and your account in this workspace is connected through it."
     static let updatedNotConnected = "The app is updated, but no account of yours is connected through it yet. "
         + "Connect through the app's connect link or code."
 }
