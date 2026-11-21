@@ -22,7 +22,8 @@ package enum ConnectPendingCard: Equatable, Sendable {
 ///   `{"state":"waiting"}`; the agent's next call re-attaches to the same
 ///   step. One step waits at most `maxWaitPerStep` over at most
 ///   `maxCallsPerStep` calls, then answers `{"state":"timeout"}`, drops its
-///   card and fails the run with `.timedOut`.
+///   card and fails the run with `.timedOut` — except the wait on a flow
+///   that left the status while a newer start is underway, which ends alone.
 /// - No tool call resolves a card: only `answerConfirm`, `sendSecret` and
 ///   `cancelSecret`, which the panel calls.
 /// - A secret goes from `sendSecret` straight to the driver; nothing here
@@ -270,12 +271,11 @@ package final class ConnectRunController {
         }
     }
 
-    /// The flow ended outside this run's wait (status no longer shows it):
-    /// calls held on it answer `failed`, and its wait is retired.
+    /// The status no longer shows the flow: it stops making starts busy.
+    /// Leaving the status is no proof of failure (a sign-in that succeeded
+    /// leaves it too), so its step stays and its own wait still answers the
+    /// calls held on it; a newer start that succeeds retires that step.
     private func forgetFlow(_ flowID: String) {
-        // Leaving the status is no proof of failure (a sign-in that succeeded
-        // leaves it too): the flow stops making starts busy, but its own
-        // wait still answers the calls held on it.
         if activeFlow == flowID { activeFlow = nil }
     }
 
@@ -360,7 +360,13 @@ package final class ConnectRunController {
 
     private func cancelFlow() async -> Reply {
         let flowID: String? = if let activeFlow { activeFlow } else { await driver.status().flow?.id }
-        guard let flowID else { return Self.result(ConnectDone()) }
+        guard let flowID else {
+            // No flow runs any more, but a step may still wait on one that
+            // left the status: the agent gave it up, so its held calls are
+            // answered and the next connect_wait does not wait on it.
+            if !ended, let step = flowStep, step.outcome == nil { retire(step, reason: "the sign-in was cancelled") }
+            return Self.result(ConnectDone())
+        }
         await driver.cancel(flowID: flowID)
         if activeFlow == flowID { activeFlow = nil }
         if let step = flowStep, step.flowID == flowID { retire(step, reason: "the sign-in was cancelled") }
@@ -530,6 +536,14 @@ package final class ConnectRunController {
     /// is cancelled, and the run fails with `.timedOut` (Retry).
     private func timeOut(_ step: Step) async -> Reply {
         let reply = Reply.result(Self.json(ConnectPending(state: "timeout")))
+        if step === flowStep, step.flowID != activeFlow, replacementStarting {
+            // A flow that left the status runs out while a newer start is
+            // underway: only its own wait ends; the run and the new start go on.
+            step.work?.cancel()
+            finish(step, reply)
+            _ = consume(step)
+            return reply
+        }
         // The run shows the error with Retry: no card stays open behind it.
         pendingCard = nil
         if let card = cardStep, card !== step, card.work == nil {  // still unanswered
@@ -547,6 +561,13 @@ package final class ConnectRunController {
         _ = consume(step)
         if let abandonedFlow { await driver.cancel(flowID: abandonedFlow) }
         return reply
+    }
+
+    /// A `connect_start` is behind its confirm card or on the driver now.
+    private var replacementStarting: Bool {
+        if flowStarting { return true }
+        if case .start = cardStep?.purpose { return true }
+        return false
     }
 
     private func unknownTool(_ tool: String) -> Reply {

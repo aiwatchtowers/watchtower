@@ -315,6 +315,7 @@ final class ConnectRunControllerTests: XCTestCase {
 
         let second = hold(controller, "connect_wait")
         await clock.sleepers(1)
+        await driver.until { driver.isWaiting }
         driver.endWait(.connected(account: "acme"))
         let secondAnswer = await second.value
         XCTAssertEqual(secondAnswer, #"{"account":"acme","state":"connected"}"#)
@@ -333,6 +334,7 @@ final class ConnectRunControllerTests: XCTestCase {
             + #""service":"slack","setup":{"stage":"pending_create"}}"#)
         let held = hold(controller, "connect_wait")
         await clock.sleepers(1)
+        await driver.until { driver.isWaiting }
         XCTAssertEqual(driver.waits, ["flow-9"])
         driver.currentStatus = ConnectStatus(service: "slack", accounts: [.init(name: "acme", status: "connected")])
         driver.endWait(.connected(account: "acme"))
@@ -513,6 +515,7 @@ final class ConnectRunControllerTests: XCTestCase {
         let firstAnswer = await first.value
         XCTAssertEqual(firstAnswer, waiting)
 
+        await driver.until { driver.isWaiting }
         driver.endWait(.connected(account: "acme"))
         while controller.activeFlow != nil { await Task.yield() }
         XCTAssertNil(driver.currentStatus.flow)
@@ -528,6 +531,7 @@ final class ConnectRunControllerTests: XCTestCase {
         _ = await call(controller, "connect_start")
         let held = hold(controller, "connect_wait")
         await clock.sleepers(1)
+        await driver.until { driver.isWaiting }
         driver.holdStatus = true
         driver.endWait(.connected(account: "acme"))
         await driver.until { !driver.heldStatus.isEmpty }
@@ -657,7 +661,7 @@ final class ConnectRunControllerTests: XCTestCase {
 
         let new = hold(controller, "connect_wait")
         await clock.sleepers(1)
-        await driver.until { driver.waits.count == 2 }
+        await driver.until { driver.isWaiting(on: "flow-2") }
         driver.endWait(.connected(account: "acme"))
         let newAnswer = await new.value
         XCTAssertEqual(newAnswer, connected)
@@ -698,6 +702,7 @@ final class ConnectRunControllerTests: XCTestCase {
         await clock.sleepers(1)
         clock.advance(by: ConnectWire.waitBudget)
         _ = await first.value
+        await driver.until { driver.isWaiting }
         driver.endWait(.failed(reason: "Slack denied the sign-in"))  // nobody collects it
         while controller.activeFlow != nil { await Task.yield() }
 
@@ -718,6 +723,7 @@ final class ConnectRunControllerTests: XCTestCase {
         await clock.sleepers(1)
         clock.advance(by: ConnectWire.waitBudget)
         _ = await first.value
+        await driver.until { driver.isWaiting }
         driver.endWait(.failed(reason: "Slack denied the sign-in"))  // nobody collects it
         while controller.activeFlow != nil { await Task.yield() }
 
@@ -725,10 +731,101 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(started, #"{"flow_id":"flow-2"}"#)
         let held = hold(controller, "connect_wait")
         await clock.sleepers(1)
-        await driver.until { driver.waits.count == 2 }
+        await driver.until { driver.isWaiting(on: "flow-2") }
         driver.endWait(.connected(account: "acme"))
         let answer = await held.value
         XCTAssertEqual(answer, connected)
+    }
+
+    /// Starts flow-1, spends all but the last call of its wait's budget,
+    /// then lets the status drop the flow (`connect_status` forgets it).
+    private func flowLeftStatusWithOneCallLeft(_ controller: ConnectRunController, _ driver: FakeConnectDriver) async {
+        _ = await call(controller, "connect_start")
+        for _ in 1..<ConnectRunController.maxCallsPerStep {
+            let held = hold(controller, "connect_wait")
+            await clock.sleepers(1)
+            clock.advance(by: ConnectWire.waitBudget)
+            let answer = await held.value
+            XCTAssertEqual(answer, waiting)
+        }
+        await driver.until { driver.isWaiting(on: "flow-1") }
+        driver.setFlow(nil)
+        _ = await call(controller, "connect_status")
+        XCTAssertNil(controller.activeFlow)
+    }
+
+    /// The old flow's wait runs out while the replacement's confirm card is
+    /// open: only the old wait ends; the card and the run stay.
+    func testOldWaitTimeoutLeavesReplacementConfirm() async {
+        let driver = pkceDriver()
+        let controller = makeController(driver)
+        await flowLeftStatusWithOneCallLeft(controller, driver)
+        let start = hold(controller, "connect_start", #"{"pkce":true}"#)
+        await clock.sleepers(1)
+        let old = hold(controller, "connect_wait")
+        await clock.sleepers(2)
+        clock.advance(by: ConnectWire.waitBudget)
+        let oldAnswer = await old.value
+        XCTAssertEqual(oldAnswer, timeout)
+        let startAnswer = await start.value
+        XCTAssertEqual(startAnswer, waiting)
+        XCTAssertEqual(controller.state, .confirm(.slackPKCE))
+        XCTAssertTrue(driver.cancels.isEmpty)
+        guard controller.failure == nil else { return }  // no card left to re-attach to
+
+        let again = hold(controller, "connect_start", #"{"pkce":true}"#)  // re-attaches to the card
+        await clock.sleepers(1)
+        controller.answerConfirm(true)
+        let started = await again.value
+        XCTAssertEqual(started, #"{"flow_id":"flow-2"}"#)
+        XCTAssertEqual(controller.activeFlow, "flow-2")
+        XCTAssertNil(controller.failure)
+    }
+
+    /// The old flow's wait runs out while the replacement start is on the
+    /// driver: the start lands in a live run.
+    func testOldWaitTimeoutLeavesReplacementStartInFlight() async {
+        let driver = FakeConnectDriver()
+        let controller = makeController(driver)
+        await flowLeftStatusWithOneCallLeft(controller, driver)
+        driver.holdStart = true
+        let start = hold(controller, "connect_start")
+        await driver.until { driver.isStarting }
+        let old = hold(controller, "connect_wait")
+        await clock.sleepers(1)
+        clock.advance(by: ConnectWire.waitBudget)
+        let oldAnswer = await old.value
+        XCTAssertEqual(oldAnswer, timeout)
+        XCTAssertNil(controller.failure)
+
+        driver.releaseStart()
+        let started = await start.value
+        XCTAssertEqual(started, #"{"flow_id":"flow-2"}"#)
+        XCTAssertEqual(controller.activeFlow, "flow-2")
+        XCTAssertNil(controller.failure)
+        XCTAssertTrue(driver.cancels.isEmpty)
+    }
+
+    /// connect_cancel with no flow left in the status gives up the wait
+    /// still held on the flow that left it.
+    func testCancelRetiresWaitOnFlowThatLeftStatus() async {
+        let driver = FakeConnectDriver()
+        let controller = makeController(driver)
+        _ = await call(controller, "connect_start")
+        let held = hold(controller, "connect_wait")
+        await clock.sleepers(1)
+        await driver.until { driver.isWaiting }
+        driver.setFlow(nil)
+        _ = await call(controller, "connect_status")
+        let cancelled = await call(controller, "connect_cancel")
+        XCTAssertEqual(cancelled, "{}")
+        XCTAssertEqual(controller.state, .thinking, "the wait is given up at once")
+        if controller.state != .thinking { controller.end() }  // fail, never hang
+        let answer = await held.value
+        XCTAssertEqual(answer, #"{"reason":"the sign-in was cancelled","state":"failed"}"#)
+        let next = await call(controller, "connect_wait")
+        XCTAssertEqual(next, "error:failed")
+        XCTAssertEqual(driver.waits, ["flow-1"])
     }
 
     func testTimeoutClearsEveryOpenCard() async {
@@ -804,6 +901,7 @@ final class ConnectRunControllerTests: XCTestCase {
         let held = hold(controller, "connect_wait")
         await clock.sleepers(1)
         XCTAssertEqual(controller.state, .waiting(step: ConnectRunController.flowWaitStep))
+        await driver.until { driver.isWaiting }
         driver.endWait(.failed(reason: "Slack denied the sign-in"))
         let failed = await held.value
         XCTAssertEqual(failed, #"{"reason":"Slack denied the sign-in","state":"failed"}"#)
@@ -815,6 +913,7 @@ final class ConnectRunControllerTests: XCTestCase {
         ])
         let connected = hold(controller, "connect_wait")
         await clock.sleepers(1)
+        await driver.until { driver.isWaiting }
         driver.endWait(.connected(account: "acme-two"))
         _ = await connected.value
         XCTAssertEqual(controller.state, .done(accounts: 2, noun: .workspace))
@@ -823,6 +922,7 @@ final class ConnectRunControllerTests: XCTestCase {
         _ = await call(controller, "connect_start")
         let quick = hold(controller, "connect_wait")
         await clock.sleepers(1)
+        await driver.until { driver.isWaiting }
         driver.endWait(.waiting)
         await clock.sleepers(2)
         clock.advance(by: ConnectWire.waitBudget)

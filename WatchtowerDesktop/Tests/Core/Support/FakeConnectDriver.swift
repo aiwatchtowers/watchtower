@@ -25,7 +25,7 @@ class FakeConnectDriver: ConnectServiceDriving {
     private(set) var fields: [[String: String]] = []
     /// How many `status()` calls have returned.
     private(set) var statusAnswers = 0
-    private var heldWaits: [Int: CheckedContinuation<ConnectWaitOutcome, Never>] = [:]
+    private var heldWaits: [Int: (flowID: String, continuation: CheckedContinuation<ConnectWaitOutcome, Never>)] = [:]
     private var nextWaitKey = 0
     private(set) var heldStatus: [CheckedContinuation<Void, Never>] = []
     private var flowCount = 0
@@ -72,8 +72,22 @@ class FakeConnectDriver: ConnectServiceDriving {
         heldStatus = []
     }
 
+    /// With `holdStart`, `start` holds (`isStarting`) until `releaseStart()`.
+    var holdStart = false
+    private var heldStart: CheckedContinuation<Void, Never>?
+    var isStarting: Bool { heldStart != nil }
+
+    func releaseStart() {
+        holdStart = false
+        heldStart?.resume()
+        heldStart = nil
+    }
+
     func start(options: [String: String]) async -> Result<String, ConnectDriverError> {
         starts.append(options)
+        if holdStart {
+            await withCheckedContinuation { heldStart = $0; changed() }
+        }
         if !startResults.isEmpty { return startResults.removeFirst() }
         flowCount += 1
         setFlow("flow-\(flowCount)")
@@ -84,6 +98,9 @@ class FakeConnectDriver: ConnectServiceDriving {
     /// A `wait` is held now.
     var isWaiting: Bool { !heldWaits.isEmpty }
 
+    /// A `wait` on `flowID` is held now.
+    func isWaiting(on flowID: String) -> Bool { heldWaits.values.contains { $0.flowID == flowID } }
+
     func wait(flowID: String) async -> ConnectWaitOutcome {
         waits.append(flowID)
         defer { changed() }
@@ -93,20 +110,22 @@ class FakeConnectDriver: ConnectServiceDriving {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 guard !Task.isCancelled else { return continuation.resume(returning: .waiting) }
-                heldWaits[key] = continuation
+                heldWaits[key] = (flowID, continuation)
                 changed()
             }
         } onCancel: {
-            Task { @MainActor in self.heldWaits.removeValue(forKey: key)?.resume(returning: .waiting) }
+            Task { @MainActor in self.heldWaits.removeValue(forKey: key)?.continuation.resume(returning: .waiting) }
         }
     }
 
     /// Ends every held `wait` with `outcome`; a finished flow leaves the status.
+    /// An outcome with no wait held is dropped: sync on `until { isWaiting }`
+    /// first (`ConnectTestClock.sleepers` only proves the call's timer runs).
     func endWait(_ outcome: ConnectWaitOutcome) {
         if outcome != .waiting { setFlow(nil) }
         let held = heldWaits.values
         heldWaits = [:]
-        held.forEach { $0.resume(returning: outcome) }
+        held.forEach { $0.continuation.resume(returning: outcome) }
     }
 
     func cancel(flowID: String) async {

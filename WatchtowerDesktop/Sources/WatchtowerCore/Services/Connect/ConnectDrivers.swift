@@ -20,7 +20,12 @@ package protocol ConnectServiceDriving: AnyObject {
     /// Starts the sign-in; returns its flow id.
     func start(options: [String: String]) async -> Result<String, ConnectDriverError>
     /// Waits on the flow. May return `.waiting` at any time; honours task
-    /// cancellation (which ends the wait, never the flow).
+    /// cancellation (which ends the wait, never the flow). On a flow that
+    /// already ended, or one the driver does not know (it ended before this
+    /// app run, or was cancelled elsewhere), it returns that flow's final
+    /// `.connected`/`.failed` at once (`.failed` when the end is unknown),
+    /// never `.waiting` forever: the controller keeps waiting on a flow
+    /// that left the status until its wait reports how it ended.
     func wait(flowID: String) async -> ConnectWaitOutcome
     func cancel(flowID: String) async
     /// Hands a secret to the verb its kind names; returns the verb's JSON
