@@ -149,9 +149,9 @@ final class EmailAccountsViewModel {
             process.environment = await Constants.resolvedEnvironmentAsync()
             guard await MainActor.run(body: { self.authProcess === process }) else { return }
             let result = await Self.runProcess(process)
-            await MainActor.run {
-                // A Cancel (or a newer attempt) meanwhile owns the state now.
-                guard self.authProcess === process else { return }
+            let applied = await MainActor.run {
+                // A Cancel meanwhile owns the state now.
+                guard self.authProcess === process else { return false }
                 self.authProcess = nil
                 self.isRunning = false
                 if result.exitCode == 0 {
@@ -167,10 +167,16 @@ final class EmailAccountsViewModel {
                         ? "Login failed (exit \(result.exitCode))"
                         : String(result.stderr.prefix(200))
                 }
+                return true
             }
+            // A cancelled run: only re-read what it may have saved before it
+            // was killed (no daemon restart).
+            if !applied { await self.refreshAsync() }
         }
     }
 
+    /// Ends a waiting Outlook sign-in silently; the run's completion then
+    /// re-reads the accounts once the process is gone.
     func cancelConnect() {
         if let process = authProcess, process.isRunning {
             process.terminate()

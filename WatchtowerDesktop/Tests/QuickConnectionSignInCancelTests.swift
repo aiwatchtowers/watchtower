@@ -11,9 +11,12 @@ import XCTest
 /// never resets the next attempt.
 @MainActor
 final class QuickConnectionSignInCancelTests: XCTestCase {
+    private var pool: DatabasePool!
+
     private func makeVM(_ stub: GatedLoginStub) throws -> ExternalConnectionsViewModel {
         let (pool, path) = try TestDatabase.createPool()
         addTeardownBlock { TestDatabase.cleanup(path: path) }
+        self.pool = pool
         return ExternalConnectionsViewModel(dbPool: pool, makeRunner: { nil }, cliPath: { stub.path })
     }
 
@@ -45,6 +48,28 @@ final class QuickConnectionSignInCancelTests: XCTestCase {
         await run.value // the stub died of the SIGTERM
         XCTAssertFalse(vm.isBusy)
         XCTAssertNil(vm.error)
+    }
+
+    /// A Cancel can land while the CLI saves: once the killed run is gone,
+    /// the list is read again, so what it saved shows.
+    func testCancelRereadsWhatTheKilledRunSaved() async throws {
+        let stub = try stub()
+        let vm = try makeVM(stub)
+        let wiki = connection(3, "acme-wiki")
+        XCTAssertTrue(vm.connections.isEmpty)
+
+        let run = Task { await vm.signIn(wiki) }
+        _ = await stub.nextRun()
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO external_connections (name, kind, url, enabled, status, error) "
+                + "VALUES ('acme-wiki', 'http', 'https://mcp.example.com', 0, 'revoked', '')")
+        }
+        vm.cancelSignIn()
+        await run.value
+
+        XCTAssertEqual(vm.connections.map(\.name), ["acme-wiki"])
+        XCTAssertNil(vm.error)
+        XCTAssertFalse(vm.isBusy)
     }
 
     func testCancelAfterTheRunExitedStaysIdle() async throws {
@@ -122,8 +147,11 @@ final class OutlookConnectCancelTests: XCTestCase {
     private func makeVM(_ stub: GatedLoginStub, daemon: FakeDaemonRestarter) throws -> EmailAccountsViewModel {
         let (pool, path) = try TestDatabase.createPool()
         addTeardownBlock { TestDatabase.cleanup(path: path) }
+        self.pool = pool
         return EmailAccountsViewModel(dbPool: pool, daemon: daemon) { stub.path }
     }
+
+    private var pool: DatabasePool!
 
     private func stub(ignoreTerm: Bool = false) throws -> GatedLoginStub {
         let stub = try GatedLoginStub(ignoreTerm: ignoreTerm)
@@ -146,6 +174,29 @@ final class OutlookConnectCancelTests: XCTestCase {
 
         await run.value
         XCTAssertFalse(vm.isRunning)
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    /// A Cancel can land while the CLI saves: once the killed run is gone,
+    /// the accounts are read again, once, with no daemon restart.
+    func testCancelRereadsTheAccountsOnce() async throws {
+        let stub = try stub()
+        let daemon = FakeDaemonRestarter()
+        let vm = try makeVM(stub, daemon: daemon)
+        var rereads = 0
+        vm.onAccountsChanged = { rereads += 1 }
+
+        let run = try XCTUnwrap(vm.connectOutlook())
+        _ = await stub.nextRun()
+        _ = try await pool.write { db in
+            try TestDatabase.insertEmailAccount(db, provider: "outlook", emailAddress: "owner@example.com")
+        }
+        vm.cancelConnect()
+        await run.value
+
+        XCTAssertEqual(rereads, 1)
+        XCTAssertEqual(vm.accounts.map(\.emailAddress), ["owner@example.com"])
         XCTAssertNil(vm.error)
         XCTAssertEqual(daemon.restartCount, 0)
     }

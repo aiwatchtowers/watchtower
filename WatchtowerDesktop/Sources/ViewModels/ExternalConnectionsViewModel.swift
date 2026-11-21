@@ -192,7 +192,8 @@ final class ExternalConnectionsViewModel {
 
     /// Terminates an in-flight sign-in process, if any, silently: the busy
     /// state resets at once, no error is set, and the run's own completion
-    /// writes nothing (it is no longer the current process). Mirrors
+    /// only re-reads the connections once the process is gone (a Cancel can
+    /// land while the CLI saves; whatever it saved then shows). Mirrors
     /// `SlackAccountsViewModel.cancelConnect`.
     func cancelSignIn() {
         if let process = authProcess, process.isRunning {
@@ -464,8 +465,12 @@ final class ExternalConnectionsViewModel {
         guard authProcess === process else { return }
 
         let result = await Self.runProcess(process)
-        // A Cancel (or a newer attempt) meanwhile owns the state now.
-        guard authProcess === process else { return }
+        // A Cancel meanwhile owns the state now: only re-read what the
+        // killed run may have saved.
+        guard authProcess === process else {
+            await refreshAsync()
+            return
+        }
         authProcess = nil
         signInConnectionID = nil
         isBusy = false
