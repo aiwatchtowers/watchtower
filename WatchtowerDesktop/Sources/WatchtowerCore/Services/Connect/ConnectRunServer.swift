@@ -467,6 +467,8 @@ final class ConnectRunPeer: @unchecked Sendable {
     private var ended = false
     private var nextCall = 0
     private var calls: [Int: Task<Void, Never>] = [:]
+    /// Calls that ended before they were tracked: `track` then keeps nothing.
+    private var endedUntracked: Set<Int> = []
     private let writeQueue = DispatchQueue(label: "connect-run.write")
 
     init(
@@ -507,18 +509,19 @@ final class ConnectRunPeer: @unchecked Sendable {
     }
 
     /// Holds a call's task until it ends (`untrack`), so ending the
-    /// connection cancels it; an ended connection cancels it at once.
+    /// connection cancels it; an ended connection cancels it at once. A task
+    /// that already ended (untracked first) is never kept.
     func track(_ task: Task<Void, Never>, key: Int) {
         lock.lock()
         let live = !ended
-        if live { calls[key] = task }
+        if live, endedUntracked.remove(key) == nil { calls[key] = task }
         lock.unlock()
         if !live { task.cancel() }
     }
 
     func untrack(_ key: Int) {
         lock.lock()
-        calls[key] = nil
+        if calls.removeValue(forKey: key) == nil, !ended { endedUntracked.insert(key) }
         lock.unlock()
     }
 
