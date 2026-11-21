@@ -84,7 +84,7 @@ struct WatchmanJournalContent: View {
 
     private var header: some View {
         HStack(spacing: Spacing.regular) {
-            Image(systemName: "moon.stars").foregroundStyle(WatchmanJournalStyle.tone)
+            Image(systemName: WatchmanStyle.icon).foregroundStyle(WatchmanJournalStyle.tone)
             Text(model.title).font(.headline)
             Spacer(minLength: Spacing.regular)
             if model.scopeOptions.count > 1 || model.scope != nil { scopeMenu }

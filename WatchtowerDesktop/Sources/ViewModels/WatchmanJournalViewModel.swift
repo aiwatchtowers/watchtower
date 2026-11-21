@@ -295,7 +295,7 @@ final class WatchmanJournalViewModel {
     var emptyHint: String { WatchmanJournalCopy.emptyHint }
     var emptyCopy: EmptyStateCopy {
         EmptyStateCopyTable.copy(for: WatchmanJournalCopy.emptyCopyKey, briefingHour: 0)
-            ?? EmptyStateCopy(icon: "moon.stars", title: "", landsHere: "", feature: nil, primaryAction: nil)
+            ?? EmptyStateCopy(icon: WatchmanStyle.icon, title: "", landsHere: "", feature: nil, primaryAction: nil)
     }
 
     var daemonLine: String? { daemon == .stopped ? WatchmanJournalCopy.daemonStopped : nil }
