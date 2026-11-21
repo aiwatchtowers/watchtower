@@ -115,9 +115,13 @@ const (
 	ErrClassFailed        = "failed"
 	ErrClassTooManyIDs    = "too_many_ids"
 	ErrClassNotAdopted    = adopt.ClassNotAdopted
-	// ErrClassNoICloud: a CloudKit code was refused, the Mac's iCloud
-	// account (or its user) cannot be read or used.
+	// ErrClassNoICloud: a CloudKit code was refused, the Mac has no usable
+	// iCloud account (none, restricted, or the build lacks the entitlement).
 	ErrClassNoICloud = "no_icloud"
+	// ErrClassICloudUnreachable: a CloudKit code was refused, the Mac's
+	// iCloud account or user could not be read just now (the bridge failed
+	// or timed out, iCloud is temporarily unavailable); a retry may work.
+	ErrClassICloudUnreachable = "icloud_unreachable"
 	// ErrClassICloudChanged: the Mac's iCloud account changed while a
 	// CloudKit code was being made; none was issued.
 	ErrClassICloudChanged = "icloud_changed"
@@ -813,6 +817,7 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 // LinkErrClass maps a link error to its answer class (the CLI's offline
 // path words its refusals through it too).
 func LinkErrClass(err error) string {
+	var accountErr *link.AccountError
 	switch {
 	case errors.Is(err, ErrIdentityMissing):
 		return ErrClassNoIdentity
@@ -824,8 +829,14 @@ func LinkErrClass(err error) string {
 		return ErrClassNoRequest
 	case errors.Is(err, link.ErrCodeChanged):
 		return ErrClassCodeChanged
-	case errors.As(err, new(*link.AccountError)), errors.Is(err, link.ErrOwnerUnknown):
-		return ErrClassNoICloud
+	case errors.As(err, &accountErr):
+		switch accountErr.Account {
+		case transport.AccountNoAccount, transport.AccountRestricted, transport.AccountNoEntitlement:
+			return ErrClassNoICloud
+		}
+		return ErrClassICloudUnreachable
+	case errors.Is(err, link.ErrOwnerUnknown):
+		return ErrClassICloudUnreachable
 	case errors.Is(err, link.ErrAccountChanged):
 		return ErrClassICloudChanged
 	}

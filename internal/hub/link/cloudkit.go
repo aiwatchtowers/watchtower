@@ -322,12 +322,16 @@ func (c *Center) owner(ctx context.Context, s transport.Shares) string {
 func (c *Center) readOwner(ctx context.Context, s transport.Shares) (string, bool) {
 	u, ok := s.(transport.CloudUser)
 	if !ok {
+		log.Printf("hub link: the Mac's iCloud user unreadable (the transport cannot name it)")
 		return "", false
 	}
 	name, err := bounded(ctx, c.shareTimeout, u.OwnerUser)
 	if err != nil {
 		log.Printf("hub link: the Mac's iCloud user unreadable (%s)", shareErrorClass(err))
 		return "", false
+	}
+	if name == "" {
+		log.Printf("hub link: the Mac's iCloud user unreadable (empty)")
 	}
 	return name, name != ""
 }

@@ -187,6 +187,8 @@ func hubAnswerError(a hub.ControlAnswer) error {
 		return errors.New("the hub refused the request as malformed")
 	case hub.ErrClassNoICloud:
 		return errors.New("iCloud is not available on this Mac: sign in to iCloud in System Settings to link an iPhone")
+	case hub.ErrClassICloudUnreachable:
+		return errors.New("iCloud could not be reached from this Mac: try again in a moment")
 	case hub.ErrClassICloudChanged:
 		return errors.New("the iCloud account on this Mac changed while the code was made: try again")
 	}

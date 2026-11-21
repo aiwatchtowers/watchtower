@@ -164,7 +164,7 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **The tower doesn't show up on the phone.** Check that Watchtower is open, **Mobile sync** is on, the Mac is awake, the build is signed and iCloud is on; then the pairing above.
 - **"This code expired" or "This code can't be used".** Press **New code** on the Mac and scan again. A code works for one phone.
 - **"Sign in to iCloud on this iPhone to use Watchtower".** The phone and the Mac both need an iCloud account ("Mobile isn't available on this Mac: iCloud is off.").
-- **"iCloud is not available on this Mac" instead of a code.** The Mac needs an iCloud account to make the code. Sign in to iCloud in System Settings, then press **New code**. "The iCloud account on this Mac changed while the code was made" also asks for **New code**.
+- **"iCloud is not available on this Mac" instead of a code.** The Mac needs an iCloud account to make the code. Sign in to iCloud in System Settings, then press **New code**. "iCloud could not be reached from this Mac" and "The iCloud account on this Mac changed while the code was made" also ask for **New code** in a moment.
 - **Another Apple ID won't link.** "This tower can't share with another Apple ID right now" means the Mac's share failed. Show a new code.
 - **"<tower> hasn't synced for a day".** No heartbeat for a day. If the Mac changed iCloud account, link again.
 - **"<tower> removed this phone".** It removed the link and freezes: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.

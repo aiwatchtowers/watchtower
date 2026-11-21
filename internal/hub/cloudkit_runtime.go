@@ -91,14 +91,19 @@ func (h *hubRuntime) cloudKitCodes() (transport.Shares, bool) {
 // pairCloudKit issues a CloudKit code (link.Center.IssueCloudKit, which
 // emits the qr and waiting events as Issue does) and runs a pass at once
 // for the phone's hello. A refusal is answered with its class (LinkErrClass:
-// no_icloud, icloud_changed, else failed). Called off hubMu with the hub
-// held by its wait group.
+// no_icloud, icloud_unreachable, icloud_changed, else failed); a hub stopping
+// meanwhile answers hub_off. Called off hubMu with the hub held by its wait
+// group.
 func (h *hubRuntime) pairCloudKit(s transport.Shares) ControlAnswer {
 	ctx, cancel := context.WithTimeout(h.ctx, opTimeout)
 	defer cancel()
 	if _, _, err := h.center.IssueCloudKit(ctx, s); err != nil {
-		log.Printf("hub: CloudKit code not issued (%s)", errClass(err))
-		return ControlAnswer{Error: LinkErrClass(err)}
+		class := LinkErrClass(err)
+		if h.ctx.Err() != nil {
+			class = ErrClassHubOff
+		}
+		log.Printf("hub: CloudKit code not issued (%s, %s)", class, errClass(err))
+		return ControlAnswer{Error: class}
 	}
 	h.kick(h.passKick)
 	return ControlAnswer{OK: true}

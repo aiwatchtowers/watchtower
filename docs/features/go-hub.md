@@ -484,8 +484,10 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   a paying phone that scanned one on a CloudKit Mac linked through a pairing slot onto the relay, where the hub
   wrote no heartbeat, so the phone showed the Mac offline. The share calls run outside the supervisor's `hubMu`,
   the hub held by its wait group (stop cancels and waits for them); the `qr` and `waiting` events reach the pair
-  stream as with `Issue`. A refusal answers `no_icloud` (no usable iCloud account, or the Mac's iCloud user
-  unreadable) or `icloud_changed` (the account changed while the code was made), worded by the CLI
+  stream as with `Issue`. A refusal answers `no_icloud` (no iCloud account, restricted, or no entitlement),
+  `icloud_unreachable` (the account or the Mac's iCloud user could not be read just now: the bridge failed or timed
+  out, iCloud temporarily unavailable; try again), `icloud_changed` (the account changed while the code was made),
+  `hub_off` (the hub stopped meanwhile) or `failed` (the code could not be stored), worded by the CLI
   (`hubAnswerError`), whose last stderr line Settings → Mobile shows; nothing is issued.
 - **A phone's relay id from its `device` record** (relay client Phase 3b Task 23, R22). An iCloud-linked phone that
   upgrades names its `relay_device_id` in its own `device` record with the `relay_auth` key's proof; the hub stores it

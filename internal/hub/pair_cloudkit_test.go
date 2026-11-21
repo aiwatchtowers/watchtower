@@ -3,6 +3,8 @@ package hub
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -140,4 +142,64 @@ func TestPairOnACloudKitDesktopWithoutICloudIsRefused(t *testing.T) {
 			t.Fatalf("the public link opened %d times", n)
 		}
 	})
+}
+
+// A CloudKit code's refusals: a real account state (no account, restricted,
+// no entitlement) is no_icloud; an account or owner that could not be read
+// just now is icloud_unreachable (try again); an account change while the
+// code was made is icloud_changed.
+func TestLinkErrClassForCloudKitCodes(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&link.AccountError{Account: transport.AccountNoAccount}, ErrClassNoICloud},
+		{&link.AccountError{Account: transport.AccountRestricted}, ErrClassNoICloud},
+		{&link.AccountError{Account: transport.AccountNoEntitlement}, ErrClassNoICloud},
+		{&link.AccountError{Account: transport.AccountTemporarilyUnavailable}, ErrClassICloudUnreachable},
+		{&link.AccountError{Account: link.AccountUnreadable, Err: transport.ErrUnavailable}, ErrClassICloudUnreachable},
+		{link.ErrOwnerUnknown, ErrClassICloudUnreachable},
+		{fmt.Errorf("wrapped: %w", link.ErrAccountChanged), ErrClassICloudChanged},
+		{errors.New("link: storing the code: disk full"), ErrClassFailed},
+	} {
+		if got := LinkErrClass(tc.err); got != tc.want {
+			t.Errorf("%v: %s, want %s", tc.err, got, tc.want)
+		}
+	}
+}
+
+// An iCloud account the bridge reports only for now unavailable refuses the
+// pair as retryable, with nothing issued.
+func TestPairOnACloudKitDesktopWithICloudBriefyUnavailableIsRetryable(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, ck, c := startPairDesk(t, transport.KindCloudKit)
+		ck.acct.Store(transport.AccountTemporarilyUnavailable)
+		if a := pairRefusal(t, c); a != ErrClassICloudUnreachable {
+			t.Fatalf("answer %s, want %s", a, ErrClassICloudUnreachable)
+		}
+		if n := codesStored(t, r.dir); n != 0 {
+			t.Fatalf("%d codes stored", n)
+		}
+	})
+}
+
+// pairRefusal asks for a code and returns the answer's error class, failing
+// on a qr event first.
+func pairRefusal(t *testing.T, c *ControlClient) string {
+	t.Helper()
+	if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		a, err := c.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.Event == link.EventQR {
+			t.Fatal("a qr event for a refused pair")
+		}
+		if a.Event == "" && a.Op == OpPair {
+			return a.Error
+		}
+	}
 }
