@@ -161,6 +161,26 @@ func (h *hubRuntime) cloudKitStart(ctx context.Context) {
 	}
 }
 
+// stopCloseTimeout bounds the stop's close of a CloudKit code's link.
+const stopCloseTimeout = 10 * time.Second
+
+// cloudKitStop closes, at stop while the bridge still runs, the link of a
+// CloudKit code still on screen (link.Center.CloseOnStop), so the shares'
+// public URLs do not outlive the hub. Best effort and bounded: a failure,
+// and the participants' sweep, are left to the next start's close. No share
+// call when no code is open.
+func (h *hubRuntime) cloudKitStop() {
+	s, ok := h.shares()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), stopCloseTimeout)
+	defer cancel()
+	if err := h.center.CloseOnStop(ctx, s); err != nil {
+		log.Printf("hub: closing the link at stop failed (%s): closed at the next start", errClass(err))
+	}
+}
+
 // sweepShares is the CloudKit link's housekeeping on every pass
 // (link.Center.SweepShares).
 func (h *hubRuntime) sweepShares(ctx context.Context) {

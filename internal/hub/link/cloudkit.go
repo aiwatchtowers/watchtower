@@ -576,6 +576,21 @@ func (c *Center) CloseLink(ctx context.Context, s transport.Shares, reason Close
 	return c.closeLink(ctx, s, reason, closed)
 }
 
+// CloseOnStop closes the link of a code still on screen when the hub stops
+// (CloseSheetClosed: nobody can link with it any more), so the shares'
+// public URLs do not outlive the hub; the participants' sweep is left to the
+// next start's close (the sweep mark stays). Nothing, and no share call,
+// when no code is open.
+func (c *Center) CloseOnStop(ctx context.Context, s transport.Shares) error {
+	c.ck.mu.Lock()
+	open := c.ck.open != nil
+	c.ck.mu.Unlock()
+	if !open {
+		return nil
+	}
+	return c.CloseLink(ctx, s, CloseSheetClosed)
+}
+
 // closeLink is CloseLink once the open code (closed, or nil) was taken.
 func (c *Center) closeLink(ctx context.Context, s transport.Shares, reason CloseReason, closed *openCode) error {
 	if err := c.refuseWaiting(reason); err != nil {

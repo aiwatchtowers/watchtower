@@ -225,3 +225,27 @@ func TestPairOnCloudKitWithoutSharesIsRefused(t *testing.T) {
 		}
 	})
 }
+
+// A hub stopped with a CloudKit code on screen (Mobile turned off) closes
+// the shares' public link before its bridge stops: the share URLs do not
+// outlive the code until the next start.
+func TestStoppingTheHubClosesAnOpenCloudKitLink(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		h := startCloudKitHub(t, nil, nil)
+		pairCode(t, h.c)
+		if n := h.ck.count("set_public_link:open"); n != 1 {
+			t.Fatalf("public link opened %d times", n)
+		}
+		closes := h.ck.count("set_public_link:close")
+		if a, err := h.c.Do(ControlRequest{Op: OpDisable}); err != nil || !a.OK {
+			t.Fatalf("disable: %+v, %v", a, err)
+		}
+		h.waitState(StateOff, ReasonDisabled)
+		eventually(t, "the public link closed at the stop", func() bool {
+			return h.ck.count("set_public_link:close") > closes
+		})
+		if h.sweepMark() != "1" {
+			t.Fatalf("sweep mark %q: the participants' sweep is the next start's", h.sweepMark())
+		}
+	})
+}
