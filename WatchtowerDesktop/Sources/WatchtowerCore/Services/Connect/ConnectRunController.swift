@@ -359,12 +359,15 @@ package final class ConnectRunController {
     }
 
     private func cancelFlow() async -> Reply {
+        let leftStatus = flowStep  // a newer step made during the await is not this call's to retire
         let flowID: String? = if let activeFlow { activeFlow } else { await driver.status().flow?.id }
         guard let flowID else {
             // No flow runs any more, but a step may still wait on one that
             // left the status: the agent gave it up, so its held calls are
             // answered and the next connect_wait does not wait on it.
-            if !ended, let step = flowStep, step.outcome == nil { retire(step, reason: "the sign-in was cancelled") }
+            if !ended, let step = leftStatus, step === flowStep, step.outcome == nil {
+                retire(step, reason: "the sign-in was cancelled")
+            }
             return Self.result(ConnectDone())
         }
         await driver.cancel(flowID: flowID)
@@ -563,11 +566,13 @@ package final class ConnectRunController {
         return reply
     }
 
-    /// A `connect_start` is behind its confirm card or on the driver now.
+    /// A `connect_start` is on the driver now, or behind a confirm card the
+    /// customer has not answered yet (a declined or refused card that the
+    /// agent has not collected starts nothing).
     private var replacementStarting: Bool {
         if flowStarting { return true }
-        if case .start = cardStep?.purpose { return true }
-        return false
+        guard let card = cardStep, card.outcome == nil, case .start = card.purpose else { return false }
+        return true
     }
 
     private func unknownTool(_ tool: String) -> Reply {

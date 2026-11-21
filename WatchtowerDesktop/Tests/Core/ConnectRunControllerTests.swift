@@ -808,6 +808,63 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// connect_cancel with no flow left in the status gives up the wait
     /// still held on the flow that left it.
+    /// The customer declined the replacement's card, but the agent has not
+    /// collected that answer: no replacement will start, so the old wait's
+    /// timeout fails the run and cancels the old flow.
+    func testOldWaitTimeoutAfterDeclinedReplacementFailsRun() async {
+        let driver = pkceDriver()
+        let controller = makeController(driver)
+        await flowLeftStatusWithOneCallLeft(controller, driver)
+        let start = hold(controller, "connect_start", #"{"pkce":true}"#)
+        await clock.sleepers(1)
+        clock.advance(by: ConnectWire.waitBudget)
+        let startAnswer = await start.value
+        XCTAssertEqual(startAnswer, waiting)
+        controller.answerConfirm(false)  // nobody holds the start: the answer waits
+
+        let old = hold(controller, "connect_wait")
+        await clock.sleepers(1)
+        clock.advance(by: ConnectWire.waitBudget)
+        let oldAnswer = await old.value
+        XCTAssertEqual(oldAnswer, timeout)
+        XCTAssertEqual(controller.state, .failed(.timedOut))
+        XCTAssertEqual(driver.cancels, ["flow-1"])
+        XCTAssertEqual(driver.starts.count, 1, "the declined card started nothing")
+    }
+
+    /// A connect_cancel whose status read began before a newer start and
+    /// wait leaves the newer wait alone.
+    func testCancelDuringStatusLeavesNewerWait() async {
+        let driver = FakeConnectDriver()
+        let controller = makeController(driver)
+        _ = await call(controller, "connect_start")
+        let old = hold(controller, "connect_wait")
+        await clock.sleepers(1)
+        await driver.until { driver.isWaiting(on: "flow-1") }
+        driver.setFlow(nil)
+        _ = await call(controller, "connect_status")
+
+        driver.holdStatus = true
+        let cancel = hold(controller, "connect_cancel")  // its snapshot shows no flow
+        await driver.until { !driver.heldStatus.isEmpty }
+        driver.holdStatus = false
+        let started = await call(controller, "connect_start")
+        XCTAssertEqual(started, #"{"flow_id":"flow-2"}"#)
+        let oldAnswer = await old.value
+        XCTAssertEqual(oldAnswer, #"{"reason":"a newer sign-in replaced this one","state":"failed"}"#)
+        let new = hold(controller, "connect_wait")
+        await clock.sleepers(1)
+        await driver.until { driver.isWaiting(on: "flow-2") }
+
+        driver.releaseStatus()
+        let cancelled = await cancel.value
+        XCTAssertEqual(cancelled, "{}")
+        XCTAssertEqual(controller.state, .waiting(step: ConnectRunController.flowWaitStep))
+        driver.endWait(.connected(account: "acme"))
+        let newAnswer = await new.value
+        XCTAssertEqual(newAnswer, connected)
+    }
+
     func testCancelRetiresWaitOnFlowThatLeftStatus() async {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)

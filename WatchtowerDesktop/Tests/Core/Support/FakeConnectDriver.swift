@@ -130,7 +130,7 @@ class FakeConnectDriver: ConnectServiceDriving {
 
     func cancel(flowID: String) async {
         cancels.append(flowID)
-        setFlow(nil)
+        if currentStatus.flow?.id == flowID { setFlow(nil) }  // only the named flow
     }
 
     func submitSecret(kind: String, value: String) async -> Result<Data, ConnectDriverError> {

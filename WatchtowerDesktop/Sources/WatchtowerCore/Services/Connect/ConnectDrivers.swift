@@ -27,6 +27,8 @@ package protocol ConnectServiceDriving: AnyObject {
     /// never `.waiting` forever: the controller keeps waiting on a flow
     /// that left the status until its wait reports how it ended.
     func wait(flowID: String) async -> ConnectWaitOutcome
+    /// Cancels the named flow only, never whatever flow is current: an id
+    /// of a flow that already ended is a no-op.
     func cancel(flowID: String) async
     /// Hands a secret to the verb its kind names; returns the verb's JSON
     /// result, never the secret.
