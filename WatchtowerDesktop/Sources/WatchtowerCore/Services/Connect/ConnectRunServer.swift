@@ -152,6 +152,10 @@ final class ConnectRunCore: @unchecked Sendable {
         var writeTimeout: Int32? = ConnectRunServer.writeTimeout
         /// The monotonic clock (nanoseconds) the write deadline is measured on.
         var now: @Sendable () -> UInt64 = ConnectRunServer.uptimeNanoseconds
+        /// Replaces the poll a stalled write waits in, once the deadline
+        /// check passed: given the descriptor, true when it is writable.
+        /// Nil polls the socket.
+        var awaitWritable: (@Sendable (Int32) -> Bool)?
     }
 
     private var storedHooks = Hooks()
@@ -358,7 +362,8 @@ final class ConnectRunCore: @unchecked Sendable {
             }
             let hooks = self.hooks
             let peer = ConnectRunPeer(fd: conn, writeTimeout: hooks.writeTimeout,
-                                      onWriteStalled: hooks.onWriteStalled, now: hooks.now) { [weak self] peer in self?.forget(peer) }
+                                      onWriteStalled: hooks.onWriteStalled, now: hooks.now,
+                                      awaitWritable: hooks.awaitWritable) { [weak self] peer in self?.forget(peer) }
             lock.lock()
             let open = !stopped
             if open { peers[ObjectIdentifier(peer)] = peer }
@@ -454,6 +459,7 @@ final class ConnectRunPeer: @unchecked Sendable {
     private let writeTimeout: Int32?
     private let onWriteStalled: (@Sendable () -> Void)?
     private let now: @Sendable () -> UInt64
+    private let awaitWritable: (@Sendable (Int32) -> Bool)?
     /// False once the descriptor is closed.
     private var open = true
     /// True once the connection ended: queued requests do not start and
@@ -468,12 +474,14 @@ final class ConnectRunPeer: @unchecked Sendable {
         writeTimeout: Int32? = ConnectRunServer.writeTimeout,
         onWriteStalled: (@Sendable () -> Void)? = nil,
         now: @escaping @Sendable () -> UInt64 = ConnectRunServer.uptimeNanoseconds,
+        awaitWritable: (@Sendable (Int32) -> Bool)? = nil,
         onClose: @escaping @Sendable (ConnectRunPeer) -> Void
     ) {
         self.fd = fd
         self.writeTimeout = writeTimeout
         self.onWriteStalled = onWriteStalled
         self.now = now
+        self.awaitWritable = awaitWritable
         self.onClose = onClose
     }
 
@@ -577,6 +585,7 @@ final class ConnectRunPeer: @unchecked Sendable {
                 guard current < deadline else { return false }
                 wait = Int32(clamping: (deadline - current + 999_999) / 1_000_000)
             }
+            if let awaitWritable { return awaitWritable(fd) }
             let ready = poll(&pfd, 1, wait)
             if ready < 0, errno == EINTR { continue }
             return ready > 0 && pfd.revents & Int16(POLLOUT) != 0 && pfd.revents & Int16(POLLHUP | POLLERR) == 0

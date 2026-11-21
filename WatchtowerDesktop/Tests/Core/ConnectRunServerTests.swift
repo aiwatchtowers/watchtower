@@ -407,53 +407,126 @@ final class ConnectRunServerTests: XCTestCase {
         }
     }
 
-    /// A finite write bound on a test clock, and the stalls of the answer.
-    private static func clockedWrite(
-        _ server: ConnectRunServer
-    ) -> (clock: FakeClock, stalled: AsyncStream<Void>) {
+    /// The writable wait of a stalled write, driven by the test: each wait
+    /// (entered once its deadline check passed) blocks until `open` says
+    /// the socket is writable. After `release` a wait polls the real socket
+    /// with no bound instead, so a write the test did not expect runs on as
+    /// the client reads rather than hanging the test.
+    private final class WritableGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private let opened = DispatchSemaphore(value: 0)
+        private var released = false
+        private var stallCount = 0
+        private let enteredContinuation: AsyncStream<Void>.Continuation
+        /// One element per wait entered.
+        let entered: AsyncStream<Void>
+
+        init() {
+            (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        }
+
+        /// Write stalls so far (`onWriteStalled`).
+        var stalls: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return stallCount
+        }
+
+        func stalled() {
+            lock.lock()
+            stallCount += 1
+            lock.unlock()
+        }
+
+        private var isReleased: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return released
+        }
+
+        func wait(_ fd: Int32) -> Bool {
+            enteredContinuation.yield()
+            if !isReleased { opened.wait() }
+            guard isReleased else { return true }
+            var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+            while poll(&pfd, 1, -1) < 0, errno == EINTR {}
+            return pfd.revents & Int16(POLLOUT) != 0 && pfd.revents & Int16(POLLHUP | POLLERR) == 0
+        }
+
+        /// The waiting write finds the socket writable.
+        func open() { opened.signal() }
+
+        /// This wait and every later one poll the socket.
+        func release() {
+            lock.lock()
+            let first = !released
+            released = true
+            lock.unlock()
+            if first { opened.signal() }
+        }
+    }
+
+    /// A finite write bound on a test clock, and the answer's writable
+    /// waits under the test's control.
+    private static func clockedWrite(_ server: ConnectRunServer) -> (clock: FakeClock, gate: WritableGate) {
         let clock = FakeClock()
+        let gate = WritableGate()
         server.core.hooks.writeTimeout = 1000
         server.core.hooks.now = { clock.now() }
-        let stalled = events { server.core.hooks.onWriteStalled = $0 }
-        return (clock, stalled)
+        server.core.hooks.onWriteStalled = { gate.stalled() }
+        server.core.hooks.awaitWritable = { gate.wait($0) }
+        return (clock, gate)
     }
 
     /// A peer that reads a little between stalls gets no fresh time per
     /// stall: the line fails at the one deadline it started with.
     func testStalledLineSharesOneDeadline() async throws {
         let server = makeServer()
-        let (clock, stalled) = Self.clockedWrite(server)
+        let (clock, gate) = Self.clockedWrite(server)
+        defer { gate.release() }
         let (path, token) = try server.start()
         let client = try await admittedClient(path, token: token)
         client.send(#"{"id":1,"tool":"big","args":{}}"#)
-        var stalls = stalled.makeAsyncIterator()
+        var waits = gate.entered.makeAsyncIterator()
 
-        _ = await stalls.next()
+        _ = await waits.next()
         clock.advance(milliseconds: 600)
         _ = await client.readChunk()
-        _ = await stalls.next()
+        gate.open()
+        _ = await waits.next()
         clock.advance(milliseconds: 600)  // 1200 ms: past the line's 1000
         _ = await client.readChunk()
+        gate.release()
 
         // The answer never completes: the connection is cut mid-line.
         let line = await client.readLine()
         XCTAssertNil(line)
+        XCTAssertEqual(gate.stalls, 2)
     }
 
-    /// Past the deadline, even a peer that now reads everything gets no
-    /// more of the line: each write attempt checks the deadline first.
+    /// A writable wait that ends past the deadline is followed by no
+    /// further write attempt: each write attempt checks the deadline first.
     func testDeadlineCheckedBeforeEachWrite() async throws {
         let server = makeServer()
-        let (clock, stalled) = Self.clockedWrite(server)
+        let (clock, gate) = Self.clockedWrite(server)
+        defer { gate.release() }
         let (path, token) = try server.start()
         let client = try await admittedClient(path, token: token)
         client.send(#"{"id":1,"tool":"big","args":{}}"#)
-        var stalls = stalled.makeAsyncIterator()
+        var waits = gate.entered.makeAsyncIterator()
 
-        _ = await stalls.next()
+        // The wait passed its own deadline check; the time runs out inside
+        // it, and the client makes room before the socket turns writable.
+        _ = await waits.next()
+        _ = await client.readChunk()
         clock.advance(milliseconds: 2000)
+        gate.release()
+
         let line = await client.readLine()
         XCTAssertNil(line)
+        // Another write attempt would have stalled again (the line is far
+        // bigger than the room made) or finished the line.
+        XCTAssertEqual(gate.stalls, 1)
     }
 
     /// The same stuck peer, still connected: only stop can free it.
