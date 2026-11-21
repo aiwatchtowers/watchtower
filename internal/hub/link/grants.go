@@ -2,11 +2,11 @@ package link
 
 import (
 	"context"
+	"crypto/ecdh"
 	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"log"
 	"slices"
 	"strings"
 	"time"
@@ -84,18 +84,9 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 		for _, p := range pending {
 			relinking[strings.ToUpper(p.deviceID)] = true
 		}
-		shadowed := map[string]bool{}
-		linked = slices.DeleteFunc(linked, func(kb wire.Keybox) bool {
-			shadowed[kb.Grant.DeviceID] = relinking[kb.Grant.DeviceID]
-			return relinking[kb.Grant.DeviceID]
-		})
-		place := func(kb wire.Keybox) {
-			if shadowed[kb.Grant.DeviceID] {
-				replaced = append(replaced, kb)
-			} else {
-				rest = append(rest, kb)
-			}
-		}
+		var relinked map[string]bool
+		linked, relinked = splitRelinks(linked, relinking)
+		var waiting []wire.Keybox
 		answered := map[string]bool{}
 		for _, r := range linked {
 			answered[r.Grant.DeviceID] = true
@@ -109,16 +100,14 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 				if raw, err := base64.RawURLEncoding.DecodeString(p.linkNonce); err == nil {
 					g.LinkCodeTag = ptr(secure.LinkCodeTag(raw))
 				}
-				place(wire.Keybox{Grant: g})
+				waiting = append(waiting, wire.Keybox{Grant: g})
 			}
 		}
 		refused, err := c.refusedRows(tx, now, answered)
 		if err != nil {
 			return err
 		}
-		for _, kb := range refused {
-			place(kb)
-		}
+		replaced, rest = splitBy(append(waiting, refused...), relinked)
 		revoked, err := c.revokedRows(tx, now, answered)
 		if err != nil {
 			return err
@@ -128,10 +117,6 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("link: reading the grants: %w", err)
-	}
-	if len(replaced) != c.relinks {
-		c.relinks = len(replaced)
-		log.Printf("hub link: %d linked phones read a re-link's keybox in place of their link", c.relinks)
 	}
 	if c.beforeKeys != nil {
 		c.beforeKeys()
@@ -159,25 +144,64 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 		}
 	}
 	room := max(0, MaxGrantRecords-len(linked)-len(replaced))
-	out := append(append(linked, replaced...), rest[:min(room, len(rest))]...)
+	rest = rest[:min(room, len(rest))]
 	// The recipients are read now, under the lock a hello takes too, so
-	// each keybox is sealed to the key of the row it shows.
-	for i := range out {
-		id, err := secure.ParseID(out[i].Grant.DeviceID)
-		if err != nil {
-			continue // not a UUID: sealing refuses it anyway
+	// each keybox is sealed to the key of the row it shows: a linked row to
+	// its link's key, any other row to its own (a re-link's included).
+	if err := fillRecipients(linked, c.keys.LinkedKeyboxRecipient); err != nil {
+		return nil, err
+	}
+	for _, boxes := range [][]wire.Keybox{replaced, rest} {
+		if err := fillRecipients(boxes, c.keys.KeyboxRecipient); err != nil {
+			return nil, err
 		}
-		recipient := c.keys.KeyboxRecipient
-		if i < len(linked) {
-			recipient = c.keys.LinkedKeyboxRecipient
+	}
+	return append(append(linked, replaced...), rest...), nil
+}
+
+// fillRecipients sets each keybox's To from recipient. The Keyring reads
+// only the local sidecar (no bridge, no network), so it runs under
+// Center.mu. A keybox with no stored key keeps To nil (sealing refuses it,
+// as before); a device id that is not a UUID is left too.
+func fillRecipients(boxes []wire.Keybox, recipient func(secure.ID) (*ecdh.PublicKey, error)) error {
+	for i := range boxes {
+		id, err := secure.ParseID(boxes[i].Grant.DeviceID)
+		if err != nil {
+			continue
 		}
 		to, err := recipient(id)
 		if err != nil && !errors.Is(err, identity.ErrNoKeyboxRecipient) {
-			return nil, fmt.Errorf("link: keybox recipient: %w", err)
+			return fmt.Errorf("link: keybox recipient: %w", err)
 		}
-		out[i].To = to
+		boxes[i].To = to
 	}
-	return out, nil
+	return nil
+}
+
+// splitRelinks takes out of linked the rows of the phones relinking names
+// (a re-link: a waiting request or its refusal shows in their place): the
+// rows kept and the device ids taken out.
+func splitRelinks(linked []wire.Keybox, relinking map[string]bool) ([]wire.Keybox, map[string]bool) {
+	taken := map[string]bool{}
+	for _, kb := range linked {
+		if relinking[kb.Grant.DeviceID] {
+			taken[kb.Grant.DeviceID] = true
+		}
+	}
+	return slices.DeleteFunc(linked, func(kb wire.Keybox) bool { return taken[kb.Grant.DeviceID] }), taken
+}
+
+// splitBy splits boxes, in order, into those of the devices in ids and the
+// others.
+func splitBy(boxes []wire.Keybox, ids map[string]bool) (in, out []wire.Keybox) {
+	for _, kb := range boxes {
+		if ids[kb.Grant.DeviceID] {
+			in = append(in, kb)
+		} else {
+			out = append(out, kb)
+		}
+	}
+	return in, out
 }
 
 // newGrant is the grant every row starts from; ok is false for a phone

@@ -136,9 +136,6 @@ type Center struct {
 	mu sync.Mutex
 	// dirty: the locked section changed the device_grant slice (guarded by mu).
 	dirty bool
-	// relinks: how many linked rows the last Keyboxes replaced by a
-	// re-link's keybox, logged when it changes (guarded by mu).
-	relinks int
 	// onRevoke and revoked: the revoke seam (OnRevoke) and the devices the
 	// locked section revoked, told from unlock (guarded by mu).
 	onRevoke func(device string)
