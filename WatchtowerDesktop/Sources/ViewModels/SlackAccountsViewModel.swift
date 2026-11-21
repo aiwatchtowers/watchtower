@@ -16,6 +16,14 @@ final class SlackAccountsViewModel {
     private(set) var accounts: [SlackAccount] = []
     var isConnecting = false
     var error: String?
+    /// The account whose browser sign-in (`slack login`) is waiting; nil
+    /// when none is, or the waiting one is a new workspace (`slack add`).
+    /// Its row shows the waiting line with Cancel in place of Re-login.
+    private(set) var signInAccountID: Int?
+    /// The browser sign-in that returned last was ended by `cancelConnect`
+    /// and wrote nothing. Read right after `relogin` returns, it tells a
+    /// Cancel from a sign-in that ran to its end (`AppState.reconnectSlack`).
+    @ObservationIgnored private(set) var lastRunCancelled = false
     /// The last account read failed; nil once one succeeds. Only the read:
     /// an action's failure stays in `error` (the Connections tab's
     /// "Couldn't read accounts" reads this).
@@ -162,7 +170,8 @@ final class SlackAccountsViewModel {
     /// The OAuth consent happens in the loopback browser; the detached Process
     /// is held in `authProcess` so `cancelConnect()` can terminate it mid-flow.
     func addAccount(daemonPolicy: DaemonRestartPolicy = .restart) async {
-        await runAuthFlow(args: Self.addArgs, failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
+        await runAuthFlow(args: Self.addArgs, accountID: nil, failurePrefix: "Connect failed",
+                          daemonPolicy: daemonPolicy)
     }
 
     // MARK: - Re-login
@@ -186,7 +195,8 @@ final class SlackAccountsViewModel {
     @discardableResult
     func relogin(_ account: SlackAccount) async -> SlackReloginRoute? {
         guard let flow = connectFlow else {
-            await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
+            await runAuthFlow(args: Self.loginArgs(for: account), accountID: account.id,
+                              failurePrefix: "Re-login failed", daemonPolicy: .restart)
             return .builtin
         }
         let route: SlackReloginRoute
@@ -211,7 +221,8 @@ final class SlackAccountsViewModel {
             error = "Another connection is already in progress."
             return nil
         }
-        await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
+        await runAuthFlow(args: Self.loginArgs(for: account), accountID: account.id,
+                          failurePrefix: "Re-login failed", daemonPolicy: .restart)
         return route
     }
 
@@ -242,12 +253,22 @@ final class SlackAccountsViewModel {
         applyResult((0, "", ""), failurePrefix: "", daemonPolicy: daemonPolicy)
     }
 
+    /// Ends the waiting browser sign-in at once and silently: the busy state
+    /// resets here, no error is set, and the run's own completion, finding
+    /// another process (or none) current, writes nothing.
     func cancelConnect() {
         if let process = authProcess, process.isRunning {
             process.terminate()
         }
         authProcess = nil
         isConnecting = false
+        signInAccountID = nil
+    }
+
+    /// The waiting line's texts for account `id`'s row; nil when its
+    /// sign-in is not the one waiting.
+    func signInWait(forAccount id: Int) -> SignInWaitCopy? {
+        signInAccountID == id ? .slack : nil
     }
 
     // MARK: - Enable / Disable
@@ -306,7 +327,16 @@ final class SlackAccountsViewModel {
 
     /// Browser-consent flow (`add`/`login`) — holds the detached Process in
     /// `authProcess` so `cancelConnect()` can terminate it while this awaits.
-    private func runAuthFlow(args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy) async {
+    /// `accountID` is the account a `login` re-consents (nil for `add`).
+    ///
+    /// A run `cancelConnect` ended finds another process (or none) current:
+    /// its state was reset by the Cancel and a newer run may own it, so it
+    /// touches nothing, except wiring in an account change that finished
+    /// before the Cancel landed (the Jira precedent).
+    private func runAuthFlow(
+        args: [String], accountID: Int?, failurePrefix: String, daemonPolicy: DaemonRestartPolicy
+    ) async {
+        lastRunCancelled = false
         guard !isConnecting else {
             error = "Another connection is already in progress."
             return
@@ -317,6 +347,7 @@ final class SlackAccountsViewModel {
         }
 
         isConnecting = true
+        signInAccountID = accountID
         error = nil
 
         let process = Process()
@@ -329,11 +360,35 @@ final class SlackAccountsViewModel {
         // running (Cancel visible); a Cancel or a newer attempt meanwhile
         // drops this launch.
         process.environment = await loginEnvironment()
-        guard authProcess === process else { return }
+        guard authProcess === process else {
+            lastRunCancelled = true
+            return
+        }
 
-        let result = await Self.runProcess(process)
+        // A Cancel that landed while the launch was under way found nothing
+        // running to terminate: stop the child as soon as it exists.
+        let onLaunch: @Sendable (Process) -> Void = { [weak self] launched in
+            Task { @MainActor in
+                if self?.authProcess !== launched { launched.terminate() }
+            }
+        }
+        let result = await ProcessPipes.run(process, onLaunch: onLaunch).trimmed
+        guard authProcess === process else {
+            // It may still have finished before the Cancel landed: the
+            // account change happened, so wire it in like a finished one.
+            guard result.exitCode == 0 else {
+                lastRunCancelled = true
+                return
+            }
+            lastRunCancelled = false
+            refresh()
+            daemonRestartTask = daemonPolicy.apply(using: daemon)
+            return
+        }
+        lastRunCancelled = false
         authProcess = nil
         isConnecting = false
+        signInAccountID = nil
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
     }
 

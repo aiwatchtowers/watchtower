@@ -101,16 +101,20 @@ extension AppState {
             return .failed("Slack account #\(accountID) is no longer connected.")
         }
         let route = await vm.relogin(account)
-        return reconnectOutcome(route: route, error: vm.error)
+        return reconnectOutcome(route: route, error: vm.error, cancelled: vm.lastRunCancelled)
     }
 
     /// How a card's Reconnect ended; a hand-off brings Connections → Slack
-    /// forward, where the flow's sheet and the connect section live.
-    func reconnectOutcome(route: SlackReloginRoute?, error: String?) -> SlackReconnectOutcome {
+    /// forward, where the flow's sheet and the connect section live. A
+    /// built-in sign-in the owner cancelled (`cancelCardSlackSignIn`, or
+    /// Cancel on its Connections row) is `.cancelled`: no note, the card
+    /// offers Reconnect Slack again.
+    func reconnectOutcome(route: SlackReloginRoute?, error: String?, cancelled: Bool = false) -> SlackReconnectOutcome {
         switch route {
         case nil:
             return .failed(error ?? "Slack did not start the sign-in.")
         case .builtin:
+            if cancelled { return .cancelled }
             return error.map(SlackReconnectOutcome.failed) ?? .signedIn
         case .flow, .connectSection:
             openConnections(.slack)

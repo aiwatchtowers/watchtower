@@ -27,6 +27,9 @@ struct MacAgentActionCard: View {
     /// Re-consents a Slack account whose token lacks the send grant and returns why it failed, nil on success. Nil
     /// hides the button.
     var onReconnectSlack: ((Int64) async -> SlackReconnectOutcome)?
+    /// Cancel on Reconnect Slack's waiting line (`AppState.cancelCardSlackSignIn`). Nil draws no line: the button
+    /// keeps its spinner.
+    var onCancelReconnectSlack: (() -> Void)?
     /// Where the proposal came from, above the card — "⚙ <automation> · run #<n>". Nil shows nothing.
     var contextLabel: String?
     /// Opens what `contextLabel` names (the automation's card, run open). Nil renders the label as plain text.
@@ -79,6 +82,7 @@ struct MacAgentActionCard: View {
             retry: { _ in retry() },
             dismiss: dismiss.map { dismiss in { _ in dismiss() } },
             reconnectSlack: onReconnectSlack,
+            reconnectSlackWaiting: onCancelReconnectSlack.map { cancel in { Self.slackSignInWait(cancel: cancel) } },
             openDestination: onOpen,
             sessionHoldsCall: { _ in holds },
             title: { _ in save?.title },
@@ -90,6 +94,12 @@ struct MacAgentActionCard: View {
     }
 
     // MARK: - The Mac's pieces
+
+    /// Reconnect Slack's waiting line: the browser sign-in runs, and Cancel ends it.
+    static func slackSignInWait(cancel: @escaping () -> Void) -> AnyView {
+        let copy = SignInWaitCopy.slack
+        return AnyView(SignInWaitLine(line: copy.line, hint: copy.hint, cancelTitle: copy.cancelTitle, onCancel: cancel))
+    }
 
     /// The row's decision state as the shared card reads it: the CLI call in flight and why the last one failed.
     static func state(inFlight: Bool, gestureError: AgentActionFeed.RowError?) -> ChatApprovalState {
@@ -229,6 +239,7 @@ extension ChatApprovalServices {
         feed: AgentActionFeed,
         highlighted: ((AgentAction) -> Bool)? = nil,
         reconnectSlack: @escaping (Int64) async -> SlackReconnectOutcome,
+        cancelReconnectSlack: @escaping () -> Void,
         sessionHolds: @escaping (AgentAction) -> Bool
     ) -> ChatApprovalServices {
         ChatApprovalServices(
@@ -252,6 +263,7 @@ extension ChatApprovalServices {
             dismiss: { action in Task { await feed.dismiss(action.id) } },
             approveAll: { turn in Task { await feed.approveAllPending(forTurn: turn) } },
             reconnectSlack: reconnectSlack,
+            reconnectSlackWaiting: { MacAgentActionCard.slackSignInWait(cancel: cancelReconnectSlack) },
             sessionHoldsCall: sessionHolds,
             title: { MacAgentActionCard.saveModel($0)?.title },
             details: { action in

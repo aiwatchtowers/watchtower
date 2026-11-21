@@ -15,6 +15,9 @@ public enum SlackReconnectOutcome: Equatable, Sendable {
     /// The sign-in continues elsewhere (the Mac's connect flow in the browser,
     /// or its connect section): nothing is granted yet.
     case handedOff
+    /// The owner cancelled the sign-in while it waited for the browser: nothing changed, and the card offers
+    /// Reconnect Slack again with no note.
+    case cancelled
     case failed(String)
 }
 
@@ -112,6 +115,9 @@ public struct ChatApprovalServices {
     public var approveAll: ((_ turnID: String) -> Void)?
     /// Re-consents a Slack account whose token lacks the send grant; says how it ended.
     public var reconnectSlack: ((Int64) async -> SlackReconnectOutcome)?
+    /// What the card draws in place of Reconnect Slack while its sign-in waits for the browser: the Mac's waiting line,
+    /// whose Cancel ends the sign-in (`reconnectSlack` then returns `.cancelled`). Nil keeps a spinner by the button.
+    public var reconnectSlackWaiting: (() -> AnyView)?
     /// Follows an applied action to what it produced, in the app (`AgentActionDestination`); nil hides **Open →**.
     public var openDestination: ((AgentActionDestination) -> Void)?
     /// A session-applied call: whether the live chat session that proposed it still waits on it. Nil: it does not.
@@ -134,6 +140,7 @@ public struct ChatApprovalServices {
         dismiss: ((ChatAgentAction) -> Void)? = nil,
         approveAll: ((_ turnID: String) -> Void)? = nil,
         reconnectSlack: ((Int64) async -> SlackReconnectOutcome)? = nil,
+        reconnectSlackWaiting: (() -> AnyView)? = nil,
         openDestination: ((AgentActionDestination) -> Void)? = nil,
         sessionHoldsCall: ((ChatAgentAction) -> Bool)? = nil,
         title: ((ChatAgentAction) -> String?)? = nil,
@@ -150,6 +157,7 @@ public struct ChatApprovalServices {
         self.dismiss = dismiss
         self.approveAll = approveAll
         self.reconnectSlack = reconnectSlack
+        self.reconnectSlackWaiting = reconnectSlackWaiting
         self.openDestination = openDestination
         self.sessionHoldsCall = sessionHoldsCall
         self.title = title

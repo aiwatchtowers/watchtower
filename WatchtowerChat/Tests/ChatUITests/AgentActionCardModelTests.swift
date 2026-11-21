@@ -212,4 +212,21 @@ final class AgentActionCardModelTests: XCTestCase {
                        "Finish connecting in your browser or in Connections → Slack, then press Retry.")
         XCTAssertEqual(AgentActionCard.reconnectNote(.failed("no CLI")), "Reconnect failed: no CLI")
     }
+
+    /// #2132 S2: a cancelled sign-in leaves no note; the card offers Reconnect Slack again.
+    func testCancelledReconnectHasNoNote() {
+        XCTAssertNil(AgentActionCard.reconnectNote(.cancelled))
+    }
+
+    /// #2132 S2: while Reconnect Slack runs, the card draws the screen's waiting line (with its Cancel) in place of
+    /// the button; a screen that gives none keeps the button and its spinner.
+    func testReconnectWaitingLine() {
+        var withoutLine = ChatApprovalServices()
+        withoutLine.reconnectSlack = { _ in .cancelled }
+        var withLine = withoutLine
+        withLine.reconnectSlackWaiting = { AnyView(Text("waiting")) }
+        XCTAssertNotNil(AgentActionCard.reconnectWaitLine(reconnecting: true, services: withLine))
+        XCTAssertNil(AgentActionCard.reconnectWaitLine(reconnecting: false, services: withLine))
+        XCTAssertNil(AgentActionCard.reconnectWaitLine(reconnecting: true, services: withoutLine))
+    }
 }
