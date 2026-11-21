@@ -253,6 +253,12 @@ package final class ConnectRunController {
         switch result {
         case let .success(flowID):
             if !ended {  // a start that lands after the run ended leaves the panel alone
+                // The older flow is over for this run: its uncollected answer
+                // goes, and calls still held on it are answered.
+                if let old = flowStep {
+                    if old.outcome == nil { retire(old, reason: "a newer sign-in replaced this one") }
+                    flowStep = nil
+                }
                 activeFlow = flowID
                 busyShown = false
                 connectedAccounts = nil
@@ -267,10 +273,10 @@ package final class ConnectRunController {
     /// The flow ended outside this run's wait (status no longer shows it):
     /// calls held on it answer `failed`, and its wait is retired.
     private func forgetFlow(_ flowID: String) {
-        activeFlow = nil
-        if let step = flowStep, step.flowID == flowID {
-            retire(step, reason: "the sign-in ended outside the assistant")
-        }
+        // Leaving the status is no proof of failure (a sign-in that succeeded
+        // leaves it too): the flow stops making starts busy, but its own
+        // wait still answers the calls held on it.
+        if activeFlow == flowID { activeFlow = nil }
     }
 
     /// Ends a flow step that no longer has a flow to wait on.
@@ -293,13 +299,17 @@ package final class ConnectRunController {
     private func waitOnFlow() async -> Reply {
         // A flow that ended between two calls: its answer waits here.
         if let step = cachedFlowAnswer() { return await attach(step) }
-        if activeFlow == nil {
+        // An unfinished flow that left the status is still waited on: the
+        // driver's wait reports how it ended.
+        var waitFor = activeFlow ?? flowStep?.flowID
+        if waitFor == nil {
             let adopted = await driver.status().flow?.id  // a reopened run resumes the flow it left
             if let refusal = stoppedSince() { return refusal }
             if let step = cachedFlowAnswer() { return await attach(step) }
-            if activeFlow == nil { activeFlow = adopted }
+            if activeFlow == nil, flowStep == nil { activeFlow = adopted }
+            waitFor = activeFlow ?? flowStep?.flowID
         }
-        guard let flowID = activeFlow else { return .error(.failed, "no sign-in is running; call connect_start first") }
+        guard let flowID = waitFor else { return .error(.failed, "no sign-in is running; call connect_start first") }
         let step: Step
         if let current = flowStep, current.flowID == flowID {
             step = current

@@ -23,6 +23,8 @@ class FakeConnectDriver: ConnectServiceDriving {
     private(set) var cancels: [String] = []
     private(set) var secrets: [(kind: String, value: String)] = []
     private(set) var fields: [[String: String]] = []
+    /// How many `status()` calls have returned.
+    private(set) var statusAnswers = 0
     private var heldWaits: [Int: CheckedContinuation<ConnectWaitOutcome, Never>] = [:]
     private var nextWaitKey = 0
     private(set) var heldStatus: [CheckedContinuation<Void, Never>] = []
@@ -59,6 +61,8 @@ class FakeConnectDriver: ConnectServiceDriving {
         if holdStatus {
             await withCheckedContinuation { heldStatus.append($0); changed() }
         }
+        statusAnswers += 1
+        changed()
         return snapshot
     }
 

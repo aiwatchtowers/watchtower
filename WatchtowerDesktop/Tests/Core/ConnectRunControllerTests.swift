@@ -639,9 +639,9 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(driver.starts.count, 2)
     }
 
-    /// The flow ended elsewhere while a connect_wait was held on it: the next
-    /// start answers that call `failed` and retires its wait, so it cannot
-    /// time the run out; the new flow gets a wait of its own.
+    /// The flow ended elsewhere while a connect_wait was held on it: a newer
+    /// start that succeeds answers that call `failed` and retires its wait,
+    /// so it cannot time the run out; the new flow gets a wait of its own.
     func testReconciledFlowAnswersHeldWait() async {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
@@ -653,7 +653,7 @@ final class ConnectRunControllerTests: XCTestCase {
         let started = await call(controller, "connect_start")
         XCTAssertEqual(started, #"{"flow_id":"flow-2"}"#)
         let oldAnswer = await old.value
-        XCTAssertEqual(oldAnswer, #"{"reason":"the sign-in ended outside the assistant","state":"failed"}"#)
+        XCTAssertEqual(oldAnswer, #"{"reason":"a newer sign-in replaced this one","state":"failed"}"#)
 
         let new = hold(controller, "connect_wait")
         await clock.sleepers(1)
@@ -663,6 +663,50 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(newAnswer, connected)
         XCTAssertEqual(driver.waits, ["flow-1", "flow-2"])
         XCTAssertNotEqual(controller.state, .failed(.timedOut))
+    }
+
+    /// A status without the flow, read while its wait runs, is no failure:
+    /// the wait's own `connected` answers the held call.
+    func testFlowLeavingStatusKeepsItsWait() async {
+        let driver = FakeConnectDriver()
+        let controller = makeController(driver)
+        _ = await call(controller, "connect_start")
+        let held = hold(controller, "connect_wait")
+        await clock.sleepers(1)
+        await driver.until { driver.isWaiting }
+        driver.setFlow(nil)  // the sign-in finished and left the status first
+        driver.currentStatus = ConnectStatus(service: "slack", accounts: [.init(name: "acme", status: "connected")])
+        let status = await call(controller, "connect_status")
+        XCTAssertTrue(status.contains(#""flow":null"#))
+        XCTAssertNil(controller.activeFlow)
+        XCTAssertEqual(controller.state, .waiting(step: ConnectRunController.flowWaitStep))
+
+        driver.endWait(.connected(account: "acme"))
+        let answer = await held.value
+        XCTAssertEqual(answer, connected)
+        await driver.until { driver.statusAnswers == 2 }  // the count read after connected
+        XCTAssertEqual(controller.state, .done(accounts: 1, noun: .workspace))
+    }
+
+    /// A newer flow that starts and is cancelled before any wait does not
+    /// bring back the older flow's uncollected answer.
+    func testOldAnswerGoneAfterNewerStartCancelled() async {
+        let driver = FakeConnectDriver()
+        let controller = makeController(driver)
+        _ = await call(controller, "connect_start")
+        let first = hold(controller, "connect_wait")
+        await clock.sleepers(1)
+        clock.advance(by: ConnectWire.waitBudget)
+        _ = await first.value
+        driver.endWait(.failed(reason: "Slack denied the sign-in"))  // nobody collects it
+        while controller.activeFlow != nil { await Task.yield() }
+
+        let started = await call(controller, "connect_start")
+        XCTAssertEqual(started, #"{"flow_id":"flow-2"}"#)
+        let cancelled = await call(controller, "connect_cancel")
+        XCTAssertEqual(cancelled, "{}")
+        let answer = await call(controller, "connect_wait")
+        XCTAssertEqual(answer, "error:failed", "no sign-in runs; the old answer is gone")
     }
 
     /// An older flow's uncollected answer is never replayed for a newer flow.
@@ -734,8 +778,11 @@ final class ConnectRunControllerTests: XCTestCase {
         await driver.until { !driver.heldStatus.isEmpty }
         let started = await call(controller, "connect_start")
         XCTAssertEqual(started, #"{"flow_id":"flow-2"}"#)
+        let answered = driver.statusAnswers
         driver.releaseStatus()
-        await Task.yield()
+        // The held read returns into the controller, which decides in the
+        // same main-actor step before this test resumes.
+        await driver.until { driver.statusAnswers == answered + 1 }
         XCTAssertEqual(controller.state, .thinking)
         XCTAssertEqual(controller.activeFlow, "flow-2")
     }
