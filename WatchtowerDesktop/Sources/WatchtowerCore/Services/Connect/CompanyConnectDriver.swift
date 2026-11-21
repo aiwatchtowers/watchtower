@@ -56,8 +56,11 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
     package func draftView() async -> Result<Data, ConnectDriverError> {
         // The stored draft first: an unread one would read as "nothing set up".
         guard await ensureOpen() else { return .failure(.failed(openFailed)) }
-        // Go set an unreadable draft aside: say so, never "nothing set up yet".
-        if let unreadable = wizard.draftUnreadable { return .failure(.failed("\(unreadable.title). \(unreadable.body)")) }
+        // Go set an unreadable draft aside and nothing replaced it yet: say so,
+        // never "nothing set up yet".
+        if let unreadable = wizard.draftUnreadable, !wizard.hasActiveDraft {
+            return .failure(.failed("\(unreadable.title). \(unreadable.body)"))
+        }
         let draft = wizard.draft
         var vendors: [String: ConnectCompanyDraft.Vendor] = [:]
         for v in wizard.ticked {
@@ -126,6 +129,10 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
         }
         if let services = fields["services"], let bad = list(services).first(where: { CompanyVendor(rawValue: $0) == nil }) {
             return .badArgs("\(bad) is not a service (\(CompanyVendor.allCases.map(\.rawValue).joined(separator: ", ")))")
+        }
+        // Values for a vendor mean the company uses it: a services list without it contradicts them.
+        if let services = fields["services"], !list(services).contains(v.rawValue), fields.keys.contains(where: vendorKeys(v).contains) {
+            return .badArgs("\(v.rawValue) values come with a services list that leaves \(v.rawValue) out")
         }
         if let hosts = fields["deny_hosts"], list(hosts).contains(where: { !CompanySetupWizardModel.isHostName($0.lowercased()) }) {
             return .badArgs(CompanySetupWizardModel.denyInvalid)

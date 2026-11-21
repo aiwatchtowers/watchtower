@@ -283,6 +283,32 @@ final class CompanyConnectDriverTests: XCTestCase {
         XCTAssertEqual(Self.error(read), .failed(expected))
     }
 
+    func testVendorValuesWithServicesLeavingItOutAreRefused() async {
+        let cli = CompanyScriptedCLI()
+        let (driver, wizard) = make(cli)
+        let save = await driver.saveDraft(vendor: "linear", fields: ["client_id": "lin_client_1", "services": "google"])
+        XCTAssertEqual(Self.error(save), .badArgs("linear values come with a services list that leaves linear out"))
+        XCTAssertEqual(wizard.ticked, [], "nothing landed")
+        XCTAssertNil(wizard.draft.linear)
+        XCTAssertTrue(cli.calls(["company", "draft", "save"]).isEmpty)
+        let both = await driver.saveDraft(vendor: "linear", fields: ["client_id": "lin_client_1", "services": "google,linear"])
+        XCTAssertNil(Self.error(both))
+        XCTAssertEqual(wizard.ticked, [.google, .linear])
+    }
+
+    func testReadAfterUnreadableDraftReplacedSucceeds() async throws {
+        let cli = CompanyScriptedCLI()
+        cli.on(["company", "draft", "show"], [#"{"state":"unreadable","draft":null,"bad_file":"draft.json.bad-x","checked_vendors":[]}"#])
+        let (driver, wizard) = make(cli)
+        let before = await driver.draftView()
+        XCTAssertNotNil(Self.error(before))
+        _ = await driver.saveDraft(vendor: "linear", fields: ["company": "Acme", "client_id": "lin_client_1"])
+        XCTAssertNotNil(wizard.draftUnreadable, "the page keeps its notice: the set-aside file stays until Discard or Publish")
+        let read = try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
+        XCTAssertEqual(read.company, "Acme")
+        XCTAssertEqual(read.vendors["linear"]?.clientID, "lin_client_1")
+    }
+
     func testLinkOfAnotherAppWhileOneIsReadyIsRefused() async {
         let cli = CompanyScriptedCLI()
         cli.setups = acmeSetup

@@ -194,6 +194,9 @@ package final class CompanySetupWizardModel {
     @ObservationIgnored private let now: () -> Date
     /// A draft file exists on disk (read or saved by this run).
     private var hasDraft = false
+    /// A readable draft is on disk (read or saved by this run): an unreadable
+    /// one set aside earlier no longer stands for the setup.
+    package var hasActiveDraft: Bool { hasDraft }
     /// The person changed something this session (discovery's pre-ticks alone make no draft).
     private var touched = false
     /// Bumped by Discard: a check of the discarded setup lands nowhere.
