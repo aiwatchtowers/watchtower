@@ -36,7 +36,8 @@ package final class OwnGoogleProjectModel {
     /// One block of the page under the guide and the drop zone.
     package enum Status: Equatable, Sendable {
         case note(String)
-        case busy(String)
+        /// The sign-in waits in the browser: the waiting line with Cancel.
+        case waiting(SignInWaitCopy)
         case problem(String)
     }
 
@@ -58,6 +59,15 @@ package final class OwnGoogleProjectModel {
     /// re-wires the daemon.
     @ObservationIgnored package var onConnected: (() -> Void)?
     @ObservationIgnored private let makeStreamer: @MainActor () -> (any CLILineStreaming)?
+    /// The running sign-in's stream; nil when none runs or Cancel ended it.
+    /// A run's answer lands only while it is still this one.
+    @ObservationIgnored private var run: Task<Answer, Never>?
+
+    /// What a run's stream left: its last JSON line and why it failed.
+    private struct Answer {
+        var last: String?
+        var failure: String?
+    }
 
     /// Go's `company.OwnProjectWeeklyRelogin` (spike S2 still open: false);
     /// the weekly frame ships only when both flip.
@@ -141,26 +151,46 @@ package final class OwnGoogleProjectModel {
     package func connect() async {
         guard canConnect, let file else { return }
         phase = .checking
+        let args = Self.connectArgs(clientID: file.client.clientID)
         let stdin = Data((file.client.clientSecret + "\n").utf8)
-        var last: String?
-        var failure: String?
-        if let streamer = makeStreamer() {
-            do {
-                for try await line in streamer.lines(args: Self.connectArgs(clientID: file.client.clientID), stdin: stdin) {
-                    let text = line.trimmingCharacters(in: .whitespaces)
-                    if text.hasPrefix("{") { last = text }
-                }
-            } catch {
-                failure = error.localizedDescription
-            }
-        } else {
-            failure = CLIRunnerError.binaryNotFound.localizedDescription
-        }
-        guard let last, let result = try? JSONDecoder().decode(CompanyCheckResult.self, from: Data(last.utf8)) else {
-            phase = .failed(Self.failedLine(failure ?? ""))
+        let streamer = makeStreamer()
+        let task = Task { await Self.answer(streamer, args: args, stdin: stdin) }
+        run = task
+        let answer = await task.value
+        // Cancel (or Cancel and a new Connect) took the page back: this
+        // run's answer, or the failure its kill caused, is not shown.
+        guard run == task else { return }
+        run = nil
+        guard let last = answer.last,
+              let result = try? JSONDecoder().decode(CompanyCheckResult.self, from: Data(last.utf8)) else {
+            phase = .failed(Self.failedLine(answer.failure ?? ""))
             return
         }
         apply(result)
+    }
+
+    /// **Cancel** on the waiting line: the sign-in stops (cancelling the
+    /// stream kills the CLI's process group) and the page is the form again,
+    /// with its JSON and no error.
+    package func cancel() {
+        guard isRunning else { return }
+        run?.cancel()
+        run = nil
+        phase = .idle
+    }
+
+    private static func answer(_ streamer: (any CLILineStreaming)?, args: [String], stdin: Data) async -> Answer {
+        guard let streamer else { return Answer(failure: CLIRunnerError.binaryNotFound.localizedDescription) }
+        var answer = Answer()
+        do {
+            for try await line in streamer.lines(args: args, stdin: stdin) {
+                let text = line.trimmingCharacters(in: .whitespaces)
+                if text.hasPrefix("{") { answer.last = text }
+            }
+        } catch {
+            answer.failure = error.localizedDescription
+        }
+        return answer
     }
 
     /// Refusals that are not Google's verdict on the client: Go's own
@@ -196,11 +226,11 @@ package final class OwnGoogleProjectModel {
     }
 
     /// The line under the drop zone: the unverified-app note before a run,
-    /// the busy line during it, the refusal after a failed one.
+    /// the waiting line during it, the refusal after a failed one.
     package var status: Status {
         switch phase {
         case .idle, .done: .note(Self.unverifiedNote)
-        case .checking: .busy(Self.checkingLine)
+        case .checking: .waiting(.google)
         case .failed(let text): .problem(text)
         }
     }
@@ -255,7 +285,6 @@ extension OwnGoogleProjectModel {
     ]
     package static let unverifiedNote = "The first sign-in shows “Google hasn't verified this app”. Choose Advanced → "
         + "Go to your project: it is your own."
-    package static let checkingLine = CompanySetupWizardModel.checkingGoogle
     package static let connectTitle = "Connect"
     package static let tryAgainTitle = "Try again"
     package static let doneTitle = "Done"

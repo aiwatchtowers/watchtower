@@ -150,7 +150,7 @@ final class OwnGoogleProjectModelTests: XCTestCase {
         let run = Task { await m.connect() }
         let session = await cli.session(number: 1)
         XCTAssertTrue(m.isRunning)
-        XCTAssertEqual(m.status, .busy(Model.checkingLine))
+        XCTAssertEqual(m.status, .waiting(.google))
         XCTAssertFalse(m.primaryEnabled)
         XCTAssertFalse(m.drop(Self.clientJSON, fileName: "other.json"), "no new JSON while signing in")
         m.close()
@@ -192,5 +192,122 @@ final class OwnGoogleProjectModelTests: XCTestCase {
         await weekly.connect()
         XCTAssertEqual(weekly.weeklyNote, "Google asks a project like this to sign in again every 7 days. "
             + "Watchtower reminds you when it is time.")
+    }
+
+    // MARK: Cancel (#2132 G5)
+
+    private func blocking() -> (Model, CancelWatchingStream) {
+        let cli = CancelWatchingStream()
+        let m = Model { cli }
+        m.open()
+        dropped(m)
+        return (m, cli)
+    }
+
+    /// Start → the waiting line; Cancel → the form again, its JSON kept,
+    /// no error, the stream cancelled (CLILineStream kills the group).
+    func testCancelReturnsToTheForm() async {
+        let (m, cli) = blocking()
+        var connected = 0
+        m.onConnected = { connected += 1 }
+        let run = Task { await m.connect() }
+        _ = await cli.base.session(number: 1)
+        XCTAssertTrue(m.isRunning)
+        XCTAssertEqual(m.status, .waiting(.google))
+
+        m.cancel()
+        XCTAssertEqual(m.phase, .idle, "Cancel resets at once")
+        await run.value
+        XCTAssertEqual(m.phase, .idle)
+        XCTAssertEqual(m.status, .note(Model.unverifiedNote), "a cancel is silent: no problem line")
+        XCTAssertEqual(cli.cancelledRuns, 1, "the sign-in's process is killed")
+        XCTAssertNotNil(m.droppedLine, "the JSON stays for the next Connect")
+        XCTAssertEqual(m.primaryTitle, "Connect")
+        XCTAssertTrue(m.primaryEnabled)
+        XCTAssertEqual(connected, 0)
+    }
+
+    /// The CLI exits as the owner presses Cancel: its answer is dropped,
+    /// the page is the form with no error.
+    func testCancelAfterTheStubExited() async {
+        let (m, cli) = blocking()
+        let run = Task { await m.connect() }
+        let session = await cli.base.session(number: 1)
+        session.emit(#"{"result":"rejected","code":"invalid_client"}"#)
+        session.exit(code: 1)
+        m.cancel()
+        await run.value
+        XCTAssertEqual(m.phase, .idle)
+        XCTAssertEqual(m.status, .note(Model.unverifiedNote))
+    }
+
+    /// Cancel, Connect again, then the first run ends: its end does not
+    /// touch the second run, which still waits.
+    func testStaleRunDoesNotResetTheNextOne() async {
+        let (m, cli) = blocking()
+        let first = Task { await m.connect() }
+        let one = await cli.base.session(number: 1)
+        m.cancel()
+        let second = Task { await m.connect() }
+        let two = await cli.base.session(number: 2)
+        one.emit(#"{"result":"ok","account_id":4,"email":"bob@example.org"}"#)
+        one.exit(code: 1)
+        await first.value
+        XCTAssertTrue(m.isRunning, "the first run's end is ignored")
+        XCTAssertEqual(m.status, .waiting(.google))
+
+        two.emit(#"{"result":"ok","account_id":4,"email":"bob@example.org"}"#)
+        two.exit()
+        await second.value
+        XCTAssertEqual(m.phase, .done(email: "bob@example.org"))
+        XCTAssertEqual(cli.cancelledRuns, 1)
+    }
+
+    /// Cancel does nothing once a run has ended: its result stays.
+    func testCancelLeavesAFinishedRun() async {
+        let (m, _) = model([.init(lines: [#"{"result":"rejected","code":"invalid_client"}"#])])
+        dropped(m)
+        await m.connect()
+        m.cancel()
+        XCTAssertEqual(m.primaryTitle, "Try again")
+        guard case .problem = m.status else { return XCTFail("the refusal stays") }
+    }
+}
+
+/// `FakeCLILineStream` with every one-shot run wrapped, to see the model
+/// cancel it: a cancelled stream is what `CLILineStream` turns into a kill
+/// of the child's process group.
+private final class CancelWatchingStream: CLILineStreaming, @unchecked Sendable {
+    let base = FakeCLILineStream()
+    private let lock = NSLock()
+    private var cancelled = 0
+
+    var cancelledRuns: Int {
+        lock.lock(); defer { lock.unlock() }
+        return cancelled
+    }
+
+    func lines(args: [String], stdin: Data?) -> AsyncThrowingStream<String, Error> {
+        let inner = base.lines(args: args, stdin: stdin)
+        let (stream, sink) = AsyncThrowingStream.makeStream(of: String.self)
+        let pump = Task {
+            do {
+                for try await line in inner { sink.yield(line) }
+                sink.finish()
+            } catch {
+                sink.finish(throwing: error)
+            }
+        }
+        sink.onTermination = { [weak self] termination in
+            pump.cancel()
+            if case .cancelled = termination { self?.markCancelled() }
+        }
+        return stream
+    }
+
+    func session(args: [String]) -> any CLILineSession { base.session(args: args) }
+
+    private func markCancelled() {
+        lock.lock(); cancelled += 1; lock.unlock()
     }
 }
