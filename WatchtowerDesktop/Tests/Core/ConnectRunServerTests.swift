@@ -389,6 +389,73 @@ final class ConnectRunServerTests: XCTestCase {
         _ = try await admittedClient(path, token: token)
     }
 
+    /// A test clock for the write deadline (nanoseconds).
+    private final class FakeClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: UInt64 = 1_000_000_000
+
+        func now() -> UInt64 {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+
+        func advance(milliseconds: UInt64) {
+            lock.lock()
+            value += milliseconds * 1_000_000
+            lock.unlock()
+        }
+    }
+
+    /// A finite write bound on a test clock, and the stalls of the answer.
+    private static func clockedWrite(
+        _ server: ConnectRunServer
+    ) -> (clock: FakeClock, stalled: AsyncStream<Void>) {
+        let clock = FakeClock()
+        server.core.hooks.writeTimeout = 1000
+        server.core.hooks.now = { clock.now() }
+        let stalled = events { server.core.hooks.onWriteStalled = $0 }
+        return (clock, stalled)
+    }
+
+    /// A peer that reads a little between stalls gets no fresh time per
+    /// stall: the line fails at the one deadline it started with.
+    func testStalledLineSharesOneDeadline() async throws {
+        let server = makeServer()
+        let (clock, stalled) = Self.clockedWrite(server)
+        let (path, token) = try server.start()
+        let client = try await admittedClient(path, token: token)
+        client.send(#"{"id":1,"tool":"big","args":{}}"#)
+        var stalls = stalled.makeAsyncIterator()
+
+        _ = await stalls.next()
+        clock.advance(milliseconds: 600)
+        _ = await client.readChunk()
+        _ = await stalls.next()
+        clock.advance(milliseconds: 600)  // 1200 ms: past the line's 1000
+        _ = await client.readChunk()
+
+        // The answer never completes: the connection is cut mid-line.
+        let line = await client.readLine()
+        XCTAssertNil(line)
+    }
+
+    /// Past the deadline, even a peer that now reads everything gets no
+    /// more of the line: each write attempt checks the deadline first.
+    func testDeadlineCheckedBeforeEachWrite() async throws {
+        let server = makeServer()
+        let (clock, stalled) = Self.clockedWrite(server)
+        let (path, token) = try server.start()
+        let client = try await admittedClient(path, token: token)
+        client.send(#"{"id":1,"tool":"big","args":{}}"#)
+        var stalls = stalled.makeAsyncIterator()
+
+        _ = await stalls.next()
+        clock.advance(milliseconds: 2000)
+        let line = await client.readLine()
+        XCTAssertNil(line)
+    }
+
     /// The same stuck peer, still connected: only stop can free it.
     func testStopCutsPeerThatStoppedReading() async throws {
         let server = makeServer()
@@ -427,6 +494,17 @@ final class ConnectRunServerTests: XCTestCase {
         let server = makeServer()
         server.stop()
         XCTAssertThrowsError(try server.start()) { XCTAssertEqual($0 as? ConnectRunServer.ServerError, .alreadyStarted) }
+    }
+
+    /// A descriptor that cannot be made non-blocking is reported, so it is
+    /// never served (accept) and fails `start` (the listener).
+    func testMakeNonBlocking() throws {
+        XCTAssertFalse(ConnectRunServer.makeNonBlocking(-1))
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        defer { close(fd) }
+        XCTAssertTrue(ConnectRunServer.makeNonBlocking(fd))
+        XCTAssertNotEqual(fcntl(fd, F_GETFL) & O_NONBLOCK, 0)
     }
 
     /// Only an empty peek (EOF) or a real error is a hang-up; nothing to read
@@ -512,6 +590,19 @@ private final class WireClient: @unchecked Sendable {
     func readLine() async -> String? {
         await withCheckedContinuation { continuation in
             DispatchQueue.global().async { [self] in continuation.resume(returning: blockingReadLine()) }
+        }
+    }
+
+    /// Reads whatever is waiting (one read call) into the line buffer;
+    /// false at EOF.
+    func readChunk() async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { [self] in
+                var chunk = [UInt8](repeating: 0, count: 64 * 1024)
+                let n = read(fd, &chunk, chunk.count)
+                if n > 0 { buffer.append(contentsOf: chunk[0..<n]) }
+                continuation.resume(returning: n > 0)
+            }
         }
     }
 

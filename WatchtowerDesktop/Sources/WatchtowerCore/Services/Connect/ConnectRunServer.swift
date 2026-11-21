@@ -92,6 +92,18 @@ package final class ConnectRunServer: @unchecked Sendable {
         return diff == 0
     }
 
+    /// The production write clock: monotonic uptime in nanoseconds.
+    @Sendable static func uptimeNanoseconds() -> UInt64 {
+        DispatchTime.now().uptimeNanoseconds
+    }
+
+    /// Sets O_NONBLOCK on `fd`; false when either fcntl call fails.
+    static func makeNonBlocking(_ fd: Int32) -> Bool {
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0 else { return false }
+        return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0
+    }
+
     static func peerUID(_ fd: Int32) -> uid_t? {
         var uid: uid_t = 0
         var gid: gid_t = 0
@@ -138,6 +150,8 @@ final class ConnectRunCore: @unchecked Sendable {
         /// The stalled-write bound in milliseconds; nil waits until the
         /// connection is cut.
         var writeTimeout: Int32? = ConnectRunServer.writeTimeout
+        /// The monotonic clock (nanoseconds) the write deadline is measured on.
+        var now: @Sendable () -> UInt64 = ConnectRunServer.uptimeNanoseconds
     }
 
     private var storedHooks = Hooks()
@@ -301,7 +315,11 @@ final class ConnectRunCore: @unchecked Sendable {
             close(fd)
             throw ConnectRunServer.ServerError.socket(err)
         }
-        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        guard ConnectRunServer.makeNonBlocking(fd) else {
+            let err = errno
+            close(fd)
+            throw ConnectRunServer.ServerError.socket(err)
+        }
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: acceptQueue)
         source.setEventHandler { [weak self, weak source] in
             guard let self, let source else { return }
@@ -326,8 +344,12 @@ final class ConnectRunCore: @unchecked Sendable {
             }
             // Non-blocking, set here rather than trusting inheritance from
             // the listener: reads and writes wait in poll, which a shutdown
-            // wakes.
-            _ = fcntl(conn, F_SETFL, fcntl(conn, F_GETFL) | O_NONBLOCK)
+            // wakes. A descriptor that cannot be made so is not served: a
+            // blocking write would escape the deadline and the shutdown.
+            guard ConnectRunServer.makeNonBlocking(conn) else {
+                close(conn)
+                continue
+            }
             var on: Int32 = 1
             setsockopt(conn, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
             guard ConnectRunServer.peerUID(conn) == ownerUID else {
@@ -336,7 +358,7 @@ final class ConnectRunCore: @unchecked Sendable {
             }
             let hooks = self.hooks
             let peer = ConnectRunPeer(fd: conn, writeTimeout: hooks.writeTimeout,
-                                      onWriteStalled: hooks.onWriteStalled) { [weak self] peer in self?.forget(peer) }
+                                      onWriteStalled: hooks.onWriteStalled, now: hooks.now) { [weak self] peer in self?.forget(peer) }
             lock.lock()
             let open = !stopped
             if open { peers[ObjectIdentifier(peer)] = peer }
@@ -422,8 +444,8 @@ final class ConnectRunCore: @unchecked Sendable {
 /// One connection's descriptor, its writes and its running calls. Writes go
 /// through one serial queue (a line is never cut by another, and a peer that
 /// stops reading never blocks the main actor; a stalled write waits in poll
-/// for at most `writeTimeout`, and a shutdown wakes it); the descriptor is closed on that queue too, so no write races its
-/// close. The server keeps the peer registered until that close, so `stop`
+/// for at most `writeTimeout`, and a shutdown wakes it); the descriptor
+/// is closed on that queue too, so no write races its close. The server keeps the peer registered until that close, so `stop`
 /// can always cut it.
 final class ConnectRunPeer: @unchecked Sendable {
     let fd: Int32
@@ -431,6 +453,7 @@ final class ConnectRunPeer: @unchecked Sendable {
     private let onClose: @Sendable (ConnectRunPeer) -> Void
     private let writeTimeout: Int32?
     private let onWriteStalled: (@Sendable () -> Void)?
+    private let now: @Sendable () -> UInt64
     /// False once the descriptor is closed.
     private var open = true
     /// True once the connection ended: queued requests do not start and
@@ -444,11 +467,13 @@ final class ConnectRunPeer: @unchecked Sendable {
         fd: Int32,
         writeTimeout: Int32? = ConnectRunServer.writeTimeout,
         onWriteStalled: (@Sendable () -> Void)? = nil,
+        now: @escaping @Sendable () -> UInt64 = ConnectRunServer.uptimeNanoseconds,
         onClose: @escaping @Sendable (ConnectRunPeer) -> Void
     ) {
         self.fd = fd
         self.writeTimeout = writeTimeout
         self.onWriteStalled = onWriteStalled
+        self.now = now
         self.onClose = onClose
     }
 
@@ -512,11 +537,14 @@ final class ConnectRunPeer: @unchecked Sendable {
             lock.unlock()
             guard live else { return }
             // One bound for the whole line, however many stalls it meets.
-            let deadline = writeTimeout.map { DispatchTime.now().uptimeNanoseconds + UInt64($0) * 1_000_000 }
+            let deadline = writeTimeout.map { now() + UInt64($0) * 1_000_000 }
             let sent = line.withUnsafeBytes { raw -> Bool in
                 guard let base = raw.baseAddress else { return true }
                 var offset = 0
                 while offset < raw.count {
+                    // Every attempt, after a short write or EINTR too, stays
+                    // inside the one deadline.
+                    if let deadline, now() >= deadline { return false }
                     let n = Darwin.write(fd, base + offset, raw.count - offset)
                     if n > 0 {
                         offset += n
@@ -545,9 +573,9 @@ final class ConnectRunPeer: @unchecked Sendable {
         while true {
             var wait: Int32 = -1
             if let deadline {
-                let now = DispatchTime.now().uptimeNanoseconds
-                guard now < deadline else { return false }
-                wait = Int32(clamping: (deadline - now + 999_999) / 1_000_000)
+                let current = now()
+                guard current < deadline else { return false }
+                wait = Int32(clamping: (deadline - current + 999_999) / 1_000_000)
             }
             let ready = poll(&pfd, 1, wait)
             if ready < 0, errno == EINTR { continue }
