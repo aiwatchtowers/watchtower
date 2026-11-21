@@ -116,6 +116,11 @@ final class DesignShotsTests: XCTestCase {
         })
     }
 
+    /// The connect assistant spec's mockups (#2133).
+    func testConnectAssistantShotsRender() throws {
+        try renderShots(ConnectAssistantShotFixtures.shots)
+    }
+
     func testChatMarkdownShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("chat-markdown-") })
     }
