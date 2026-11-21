@@ -199,6 +199,9 @@ enum CompanyWizardLive {
 
     // MARK: Scenes
 
+    /// The wizard model of a scene, for a shot that draws one step of it (`SignInWaitBuiltShots`).
+    static func wizardModel(_ name: String) -> CompanySetupWizardModel { model(name) }
+
     private static func model(_ name: String) -> Model {
         if let model = pageScene(name) ?? servicesScene(name) { return model }
         if name.hasPrefix("slack-") { return slackScene(name) }

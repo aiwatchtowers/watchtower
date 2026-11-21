@@ -11,6 +11,8 @@ struct CompaniesZoneActions {
     var connectAll: (String) -> Void = { _ in }
     var connectRest: (String) -> Void = { _ in }
     var relogin: (String, [CompanyVendor]) -> Void = { _, _ in }
+    /// Cancel on a card's waiting sign-in: **Stop** of the hidden chain.
+    var stopChain: () -> Void = {}
     var submitCode: () -> Void = {}
 }
 
@@ -21,7 +23,8 @@ struct CompaniesZoneActions {
 struct CompaniesZone: View {
     let state: CompaniesZoneState
     @Bindable var model: CompaniesZoneModel
-    /// The card whose chain waits on a vendor: "Connecting… Google" with the spinner.
+    /// The card whose chain waits on a vendor's browser sign-in, its sheet
+    /// closed: the waiting line with Cancel.
     var connecting: (slug: String, vendor: CompanyVendor)?
     /// A connect flow or another sign-in runs: no card starts a second one.
     var flowBusy = false
@@ -87,10 +90,9 @@ struct CompaniesZone: View {
                 if card.managed { ManagedByOrganizationBadge() }
                 Text(card.line).font(.caption).foregroundStyle(.secondary)
                 if let vendor = running {
-                    HStack(spacing: Spacing.small) {
-                        ProgressView().controlSize(.mini)
-                        Text(Pres.connecting(vendor)).font(.caption).foregroundStyle(.secondary)
-                    }
+                    let copy = SignInWaitCopy(vendor: vendor)
+                    SignInWaitLine(line: copy.line, hint: copy.hint, cancelTitle: copy.cancelTitle,
+                                   onCancel: actions.stopChain)
                 }
                 if let missing = card.missingLine {
                     Text(missing).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

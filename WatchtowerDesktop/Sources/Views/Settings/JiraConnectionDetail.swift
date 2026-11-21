@@ -148,63 +148,78 @@ struct JiraConnectionDetail: View {
 
     private func accountRow(_ vm: JiraAccountsViewModel, account: JiraAccount, ref: AccountRef) -> some View {
         let status = appState.companyRowStatus(ref)
+        let waiting = vm.isConnecting && vm.signInAccountID == account.id
+        // While its Re-login waits, the row's status gives way to the waiting
+        // lines under a grey dot.
         return CompanyAccountRow(
             title: account.displayName,
             tag: CompanyConnectionsPresentation.tag(ref),
-            status: status,
+            status: waiting ? nil : status,
             line: CompanyConnectionsPresentation.jiraRowLine(ref, title: account.displayName, enabled: account.enabled,
                                                              email: account.ownerEmail),
-            dot: statusColor(account),
-            extra: AnyView(rowExtra(account, hasStatus: status != nil))
+            dot: waiting ? Tone.status("gray") : statusColor(account),
+            extra: AnyView(rowExtra(account, hasStatus: status != nil, waiting: waiting))
         ) {
-            Toggle("Enabled", isOn: Binding(
-                get: { account.enabled },
-                set: { newValue in Task { await vm.setEnabled(account, enabled: newValue) } }
-            ))
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .disabled(vm.isConnecting || account.isPurged)
-            if status?.action == .pasteCode {
-                CompanyRowStatusButton(action: .pasteCode, disabled: sourceBlocked) { action in
-                    appState.companyRowAction(action, account: ref)
-                }
-            } else if ref.isAPIToken {
-                // A token site takes a new token, never an OAuth sign-in; a stopped one takes nothing.
-                if CompanyConnectionsPresentation.offersNewToken(ref, status: status) {
-                    CompanyRowStatusButton(action: .pasteNewToken,
-                                           disabled: vm.isConnecting || appState.atlassianToken.isChecking
-                                               || reloginBlocked(account.id) != nil) { action in
-                        appState.companyRowAction(action, account: ref)
-                    }
-                    .managedByOrganization(sourceBlocked)
-                    .help(reloginBlocked(account.id) ?? "")
-                }
-            } else if !account.isOK || status?.action == .relogin {
-                // `jira login --account` signs in through the site's own client (its company's after a Replace).
-                Button(RowStatus.Action.relogin.title) { Task { await vm.relogin(account) } }
-                    .buttonStyle(.kitSecondary)
-                    .managedByOrganization(sourceBlocked)
-                    .help(reloginBlocked(account.id) ?? "")
-                    .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
+            if waiting {
+                // Its Re-login waits in the browser: only the spinner and Cancel.
+                SignInWaitCancel(cancelTitle: SignInWaitCopy.atlassian.cancelTitle) { vm.cancelConnect() }
+            } else {
+                rowControls(vm, account: account, ref: ref, status: status)
             }
-            Button("Rename…") {
-                accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
-            }
-            .buttonStyle(.kitQuiet)
-            .disabled(vm.isConnecting)
-            // A token check still running (its sheet may be closed) could write the row back after a remove.
-            Button("Remove") { jiraAccountPendingRemoval = account }
-                .buttonStyle(.kitQuiet)
-                .foregroundStyle(Tone.error)
-                .disabled(vm.isConnecting || appState.atlassianToken.isChecking)
         }
     }
 
-    /// The row's own lines under its status: the site's error (when no §4.3
-    /// status says it) and the purge line.
+    /// The row's toggle and buttons when no Re-login of it waits.
     @ViewBuilder
-    private func rowExtra(_ account: JiraAccount, hasStatus: Bool) -> some View {
-        if !hasStatus, !account.isOK, !account.error.isEmpty {
+    private func rowControls(
+        _ vm: JiraAccountsViewModel, account: JiraAccount, ref: AccountRef, status: RowStatus?
+    ) -> some View {
+        Toggle("Enabled", isOn: Binding(
+            get: { account.enabled },
+            set: { newValue in Task { await vm.setEnabled(account, enabled: newValue) } }
+        ))
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .disabled(vm.isConnecting || account.isPurged)
+        if status?.action == .pasteCode {
+            CompanyRowStatusButton(action: .pasteCode, disabled: sourceBlocked) { action in
+                appState.companyRowAction(action, account: ref)
+            }
+        } else if ref.isAPIToken {
+            // A token site takes a new token, never an OAuth sign-in; a stopped one takes nothing.
+            if CompanyConnectionsPresentation.offersNewToken(ref, status: status) {
+                CompanyRowStatusButton(action: .pasteNewToken,
+                                       disabled: vm.isConnecting || appState.atlassianToken.isChecking
+                                           || reloginBlocked(account.id) != nil) { action in
+                    appState.companyRowAction(action, account: ref)
+                }
+                .managedByOrganization(sourceBlocked)
+                .help(reloginBlocked(account.id) ?? "")
+            }
+        } else if !account.isOK || status?.action == .relogin {
+            // `jira login --account` signs in through the site's own client (its company's after a Replace).
+            Button(RowStatus.Action.relogin.title) { Task { await vm.relogin(account) } }
+                .buttonStyle(.kitSecondary)
+                .managedByOrganization(sourceBlocked)
+                .help(reloginBlocked(account.id) ?? "")
+                .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
+        }
+        Button("Rename…") {
+            accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
+        }
+        .buttonStyle(.kitQuiet)
+        .disabled(vm.isConnecting)
+        // A token check still running (its sheet may be closed) could write the row back after a remove.
+        Button("Remove") { jiraAccountPendingRemoval = account }
+            .buttonStyle(KitQuietButtonStyle(label: Tone.error))
+            .disabled(vm.isConnecting || appState.atlassianToken.isChecking)
+    }
+
+    /// The row's own lines under its status: the site's error (when no §4.3
+    /// status says it), the purge line, and the waiting sign-in's two lines.
+    @ViewBuilder
+    private func rowExtra(_ account: JiraAccount, hasStatus: Bool, waiting: Bool) -> some View {
+        if !hasStatus, !waiting, !account.isOK, !account.error.isEmpty {
             Text(account.error)
                 .font(.caption)
                 .foregroundStyle(Tone.error)
@@ -215,6 +230,9 @@ struct JiraConnectionDetail: View {
             isPurged: account.isPurged
         ) {
             line
+        }
+        if waiting {
+            SignInWaitText(line: SignInWaitCopy.atlassian.line, hint: SignInWaitCopy.atlassian.hint)
         }
     }
 

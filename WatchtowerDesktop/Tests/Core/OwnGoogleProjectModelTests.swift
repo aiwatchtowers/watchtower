@@ -150,7 +150,7 @@ final class OwnGoogleProjectModelTests: XCTestCase {
         let run = Task { await m.connect() }
         let session = await cli.session(number: 1)
         XCTAssertTrue(m.isRunning)
-        XCTAssertEqual(m.status, .busy(Model.checkingLine))
+        XCTAssertEqual(m.status, .waiting(.google))
         XCTAssertFalse(m.primaryEnabled)
         XCTAssertFalse(m.drop(Self.clientJSON, fileName: "other.json"), "no new JSON while signing in")
         m.close()
@@ -192,5 +192,175 @@ final class OwnGoogleProjectModelTests: XCTestCase {
         await weekly.connect()
         XCTAssertEqual(weekly.weeklyNote, "Google asks a project like this to sign in again every 7 days. "
             + "Watchtower reminds you when it is time.")
+    }
+
+    // MARK: Cancel (#2132 G5)
+
+    private func blocking() -> (Model, FakeCLILineStream) {
+        let cli = FakeCLILineStream()
+        let m = Model { cli }
+        m.open()
+        dropped(m)
+        return (m, cli)
+    }
+
+    /// Start → the waiting line; Cancel → the form again at once, its JSON
+    /// kept, no error, the CLI killed. The re-read waits for the killed CLI
+    /// to end (it may still be saving), then runs once.
+    func testCancelReturnsToTheForm() async {
+        let (m, cli) = blocking()
+        var connected = 0
+        var cancelled = 0
+        let (reReads, reRead) = AsyncStream.makeStream(of: Void.self)
+        m.onConnected = { connected += 1 }
+        m.onCancelled = { cancelled += 1; reRead.yield() }
+        let run = Task { await m.connect() }
+        let session = await cli.session(number: 1)
+        session.exitsOnTerminate = false // a killed process lives until it is reaped
+        XCTAssertTrue(m.isRunning)
+        XCTAssertEqual(m.status, .waiting(.google))
+
+        m.cancel()
+        XCTAssertTrue(session.terminated, "the sign-in's process group is killed")
+        XCTAssertEqual(m.phase, .idle, "Cancel resets at once")
+        XCTAssertEqual(m.status, .note(Model.unverifiedNote), "a cancel is silent: no problem line")
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertEqual(cancelled, 0, "no re-read while the killed CLI may still be writing")
+
+        session.exit() // reaped, no answer printed
+        await run.value
+        var events = reReads.makeAsyncIterator()
+        await events.next()
+        XCTAssertEqual(cancelled, 1, "what Go saved before the kill is re-read once")
+        XCTAssertEqual(m.phase, .idle)
+        XCTAssertNotNil(m.droppedLine, "the JSON stays for the next Connect")
+        XCTAssertEqual(m.primaryTitle, "Connect")
+        XCTAssertTrue(m.primaryEnabled)
+        XCTAssertEqual(connected, 0, "a cancel never re-wires the daemon")
+    }
+
+    /// The CLI had already exited 0 with its answer when Cancel arrived:
+    /// the account is saved, so the run ends as a connect (the done page,
+    /// onConnected), not as a cancel.
+    func testCancelAfterASuccessfulExitIsAConnect() async {
+        let (m, cli) = blocking()
+        var cancelled = 0
+        let (connects, connected) = AsyncStream.makeStream(of: Void.self)
+        m.onConnected = { connected.yield() }
+        m.onCancelled = { cancelled += 1 }
+        let run = Task { await m.connect() }
+        let session = await cli.session(number: 1)
+        session.emit(#"{"result":"ok","account_id":4,"email":"bob@example.org"}"#)
+        session.exit()
+        m.cancel()
+        XCTAssertEqual(m.phase, .idle, "Cancel resets at once")
+        await run.value
+        var events = connects.makeAsyncIterator()
+        await events.next()
+        XCTAssertEqual(m.phase, .done(email: "bob@example.org"))
+        XCTAssertEqual(cancelled, 0)
+    }
+
+    /// The CLI exits with a refusal as the owner presses Cancel: the
+    /// buffered refusal is dropped; the page is the form, no error.
+    func testCancelDropsTheBufferedRefusal() async {
+        let (m, cli) = blocking()
+        let (reReads, reRead) = AsyncStream.makeStream(of: Void.self)
+        m.onCancelled = { reRead.yield() }
+        let run = Task { await m.connect() }
+        let session = await cli.session(number: 1)
+        session.emit(#"{"result":"rejected","code":"invalid_client"}"#)
+        session.exit(code: 1)
+        m.cancel()
+        await run.value
+        var events = reReads.makeAsyncIterator()
+        await events.next()
+        XCTAssertEqual(m.phase, .idle)
+        XCTAssertEqual(m.status, .note(Model.unverifiedNote))
+    }
+
+    /// Cancel, Connect again, then the first run ends: its end does not
+    /// touch the second run, which still waits.
+    func testStaleRunDoesNotResetTheNextOne() async {
+        let (m, cli) = blocking()
+        let first = Task { await m.connect() }
+        let one = await cli.session(number: 1)
+        m.cancel()
+        XCTAssertTrue(one.terminated)
+        let second = Task { await m.connect() }
+        let two = await cli.session(number: 2)
+        await first.value
+        XCTAssertTrue(m.isRunning, "the first run's end is ignored")
+        XCTAssertEqual(m.status, .waiting(.google))
+
+        two.emit(#"{"result":"ok","account_id":4,"email":"bob@example.org"}"#)
+        two.exit()
+        await second.value
+        XCTAssertEqual(m.phase, .done(email: "bob@example.org"))
+        XCTAssertFalse(two.terminated)
+    }
+
+    /// A cancelled run that turns out to have connected, while a new run
+    /// already waits: the accounts are re-read and re-wired, the new run's
+    /// waiting line stays.
+    func testStaleSuccessLeavesTheNextRun() async {
+        let (m, cli) = blocking()
+        let (connects, connected) = AsyncStream.makeStream(of: Void.self)
+        m.onConnected = { connected.yield() }
+        let first = Task { await m.connect() }
+        let one = await cli.session(number: 1)
+        one.exitsOnTerminate = false
+        m.cancel()
+        let second = Task { await m.connect() }
+        let two = await cli.session(number: 2)
+        one.emit(#"{"result":"ok","account_id":4,"email":"bob@example.org"}"#)
+        one.exit()
+        await first.value
+        var events = connects.makeAsyncIterator()
+        await events.next()
+        XCTAssertTrue(m.isRunning, "the new run keeps its waiting line")
+
+        two.exit(code: 1)
+        await second.value
+    }
+
+    /// A cancelled run that turns out to have connected after the owner
+    /// dropped another client JSON: the new form stays, the accounts are
+    /// still re-read and re-wired once.
+    func testStaleSuccessLeavesANewForm() async {
+        let (m, cli) = blocking()
+        var connectedCount = 0
+        let (connects, connected) = AsyncStream.makeStream(of: Void.self)
+        m.onConnected = { connectedCount += 1; connected.yield() }
+        let run = Task { await m.connect() }
+        let session = await cli.session(number: 1)
+        session.exitsOnTerminate = false
+        m.cancel()
+        let other = Data(#"{"installed":{"client_id":"9999-other.apps.googleusercontent.com","client_secret":"s","project_id":"acme"}}"#.utf8)
+        XCTAssertTrue(m.drop(other, fileName: "client_secret_9999-other.json"))
+        session.emit(#"{"result":"ok","account_id":4,"email":"bob@example.org"}"#)
+        session.exit()
+        await run.value
+        var events = connects.makeAsyncIterator()
+        await events.next()
+        XCTAssertEqual(connectedCount, 1)
+        XCTAssertEqual(m.phase, .idle, "the new form stays")
+        XCTAssertEqual(m.droppedLine, "client_secret_9999-other.json · project acme")
+    }
+
+    /// Cancel does nothing once a run has ended: its result stays, nothing
+    /// is re-read.
+    func testCancelLeavesAFinishedRun() async {
+        let (m, _) = model([.init(lines: [#"{"result":"rejected","code":"invalid_client"}"#])])
+        var cancelled = 0
+        m.onCancelled = { cancelled += 1 }
+        m.cancel()
+        dropped(m)
+        await m.connect()
+        m.cancel()
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertEqual(cancelled, 0, "Cancel with nothing running re-reads nothing")
+        XCTAssertEqual(m.primaryTitle, "Try again")
+        guard case .problem = m.status else { return XCTFail("the refusal stays") }
     }
 }

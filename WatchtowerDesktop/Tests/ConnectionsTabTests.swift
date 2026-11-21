@@ -488,7 +488,7 @@ final class ConnectionsTabTests: XCTestCase {
 
     /// The zone's states through the view: loading, read failed with Try
     /// again, the empty invitation, the port-busy line with the code field,
-    /// the setup line, and a card's spinner while its chain runs.
+    /// the setup line, and a card's waiting sign-in (with Cancel) while its chain runs.
     func testCompaniesZoneStates() throws {
         typealias Pres = CompanyConnectionsPresentation
         let model = CompaniesZoneModel { nil }
@@ -498,6 +498,7 @@ final class ConnectionsTabTests: XCTestCase {
         actions.setUpForCompany = { pressed.append("setUp") }
         actions.continueSetup = { pressed.append("continue") }
         actions.connectAll = { pressed.append("all:\($0)") }
+        actions.stopChain = { pressed.append("stop") }
         func zone(_ state: CompaniesZoneState, connecting: (slug: String, vendor: CompanyVendor)? = nil) -> CompaniesZone {
             CompaniesZone(state: state, model: model, connecting: connecting, actions: actions)
         }
@@ -532,10 +533,14 @@ final class ConnectionsTabTests: XCTestCase {
 
         let mdm = state([CompanyRef(slug: "acme", name: "Acme", forced: true, vendors: [.google: "example.com"])])
         let running = zone(mdm, connecting: (slug: "acme", vendor: .google))
-        XCTAssertNoThrow(try running.inspect().find(text: Pres.connecting(.google)))
-        XCTAssertThrowsError(try zone(mdm).inspect().find(text: Pres.connecting(.google)))
+        // C1: the card's waiting sign-in, its Cancel stops the hidden chain.
+        let wait = SignInWaitCopy.google
+        XCTAssertNoThrow(try running.inspect().find(text: wait.line))
+        XCTAssertNoThrow(try running.inspect().find(text: wait.hint))
+        try running.inspect().find(button: wait.cancelTitle).tap()
+        XCTAssertThrowsError(try zone(mdm).inspect().find(text: wait.line))
         try zone(mdm).inspect().find(button: "Connect all").tap()
-        XCTAssertEqual(pressed, ["tryAgain", "setUp", "continue", "all:acme"])
+        XCTAssertEqual(pressed, ["tryAgain", "setUp", "continue", "stop", "all:acme"])
     }
 
     /// A5 unchanged: a company's Re-login row needs the owner (banner and

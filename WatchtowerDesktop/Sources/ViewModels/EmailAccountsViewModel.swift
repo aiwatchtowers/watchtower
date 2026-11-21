@@ -20,12 +20,19 @@ final class EmailAccountsViewModel {
     private(set) var readError: String?
 
     private let dbPool: DatabasePool
-    /// Resolves the CLI binary for `rename`; injectable so tests can run a stand-in.
+    /// Resolves the CLI binary for `rename` and the Outlook sign-in;
+    /// injectable so tests can run a stand-in.
     private let cliPath: () -> String?
+    private let daemon: any DaemonRestarting
     private var authProcess: Process?
 
-    init(dbPool: DatabasePool, cliPath: @escaping () -> String? = Constants.findCLIPath) {
+    init(
+        dbPool: DatabasePool,
+        daemon: any DaemonRestarting = LiveDaemonRestarter(),
+        cliPath: @escaping () -> String? = Constants.findCLIPath
+    ) {
         self.dbPool = dbPool
+        self.daemon = daemon
         self.cliPath = cliPath
     }
 
@@ -100,7 +107,7 @@ final class EmailAccountsViewModel {
             error = nil
             refresh()
             // Re-wire the daemon so the new mailbox's first sync + AI cycle runs now.
-            Task { await DaemonManager.restartLoggingQueued() }
+            Task { await self.daemon.restartLogging() }
             return true
         } else {
             error = result.stderr.isEmpty
@@ -113,12 +120,14 @@ final class EmailAccountsViewModel {
     // MARK: - Outlook
 
     /// Runs `watchtower outlook login --app-return`, same OAuth loopback-browser
-    /// flow shape as `GoogleAuthService.connect()`.
-    func connectOutlook() {
-        guard !isRunning else { return }
-        guard let cliPath = Constants.findCLIPath() else {
+    /// flow shape as `GoogleAuthService.connect()`. The returned task ends
+    /// once the run's completion is applied (tests await it).
+    @discardableResult
+    func connectOutlook() -> Task<Void, Never>? {
+        guard !isRunning else { return nil }
+        guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
-            return
+            return nil
         }
 
         isRunning = true
@@ -134,20 +143,29 @@ final class EmailAccountsViewModel {
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
 
-        Task.detached {
+        return Task.detached {
             // The login environment is awaited here, off the main actor; a
             // Cancel (or a newer attempt) while it resolves drops this launch.
             process.environment = await Constants.resolvedEnvironmentAsync()
             guard await MainActor.run(body: { self.authProcess === process }) else { return }
-            let result = await Self.runProcess(process)
-            await MainActor.run {
+            // A Cancel that landed while the launch was under way found
+            // nothing running to terminate: stop the child once it exists.
+            let onLaunch: @Sendable (Process) -> Void = { launched in
+                Task { @MainActor in
+                    if self.authProcess !== launched { launched.terminate() }
+                }
+            }
+            let result = await ProcessPipes.run(process, onLaunch: onLaunch).trimmed
+            let applied = await MainActor.run {
+                // A Cancel meanwhile owns the state now.
+                guard self.authProcess === process else { return false }
                 self.authProcess = nil
                 self.isRunning = false
                 if result.exitCode == 0 {
                     self.error = nil
                     self.refresh()
                     // Re-wire the daemon so the new account's first sync runs now.
-                    Task { await DaemonManager.restartLoggingQueued() }
+                    Task { await self.daemon.restartLogging() }
                 } else if result.exitCode == 15 || result.exitCode == 9 {
                     // SIGTERM/SIGKILL — user cancelled
                     self.error = nil
@@ -156,10 +174,31 @@ final class EmailAccountsViewModel {
                         ? "Login failed (exit \(result.exitCode))"
                         : String(result.stderr.prefix(200))
                 }
+                return true
             }
+            guard !applied else { return }
+            // A cancelled run: re-read what it saved. One that had exited 0
+            // before the Cancel came is a finished connect and keeps its
+            // daemon restart; one the Cancel killed while saving does not.
+            await self.rereadQuietly()
+            if result.exitCode == 0 { await self.daemon.restartLogging() }
         }
     }
 
+    /// The re-read after a Cancel: the owner asked for nothing, so a failed
+    /// read shows only as `readError`, never as the sheet's `error`.
+    private func rereadQuietly() async {
+        do {
+            accounts = try await dbPool.read { db in try EmailAccountQueries.fetchAll(db) }
+            readError = nil
+            await onAccountsChanged?()
+        } catch {
+            readError = "Failed to load accounts: \(error.localizedDescription)"
+        }
+    }
+
+    /// Ends a waiting Outlook sign-in silently; the run's completion then
+    /// re-reads the accounts once the process is gone.
     func cancelConnect() {
         if let process = authProcess, process.isRunning {
             process.terminate()
@@ -217,7 +256,7 @@ final class EmailAccountsViewModel {
             error = nil
             refresh()
             // Restart so the daemon drops the removed account's syncer.
-            Task { await DaemonManager.restartLoggingQueued() }
+            Task { await self.daemon.restartLogging() }
         } else {
             error = result.stderr.isEmpty
                 ? "Remove failed (exit \(result.exitCode))"

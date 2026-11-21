@@ -38,6 +38,9 @@ struct ConfluenceSpacesSection: View {
             if featureOff {
                 featureOffContent
             } else if let vm = appState.confluenceSpacesViewModels[accountID] {
+                // Above the branches: a reload while the sign-in waits may
+                // switch them, and Cancel must stay.
+                if vm.isWaitingForSignIn { signInWait(vm) }
                 if vm.needsConsent {
                     consentContent(vm)
                 } else {
@@ -105,10 +108,21 @@ struct ConfluenceSpacesSection: View {
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
         }
-        Button("Grant Confluence access") {
-            vm.reconsent()
+        if !vm.isWaitingForSignIn {
+            Button("Grant Confluence access") {
+                vm.reconsent()
+            }
+            .disabled(vm.isReconsenting || appState.jiraAccountsViewModel?.isConnecting == true)
         }
-        .disabled(vm.isReconsenting || appState.jiraAccountsViewModel?.isConnecting == true)
+    }
+
+    /// The re-consent waits in the browser: the waiting line with Cancel in
+    /// place of Grant Confluence access or Allow editing.
+    private func signInWait(_ vm: ConfluenceSpacesViewModel) -> some View {
+        let copy = SignInWaitCopy.atlassian
+        return SignInWaitLine(line: copy.line, hint: copy.hint, cancelTitle: copy.cancelTitle) {
+            vm.cancelReconsent()
+        }
     }
 
     // MARK: - Spaces
@@ -188,10 +202,12 @@ struct ConfluenceSpacesSection: View {
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
             }
-            Button("Allow editing") {
-                vm.allowEditing()
+            if !vm.isWaitingForSignIn {
+                Button("Allow editing") {
+                    vm.allowEditing()
+                }
+                .disabled(vm.isReconsenting || appState.jiraAccountsViewModel?.isConnecting == true)
             }
-            .disabled(vm.isReconsenting || appState.jiraAccountsViewModel?.isConnecting == true)
         } else if vm.canEdit {
             Text("The assistant can propose page edits in chat; each one waits for your Approve.")
                 .font(.caption)

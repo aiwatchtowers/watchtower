@@ -10,11 +10,11 @@ import WatchtowerTestSupport
 final class SlackReconnectOutcomeTests: XCTestCase {
     func testOutcomes() {
         let appState = AppState.isolated()
-        XCTAssertEqual(appState.reconnectOutcome(route: .builtin, error: nil), .signedIn)
-        XCTAssertEqual(appState.reconnectOutcome(route: .builtin, error: "Re-login failed (exit 1)"),
-                       .failed("Re-login failed (exit 1)"))
-        XCTAssertEqual(appState.reconnectOutcome(route: nil, error: "Another connection is already in progress."),
+        XCTAssertEqual(appState.reconnectOutcome(.signedIn), .signedIn)
+        XCTAssertEqual(appState.reconnectOutcome(.failed("Re-login failed (exit 1)")), .failed("Re-login failed (exit 1)"))
+        XCTAssertEqual(appState.reconnectOutcome(.failed("Another connection is already in progress.")),
                        .failed("Another connection is already in progress."))
+        XCTAssertEqual(appState.reconnectOutcome(.cancelled), .cancelled)
     }
 
     func testNoAccountsYetFails() async {

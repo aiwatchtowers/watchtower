@@ -95,6 +95,17 @@ enum ApprovalCardShotFixtures {
         ]
     }
 
+    /// The failed send's card while its **Reconnect Slack** sign-in waits (#2132 S2): the line the screen hands every
+    /// card (`AppState.cardSlackSignInWait`), for `sign-in-wait-built-chat-card`.
+    static func slackReconnectWaiting() -> AnyView {
+        AnyView(Card(
+            action: row(tool: "send_slack_message", external: true, args: slackArgs, status: "failed", error: scopeError),
+            inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+            onReconnectSlack: { _ in .cancelled },
+            reconnectSlackWait: { _ in Card.SlackSignInWait(copy: .slack) {} }
+        ))
+    }
+
     // MARK: - Cards
 
     private static func card(

@@ -359,11 +359,6 @@ package enum CompanyConnectionsPresentation {
     package static let tokenLocked = "Your organization does not allow Atlassian API tokens. Token sites stop syncing "
         + "and keep their data."
 
-    /// A company card while its chain waits on a vendor (§3.2, A10).
-    package static func connecting(_ vendor: CompanyVendor) -> String {
-        "Connecting… \(vendorName(vendor))"
-    }
-
     /// What identifies a company's Slack app in its group caption, from the
     /// Slack setup record that holds the bundle's client id.
     package static func slackAppDetail(appID: String) -> String {

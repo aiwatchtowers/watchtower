@@ -73,7 +73,9 @@ struct QuickConnectionsDetail: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(vm.connections) { connection in
-                        connectionRow(connection, vm: vm)
+                        QuickConnectionRow(
+                            connection: connection, vm: vm, policy: appState.managedPolicy.policy
+                        ) { connectionPendingRemoval = connection }
                         DisclosureGroup(isExpanded: toolsExpanded(connection)) {
                             QuickConnectionToolsView(connection: connection, vm: vm)
                         } label: {
@@ -161,60 +163,6 @@ struct QuickConnectionsDetail: View {
         return error
     }
 
-    private func connectionRow(_ connection: ExternalConnection, vm: ExternalConnectionsViewModel) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(connection.name)
-                Text(connection.kind)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if !connection.allowed(by: appState.managedPolicy.policy) {
-                    Label(SourceBlockedNotice.title, systemImage: "lock.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if connection.status == "error", !connection.error.isEmpty {
-                    Text(Self.reason(connection.error))
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer()
-            Circle()
-                .fill(connectionStatusColor(connection))
-                .frame(width: 8, height: 8)
-                .help(connection.isOK
-                    ? "OK"
-                    : (connection.error.isEmpty ? connection.status : connection.error))
-            if connection.needsSignIn {
-                Button("Sign in again") {
-                    Task { await vm.signIn(connection) }
-                }
-                .buttonStyle(.plain)
-                .disabled(vm.isBusy || vm.toolsInFlight.contains(connection.id))
-            }
-            Toggle("Enabled", isOn: Binding(
-                get: { connection.enabled },
-                set: { newValue in
-                    Task { await vm.setEnabled(connection, enabled: newValue) }
-                }
-            ))
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .disabled(vm.isBusy || vm.toolsInFlight.contains(connection.id))
-            // A connection outside the policy's list cannot be turned on;
-            // one still on can be turned off.
-            .managedByOrganization(!connection.enabled && !connection.allowed(by: appState.managedPolicy.policy))
-            Button("Remove") {
-                connectionPendingRemoval = connection
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.red)
-            .disabled(vm.isBusy || vm.toolsInFlight.contains(connection.id))
-        }
-    }
-
     private func toolsExpanded(_ connection: ExternalConnection) -> Binding<Bool> {
         Binding(
             get: { expandedTools.contains(connection.id) },
@@ -223,11 +171,87 @@ struct QuickConnectionsDetail: View {
             }
         )
     }
+}
 
-    private func connectionStatusColor(_ connection: ExternalConnection) -> Color {
-        if connection.isOK { return .green }
+/// One Quick Connection: its name, kind and status, and its actions. While
+/// its browser sign-in waits, the waiting lines show under the name and
+/// Cancel takes the place of the actions (`SignInWaitText` +
+/// `SignInWaitCancel`), so a sign-in page that never comes back is never a
+/// dead end.
+struct QuickConnectionRow: View {
+    let connection: ExternalConnection
+    let vm: ExternalConnectionsViewModel
+    let policy: ManagedPolicy
+    let onRemove: () -> Void
+
+    var body: some View {
+        let wait = vm.signInWait(for: connection)
+        HStack {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(connection.name)
+                Text(connection.kind)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !connection.allowed(by: policy) {
+                    Label(SourceBlockedNotice.title, systemImage: "lock.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let wait {
+                    SignInWaitText(line: wait.line, hint: wait.hint)
+                } else if connection.status == "error", !connection.error.isEmpty {
+                    Text(QuickConnectionsDetail.reason(connection.error))
+                        .font(.caption)
+                        .foregroundStyle(Tone.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+            Circle()
+                .fill(wait == nil ? statusColor : Tone.status("gray"))
+                .frame(width: 8, height: 8)
+                .help(wait?.line ?? (connection.isOK
+                    ? "OK"
+                    : (connection.error.isEmpty ? connection.status : connection.error)))
+            if let wait {
+                SignInWaitCancel(cancelTitle: wait.cancelTitle) { vm.cancelSignIn() }
+            } else {
+                actions
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        let busy = vm.isBusy || vm.toolsInFlight.contains(connection.id)
+        if connection.needsSignIn {
+            Button("Sign in again") {
+                Task { await vm.signInAgain(connection) }
+            }
+            .buttonStyle(.kitQuiet)
+            .disabled(busy)
+        }
+        Toggle("Enabled", isOn: Binding(
+            get: { connection.enabled },
+            set: { newValue in
+                Task { await vm.setEnabled(connection, enabled: newValue) }
+            }
+        ))
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .disabled(busy)
+        // A connection outside the policy's list cannot be turned on;
+        // one still on can be turned off.
+        .managedByOrganization(!connection.enabled && !connection.allowed(by: policy))
+        Button("Remove", action: onRemove)
+            .buttonStyle(KitQuietButtonStyle(label: Tone.error))
+            .disabled(busy)
+    }
+
+    private var statusColor: Color {
+        if connection.isOK { return Tone.success }
         // Red only when a new sign-in is the fix; a transient or tool-list
         // error is orange (its tooltip says what to do).
-        return connection.needsSignIn ? .red : .orange
+        return connection.needsSignIn ? Tone.error : Tone.warning
     }
 }

@@ -42,7 +42,10 @@ extension AppState {
     /// start at once.
     func companyDetailBusy(_ vendor: CompanyVendor) -> Bool {
         let own = switch vendor {
-        case .google: (googleAccountsViewModel?.isConnecting ?? true) || ownGoogleProject.isRunning
+        case .google:
+            (googleAccountsViewModel?.isConnecting ?? true) || ownGoogleProject.isRunning
+                // Calendar's empty-state connect (#2132): one Google sign-in at a time.
+                || GoogleConnectFlow.shared.isRunning
         case .atlassian: jiraAccountsViewModel?.isConnecting ?? true
         case .slack, .linear, .microsoft: false
         }
@@ -51,7 +54,7 @@ extension AppState {
 
     /// The own Google project page's model (#1887 C4): waits for the other
     /// Google sign-ins, and a connect re-reads the accounts and re-wires the
-    /// daemon.
+    /// daemon; a Cancel only re-reads them.
     func makeOwnGoogleProject(
         makeStreamer: @escaping @MainActor () -> (any CLILineStreaming)?
     ) -> OwnGoogleProjectModel {
@@ -64,6 +67,14 @@ extension AppState {
             guard let self else { return }
             googleAccountsViewModel?.accountAddedElsewhere(daemonPolicy: accountDaemonPolicy)
             reloadCompanies() // the personal bundle Go stored names the group
+        }
+        model.onCancelled = { [weak self] in
+            // A sign-in killed while Go saved leaves what it saved: show it,
+            // refresh only (spec "Cancel lands while the CLI is saving").
+            guard let self else { return }
+            // Quiet: a failed re-read never turns the Cancel into an error.
+            googleAccountsViewModel?.refresh(quiet: true)
+            reloadCompanies()
         }
         return model
     }

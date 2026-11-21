@@ -36,7 +36,8 @@ package final class OwnGoogleProjectModel {
     /// One block of the page under the guide and the drop zone.
     package enum Status: Equatable, Sendable {
         case note(String)
-        case busy(String)
+        /// The sign-in waits in the browser: the waiting line with Cancel.
+        case waiting(SignInWaitCopy)
         case problem(String)
     }
 
@@ -57,7 +58,33 @@ package final class OwnGoogleProjectModel {
     /// A run connected an account: AppState re-reads the accounts and
     /// re-wires the daemon.
     @ObservationIgnored package var onConnected: (() -> Void)?
+    /// Cancel ended a run: AppState re-reads the accounts and companies only
+    /// (no daemon restart), since a kill while Go saves leaves what it saved.
+    @ObservationIgnored package var onCancelled: (() -> Void)?
     @ObservationIgnored private let makeStreamer: @MainActor () -> (any CLILineStreaming)?
+    /// The running sign-in; nil when none runs or Cancel ended it. A run's
+    /// answer lands only while it is still this one.
+    @ObservationIgnored private var run: Run?
+    /// Bumped by every new form (a drop, a reset) and every Connect: a cancelled
+    /// run's late Done shows only while the page is still the form it left.
+    @ObservationIgnored private var formGeneration = 0
+
+    private struct Run {
+        /// Reads the CLI's lines to its end, then waits for its exit.
+        let task: Task<Answer, Never>
+        /// Nil when the CLI cannot be found.
+        let session: (any CLILineSession)?
+    }
+
+    /// What a run's stream left: its last JSON line and why it failed.
+    private struct Answer {
+        var last: String?
+        var failure: String?
+
+        var result: CompanyCheckResult? {
+            last.flatMap { try? JSONDecoder().decode(CompanyCheckResult.self, from: Data($0.utf8)) }
+        }
+    }
 
     /// Go's `company.OwnProjectWeeklyRelogin` (spike S2 still open: false);
     /// the weekly frame ships only when both flip.
@@ -103,6 +130,7 @@ package final class OwnGoogleProjectModel {
     }
 
     private func reset() {
+        formGeneration += 1
         phase = .idle
         notGranted = []
         file = nil
@@ -123,6 +151,7 @@ package final class OwnGoogleProjectModel {
         fileProblem = false
         file = DroppedFile(name: fileName, client: client)
         phase = .idle
+        formGeneration += 1
         return true
     }
 
@@ -141,26 +170,65 @@ package final class OwnGoogleProjectModel {
     package func connect() async {
         guard canConnect, let file else { return }
         phase = .checking
+        formGeneration += 1
+        let args = Self.connectArgs(clientID: file.client.clientID)
         let stdin = Data((file.client.clientSecret + "\n").utf8)
-        var last: String?
-        var failure: String?
-        if let streamer = makeStreamer() {
-            do {
-                for try await line in streamer.lines(args: Self.connectArgs(clientID: file.client.clientID), stdin: stdin) {
-                    let text = line.trimmingCharacters(in: .whitespaces)
-                    if text.hasPrefix("{") { last = text }
-                }
-            } catch {
-                failure = error.localizedDescription
-            }
-        } else {
-            failure = CLIRunnerError.binaryNotFound.localizedDescription
-        }
-        guard let last, let result = try? JSONDecoder().decode(CompanyCheckResult.self, from: Data(last.utf8)) else {
-            phase = .failed(Self.failedLine(failure ?? ""))
+        let session = makeStreamer()?.oneShot(args: args, stdin: stdin)
+        let task = Task { await Self.answer(session) }
+        run = Run(task: task, session: session)
+        let answer = await task.value
+        // Cancel (or Cancel and a new Connect) took the page back: what
+        // this run left is Cancel's to handle.
+        guard run?.task == task else { return }
+        run = nil
+        guard let result = answer.result else {
+            phase = .failed(Self.failedLine(answer.failure ?? ""))
             return
         }
         apply(result)
+    }
+
+    /// **Cancel** on the waiting line: the sign-in stops (the CLI's process
+    /// group is killed) and the page is the form again, with its JSON and no
+    /// error. Once the CLI has ended: a kill while Go was saving leaves what
+    /// it saved, so the lists are re-read (`onCancelled`); a CLI that had
+    /// already exited 0 with its answer is a finished connect and ends as one.
+    package func cancel() {
+        guard isRunning, let old = run else { return }
+        old.session?.terminate()
+        run = nil
+        phase = .idle
+        let generation = formGeneration
+        Task {
+            let answer = await old.task.value
+            // Go prints `ok` only after it saved the account: even a run
+            // killed after that line is a finished connect.
+            guard answer.failure == nil, let result = answer.result, result.result == "ok" else {
+                onCancelled?()
+                return
+            }
+            if formGeneration == generation, phase == .idle {
+                apply(result) // the done page and onConnected
+            } else {
+                onConnected?() // a new form or run owns the page; still re-read and re-wire
+            }
+        }
+    }
+
+    private static func answer(_ session: (any CLILineSession)?) async -> Answer {
+        guard let session else { return Answer(failure: CLIRunnerError.binaryNotFound.localizedDescription) }
+        var answer = Answer()
+        do {
+            for try await line in session.lines {
+                let text = line.trimmingCharacters(in: .whitespaces)
+                if text.hasPrefix("{") { answer.last = text }
+            }
+        } catch {
+            answer.failure = error.localizedDescription
+        }
+        // A killed CLI's stream can end before it is reaped.
+        await session.waitForExit()
+        return answer
     }
 
     /// Refusals that are not Google's verdict on the client: Go's own
@@ -196,11 +264,11 @@ package final class OwnGoogleProjectModel {
     }
 
     /// The line under the drop zone: the unverified-app note before a run,
-    /// the busy line during it, the refusal after a failed one.
+    /// the waiting line during it, the refusal after a failed one.
     package var status: Status {
         switch phase {
         case .idle, .done: .note(Self.unverifiedNote)
-        case .checking: .busy(Self.checkingLine)
+        case .checking: .waiting(.google)
         case .failed(let text): .problem(text)
         }
     }
@@ -255,7 +323,6 @@ extension OwnGoogleProjectModel {
     ]
     package static let unverifiedNote = "The first sign-in shows “Google hasn't verified this app”. Choose Advanced → "
         + "Go to your project: it is your own."
-    package static let checkingLine = CompanySetupWizardModel.checkingGoogle
     package static let connectTitle = "Connect"
     package static let tryAgainTitle = "Try again"
     package static let doneTitle = "Done"

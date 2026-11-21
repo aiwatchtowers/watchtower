@@ -50,9 +50,39 @@ final class AddGoogleAccountViewTests: XCTestCase {
         let view = AddGoogleAccountView(offersGmail: false).environment(appState)
 
         try view.inspect().find(button: "Connect").tap()
-        await vm.addTask?.value
+        await vm.signInTask?.value
         let args = try String(contentsOf: cli.log, encoding: .utf8)
         XCTAssertEqual(args.trimmingCharacters(in: .whitespacesAndNewlines), "google add --app-return --calendar")
+    }
+
+    /// The sheet closes only when its own attempt connected: a Cancel
+    /// pressed in another view (Calendar, the Google detail) ends the
+    /// attempt silently, and the count of connected sign-ins stays put.
+    func testSheetClosesOnlyOnItsOwnConnect() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
+        let stub = try GatedLoginStub()
+        addTeardownBlock { stub.reap() }
+        let vm = GoogleAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter()) { stub.path }
+        vm.loginEnvironment = { [:] }
+
+        let before = vm.connectedSignIns
+        vm.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: "", daemonPolicy: .deferred)
+        let cancelled = try XCTUnwrap(vm.signInTask)
+        _ = try await stub.nextRun(or: cancelled)
+        vm.cancelConnect() // pressed in another view
+        await cancelled.value
+        XCTAssertFalse(vm.isConnecting)
+        XCTAssertNil(vm.error)
+        XCTAssertFalse(AddGoogleAccountView.ownAttemptConnected(before: before, now: vm.connectedSignIns),
+                       "a silent cancel does not close the sheet")
+
+        vm.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: "", daemonPolicy: .deferred)
+        let connected = try XCTUnwrap(vm.signInTask)
+        await stub.release(try await stub.nextRun(or: connected), exitCode: 0)
+        await connected.value
+        XCTAssertTrue(AddGoogleAccountView.ownAttemptConnected(before: before, now: vm.connectedSignIns))
+        XCTAssertFalse(AddGoogleAccountView.ownAttemptConnected(before: before, now: nil))
     }
 
     /// Own projects locked (§5.4): the note names the company's project only.
