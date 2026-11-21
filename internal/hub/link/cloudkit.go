@@ -235,8 +235,10 @@ type retiredCode struct{ nonce, reason string }
 // owner) closes the link with CloseAccountChanged and returns
 // ErrAccountChanged. Otherwise it stores the code like Issue (v4, container,
 // owner_user, data_share, relay_share, transport cloudkit, transports
-// ["cloudkit","relay"]). A pending grace sweep or retry is cancelled: the
-// new code's own close sweeps. A code that cannot be stored closes the link
+// ["cloudkit","relay"]). Once the account and the owner checks pass, a
+// pending grace sweep or retry is cancelled (the new code's own close
+// sweeps) and the last close's refusal is retired; a code refused before
+// that leaves them as they were. A code that cannot be stored closes the link
 // it opened. Issues run one at a time: a second call waits for the one in
 // flight, then issues the newest code (the one that links), as two New code
 // clicks did in Swift — so one issue's close never shuts another's link.
@@ -245,7 +247,6 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 	defer func() { <-c.issueSem }()
 	c.ck.mu.Lock()
 	c.ck.issuing++
-	c.ck.sweepAt, c.ck.sweepTries, c.ck.linkCloseAt, c.ck.linkCloseTries = time.Time{}, 0, time.Time{}, 0
 	epoch := c.ck.accountEpoch
 	c.ck.mu.Unlock()
 	defer func() {
@@ -253,7 +254,6 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 		c.ck.issuing--
 		c.ck.mu.Unlock()
 	}()
-	c.setRetired(retiredCode{}) // the new code retires every open one: their hellos read expired_code
 	account, err := bounded(ctx, c.shareTimeout, s.AccountStatus)
 	if err != nil {
 		log.Printf("hub link: iCloud account unreadable (%s): no code", shareErrorClass(err))
@@ -267,6 +267,12 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 	if owner == "" {
 		return wire.LinkPayload{}, "", ErrOwnerUnknown
 	}
+	// Only a code that will be made ends the last close's waits and refusal:
+	// a refused one leaves both as they were.
+	c.ck.mu.Lock()
+	c.ck.sweepAt, c.ck.sweepTries, c.ck.linkCloseAt, c.ck.linkCloseTries = time.Time{}, 0, time.Time{}, 0
+	c.ck.mu.Unlock()
+	c.setRetired(retiredCode{}) // the new code retires every open one: their hellos read expired_code
 	fields := &cloudKitFields{container: c.container, ownerUser: owner}
 	if data, relay, ok := c.openPublicLink(ctx, s); ok {
 		fields.dataShare, fields.relayShare = &data, &relay
