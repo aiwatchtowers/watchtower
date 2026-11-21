@@ -86,6 +86,12 @@ func paths() []string {
 	return out
 }
 
+// ReadFile returns an embedded file's bytes, p relative to docs/guide
+// ("connect/slack.md").
+func ReadFile(p string) ([]byte, error) {
+	return files.ReadFile(p)
+}
+
 // Pages returns every embedded page except WRITING.md, sorted by path.
 func Pages() []Page {
 	var pages []Page
