@@ -221,4 +221,19 @@ final class GoogleSignInWaitViewTests: XCTestCase {
         XCTAssertTrue(CalendarEventsView.showsSignInFailureAtTop(.section, health: .ok))
         XCTAssertFalse(CalendarEventsView.showsSignInFailureAtTop(nil, health: .ok))
     }
+
+    /// The alert's Reconnect with no CLI to run: the sign-in never starts,
+    /// and its error shows at Calendar's top.
+    func testCalendarTopShowsASignInThatNeverStarted() async throws {
+        let appState = AppState.isolated()
+        let vm = GoogleAccountsViewModel(dbPool: try pool(), daemon: FakeDaemonRestarter()) { nil }
+        await vm.refreshAsync()
+        appState.googleAccountsViewModel = vm
+        let view = CalendarEventsView().environment(appState)
+
+        appState.reconnectGoogleCalendar(accountID: nil)
+        XCTAssertFalse(vm.isConnecting)
+        XCTAssertEqual(vm.failedSignIn, .section)
+        XCTAssertNoThrow(try view.inspect().find(text: GoogleAccountsViewModel.cliNotFound))
+    }
 }

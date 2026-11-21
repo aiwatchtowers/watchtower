@@ -38,11 +38,13 @@ After the fix, the next sync fetches the days the account missed, up to 30 days 
 
 ## A sign-in waits in the browser
 
-A row, section or card says **Waiting for the … sign-in in your browser…** with **Cancel**. A row shows only **Cancel**; a section or card greys out its other buttons. The sign-in waits for the browser page to come back to Watchtower, which never happens when the page shows an error (such as Google's "Access blocked") or you closed it.
+A row, section or card says **Waiting for the … sign-in in your browser…** with **Cancel**. A row shows only **Cancel**; a section or card greys out or hides its other buttons. The sign-in waits for the browser page to come back to Watchtower, which never happens when the page shows an error (such as Google's "Access blocked") or you closed it.
 
-1. Press **Cancel**. The sign-in stops at once, with no error, and the row offers its own button again (**Re-login**, **Sign in again**, **Grant Confluence access**).
+1. Press **Cancel**. The sign-in stops at once, with no error, and its button comes back: **Re-login** or **Sign in again** on a row, **Grant Confluence access** in the Confluence section.
 2. Press that button to try again.
-3. If the browser shows the same error again, your company's admin has to allow the app for your account.
+3. If the browser shows the same error again, check which app the page names:
+   - Google's "Access blocked: … has not passed verification" for Watchtower's own app means the app is still in Google's verification, and no company admin can change that. Try again later, or contact Watchtower support or the person who set Watchtower up for you.
+   - For your company's own app, your company's admin has to add your account to it.
 
 If you pressed **Cancel** just as the sign-in finished, the account may show as connected anyway: that sign-in went through.
 

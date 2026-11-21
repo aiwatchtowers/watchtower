@@ -261,7 +261,7 @@ final class GoogleSignInCancelTests: XCTestCase {
             _ = try await brokenAccount(pool, vm: vm)
             let appState = appState(vm)
 
-            appState.reconnectGoogleCalendar(accountID: accountID)
+            await appState.reconnectGoogleCalendar(accountID: accountID)?.value
             XCTAssertEqual(appState.selectedDestination, .calendar)
             XCTAssertEqual(vm.signIn, .section)
             let run = try XCTUnwrap(vm.signInTask)
@@ -294,6 +294,99 @@ final class GoogleSignInCancelTests: XCTestCase {
         vm.cancelConnect()
         await run.value
         XCTAssertNil(vm.error)
+    }
+
+    /// The flagged account was added after the last read: a fresh read finds
+    /// it, and it re-logs by its id, never the legacy account-#1 login.
+    func testReconnectRereadsBeforeCallingTheAccountGone() async throws {
+        let stub = try stub()
+        let cli = try logging(stub)
+        let pool = try pool()
+        let (vm, _) = makeVM(pool, cli: cli.path)
+        await vm.refreshAsync()
+        XCTAssertTrue(vm.accounts.isEmpty)
+        let id = try await pool.write { db in
+            try TestDatabase.insertGoogleAccount(db, email: "team@acme.example", calendarEnabled: true, status: "error")
+        }
+        let appState = appState(vm)
+
+        let reread = try XCTUnwrap(appState.reconnectGoogleCalendar(accountID: Int(id)))
+        await reread.value
+        XCTAssertEqual(vm.signIn, .account(Int(id)))
+        let run = try XCTUnwrap(vm.signInTask)
+        _ = try await stub.nextRun(or: run)
+        XCTAssertEqual(try args(cli.log), ["google login --account \(id) --app-return --calendar"])
+
+        vm.cancelConnect()
+        await run.value
+        XCTAssertNil(vm.error)
+    }
+
+    /// The fresh read fails: the flagged id is not known to be gone, so it
+    /// re-logs by that id.
+    func testReconnectWhoseRereadFailsReloginsTheFlaggedID() async throws {
+        let stub = try stub()
+        let cli = try logging(stub)
+        let pool = try pool()
+        let (vm, _) = makeVM(pool, cli: cli.path)
+        await vm.refreshAsync()
+        try await pool.write { db in try db.execute(sql: "DROP TABLE google_accounts") }
+        let appState = appState(vm)
+
+        await appState.reconnectGoogleCalendar(accountID: 7)?.value
+        XCTAssertNotNil(vm.readError)
+        XCTAssertEqual(vm.signIn, .account(7))
+        let run = try XCTUnwrap(vm.signInTask)
+        _ = try await stub.nextRun(or: run)
+        XCTAssertEqual(try args(cli.log), ["google login --account 7 --app-return"])
+
+        vm.cancelConnect()
+        await run.value
+        XCTAssertNil(vm.error)
+    }
+
+    // MARK: - Sign-ins that never start
+
+    /// No CLI, or another sign-in runs: the error is marked as the place's
+    /// failed sign-in, so Calendar's top line can show it.
+    func testRefusedSignInsMarkTheirPlace() async throws {
+        let pool = try pool()
+        let vm = GoogleAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter()) { nil }
+        let account = try await brokenAccount(pool, vm: vm)
+
+        vm.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: "")
+        XCTAssertEqual(vm.error, GoogleAccountsViewModel.cliNotFound)
+        XCTAssertEqual(vm.failedSignIn, .section)
+        vm.relogin(account)
+        XCTAssertEqual(vm.failedSignIn, .account(account.id))
+        vm.reloginLegacyCalendar()
+        XCTAssertEqual(vm.failedSignIn, .section)
+
+        vm.isConnecting = true
+        vm.relogin(account)
+        XCTAssertEqual(vm.error, GoogleAccountsViewModel.busyMessage)
+        XCTAssertEqual(vm.failedSignIn, .account(account.id))
+        vm.refuseBusy(place: .section)
+        XCTAssertEqual(vm.error, GoogleAccountsViewModel.busyMessage)
+        XCTAssertEqual(vm.failedSignIn, .section)
+    }
+
+    // MARK: - The own Google project's Cancel
+
+    /// The own project's Cancel re-reads the accounts quietly: a failed read
+    /// shows no error.
+    func testOwnProjectCancelRereadsQuietly() async throws {
+        let pool = try pool()
+        let (vm, _) = makeVM(pool, cli: "/usr/bin/false")
+        await vm.refreshAsync()
+        try await pool.write { db in try db.execute(sql: "DROP TABLE google_accounts") }
+        let appState = appState(vm)
+        let model = appState.makeOwnGoogleProject { nil }
+
+        model.onCancelled?()
+        await vm.refreshTask?.value
+        XCTAssertNotNil(vm.readError)
+        XCTAssertNil(vm.error, "a cancel is silent")
     }
 
     // MARK: - Cancel between the launch check and the launch

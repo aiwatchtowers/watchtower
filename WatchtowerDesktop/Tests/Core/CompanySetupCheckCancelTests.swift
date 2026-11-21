@@ -158,16 +158,18 @@ final class CompanySetupCheckCancelTests: XCTestCase {
         cli.release(check, [])
     }
 
+    /// A draft with both Google and Atlassian.
+    private let bothDraft = #"{"company":"Acme","services":["google","atlassian"],"step":"atlassian","#
+        + #""started_at":"2026-11-17T09:00:00Z","slack":{},"#
+        + #""google":{"client_id":"1234-abcd.apps.googleusercontent.com","client_secret":"sample-secret"},"#
+        + #""atlassian":{"client_id":"9f3a8d0e4b7c21","client_secret":"sample-secret","#
+        + #""site":"https://acme.atlassian.net","confluence":true}}"#
+
     /// Cancel on one vendor's check while another still signs in under the
     /// company name: the name stays.
     func testCancelKeepsTheNameWhileAnotherCheckRuns() async {
-        let both = #"{"company":"Acme","services":["google","atlassian"],"step":"atlassian","#
-            + #""started_at":"2026-11-17T09:00:00Z","slack":{},"#
-            + #""google":{"client_id":"1234-abcd.apps.googleusercontent.com","client_secret":"sample-secret"},"#
-            + #""atlassian":{"client_id":"9f3a8d0e4b7c21","client_secret":"sample-secret","#
-            + #""site":"https://acme.atlassian.net","confluence":true}}"#
         let cli = CompanyScriptedCLI()
-        cli.on(["company", "draft", "show"], [#"{"state":"ok","draft":"# + both + #","bad_file":"","checked_vendors":[]}"#])
+        cli.on(["company", "draft", "show"], [#"{"state":"ok","draft":"# + bothDraft + #","bad_file":"","checked_vendors":[]}"#])
         let model = Model(streamer: cli, slack: SlackAppSetupModel(streamer: cli, mode: .wizard))
         await model.open()
         let google = ["company", "check", "google"]
@@ -188,6 +190,42 @@ final class CompanySetupCheckCancelTests: XCTestCase {
         cli.release(google, [])
         await googleRun.value
         cli.release(check, [])
+    }
+
+    /// Cancel on Google, then Atlassian's check starts before the re-read
+    /// answers: Go's Google mark still lands (another vendor's check never
+    /// drops it), Atlassian keeps running, and the name stays.
+    func testRereadLandsWhileAnotherVendorsCheckStarts() async {
+        let cli = CompanyScriptedCLI()
+        cli.on(["company", "draft", "show"], [#"{"state":"ok","draft":"# + bothDraft + #","bad_file":"","checked_vendors":[]}"#])
+        let model = Model(streamer: cli, slack: SlackAppSetupModel(streamer: cli, mode: .wizard))
+        await model.open()
+        let google = ["company", "check", "google"]
+        let show = ["company", "draft", "show"]
+        cli.hold(google)
+        let googleRun = Task { await model.check(.google) }
+        await cli.waitFor(google)
+        cli.hold(show)
+        model.cancelCheck(.google)
+        await cli.waitFor(show, count: 2)
+        await googleRun.value
+        cli.release(google, []) // the cancelled child's held stream
+
+        cli.hold(check)
+        let atlassianRun = Task { await model.check(.atlassian) }
+        await cli.waitFor(check)
+        let stored = bothDraft.replacingOccurrences(of: #""company":"Acme","#, with: #""company":"Acme","slug":"acme","#)
+        cli.release(show, [#"{"state":"ok","draft":"# + stored + #","bad_file":"","checked_vendors":["google"]}"#])
+        await model.rereadAfterCancel?.value
+
+        XCTAssertTrue(model.isChecked(.google), "Go's mark lands")
+        XCTAssertNil(model.checks[.google])
+        XCTAssertEqual(model.checks[.atlassian], .running)
+        XCTAssertEqual(model.checkWait(.atlassian), .atlassian)
+        XCTAssertEqual(model.draft.company, "Acme")
+
+        cli.release(check, [])
+        await atlassianRun.value
     }
 
     /// The re-read waits for the killed child's exit: Go may still be

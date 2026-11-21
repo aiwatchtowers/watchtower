@@ -72,7 +72,8 @@ extension AppState {
             // A sign-in killed while Go saved leaves what it saved: show it,
             // refresh only (spec "Cancel lands while the CLI is saving").
             guard let self else { return }
-            googleAccountsViewModel?.refresh()
+            // Quiet: a failed re-read never turns the Cancel into an error.
+            googleAccountsViewModel?.refresh(quiet: true)
             reloadCompanies()
         }
         return model
