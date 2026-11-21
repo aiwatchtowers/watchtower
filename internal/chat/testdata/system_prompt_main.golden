@@ -292,6 +292,12 @@ Connect with an agent
 - Connect Confluence with the assistant (connect/confluence.md)
 - Connect Linear with the assistant (connect/linear.md)
 - Connect a Quick Connection with the assistant (connect/quick-connections.md)
+- Connect your own Google project with the assistant (connect/own-google-project.md)
+- Set up your company's Slack app with the assistant (connect/company-slack.md)
+- Set up your company's Google app with the assistant (connect/company-google.md)
+- Set up your company's Atlassian app with the assistant (connect/company-atlassian.md)
+- Set up your company's Linear app with the assistant (connect/company-linear.md)
+- Set up your company's Microsoft 365 app with the assistant (connect/company-microsoft.md)
 
 Reference
 - Settings (reference/settings.md)

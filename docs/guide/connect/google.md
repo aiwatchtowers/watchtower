@@ -12,7 +12,7 @@ Press **Connect with Claude** (or Codex) in **Connections → Google** and the a
 
 - Watchtower stays open on this Mac: Google's sign-in returns to it on `127.0.0.1`.
 - You can sign in to the Google account.
-- Watchtower's shared Google app connects Calendar only. Gmail needs your company's Google project (open your company's Watchtower link) or your own: Connect your own Google project with the assistant.
+- Watchtower's shared Google app connects Calendar only. Gmail needs your company's Google project (open your company's Watchtower link) or your own: [Connect your own Google project with the assistant](own-google-project.md).
 - Your organization's policy allows Google. A blocked Google shows **Blocked by your organization** and the assistant cannot connect it.
 - Google's sign-in page is yours alone. The assistant reads only support.google.com. It leaves any other page and stops.
 
@@ -29,7 +29,7 @@ The assistant's panel always offers **Set up by hand**, which opens **Connection
 
 - **Blocked by your organization** (`connect_start` answers `policy`). Your organization does not allow Google. Ask your IT team.
 - **"Another connection is already in progress."** (`busy`). Another Google sign-in is running, from the panel or a sheet. Wait for it, or cancel it, then start again.
-- **"gmail needs your company's or your own Google project".** Watchtower's shared app asks for Calendar only. Connect Calendar alone, then open your company's Watchtower link or use your own Google project.
+- **"gmail needs your company's or your own Google project".** Watchtower's shared app asks for Calendar only. Connect Calendar alone, then open your company's Watchtower link or use [your own Google project](own-google-project.md).
 - **The sign-in page was closed, or the wait ran out** (`timeout`). Nothing was connected. Start again.
 - **"Connect failed" with a message.** The assistant reads you the message. Try again, or use **Set up by hand**.
 

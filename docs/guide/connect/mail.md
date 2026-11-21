@@ -6,7 +6,7 @@ Press **Connect with Claude** (or Codex) in **Connections → Email** and the as
 
 - Mail sent to you as attention items in Catch Up, the briefing and the Inbox's **Waiting for me** ([Mail](../features/mail.md)).
 - Several mailboxes: run it once per account.
-- Gmail connects through Google instead: [Connect Google with the assistant](google.md) or your own Google project.
+- Gmail connects through Google instead: [Connect Google with the assistant](google.md) or [your own Google project](own-google-project.md).
 
 ## Before you start
 

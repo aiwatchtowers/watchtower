@@ -10,7 +10,7 @@ Press **Connect with Claude** (or Codex) in **Connections → Jira** and the ass
 ## Before you start
 
 - Watchtower stays open on this Mac: Atlassian's sign-in returns to it on `127.0.0.1`.
-- Your company's Atlassian app is on this Mac: **Connections → Jira** offers **Connect with <company>'s Atlassian app**. Without one, open your company's Watchtower link, set it up with Connect your company's Atlassian app with the assistant, or connect by hand with an API token.
+- Your company's Atlassian app is on this Mac: **Connections → Jira** offers **Connect with <company>'s Atlassian app**. Without one, open your company's Watchtower link, set it up with [Connect your company's Atlassian app with the assistant](company-atlassian.md), or connect by hand with an API token.
 - You can sign in to Atlassian with an account that reaches the company's site.
 - Your organization's policy allows Jira. A blocked Jira shows **Blocked by your organization** and the assistant cannot connect it.
 - Atlassian's sign-in page is yours alone. The assistant reads only support.atlassian.com. It leaves any other page and stops.
