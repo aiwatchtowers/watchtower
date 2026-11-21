@@ -911,8 +911,11 @@ package final class CompanySetupWizardModel {
             guard generation == started, checkEpoch == epoch else { return }
             let line = await lastJSONLine(["company", "draft", "show", "--json"], stdin: nil)
             guard generation == started, checkEpoch == epoch else { return }
-            if let line, let show = try? JSONDecoder().decode(CompanyDraftShow.self, from: Data(line.utf8)),
-               show.state == "ok", let read = show.draft {
+            // An unanswered or unreadable re-read leaves open whether Go stored
+            // the company: the name stays (released only on a read that says).
+            guard let line, let show = try? JSONDecoder().decode(CompanyDraftShow.self, from: Data(line.utf8)),
+                  show.state == "ok" || show.state == "none" else { return }
+            if let read = show.draft {
                 landed(v, read: read, checked: show.checkedVendors.contains(v.rawValue), values: run.values)
             }
             // Another vendor's check may still sign in under the name.
