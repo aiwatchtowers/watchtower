@@ -175,26 +175,33 @@ package final class OwnGoogleProjectModel {
     /// **Cancel** on the waiting line: the sign-in stops (cancelling the
     /// stream kills the CLI's process group) and the page is the form again,
     /// with its JSON and no error. A kill while Go was saving leaves what it
-    /// saved, so the lists are re-read (`onCancelled`).
+    /// saved, so once the CLI has ended the lists are re-read (`onCancelled`).
     package func cancel() {
-        guard isRunning else { return }
-        run?.cancel()
+        guard isRunning, let old = run else { return }
+        old.cancel()
         run = nil
         phase = .idle
-        onCancelled?()
+        // The re-read waits for the killed CLI's end, so its last write shows.
+        Task {
+            _ = await old.value
+            onCancelled?()
+        }
     }
 
     private static func answer(_ streamer: (any CLILineStreaming)?, args: [String], stdin: Data) async -> Answer {
         guard let streamer else { return Answer(failure: CLIRunnerError.binaryNotFound.localizedDescription) }
         var answer = Answer()
+        let session = streamer.oneShot(args: args, stdin: stdin)
         do {
-            for try await line in streamer.lines(args: args, stdin: stdin) {
+            for try await line in session.lines {
                 let text = line.trimmingCharacters(in: .whitespaces)
                 if text.hasPrefix("{") { answer.last = text }
             }
         } catch {
             answer.failure = error.localizedDescription
         }
+        // A cancelled stream ends at once; the run ends when the CLI does.
+        await session.waitForExit()
         return answer
     }
 

@@ -20,6 +20,19 @@ package protocol CLILineStreaming: Sendable {
     /// A long-lived child the caller keeps talking to over stdin
     /// (`slack connect serve`).
     func session(args: [String]) -> any CLILineSession
+    /// `lines(args:stdin:)` as a session, for a caller that must know when
+    /// a run it cancelled has really ended (`waitForExit`): stdin written
+    /// and closed as there, cancelling the consumer kills the group.
+    func oneShot(args: [String], stdin: Data?) -> any CLILineSession
+}
+
+extension CLILineStreaming {
+    package func oneShot(args: [String], stdin: Data?) -> any CLILineSession {
+        let session = session(args: args)
+        if let stdin { session.write(stdin) }
+        session.closeInput()
+        return session
+    }
 }
 
 /// A running child: its stdout lines, its stdin, and its end.

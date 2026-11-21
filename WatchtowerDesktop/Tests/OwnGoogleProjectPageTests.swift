@@ -24,13 +24,14 @@ final class OwnGoogleProjectPageTests: XCTestCase {
         XCTAssertThrowsError(try page.inspect().find(SignInWaitLine.self), "no waiting line before Connect")
 
         let run = Task { await model.connect() }
-        _ = await cli.session(number: 1)
+        let session = await cli.session(number: 1)
         let copy = SignInWaitCopy.google
         XCTAssertNoThrow(try page.inspect().find(SignInWaitLine.self))
         XCTAssertNoThrow(try page.inspect().find(text: copy.line))
         XCTAssertNoThrow(try page.inspect().find(text: copy.hint))
 
         try page.inspect().find(button: copy.cancelTitle).tap()
+        session.exit(code: 1) // the killed CLI ends
         await run.value
         XCTAssertEqual(model.phase, .idle)
         XCTAssertThrowsError(try page.inspect().find(SignInWaitLine.self), "Cancel takes the page back to the form")
