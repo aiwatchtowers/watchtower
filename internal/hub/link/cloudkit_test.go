@@ -1741,3 +1741,59 @@ func TestARefusedCloudKitCodeKeepsTheLastClose(t *testing.T) {
 		t.Errorf("the grace sweep was cancelled by the refused code: %v", got)
 	}
 }
+
+// #1127 review: an abandoned stream's close of its code, interleaved with a
+// newer CloudKit code issued between taking the old code and closing its
+// link, leaves the newer code alone: its public link stays open and the
+// phone waiting under it is not refused.
+func TestAStaleCodeCloseLeavesANewerCloudKitCode(t *testing.T) {
+	r := newCKRig(t)
+	old := r.issueCK()
+	closed, gen, ok := r.c.takeCode(old.Nonce)
+	if !ok {
+		t.Fatal("the old code is not on screen")
+	}
+	newer := r.issueCK() // lands between the take and the close
+	b := newPhone(t)
+	if got, err := r.ckHello(b, newer.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("hello under the newer code: %+v, %v", got, err)
+	}
+	if err := r.c.closeLink(r.ctx, r.s, CloseSheetClosed, closed, gen); err != nil {
+		t.Fatal(err)
+	}
+	if !r.s.isOpen() {
+		t.Error("the stale close shut the newer code's public link")
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(b)) {
+		t.Errorf("waiting after the stale close: %v", ids)
+	}
+}
+
+// #1127 review: a relay code issued after a CloudKit one replaces it: the
+// CloudKit code is off screen (an abandoned stream's close of it refuses
+// nobody waiting on the relay code), and its public link still closes at the
+// next share sweep.
+func TestARelayCodeReplacesTheCloudKitCodeOnScreen(t *testing.T) {
+	r := newCKRig(t)
+	ck := r.issueCK()
+	relayCode := r.issue()
+	b := newPhone(t)
+	if got := r.handle(b, relayCode.Nonce); got.Code == "" {
+		t.Fatalf("hello under the relay code: %+v", got)
+	}
+	if err := r.c.CloseCode(r.ctx, r.s, ck.Nonce, CloseSheetClosed); err != nil {
+		t.Fatal(err)
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(b)) {
+		t.Fatalf("the old CloudKit code's close refused the relay code's request: %v", ids)
+	}
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() {
+		t.Error("the replaced CloudKit code's public link stayed open")
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(b)) {
+		t.Fatalf("the sweep refused the relay code's request: %v", ids)
+	}
+}

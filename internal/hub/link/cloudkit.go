@@ -167,8 +167,12 @@ func (e *AccountError) Unwrap() error { return e.Err }
 // bridge call, and never held while taking Center.mu).
 type ckState struct {
 	mu sync.Mutex
-	// open is the code on screen, nil once it was used, expired or closed.
-	open *openCode
+	// open is the code on screen, nil once it was used, expired or closed,
+	// or replaced by a relay code. codeGen counts the codes issued (relay
+	// and CloudKit): a close scoped to one code (CloseCode) stands down once
+	// a newer one exists.
+	open    *openCode
+	codeGen uint64
 	// issuing counts the IssueCloudKit calls running (the Swift issuing).
 	issuing int
 	// graceEnd: an answering close's grace runs until then.
@@ -280,7 +284,7 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 	}
 	if c.accountMoved(ctx, s, epoch, owner) {
 		log.Printf("hub link: the iCloud account changed while a code was issued: link closed, no code")
-		_ = c.closeLink(ctx, s, CloseAccountChanged, nil)
+		_ = c.closeLink(ctx, s, CloseAccountChanged, nil, 0)
 		return wire.LinkPayload{}, "", ErrAccountChanged
 	}
 	var p wire.LinkPayload
@@ -294,7 +298,7 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 	}
 	if err != nil {
 		// No code links, so the link just opened must not stay open.
-		_ = c.closeLink(ctx, s, CloseIssueFailed, nil)
+		_ = c.closeLink(ctx, s, CloseIssueFailed, nil, 0)
 		return wire.LinkPayload{}, "", err
 	}
 	c.ck.mu.Lock()
@@ -391,7 +395,7 @@ func (c *Center) openPublicLink(ctx context.Context, s transport.Shares) (data, 
 	if err := c.st.WithTx(ctx, markSweepTx); err != nil {
 		return fail("sweep_mark", err)
 	}
-	if written, err := c.setLink(ctx, s, true, CloseRestart); err != nil {
+	if written, err := c.setLink(ctx, s, true, CloseRestart, 0); err != nil {
 		return fail("set_public_link", err)
 	} else if !written {
 		return fail("set_public_link", errSuperseded)
@@ -449,9 +453,11 @@ func writtenAs(open bool) linkWrite {
 // A close yields to a code being issued (no call) unless reason voids that
 // code. written false with no error: the close yielded, or a newer wanted
 // state replaced this one meanwhile; an error: the write failed or timed out.
-func (c *Center) setLink(ctx context.Context, s transport.Shares, open bool, reason CloseReason) (bool, error) {
+// gen non-zero: a close scoped to that code generation, which yields too once
+// a newer code was issued (CloseCode).
+func (c *Center) setLink(ctx context.Context, s transport.Shares, open bool, reason CloseReason, gen uint64) (bool, error) {
 	c.ck.mu.Lock()
-	if !open && c.ck.issuing > 0 && !reason.voidsCode() {
+	if !open && ((c.ck.issuing > 0 && !reason.voidsCode()) || (gen != 0 && c.ck.codeGen != gen)) {
 		c.ck.mu.Unlock()
 		return false, nil
 	}
@@ -573,7 +579,7 @@ func (c *Center) CloseLink(ctx context.Context, s transport.Shares, reason Close
 	closed := c.ck.open
 	c.ck.open = nil
 	c.ck.mu.Unlock()
-	return c.closeLink(ctx, s, reason, closed)
+	return c.closeLink(ctx, s, reason, closed, 0)
 }
 
 // CloseOnStop closes the link of a code still on screen when the hub stops
@@ -591,23 +597,51 @@ func (c *Center) CloseOnStop(ctx context.Context, s transport.Shares) error {
 	return c.CloseLink(ctx, s, CloseSheetClosed)
 }
 
-// CloseCode closes the link of the code nonce (CloseLink with reason) only
-// while it is still the code on screen: a newer code's link stays open.
+// CloseCode closes the link of the code nonce only while it is still the
+// code on screen, and only that code's: it refuses the requests waiting
+// under nonce alone, and once a newer code (relay or CloudKit) was issued
+// meanwhile it leaves the public link and the sweep to that code.
 func (c *Center) CloseCode(ctx context.Context, s transport.Shares, nonce string, reason CloseReason) error {
-	c.ck.mu.Lock()
-	closed := c.ck.open
-	if closed == nil || closed.nonce != nonce {
-		c.ck.mu.Unlock()
+	closed, gen, ok := c.takeCode(nonce)
+	if !ok {
 		return nil
 	}
-	c.ck.open = nil
-	c.ck.mu.Unlock()
-	return c.closeLink(ctx, s, reason, closed)
+	return c.closeLink(ctx, s, reason, closed, gen)
 }
 
-// closeLink is CloseLink once the open code (closed, or nil) was taken.
-func (c *Center) closeLink(ctx context.Context, s transport.Shares, reason CloseReason, closed *openCode) error {
-	if err := c.refuseWaiting(reason); err != nil {
+// takeCode takes the code nonce off screen when it is the one there: the
+// code and the code generation it was taken at.
+func (c *Center) takeCode(nonce string) (*openCode, uint64, bool) {
+	c.ck.mu.Lock()
+	defer c.ck.mu.Unlock()
+	closed := c.ck.open
+	if closed == nil || closed.nonce != nonce {
+		return nil, 0, false
+	}
+	c.ck.open = nil
+	return closed, c.ck.codeGen, true
+}
+
+// stale: a code was issued since generation gen (0: never stale).
+func (c *Center) stale(gen uint64) bool {
+	if gen == 0 {
+		return false
+	}
+	c.ck.mu.Lock()
+	defer c.ck.mu.Unlock()
+	return c.ck.codeGen != gen
+}
+
+// closeLink is CloseLink once the open code (closed, or nil) was taken. gen
+// non-zero scopes it to closed (CloseCode): only the requests under its
+// nonce are refused, and once a newer code exists (or is being issued) the
+// public link and the sweep are left to that code.
+func (c *Center) closeLink(ctx context.Context, s transport.Shares, reason CloseReason, closed *openCode, gen uint64) error {
+	under := ""
+	if gen != 0 && closed != nil {
+		under = closed.nonce
+	}
+	if err := c.refuseWaiting(reason, under); err != nil {
 		log.Printf("hub link: waiting link requests not refused (%s, %s)", reason, shareErrorClass(err))
 	}
 	if !reason.answersLateHellos() {
@@ -622,6 +656,9 @@ func (c *Center) closeLink(ctx context.Context, s transport.Shares, reason Close
 	if closed != nil {
 		c.retire(closed.nonce, reason)
 	}
+	if c.stale(gen) {
+		return nil
+	}
 	pending, err := c.sweepPending()
 	if err != nil {
 		log.Printf("hub link: share sweep mark unreadable (%s)", reason)
@@ -632,7 +669,7 @@ func (c *Center) closeLink(ctx context.Context, s transport.Shares, reason Close
 	c.ck.graceEnd = c.now().Add(c.sweep.AnswerGrace)
 	c.ck.sweepAt, c.ck.sweepTries = c.ck.graceEnd, 0
 	c.ck.mu.Unlock()
-	if _, err := c.setLink(ctx, s, false, reason); err != nil {
+	if _, err := c.setLink(ctx, s, false, reason, gen); err != nil {
 		log.Printf("hub link: share link not closed (%s, %s), retried", reason, shareErrorClass(err))
 		c.ck.mu.Lock()
 		c.ck.linkCloseAt, c.ck.linkCloseTries = c.now().Add(linkCloseRetryDelays[0]), 1
@@ -658,7 +695,7 @@ func (c *Center) SweepShares(ctx context.Context, s transport.Shares) error {
 		}
 		c.ck.open = nil
 		c.ck.mu.Unlock()
-		return c.closeLink(ctx, s, CloseExpired, open)
+		return c.closeLink(ctx, s, CloseExpired, open, 0)
 	}
 	if c.ck.issuing > 0 {
 		c.ck.mu.Unlock()
@@ -709,7 +746,7 @@ func (c *Center) retryLinkClose(ctx context.Context, s transport.Shares, now tim
 		c.ck.mu.Unlock()
 		return nil
 	}
-	_, err := c.setLink(ctx, s, false, CloseRestart)
+	_, err := c.setLink(ctx, s, false, CloseRestart, 0)
 	c.ck.mu.Lock()
 	defer c.ck.mu.Unlock()
 	if err == nil {
@@ -818,7 +855,7 @@ func (c *Center) sweepShares(ctx context.Context, s transport.Shares, reason Clo
 	if yields() {
 		return false, nil
 	}
-	if written, err := c.setLink(ctx, s, false, reason); err != nil {
+	if written, err := c.setLink(ctx, s, false, reason, 0); err != nil {
 		return fail("set_public_link", err)
 	} else if !written {
 		return false, nil // a code being issued keeps its link: its own close sweeps
@@ -1168,8 +1205,8 @@ func (c *Center) removeParticipant(ctx context.Context, s transport.Shares, devi
 }
 
 // refuseWaiting refuses every request still waiting with the close's
-// refusal and removes it.
-func (c *Center) refuseWaiting(reason CloseReason) error {
+// refusal and removes it; under non-empty, only those under that code.
+func (c *Center) refuseWaiting(reason CloseReason, under string) error {
 	c.mu.Lock()
 	defer c.unlock()
 	now := c.now()
@@ -1180,11 +1217,14 @@ func (c *Center) refuseWaiting(reason CloseReason) error {
 			return err
 		}
 		for _, p := range all {
+			if under != "" && p.linkNonce != under {
+				continue
+			}
 			if err := refusePending(tx, p, reason.refusal(), now); err != nil {
 				return err
 			}
+			refused = append(refused, p)
 		}
-		refused = all
 		return nil
 	})
 	if err != nil {
