@@ -205,13 +205,21 @@ type fakeStore struct {
 	agentIDs          []db.AgentSessionID
 	uuidOwners        map[string][]int64
 	idsErr, ownersErr error
+	// afterSessionRead, when set, runs once after the first CleanupSession
+	// read: the database changing between two reads.
+	afterSessionRead func(*fakeStore)
 }
 
 func (s *fakeStore) CleanupSession(_ context.Context, id int64) (SessionInfo, error) {
 	if id != s.session.ID {
 		return SessionInfo{}, db.ErrTerminalSessionNotFound
 	}
-	return s.session, nil
+	out := s.session
+	if s.afterSessionRead != nil {
+		s.afterSessionRead(s)
+		s.afterSessionRead = nil
+	}
+	return out, nil
 }
 
 func (s *fakeStore) SessionWorktrees(context.Context, int64) ([]db.SessionWorktree, error) {

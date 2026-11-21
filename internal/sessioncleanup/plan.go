@@ -44,7 +44,26 @@ type Request struct {
 	LiveSessions                        []int64
 	DeclaredWorktrees, DeclaredBranches []string
 	NoSize                              bool
-	Now                                 time.Time
+	// PruneBuilds lets an apply that names no item, of a session that
+	// ended (finished or being deleted), outside a terminal session,
+	// delete the build output of the worktrees it keeps for their work
+	// (#2131, builds.go). Ignored anywhere else.
+	PruneBuilds bool
+	// NoTerminate: the apply signals no process; a worktree with an orphan
+	// in it is kept (process_running), as in a sweep. The daemon's
+	// automatic apply sets it (#2131): no owner action asked for it.
+	NoTerminate bool
+	// RequireEnded: the apply acts only while the session's finish stands
+	// and it is not being deleted — checked on the facts read under the
+	// repository locks, and again before each removal and prune; a session
+	// resumed since it was listed loses nothing. The automatic apply sets
+	// it (#2131).
+	RequireEnded bool
+	// BuildsChecked are worktree roots whose build folders an earlier
+	// automatic apply, since the session's finish, already found nothing
+	// left to delete in: the prune does not walk them again.
+	BuildsChecked []string
+	Now           time.Time
 	// Observer hears the evaluation (and an apply) as it goes; nil = no
 	// events. Apply's re-checks never report.
 	Observer Observer
@@ -61,6 +80,9 @@ type Request struct {
 	// staleUnder are the part's other bench folders over the same
 	// repository: their stale LaunchServices entries are listed too.
 	staleUnder []string
+	// scope is the folder set Apply read once and locked (repoScope); nil
+	// = read here as before (a plan).
+	scope *repoScope
 }
 
 // builder carries one evaluation's facts.
@@ -196,8 +218,14 @@ func (b *builder) loadSession(ctx context.Context) error {
 // #2003), a sweep part's folder, else the workbench's home folder.
 func (b *builder) loadRepo(ctx context.Context, g gitCmd) error {
 	folder := b.session.Folder
+	if b.req.scope != nil && !b.req.Sweep {
+		folder = b.req.scope.sessionFolder // the folder Apply locked
+	}
 	if folder == "" {
 		folder = b.req.folder
+	}
+	if folder == "" && b.req.scope != nil {
+		folder = b.req.scope.home
 	}
 	if folder == "" {
 		home, err := b.deps.DB.WorkbenchFolder(ctx, b.req.WorkbenchID)

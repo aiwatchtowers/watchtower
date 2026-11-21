@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 const ledgerAt = "2026-10-12T12:00:00.000Z"
@@ -461,5 +462,45 @@ func TestSessionLedgerCwdWritersOnMigratedSchema(t *testing.T) {
 	m, err := d.WorkbenchSessionWorktrees(ctx, wb)
 	if err != nil || len(m[root]) != 1 || m[root][0] != id {
 		t.Fatalf("WorkbenchSessionWorktrees = %v, %v; want %s → [%d]", m, err, root, id)
+	}
+}
+
+// TestFinishedSessionsForCleanup lists finished agent rows of a workbench
+// since the given time, not being deleted, never-cleaned first (#2131).
+func TestFinishedSessionsForCleanup(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	row := func(uuid string) int64 { return newAgentStateRow(t, d, wb, "claude", uuid) }
+	set := func(id int64, sql string, args ...any) {
+		t.Helper()
+		if _, err := d.Exec(`UPDATE terminal_sessions SET `+sql+` WHERE id = ?`, append(args, id)...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cleaned := row("11111111-1111-4111-8111-111111111111")
+	set(cleaned, `finished_at = ?, cleanup_at = ?, cleanup_result = '{}'`,
+		AgentStateStamp(now.Add(-2*time.Hour)), AgentStateStamp(now.Add(-time.Hour)))
+	never := row("22222222-2222-4222-8222-222222222222")
+	set(never, `finished_at = ?`, AgentStateStamp(now.Add(-3*time.Hour)))
+	old := row("33333333-3333-4333-8333-333333333333")
+	set(old, `finished_at = ?`, AgentStateStamp(now.Add(-30*24*time.Hour)))
+	deleting := row("44444444-4444-4444-8444-444444444444")
+	set(deleting, `finished_at = ?, delete_requested_at = ?`, AgentStateStamp(now), now.Format(time.RFC3339))
+	row("55555555-5555-4555-8555-555555555555") // not finished
+
+	got, err := d.FinishedSessionsForCleanup(ctx, now.Add(-14*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].SessionID != never || got[1].SessionID != cleaned {
+		t.Fatalf("got %+v", got)
+	}
+	if got[0].WorkbenchID != wb || !got[0].CleanupAt.IsZero() || !got[0].FinishedAt.Equal(now.Add(-3*time.Hour)) {
+		t.Fatalf("never-cleaned row %+v", got[0])
+	}
+	if !got[1].CleanupAt.Equal(now.Add(-time.Hour)) || got[1].CleanupResult != "{}" {
+		t.Fatalf("cleaned row %+v", got[1])
 	}
 }

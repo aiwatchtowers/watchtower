@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/sessioncleanup"
 )
 
@@ -75,7 +76,48 @@ var cleanupDeps = func(database *db.DB) sessioncleanup.Deps {
 		Results: database,
 		// The projects directory the session feed reads (sessionfeed.Dirs).
 		ClaudeProjects: func() string { return sessioncleanup.ClaudeProjectsDir(agentsClaudeDir()) },
+		Lock:           workbenchCleanupLock,
 	}
+}
+
+// cleanupLockWait bounds how long an apply waits for another cleanup of
+// the same repository (the daemon's automatic one, #2131) to end: well
+// under the Desktop's 10-minute limit on its background apply.
+const cleanupLockWait = 5 * time.Minute
+
+// cleanupLockNotice is the stderr line of an apply that has to wait.
+const cleanupLockNotice = "watchtower: waiting for another cleanup of this repository to finish…"
+
+// workbenchCleanupLock takes the repository's cross-process cleanup lock
+// beside the active workspace's database (sessioncleanup.LockPath). When
+// another cleanup holds it, it says so on stderr once and waits at most
+// cleanupLockWait.
+func workbenchCleanupLock(ctx context.Context, repo string) (func(), error) {
+	cfg, err := loadWorkbenchCLIConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	return waitCleanupLock(ctx, sessioncleanup.LockPath(cfg.DBPath(), repo), os.Stderr, cleanupLockWait)
+}
+
+// waitCleanupLock takes the lock at path at once when it is free; else it
+// writes cleanupLockNotice to notice and waits up to wait.
+func waitCleanupLock(ctx context.Context, path string, notice io.Writer, wait time.Duration) (func(), error) {
+	unlock, ok, err := fsutil.TryLockFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("taking the cleanup lock: %w", err)
+	}
+	if ok {
+		return unlock, nil
+	}
+	fmt.Fprintln(notice, cleanupLockNotice)
+	wctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	unlock, err = fsutil.LockFile(wctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("another cleanup of this repository is still running: %w", err)
+	}
+	return unlock, nil
 }
 
 func runWorkbenchCleanup(cmd *cobra.Command, _ []string) error {
@@ -168,6 +210,10 @@ func cleanupRequest(f cleanupFlags, sessionGiven bool, lookupEnv func(string) (s
 	req := sessioncleanup.Request{
 		WorkbenchID: f.workbench, Sweep: f.sweep, CallerSessionID: caller, LiveSessions: f.liveSessions,
 		DeclaredWorktrees: f.worktrees, DeclaredBranches: f.branches, NoSize: f.noSize,
+		// An apply that names no item, of an ended session, outside a
+		// terminal session, also drops the build output of the worktrees
+		// it keeps (#2131); sessioncleanup checks the rest.
+		PruneBuilds: f.apply && len(f.items) == 0,
 	}
 	if f.sweep {
 		return req, nil
