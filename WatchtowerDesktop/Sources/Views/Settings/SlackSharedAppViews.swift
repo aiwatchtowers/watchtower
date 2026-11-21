@@ -85,11 +85,19 @@ struct SlackWorkspacesAddRow: View {
     let section: SlackModePresentation.ConnectSection?
     var blocked = false
     var addDisabled = false
+    /// The connect assistant's **Connect with <harness>** (agent connect
+    /// spec §7), first and only where the row offers Add: the agent offers
+    /// no more than the manual path. It waits while a sign-in runs.
+    var agent: (harness: ConnectHarness, open: () -> Void)?
     let add: () -> Void
     let openFold: () -> Void
 
     var body: some View {
         HStack(spacing: Spacing.regular) {
+            if section?.showsAddAccount ?? true, let agent {
+                ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(agent.harness), action: agent.open)
+                    .disabled(addDisabled)
+            }
             if section?.showsAddAccount ?? true {
                 Button("Add Slack Workspace", action: add)
                     .buttonStyle(.kitSecondary)

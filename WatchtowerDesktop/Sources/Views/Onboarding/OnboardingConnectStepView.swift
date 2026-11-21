@@ -410,10 +410,11 @@ struct OnboardingConnectSourceRow: View {
                     .accessibilityLabel("More for \(title)")
                 }
             } else if let agent {
-                ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(agent.harness), action: agent.open)
-                Button(ConnectAssistantPresentation.connectByHand, action: connect)
-                    .buttonStyle(.kitQuiet)
-                    .disabled(!available)
+                // Side by side, else stacked: the panel beside the step narrows it.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Spacing.regular) { agentPair(agent) }
+                    VStack(alignment: .trailing, spacing: Spacing.small) { agentPair(agent) }
+                }
             } else {
                 Button(ConnectAssistantPresentation.connectByHand, action: connect)
                     .disabled(!available)
@@ -422,5 +423,13 @@ struct OnboardingConnectSourceRow: View {
         .padding(.horizontal, Spacing.medium)
         .padding(.vertical, Spacing.regular)
         .card()
+    }
+
+    @ViewBuilder
+    private func agentPair(_ agent: (harness: ConnectHarness, open: () -> Void)) -> some View {
+        ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(agent.harness), action: agent.open)
+        Button(ConnectAssistantPresentation.connectByHand, action: connect)
+            .buttonStyle(.kitQuiet)
+            .disabled(!available)
     }
 }

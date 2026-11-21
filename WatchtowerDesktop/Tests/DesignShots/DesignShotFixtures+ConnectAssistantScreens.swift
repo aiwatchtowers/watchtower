@@ -20,6 +20,10 @@ enum ConnectAssistantScreenFixtures {
             },
             DesignShot(name: "connect-onboarding-step", size: NSSize(width: 860, height: 0)) {
                 AnyView(OnboardingConnectAgentScene(harness: .fixture("claude")))
+            },
+            // The step beside the 380 pt panel in the 800 pt minimum window: the pair stacks.
+            DesignShot(name: "connect-onboarding-step-narrow", size: NSSize(width: 420, height: 0)) {
+                AnyView(OnboardingConnectAgentScene(harness: .fixture("claude")))
             }
         ]
     }

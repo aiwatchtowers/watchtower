@@ -272,13 +272,16 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
 
     private func startConnect(_ target: SlackConnectTarget) -> Result<String, ConnectDriverError> {
         guard let flow = connectFlow else { return .failure(.failed(Self.listenerMissing)) }
-        guard flow.start(target) else { return .failure(.busy) }
+        // The panel shows this run, so no flow sheet goes up over it.
+        guard flow.start(target, byAssistant: true) else { return .failure(.busy) }
         let id = begin(.connect(target))
         Task { [weak self] in
             // `isRunning` stays true after a Cancel until the child answers
             // the start (observed: `cancelAfterStart`).
             await ObservedWait { !flow.isRunning }.wait()
             self?.connectEnded(id, step: flow.step)
+            // The result is the panel's to show: no sheet waits for its Done.
+            if flow.startedByAssistant { flow.dismiss() }
         }
         return .success(id)
     }

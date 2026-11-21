@@ -244,6 +244,39 @@ final class SlackConnectDriverTests: XCTestCase {
         XCTAssertEqual(rig.child.writtenLines, [])
     }
 
+    /// A sign-in the assistant starts shows in its panel, not as the flow
+    /// sheet over it: neither host (the onboarding Connect step, the Slack
+    /// detail) presents one, and its end leaves the flow idle (no sheet
+    /// waits for Done). A manual start and an incoming link keep the sheet.
+    func testAssistantFlowShowsNoSheetInEitherHost() async {
+        let rig = await makeRig()
+        let hostsShowSheet: () -> (onboarding: Bool, detail: Bool) = {
+            (OnboardingConnectStepView.sheet(nil, flowShowsSheet: rig.flow.showsSheet) != nil,
+             SlackConnectionDetail.showsConnectSheet(flow: rig.flow, setupPresented: false))
+        }
+        _ = await rig.driver.start(options: ["code": code])
+        XCTAssertTrue(rig.flow.isRunning)
+        XCTAssertTrue(rig.flow.startedByAssistant)
+        XCTAssertFalse(hostsShowSheet().onboarding)
+        XCTAssertFalse(hostsShowSheet().detail)
+        rig.emit(.browser(flow: "f1"))
+        await untilObserved { if case .browser = rig.flow.step { true } else { false } }
+        XCTAssertFalse(hostsShowSheet().onboarding, "the browser step stays the panel's")
+        XCTAssertFalse(hostsShowSheet().detail)
+        rig.emit(.connected(SlackConnectedAccount(flow: "f1", accountID: 3, teamID: "T0ACME", teamName: "Acme", reboundFrom: "")))
+        let outcome = await rig.driver.wait(flowID: "flow-1")
+        XCTAssertEqual(outcome, .connected(account: "Acme"))
+        await untilObserved { rig.flow.step == .idle }
+        XCTAssertFalse(rig.flow.startedByAssistant)
+
+        // A manual start (the connect section's paste) keeps today's sheet.
+        rig.flow.pasteText = code
+        XCTAssertTrue(rig.flow.connectPasted())
+        XCTAssertFalse(rig.flow.startedByAssistant)
+        XCTAssertTrue(hostsShowSheet().onboarding)
+        XCTAssertTrue(hostsShowSheet().detail)
+    }
+
     func testCancelEndsOnlyTheNamedFlow() async {
         let rig = await makeRig()
         _ = await rig.driver.start(options: ["code": code])

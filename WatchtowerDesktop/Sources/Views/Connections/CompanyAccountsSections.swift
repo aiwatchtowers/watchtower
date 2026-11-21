@@ -81,13 +81,15 @@ struct CompanyAccountsSections<Row: View>: View {
 
     @ViewBuilder
     private func buttonRow(_ actions: [DetailAction]) -> some View {
-        if let agent, let harness = agent.harness(vendorService) {
-            ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(harness)) { agent.open(vendorService) }
+        // A source the organization blocks offers no agent button (spec §6).
+        if !blocked, let agent, let service = vendorService, let harness = agent.harness(service) {
+            ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(harness)) { agent.open(service) }
                 .disabled(busy)
         }
         ForEach(actions) { action in
             DetailActionButton(action: action, disabled: busy, blocked: blocked) { perform(action.kind) }
-            if action.kind == .setUpForCompany, let agent, let harness = agent.harness(AppState.companyConnectService) {
+            if action.kind == .setUpForCompany, !blocked, let agent,
+               let harness = agent.harness(AppState.companyConnectService) {
                 ConnectAgentButton(title: ConnectAssistantPresentation.setUpCompanyWith(harness)) {
                     agent.open(AppState.companyConnectService)
                 }
@@ -97,9 +99,14 @@ struct CompanyAccountsSections<Row: View>: View {
         if busy { ProgressView().controlSize(.small) }
     }
 
-    /// The connect service of this detail's vendor.
-    private var vendorService: String {
-        vendor == .google ? ConnectionService.google.rawValue : ConnectionService.jira.rawValue
+    /// The connect service of this detail's vendor; nil for a vendor these
+    /// sections draw no agent button for.
+    private var vendorService: String? {
+        switch vendor {
+        case .google: ConnectionService.google.rawValue
+        case .atlassian: ConnectionService.jira.rawValue
+        case .slack, .linear, .microsoft: nil
+        }
     }
 }
 

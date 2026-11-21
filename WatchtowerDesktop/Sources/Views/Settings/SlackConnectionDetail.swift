@@ -163,9 +163,15 @@ struct SlackConnectionDetail: View {
     }
 
     private var connectSheetShown: Binding<Bool> {
-        // The setup sheet mirrors its admin connect as a step: no second sheet over it.
-        Binding(get: { (appState.slackConnectFlow?.showsSheet ?? false) && !appState.slackAppSetup.isPresented },
+        Binding(get: { Self.showsConnectSheet(flow: appState.slackConnectFlow, setupPresented: appState.slackAppSetup.isPresented) },
                 set: { _ in })
+    }
+
+    /// The flow's sheet is up: a step to show, not the connect assistant's
+    /// own run (its panel shows it), and no setup sheet, which mirrors its
+    /// admin connect as a step: no second sheet over it.
+    static func showsConnectSheet(flow: SlackConnectFlowModel?, setupPresented: Bool) -> Bool {
+        (flow?.showsSheet ?? false) && !setupPresented
     }
 
     /// The flow's sheet; its buttons drive the flow (no swipe-away: Cancel
@@ -479,17 +485,17 @@ struct SlackConnectionDetail: View {
             SlackRevokeNoticeLine(text: notice)
         }
 
-        HStack(spacing: Spacing.regular) {
-            ConnectAgentDetailButton(service: .slack, disabled: vm.isConnecting || appState.connectFlowRunning)
-            SlackWorkspacesAddRow(
-                section: connectPresentation, blocked: sourceBlocked,
-                addDisabled: vm.isConnecting || appState.connectFlowRunning,
-                add: { showAddSlackAccountSheet = true },
-                openFold: {
-                    connectExpanded = true
-                    connectFieldFocused = true
-                })
-        }
+        SlackWorkspacesAddRow(
+            section: connectPresentation, blocked: sourceBlocked,
+            addDisabled: vm.isConnecting || appState.connectFlowRunning,
+            agent: appState.connectAssistantButton(for: ConnectionService.slack.rawValue).map { harness in
+                (harness, { appState.openConnectAssistant(service: ConnectionService.slack.rawValue) })
+            },
+            add: { showAddSlackAccountSheet = true },
+            openFold: {
+                connectExpanded = true
+                connectFieldFocused = true
+            })
     }
 
     /// The dictionary editor lives only on the Reactions built-in's card (ask #366, C3).

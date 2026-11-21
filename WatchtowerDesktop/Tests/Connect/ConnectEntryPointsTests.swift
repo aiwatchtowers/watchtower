@@ -265,7 +265,7 @@ final class ConnectEntryPointsTests: XCTestCase {
         state.openConnectAssistant(service: "company")
         let session = try XCTUnwrap(state.connectAssistants.loaded("company"))
         XCTAssertEqual(session.harness.id, "codex")
-        let turn = await startRun(session, ai: ai)
+        let turn = try await startRun(session, ai: ai)
         ai.emit(.failure(ChatSessionError(turnID: "t", code: .rateLimit, message: "You've hit your usage limit",
                                           retryable: false, reason: "quota_exhausted")), call: turn)
         ai.finish(call: turn)
@@ -301,7 +301,7 @@ final class ConnectEntryPointsTests: XCTestCase {
         install(ai: ai, in: state)
         state.openConnectAssistant(service: "google_own_project")
         let own = try XCTUnwrap(state.connectAssistants.loaded("google_own_project"))
-        _ = await startRun(own, ai: ai)
+        _ = try await startRun(own, ai: ai)
         XCTAssertNotEqual(own.state, .empty)
 
         state.connectAssistantService = "google"
@@ -325,7 +325,7 @@ final class ConnectEntryPointsTests: XCTestCase {
         install(ai: ai, in: state, connects: true)
         state.openConnectAssistant(service: "company")
         let session = try XCTUnwrap(state.connectAssistants.loaded("company"))
-        let turn = await startRun(session, ai: ai)
+        let turn = try await startRun(session, ai: ai)
         _ = await session.handle(ConnectWireRequest(id: 1, tool: "connect_start", args: Data("{}".utf8)))
         _ = await session.handle(ConnectWireRequest(id: 2, tool: "connect_wait", args: Data("{}".utf8)))
         await untilObserved { if case .done = session.state { true } else { false } }
@@ -406,7 +406,7 @@ final class ConnectEntryPointsTests: XCTestCase {
         let row = OnboardingConnectSourceRow(
             letter: "J", title: "Jira", subtitle: "Issues and boards · for tasks",
             connect: { connectPressed += 1 }, agent: (.fixture("claude"), { agentPressed += 1 }))
-        XCTAssertEqual(try buttonTitles(row), ["Connect with Claude", "Connect"])
+        XCTAssertEqual(Array(try buttonTitles(row).prefix(2)), ["Connect with Claude", "Connect"])
         try row.inspect().find(button: "Connect with Claude").tap()
         try row.inspect().find(button: "Connect").tap()
         XCTAssertEqual([agentPressed, connectPressed], [1, 1])
@@ -446,7 +446,7 @@ final class ConnectEntryPointsTests: XCTestCase {
         install(ai: ai, in: state)
         state.openConnectAssistant(service: "slack")
         let session = try XCTUnwrap(state.connectAssistantPanelSession)
-        let turn = await startRun(session, ai: ai)
+        let turn = try await startRun(session, ai: ai)
         XCTAssertEqual(session.engine?.isBusy, true)
 
         state.onboarding.goTo(.purpose)
@@ -501,14 +501,41 @@ final class ConnectEntryPointsTests: XCTestCase {
         XCTAssertThrowsError(try page.inspect().find(button: "Connect with Claude"))
     }
 
+    /// A source the organization blocks: its detail offers no agent button,
+    /// not even **Set up for my company with <harness>** (spec §6). The
+    /// Slack add row offers the agent only where it offers Add.
+    func testBlockedDetailAndHiddenSlackAddOfferNoAgent() throws {
+        let agent = ConnectAgentEntry(harness: { _ in .fixture("claude") }, open: { _ in })
+        let blocked = sections(.atlassian, list: .empty("No Jira site yet"), companies: [], agent: agent, blocked: true)
+        let titles = try buttonTitles(blocked)
+        XCTAssertFalse(titles.contains { $0.hasSuffix("with Claude") }, "\(titles)")
+        XCTAssertTrue(titles.contains(CompaniesZoneState.Action.setUpForCompany.title), "today's button stays")
+
+        var pressed = 0
+        let slack = SlackWorkspacesAddRow(section: nil, agent: (.fixture("claude"), { pressed += 1 }), add: {}, openFold: {})
+        XCTAssertEqual(try buttonTitles(slack), ["Connect with Claude", "Add Slack Workspace"])
+        try slack.inspect().find(button: "Connect with Claude").tap()
+        XCTAssertEqual(pressed, 1)
+        let noAdd = SlackModePresentation.ConnectSection(
+            display: .off, portBusy: false, expanded: true, organizationApps: [], accounts: [], builtinApp: false)
+        XCTAssertFalse(noAdd.showsAddAccount)
+        let hidden = SlackWorkspacesAddRow(section: noAdd, agent: (.fixture("claude"), {}), add: {}, openFold: {})
+        XCTAssertFalse(try buttonTitles(hidden).contains("Connect with Claude"))
+    }
+
     private func sections(
-        _ vendor: CompanyVendor, list: AccountsListState, companies: [CompanyRef], agent: ConnectAgentEntry, busy: Bool = false
+        _ vendor: CompanyVendor,
+        list: AccountsListState,
+        companies: [CompanyRef],
+        agent: ConnectAgentEntry,
+        busy: Bool = false,
+        blocked: Bool = false
     ) -> CompanyAccountsSections<EmptyView> {
         CompanyAccountsSections(
             vendor: vendor, banner: nil, list: list,
             emptyActions: CompanyConnectionsPresentation.detailActions(vendor, companies: companies, empty: true),
             addActions: CompanyConnectionsPresentation.detailActions(vendor, companies: companies, empty: false),
-            connect: CompanyGroupConnect { _, _ in }, busy: busy, agent: agent,
+            connect: CompanyGroupConnect { _, _ in }, blocked: blocked, busy: busy, agent: agent,
             perform: { _ in }, bannerAction: { _ in }, tryAgain: {}, row: { _ in EmptyView() })
     }
 
@@ -540,7 +567,14 @@ final class ConnectEntryPointsTests: XCTestCase {
         addTeardownBlock { @MainActor in state.connectAssistant.closeAll() }
     }
 
-    private func startRun(_ session: ConnectAssistantSession, ai: ScriptedAIService) async -> Int {
+    /// Starts a words-only run. A browser harness would first run a probe
+    /// turn that the scripted AI never answers, so `prepared()` would wait
+    /// forever: such a test fails here instead of hanging.
+    private func startRun(_ session: ConnectAssistantSession, ai: ScriptedAIService) async throws -> Int {
+        guard session.harness.capability != .browser else {
+            XCTFail("startRun needs a words-only harness (codex): \(session.harness.id) probes its browser first")
+            throw CancellationError()
+        }
         session.start()
         await session.prepared()
         await session.engine?.started()
