@@ -62,14 +62,28 @@ package final class OwnGoogleProjectModel {
     /// (no daemon restart), since a kill while Go saves leaves what it saved.
     @ObservationIgnored package var onCancelled: (() -> Void)?
     @ObservationIgnored private let makeStreamer: @MainActor () -> (any CLILineStreaming)?
-    /// The running sign-in's stream; nil when none runs or Cancel ended it.
-    /// A run's answer lands only while it is still this one.
-    @ObservationIgnored private var run: Task<Answer, Never>?
+    /// The running sign-in; nil when none runs or Cancel ended it. A run's
+    /// answer lands only while it is still this one.
+    @ObservationIgnored private var run: Run?
+    /// Bumped by every new form (a drop, a reset) and every Connect: a cancelled
+    /// run's late Done shows only while the page is still the form it left.
+    @ObservationIgnored private var formGeneration = 0
+
+    private struct Run {
+        /// Reads the CLI's lines to its end, then waits for its exit.
+        let task: Task<Answer, Never>
+        /// Nil when the CLI cannot be found.
+        let session: (any CLILineSession)?
+    }
 
     /// What a run's stream left: its last JSON line and why it failed.
     private struct Answer {
         var last: String?
         var failure: String?
+
+        var result: CompanyCheckResult? {
+            last.flatMap { try? JSONDecoder().decode(CompanyCheckResult.self, from: Data($0.utf8)) }
+        }
     }
 
     /// Go's `company.OwnProjectWeeklyRelogin` (spike S2 still open: false);
@@ -116,6 +130,7 @@ package final class OwnGoogleProjectModel {
     }
 
     private func reset() {
+        formGeneration += 1
         phase = .idle
         notGranted = []
         file = nil
@@ -136,6 +151,7 @@ package final class OwnGoogleProjectModel {
         fileProblem = false
         file = DroppedFile(name: fileName, client: client)
         phase = .idle
+        formGeneration += 1
         return true
     }
 
@@ -154,44 +170,54 @@ package final class OwnGoogleProjectModel {
     package func connect() async {
         guard canConnect, let file else { return }
         phase = .checking
+        formGeneration += 1
         let args = Self.connectArgs(clientID: file.client.clientID)
         let stdin = Data((file.client.clientSecret + "\n").utf8)
-        let streamer = makeStreamer()
-        let task = Task { await Self.answer(streamer, args: args, stdin: stdin) }
-        run = task
+        let session = makeStreamer()?.oneShot(args: args, stdin: stdin)
+        let task = Task { await Self.answer(session) }
+        run = Run(task: task, session: session)
         let answer = await task.value
-        // Cancel (or Cancel and a new Connect) took the page back: this
-        // run's answer, or the failure its kill caused, is not shown.
-        guard run == task else { return }
+        // Cancel (or Cancel and a new Connect) took the page back: what
+        // this run left is Cancel's to handle.
+        guard run?.task == task else { return }
         run = nil
-        guard let last = answer.last,
-              let result = try? JSONDecoder().decode(CompanyCheckResult.self, from: Data(last.utf8)) else {
+        guard let result = answer.result else {
             phase = .failed(Self.failedLine(answer.failure ?? ""))
             return
         }
         apply(result)
     }
 
-    /// **Cancel** on the waiting line: the sign-in stops (cancelling the
-    /// stream kills the CLI's process group) and the page is the form again,
-    /// with its JSON and no error. A kill while Go was saving leaves what it
-    /// saved, so once the CLI has ended the lists are re-read (`onCancelled`).
+    /// **Cancel** on the waiting line: the sign-in stops (the CLI's process
+    /// group is killed) and the page is the form again, with its JSON and no
+    /// error. Once the CLI has ended: a kill while Go was saving leaves what
+    /// it saved, so the lists are re-read (`onCancelled`); a CLI that had
+    /// already exited 0 with its answer is a finished connect and ends as one.
     package func cancel() {
         guard isRunning, let old = run else { return }
-        old.cancel()
+        old.session?.terminate()
         run = nil
         phase = .idle
-        // The re-read waits for the killed CLI's end, so its last write shows.
+        let generation = formGeneration
         Task {
-            _ = await old.value
-            onCancelled?()
+            let answer = await old.task.value
+            // Go prints `ok` only after it saved the account: even a run
+            // killed after that line is a finished connect.
+            guard answer.failure == nil, let result = answer.result, result.result == "ok" else {
+                onCancelled?()
+                return
+            }
+            if formGeneration == generation, phase == .idle {
+                apply(result) // the done page and onConnected
+            } else {
+                onConnected?() // a new form or run owns the page; still re-read and re-wire
+            }
         }
     }
 
-    private static func answer(_ streamer: (any CLILineStreaming)?, args: [String], stdin: Data) async -> Answer {
-        guard let streamer else { return Answer(failure: CLIRunnerError.binaryNotFound.localizedDescription) }
+    private static func answer(_ session: (any CLILineSession)?) async -> Answer {
+        guard let session else { return Answer(failure: CLIRunnerError.binaryNotFound.localizedDescription) }
         var answer = Answer()
-        let session = streamer.oneShot(args: args, stdin: stdin)
         do {
             for try await line in session.lines {
                 let text = line.trimmingCharacters(in: .whitespaces)
@@ -200,7 +226,7 @@ package final class OwnGoogleProjectModel {
         } catch {
             answer.failure = error.localizedDescription
         }
-        // A cancelled stream ends at once; the run ends when the CLI does.
+        // A killed CLI's stream can end before it is reaped.
         await session.waitForExit()
         return answer
     }
