@@ -284,6 +284,7 @@ Apps & integration
 - Claude Code integration (features/claude-code-integration.md)
 
 Connect with an agent
+- Connect with an agent (features/connect-with-an-agent.md)
 - Connect Slack with the assistant (connect/slack.md)
 - Connect Google with the assistant (connect/google.md)
 - Connect mail with the assistant (connect/mail.md)
