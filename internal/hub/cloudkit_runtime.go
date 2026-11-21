@@ -78,14 +78,19 @@ func (h *hubRuntime) shares() (transport.Shares, bool) {
 	return s, ok
 }
 
-// cloudKitCodes is the shares a link code is issued over: false (a relay
-// code) unless the hub's active transport is CloudKit — a desktop host's
-// switch on CloudKit, or a CloudKit hub — and it has the shares.
-func (h *hubRuntime) cloudKitCodes() (transport.Shares, bool) {
+// cloudKitCodes reports whether a link code is a CloudKit one — the hub's
+// active transport is CloudKit (a desktop host's switch on CloudKit, or a
+// CloudKit hub) — and the shares it is issued over; ok is false when such a
+// hub has no shares (no code then: a relay code would link the phone where
+// the hub does not publish). The active transport can change before the
+// code is stored; that code is then the one the phone is answered on
+// (accepted: a switch takes a person and minutes).
+func (h *hubRuntime) cloudKitCodes() (s transport.Shares, cloudKit, ok bool) {
 	if h.tr.Kind() != transport.KindCloudKit {
-		return nil, false
+		return nil, false, false
 	}
-	return h.shares()
+	s, ok = h.shares()
+	return s, true, ok
 }
 
 // pairCloudKit issues a CloudKit code (link.Center.IssueCloudKit, which

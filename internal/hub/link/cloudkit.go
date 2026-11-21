@@ -243,6 +243,7 @@ type retiredCode struct{ nonce, reason string }
 // flight, then issues the newest code (the one that links), as two New code
 // clicks did in Swift — so one issue's close never shuts another's link.
 func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.LinkPayload, string, error) {
+	// Not bounded by ctx: the issue in flight ends within its share timeouts.
 	c.issueSem <- struct{}{}
 	defer func() { <-c.issueSem }()
 	c.ck.mu.Lock()

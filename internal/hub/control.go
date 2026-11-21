@@ -741,17 +741,23 @@ func (s *supervisor) withHubOr(fn func(*hubRuntime) ControlAnswer, off func() Co
 // CloudKit issues a CloudKit code (hubRuntime.pairCloudKit), so the phone
 // links on the transport the hub publishes on; its share calls run outside
 // hubMu, the hub held by its wait group, which stop cancels and waits for.
-// Any other hub issues a relay code under hubMu (hubRuntime.handle).
+// Such a hub without the shares answers failed, never a relay code. Any
+// other hub issues a relay code under hubMu (hubRuntime.handle).
 func (s *supervisor) pair(r ControlRequest, pl *pairListener) ControlAnswer {
 	var (
 		h      *hubRuntime
 		shares transport.Shares
 	)
 	a := s.withHub(func(rt *hubRuntime) ControlAnswer {
-		var ok bool
-		if shares, ok = rt.cloudKitCodes(); !ok {
+		sh, cloudKit, ok := rt.cloudKitCodes()
+		switch {
+		case !cloudKit:
 			return rt.handle(r, pl)
+		case !ok:
+			log.Printf("hub: no code: CloudKit is active but its shares are not available")
+			return ControlAnswer{Error: ErrClassFailed}
 		}
+		shares = sh
 		rt.wg.Add(1) // under hubMu: stop has not begun
 		h = rt
 		return ControlAnswer{}

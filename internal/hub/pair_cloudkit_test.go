@@ -8,11 +8,13 @@ import (
 	"slices"
 	"testing"
 
+	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/cloudkit"
+	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/policy/policytest"
 )
@@ -202,4 +204,24 @@ func pairRefusal(t *testing.T, c *ControlClient) string {
 			return a.Error
 		}
 	}
+}
+
+// A hub on CloudKit without the shares seam never falls back to a relay code
+// (the #1127 bug: the phone would link where the hub does not publish): the
+// pair is refused failed and nothing is issued.
+func TestPairOnCloudKitWithoutSharesIsRefused(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		h := startCloudKitHub(t, nil, func(o *Options) {
+			plain := memfake.New(transport.KindCloudKit, nil)
+			o.newTransport = func(context.Context, identity.Identity, *state.Store, []string) (transport.Transport, error) {
+				return plain, nil
+			}
+		})
+		if a := pairRefusal(t, h.c); a != ErrClassFailed {
+			t.Fatalf("answer %s, want %s", a, ErrClassFailed)
+		}
+		if n := codesStored(t, h.dir); n != 0 {
+			t.Fatalf("%d codes stored", n)
+		}
+	})
 }
