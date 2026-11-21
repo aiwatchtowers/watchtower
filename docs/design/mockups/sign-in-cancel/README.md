@@ -15,6 +15,8 @@ Proposal mockups for [the spec](../../../superpowers/specs/2026-11-21-sign-in-ca
 | `sign-in-wait-chat-card-waiting` | An agent card's **Reconnect Slack**. |
 | `sign-in-wait-wizard-check-waiting` | The company setup wizard's sign-in check. |
 
+The views as built, and how they differ from these, are in [implemented/](implemented/README.md).
+
 Render them again with:
 
 ```sh

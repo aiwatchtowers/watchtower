@@ -389,8 +389,7 @@ private struct MobilePhoneRow: View {
         Chip(text: row.transportLabel, color: MobileTransportTone.color(row.transport))
         if hovered || model.pendingRemove?.id == row.id {
             Button(Copy.removeTitle) { model.requestRemove(row) }
-                .buttonStyle(.kitQuiet)
-                .foregroundStyle(Tone.error)
+                .buttonStyle(KitQuietButtonStyle(label: Tone.error))
                 .disabled(busy)
         }
     }
@@ -462,8 +461,7 @@ private struct MobileRecordingsSection: View {
                 Button(Copy.retryTitle) { Task { await model.retryRecording(recording.id) } }.buttonStyle(.kitSecondary)
             }
             Button(Copy.discardTitle) { model.requestDiscard(recording) }
-                .buttonStyle(.kitQuiet)
-                .foregroundStyle(Tone.error)
+                .buttonStyle(KitQuietButtonStyle(label: Tone.error))
         }
         .disabled(busy)
     }

@@ -204,8 +204,7 @@ struct GoogleConnectionDetail: View {
             .buttonStyle(.kitQuiet)
             .disabled(appState.companyDetailBusy(.google))
             Button("Remove") { googleAccountPendingRemoval = account }
-                .buttonStyle(.kitQuiet)
-                .foregroundStyle(Tone.error)
+                .buttonStyle(KitQuietButtonStyle(label: Tone.error))
                 .disabled(appState.companyDetailBusy(.google))
         }
     }

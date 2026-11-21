@@ -128,6 +128,18 @@ public struct AgentActionCard: View {
         services.reconnectSlackWaiting.flatMap { $0(accountID) }
     }
 
+    /// Whether the screen's Reconnect Slack sign-in for this card's account waits in the browser: the card then shows
+    /// the waiting line and hides its decision row (Retry) and the retry note until the wait ends.
+    /// The retry note under a failed external card; hidden with Retry while the card's sign-in waits.
+    static func showsRetryNote(_ action: ChatAgentAction, signInWaits: Bool) -> Bool {
+        action.status == "failed" && action.external && !action.isSessionApplied && !signInWaits
+    }
+
+    static func signInWaits(_ action: ChatAgentAction, services: ChatApprovalServices) -> Bool {
+        guard let accountID = reconnectAccount(action, services: services) else { return false }
+        return reconnectWaitLine(accountID: accountID, services: services) != nil
+    }
+
     /// The shared human name (`ActionToolCatalog`) — the same words the Inbox cheat sheet and Settings use.
     static func title(for action: ChatAgentAction) -> String {
         ActionToolCatalog.title(for: action.tool)
@@ -181,6 +193,7 @@ public struct AgentActionCard: View {
         // One args decode per render for a connector card.
         let connector = ConnectorCallProposal(action: action)
         let details = services.details?(action)
+        let signInWaits = Self.signInWaits(action, services: services)
         style.approvalCard(AnyView(VStack(alignment: .leading, spacing: Spacing.regular) {
             if let contextLabel {
                 contextLine(contextLabel)
@@ -217,7 +230,7 @@ public struct AgentActionCard: View {
             // Only a FAILED row can have left a half-finished external write: Apply claims the row before it runs the
             // tool, so an `approved` one provably never reached Jira. (A Confluence edit is version-checked, so its
             // note says why a retry cannot double-write.)
-            if action.status == "failed", action.external, !action.isSessionApplied {
+            if Self.showsRetryNote(action, signInWaits: signInWaits) {
                 style.approvalRetryNote(
                     action.tool == SlackSendProposal.tool ? Self.slackRetryNote : ConfluenceEdit.retryNote(for: action)
                 )
@@ -231,7 +244,11 @@ public struct AgentActionCard: View {
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("agentAction.slackMessage")
             }
-            decision(connector: connector)
+            // While the card's Reconnect Slack waits in the browser, its waiting line is the one action: no Retry
+            // under it until the wait ends (the chat-card-waiting mockup).
+            if !signInWaits {
+                decision(connector: connector)
+            }
         }), outlined: outlined)
     }
 

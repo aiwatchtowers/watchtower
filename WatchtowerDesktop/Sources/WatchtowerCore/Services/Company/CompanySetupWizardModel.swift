@@ -204,10 +204,16 @@ package final class CompanySetupWizardModel {
 
     /// The draft re-read that the last `cancelCheck` started.
     @ObservationIgnored package private(set) var rereadAfterCancel: Task<Void, Never>?
-    /// Bumped by every check start and Cancel: a re-read after Cancel lands
-    /// only while no newer check started (it must not release the name a
-    /// running check signs in under).
-    @ObservationIgnored private var checkEpoch = 0
+    /// Per vendor, bumped by its check's start and Cancel: a re-read after
+    /// Cancel lands Go's mark only while no newer check of that vendor
+    /// started. Another vendor's check never drops it; the name is guarded
+    /// apart (`checkActivity`).
+    @ObservationIgnored private var checkEpochs: [CompanyVendor: Int] = [:]
+    /// Bumped by every check start and Cancel, of any vendor: a re-read after
+    /// Cancel releases the name only while nothing started or was cancelled
+    /// since (a check started and cancelled meanwhile may have stored the
+    /// company under it).
+    @ObservationIgnored private var checkActivity = 0
 
     private final class CheckRun {
         let values: [String]
@@ -865,7 +871,8 @@ package final class CompanySetupWizardModel {
             return
         }
         checks[v] = .running
-        checkEpoch += 1
+        checkEpochs[v, default: 0] += 1
+        checkActivity += 1
         let run = CheckRun(values: values)
         checkRuns[v] = run
         defer { if checkRuns[v] === run { checkRuns[v] = nil } }
@@ -896,21 +903,26 @@ package final class CompanySetupWizardModel {
     /// step: the draft is re-read once (refresh only, silent on failure) and
     /// what landed is kept — the slug, and Go's check mark while the values
     /// are the ones the run checked. The name is released only when nothing
-    /// was stored. A check started before the re-read answers wins: the
-    /// answer then changes nothing.
+    /// was stored. A check of the same vendor started before the re-read
+    /// answers wins: the answer then changes nothing. Another vendor's
+    /// check only keeps the name (it signs in under it).
     package func cancelCheck(_ v: CompanyVendor) {
         guard checks[v] == .running, let run = checkRuns.removeValue(forKey: v) else { return }
         run.task?.cancel()
         checks[v] = nil
-        checkEpoch += 1
-        let epoch = checkEpoch
+        checkEpochs[v, default: 0] += 1
+        checkActivity += 1
+        let epoch = checkEpochs[v]
+        let activity = checkActivity
         let started = generation
+        // A newer check of this vendor (started, or cancelled again) owns its step.
+        let current = { [self] in generation == started && checkEpochs[v] == epoch }
         rereadAfterCancel = Task { [self] in
             // Only once the killed child has exited: Go may still be writing the draft.
             _ = await run.task?.value
-            guard generation == started, checkEpoch == epoch else { return }
+            guard current() else { return }
             let line = await lastJSONLine(["company", "draft", "show", "--json"], stdin: nil)
-            guard generation == started, checkEpoch == epoch else { return }
+            guard current() else { return }
             // An unanswered or unreadable re-read leaves open whether Go stored
             // the company: the name stays (released only on a read that says).
             guard let line, let show = try? JSONDecoder().decode(CompanyDraftShow.self, from: Data(line.utf8)),
@@ -918,8 +930,9 @@ package final class CompanySetupWizardModel {
             if let read = show.draft {
                 landed(v, read: read, checked: show.checkedVendors.contains(v.rawValue), values: run.values)
             }
-            // Another vendor's check may still sign in under the name.
-            if checkRuns.isEmpty { releaseUnstoredName() }
+            // Another vendor's check may still sign in under the name, or one
+            // started (and maybe cancelled) since may have stored it.
+            if checkRuns.isEmpty, checkActivity == activity { releaseUnstoredName() }
         }
     }
 

@@ -578,12 +578,6 @@ final class ExternalConnectionsViewModel {
         return await runProcess(process, stdin: stdin)
     }
 
-    /// Runs a pre-configured Process, draining stdout and stderr concurrently
-    /// (`ProcessPipes`, SB3). If `stdin` is provided, `process.standardInput`
-    /// must already be a `Pipe` (see `runCLI` above) — the string is written
-    /// to its `fileHandleForWriting` and the pipe is closed before draining
-    /// output, which is how the connection secret reaches the subprocess
-    /// without ever touching argv.
     /// Launches the sign-in's child off the main actor; `onLaunch` runs
     /// right after the launch (`ProcessPipes.run`).
     nonisolated private static func launch(
@@ -595,6 +589,12 @@ final class ExternalConnectionsViewModel {
         return await ProcessPipes.run(process, onLaunch: onLaunch).trimmed
     }
 
+    /// Runs a pre-configured Process, draining stdout and stderr concurrently
+    /// (`ProcessPipes`, SB3). If `stdin` is provided, `process.standardInput`
+    /// must already be a `Pipe` (see `runCLI` above) — the string is written
+    /// to its `fileHandleForWriting` and the pipe is closed before draining
+    /// output, which is how the connection secret reaches the subprocess
+    /// without ever touching argv.
     nonisolated private static func runProcess(
         _ process: Process,
         stdin: String? = nil

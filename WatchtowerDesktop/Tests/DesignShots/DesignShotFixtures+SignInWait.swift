@@ -65,7 +65,7 @@ enum SignInWaitShotFixtures {
             Text("Accounts").font(.headline).padding(.bottom, Spacing.small)
             CompanyAccountRow(title: "owner@example.com", line: "Calendar · Gmail") {
                 Button("Rename…") {}.buttonStyle(.kitQuiet).disabled(state == .waiting)
-                Button("Remove") {}.buttonStyle(.kitQuiet).foregroundStyle(Tone.error).disabled(state == .waiting)
+                Button("Remove") {}.buttonStyle(KitQuietButtonStyle(label: Tone.error)).disabled(state == .waiting)
             }
             CompanyAccountRow(
                 title: "team@acme.example",
@@ -78,7 +78,7 @@ enum SignInWaitShotFixtures {
                 } else {
                     Button(RowStatus.Action.relogin.title) {}.buttonStyle(.kitSecondary)
                     Button("Rename…") {}.buttonStyle(.kitQuiet)
-                    Button("Remove") {}.buttonStyle(.kitQuiet).foregroundStyle(Tone.error)
+                    Button("Remove") {}.buttonStyle(KitQuietButtonStyle(label: Tone.error))
                 }
             }
         }

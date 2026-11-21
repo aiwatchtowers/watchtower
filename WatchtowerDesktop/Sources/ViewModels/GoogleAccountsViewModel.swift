@@ -37,6 +37,10 @@ final class GoogleAccountsViewModel {
     /// Where the sign-in whose failure `error` holds was waiting, so a place
     /// with no row or banner of its own (Calendar's top line) can say why.
     private(set) var failedSignIn: SignInPlace?
+    /// Counts the sign-ins that ended connected (the CLI exited 0 while its
+    /// run was still the current one), so a place can tell its own attempt
+    /// succeeded from one that a Cancel elsewhere ended (`AddGoogleAccountView`).
+    private(set) var connectedSignIns = 0
     /// The last account read failed (the error's own text); nil once one
     /// succeeds. Only the read: an action's failure stays in `error` (the
     /// Connections tab's "Couldn't read accounts" reads this).
@@ -57,6 +61,8 @@ final class GoogleAccountsViewModel {
     /// `reloginLegacyCalendar`) — held so tests can await the
     /// fire-and-forget flow.
     @ObservationIgnored private(set) var signInTask: Task<Void, Never>?
+    /// The last `refresh()` — held so tests can await it.
+    @ObservationIgnored private(set) var refreshTask: Task<Void, Never>?
 
     private let dbPool: DatabasePool
     private let daemon: any DaemonRestarting
@@ -93,8 +99,8 @@ final class GoogleAccountsViewModel {
     /// Cross-process writes (the CLI subprocess, or the daemon's Calendar/Gmail
     /// syncers) don't fire GRDB's ValueObservation, so callers reload on
     /// appear / after a CLI call completes rather than observing live.
-    func refresh() {
-        Task { await refreshAsync() }
+    func refresh(quiet: Bool = false) {
+        refreshTask = Task { _ = await refreshAsync(quiet: quiet) }
     }
 
     /// The awaitable body of `refresh()`, split out so tests can call it
@@ -104,9 +110,14 @@ final class GoogleAccountsViewModel {
     /// `quiet` (the re-read after a Cancel) reports a failed read through
     /// `readError` only, never `error`: a Cancel stays silent, and a newer
     /// attempt's result is never overwritten.
-    func refreshAsync(quiet: Bool = false) async {
+    ///
+    /// Returns this read's own accounts (nil when it failed): `accounts` and
+    /// `readError` may already hold a concurrent refresh's answer.
+    @discardableResult
+    func refreshAsync(quiet: Bool = false) async -> [GoogleAccount]? {
+        let rows: [GoogleAccount]
         do {
-            let rows = try await dbPool.read { db in try GoogleAccountQueries.fetchAll(db) }
+            rows = try await dbPool.read { db in try GoogleAccountQueries.fetchAll(db) }
             self.accounts = rows
             readError = nil
             hasRead = true
@@ -115,9 +126,10 @@ final class GoogleAccountsViewModel {
             if !quiet { self.error = "Failed to load accounts: \(error.localizedDescription)" }
             readError = error.localizedDescription
             hasRead = true
-            return
+            return nil
         }
         if readsAccountFlags { await sharedFlags.read(cliPath: cliPath()) }
+        return rows
     }
 
     // MARK: - Add
@@ -161,11 +173,11 @@ final class GoogleAccountsViewModel {
         daemonPolicy: DaemonRestartPolicy = .restart
     ) -> Bool {
         guard !isConnecting else {
-            error = Self.busyMessage
+            fail(Self.busyMessage, place: .section)
             return false
         }
         guard let cliPath = cliPath() else {
-            error = "Watchtower CLI not found"
+            fail(Self.cliNotFound, place: .section)
             return false
         }
 
@@ -211,11 +223,11 @@ final class GoogleAccountsViewModel {
 
     private func relogin(args: [String], accountID: Int, daemonPolicy: DaemonRestartPolicy) {
         guard !isConnecting else {
-            error = Self.busyMessage
+            fail(Self.busyMessage, place: .account(accountID))
             return
         }
         guard let cliPath = cliPath() else {
-            error = "Watchtower CLI not found"
+            fail(Self.cliNotFound, place: .account(accountID))
             return
         }
         let process = Process()
@@ -226,6 +238,22 @@ final class GoogleAccountsViewModel {
 
     /// Another Google sign-in or command runs.
     static let busyMessage = "Another connection is already in progress."
+    static let cliNotFound = "Watchtower CLI not found"
+
+    /// A sign-in that never started (no CLI, or another one runs): its error,
+    /// marked as `place`'s failed sign-in so a place with no row or banner of
+    /// its own (Calendar's top line) shows it too. `error` first: setting it
+    /// clears `failedSignIn`.
+    private func fail(_ message: String, place: SignInPlace) {
+        error = message
+        failedSignIn = place
+    }
+
+    /// Another flow's Google sign-in runs (Calendar's `GoogleConnectFlow`),
+    /// so `place`'s sign-in does not start: says so like a busy guard here.
+    func refuseBusy(place: SignInPlace) {
+        fail(Self.busyMessage, place: place)
+    }
 
     /// The `calendar login` args of the revoked-calendar alert when it names
     /// no account that exists: the CLI resolves account #1 itself.
@@ -237,11 +265,11 @@ final class GoogleAccountsViewModel {
     /// runs beside another Google sign-in and offers the same Cancel.
     func reloginLegacyCalendar(daemonPolicy: DaemonRestartPolicy = .restart) {
         guard !isConnecting else {
-            error = Self.busyMessage
+            fail(Self.busyMessage, place: .section)
             return
         }
         guard let cliPath = cliPath() else {
-            error = "Watchtower CLI not found"
+            fail(Self.cliNotFound, place: .section)
             return
         }
         let process = Process()
@@ -312,6 +340,8 @@ final class GoogleAccountsViewModel {
             return
         }
         authProcess = nil
+        // Counted before the busy flag drops: an observer of that drop sees it.
+        if result.exitCode == 0 { connectedSignIns += 1 }
         isConnecting = false
         signIn = nil
         if result.exitCode == 0 {
@@ -380,7 +410,7 @@ final class GoogleAccountsViewModel {
             return
         }
         guard let cliPath = cliPath() else {
-            error = "Watchtower CLI not found"
+            error = Self.cliNotFound
             return
         }
         let args = Self.removeArgs(for: account)

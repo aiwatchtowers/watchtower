@@ -52,6 +52,10 @@ struct AddGoogleAccountView: View {
     /// unrelated `isConnecting` flip (e.g. another sheet's attempt finishing
     /// while this one happens to still be around).
     @State private var connectAttempted = false
+    /// The model's connected sign-ins when this sheet's attempt started: the
+    /// sheet closes only once that count grew, never on a Cancel pressed in
+    /// another view (Calendar, the Google detail) that ended this attempt.
+    @State private var connectedBefore = 0
 
     /// Gmail is asked for only where the client may ask for it.
     private var gmail: Bool { offersGmail && wantGmail }
@@ -123,10 +127,18 @@ struct AddGoogleAccountView: View {
             // success, stay open with the error otherwise" behavior here.
             guard connectAttempted, oldValue == true, newValue == false else { return }
             connectAttempted = false
-            if vm?.error == nil {
+            if Self.ownAttemptConnected(before: connectedBefore, now: vm?.connectedSignIns) {
                 dismiss()
             }
         }
+    }
+
+    /// Pure: this sheet's attempt ended connected — the model counted a
+    /// connected sign-in since it started. A silent Cancel (here or in
+    /// another view) and a failure both leave the count as it was.
+    static func ownAttemptConnected(before: Int, now: Int?) -> Bool {
+        guard let now else { return false }
+        return now > before
     }
 
     private func connect() {
@@ -135,6 +147,7 @@ struct AddGoogleAccountView: View {
         // CLI found) return false without ever flipping isConnecting, so the
         // onChange below would otherwise wait for a true→false transition
         // that will never come from this attempt.
+        connectedBefore = vm?.connectedSignIns ?? 0
         connectAttempted = vm?.addAccount(
             calendar: wantCalendar,
             gmail: gmail,

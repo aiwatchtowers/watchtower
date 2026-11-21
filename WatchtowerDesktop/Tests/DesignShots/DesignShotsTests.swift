@@ -118,7 +118,14 @@ final class DesignShotsTests: XCTestCase {
 
     /// The waiting browser sign-in's mockups alone (#2132).
     func testSignInWaitShotsRender() throws {
-        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("sign-in-wait-") })
+        try renderShots(DesignShotCatalog.all.filter {
+            $0.name.hasPrefix("sign-in-wait-") && !$0.name.hasPrefix("sign-in-wait-built-")
+        })
+    }
+
+    /// The same states as built (#2132 T8): the production views with a sign-in held.
+    func testSignInWaitBuiltShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("sign-in-wait-built-") })
     }
 
     func testChatMarkdownShotsRender() throws {
