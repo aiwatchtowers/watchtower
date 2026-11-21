@@ -1092,10 +1092,10 @@ func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
 	}
 }
 
-// A linked phone that scans a new QR waits for the owner like any phone, but
-// its keybox stays the linked one (the Swift DeviceGrantSlice: linked rows
-// first, a phone appears once), with its keys and no confirm nonce.
-func TestALinkedPhoneRescanningKeepsItsLinkedKeybox(t *testing.T) {
+// A linked phone that scans a new QR waits for the owner like any phone, and
+// its keybox is the waiting one (#1127: it shows the compare code), with no
+// keys until the owner confirms; a phone still appears once.
+func TestALinkedPhoneRescanningReadsItsWaitingKeybox(t *testing.T) {
 	r := newRig(t)
 	a := newPhone(t)
 	r.confirmLinked(a)
@@ -1107,7 +1107,7 @@ func TestALinkedPhoneRescanningKeepsItsLinkedKeybox(t *testing.T) {
 		t.Fatalf("waiting %v", ids)
 	}
 	kb := r.mustKeybox(a)
-	if !kb.Grant.Linked || kb.Keys == nil || kb.Grant.ConfirmNonce != nil || kb.Grant.AwaitingConfirmation != nil {
+	if kb.Grant.Linked || kb.Keys != nil || kb.Grant.ConfirmNonce == nil || kb.Grant.AwaitingConfirmation == nil {
 		t.Errorf("keybox %+v", kb)
 	}
 	grants, err := r.c.Grants()

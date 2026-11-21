@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -54,17 +55,25 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 	var linked, rest []wire.Keybox
 	keyed := false
 	err := c.st.ReadTx(context.Background(), func(tx *sql.Tx) error {
-		var err error
-		if linked, keyed, err = c.linkedRows(tx); err != nil {
-			return err
-		}
-		answered := map[string]bool{}
-		for _, r := range linked {
-			answered[r.Grant.DeviceID] = true
-		}
 		pending, err := pendingDevicesTx(tx)
 		if err != nil {
 			return err
+		}
+		if linked, keyed, err = c.linkedRows(tx); err != nil {
+			return err
+		}
+		// A linked phone that links again (a new hello, no unlink) reads
+		// its waiting grant until the owner answers: the compare code, and
+		// no keys meanwhile. Confirm links it again with its grants kept; a
+		// refusal or an expiry drops the request and its linked row is back.
+		relinking := map[string]bool{}
+		for _, p := range pending {
+			relinking[strings.ToUpper(p.deviceID)] = true
+		}
+		linked = slices.DeleteFunc(linked, func(kb wire.Keybox) bool { return relinking[kb.Grant.DeviceID] })
+		answered := map[string]bool{}
+		for _, r := range linked {
+			answered[r.Grant.DeviceID] = true
 		}
 		for i := len(pending) - 1; i >= 0; i-- {
 			p := pending[i]

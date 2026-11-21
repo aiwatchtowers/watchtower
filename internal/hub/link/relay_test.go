@@ -562,3 +562,60 @@ func TestPairZoneKeyboxCarriesKeysOutsideTheZoneRule(t *testing.T) {
 		t.Fatalf("the data zone's keybox has keys: %+v", zone.Keys)
 	}
 }
+
+// #1127: a linked phone that links again with a new code (no unlink first)
+// reads the waiting grant — awaiting_confirmation, confirm_nonce,
+// link_code_tag, no keys — until the owner confirms, in the data zone and in
+// its pairing slot alike, so it shows the compare code; after Confirm it is
+// linked with the keys and keeps the owner's grants.
+func TestARelinkWithoutUnlinkWaitsWithTheCompareCode(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	f := memfake.New(transport.KindRelay, r.clock)
+	a := newPhone(t)
+	r.confirmLinked(a)
+	if err := r.c.Allow(a.id.String(), GrantChat, false); err != nil {
+		t.Fatal(err)
+	}
+	code := r.issue()
+	r.writeHello(f, "slot1", a, code.Nonce, withRelayID(relayID(t)))
+	if err := r.c.OnPairingOpened(ctx, f, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	if r.code(a) == "" {
+		t.Fatal("the re-link does not wait for the owner")
+	}
+	waiting := func(where string, kb wire.Keybox) {
+		t.Helper()
+		g := kb.Grant
+		if g.AwaitingConfirmation == nil || !*g.AwaitingConfirmation || g.ConfirmNonce == nil || g.LinkCodeTag == nil {
+			t.Fatalf("%s: not the waiting grant: %+v", where, g)
+		}
+		if g.Linked || kb.Keys != nil {
+			t.Fatalf("%s: linked %v, keys %v before the owner confirmed", where, g.Linked, kb.Keys != nil)
+		}
+	}
+	waiting("data zone", r.mustKeybox(a))
+	kb, ok := r.pairKeybox(f, "slot1", a)
+	if !ok {
+		t.Fatal("no keybox in the pair zone")
+	}
+	waiting("pair zone", kb)
+
+	if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
+		t.Fatal(err)
+	}
+	got := r.mustKeybox(a)
+	if !got.Grant.Linked || got.Keys == nil || got.Grant.AwaitingConfirmation != nil {
+		t.Fatalf("after Confirm: %+v (keys %v)", got.Grant, got.Keys != nil)
+	}
+	if got.Grant.Chat == nil || *got.Grant.Chat {
+		t.Fatalf("after Confirm the owner's chat grant is %v, want still off", got.Grant.Chat)
+	}
+	if err := r.c.PublishPairKeyboxes(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	if kb, _ := r.pairKeybox(f, "slot1", a); !kb.Grant.Linked || kb.Keys == nil {
+		t.Fatalf("pair zone after Confirm: %+v (keys %v)", kb.Grant, kb.Keys != nil)
+	}
+}
