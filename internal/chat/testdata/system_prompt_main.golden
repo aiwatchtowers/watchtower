@@ -285,6 +285,13 @@ Apps & integration
 
 Connect with an agent
 - Connect Slack with the assistant (connect/slack.md)
+- Connect Google with the assistant (connect/google.md)
+- Connect mail with the assistant (connect/mail.md)
+- Connect a calendar with the assistant (connect/calendar.md)
+- Connect Jira with the assistant (connect/jira.md)
+- Connect Confluence with the assistant (connect/confluence.md)
+- Connect Linear with the assistant (connect/linear.md)
+- Connect a Quick Connection with the assistant (connect/quick-connections.md)
 
 Reference
 - Settings (reference/settings.md)
