@@ -619,3 +619,100 @@ func TestARelinkWithoutUnlinkWaitsWithTheCompareCode(t *testing.T) {
 		t.Fatalf("pair zone after Confirm: %+v (keys %v)", kb.Grant, kb.Keys != nil)
 	}
 }
+
+// closedSlots is a relay fake whose pairing slots, once closed (promoted or
+// expired on the relay), refuse reads and writes FORBIDDEN, counting them.
+type closedSlots struct {
+	*memfake.Fake
+	mu            sync.Mutex
+	closed        map[string]bool
+	reads, writes map[string]int
+}
+
+func newClosedSlots(clock func() time.Time) *closedSlots {
+	return &closedSlots{Fake: memfake.New(transport.KindRelay, clock), closed: map[string]bool{},
+		reads: map[string]int{}, writes: map[string]int{}}
+}
+
+func (z *closedSlots) close(slot string) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.closed[transport.PairZone(slot)] = true
+}
+
+func (z *closedSlots) counts(slot string) (reads, writes int) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.reads[transport.PairZone(slot)], z.writes[transport.PairZone(slot)]
+}
+
+func (z *closedSlots) Changes(ctx context.Context, zone string, since uint64) (transport.Batch, error) {
+	z.mu.Lock()
+	z.reads[zone]++
+	closed := z.closed[zone]
+	z.mu.Unlock()
+	if closed {
+		return transport.Batch{}, transport.ErrForbidden
+	}
+	return z.Fake.Changes(ctx, zone, since)
+}
+
+func (z *closedSlots) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
+	z.mu.Lock()
+	closed := false
+	for _, it := range items {
+		z.writes[it.Record.Zone()]++
+		closed = closed || z.closed[it.Record.Zone()]
+	}
+	z.mu.Unlock()
+	if closed {
+		return nil, transport.ErrForbidden
+	}
+	return z.Fake.Save(ctx, items)
+}
+
+// #1127: once the relay closed a pairing slot (the phone promoted it), the
+// hub's first FORBIDDEN there drops the slot: no more keybox writes on each
+// link upkeep, no read on a later resync marker, no error to log again.
+func TestAClosedPairingSlotIsDroppedOnItsFirstForbidden(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	z := newClosedSlots(r.clock)
+	code := r.issue()
+	p := newPhone(t)
+	r.writeHello(z.Fake, "slot1", p, code.Nonce, withRelayID(relayID(t)))
+	if err := r.c.OnPairingOpened(ctx, z, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.Confirm(p.id.String(), r.code(p), true); err != nil {
+		t.Fatal(err)
+	}
+	z.close("slot1")
+	if err := r.c.PublishPairKeyboxes(ctx, z); err != nil {
+		t.Fatalf("the first FORBIDDEN of a closed slot: %v", err)
+	}
+	reads, writes := z.counts("slot1")
+	for range 3 {
+		if err := r.c.PublishPairKeyboxes(ctx, z); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.c.OnPairingOpened(ctx, z, "slot1"); err != nil { // a resync marker
+			t.Fatal(err)
+		}
+	}
+	if gotR, gotW := z.counts("slot1"); gotR != reads || gotW != writes {
+		t.Fatalf("after the drop: %d reads, %d writes (was %d, %d)", gotR, gotW, reads, writes)
+	}
+
+	// A read refused FORBIDDEN drops the slot too.
+	z.close("slot2")
+	if err := r.c.OnPairingOpened(ctx, z, "slot2"); err != nil {
+		t.Fatalf("the first FORBIDDEN read: %v", err)
+	}
+	if err := r.c.OnPairingOpened(ctx, z, "slot2"); err != nil {
+		t.Fatal(err)
+	}
+	if reads, _ := z.counts("slot2"); reads != 1 {
+		t.Fatalf("slot2 read %d times, want 1", reads)
+	}
+}

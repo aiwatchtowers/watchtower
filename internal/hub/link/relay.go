@@ -48,12 +48,15 @@ const (
 )
 
 // pairSlot is one pairing slot the hub reads: when it was opened, how far
-// its zone was read, and the phones whose hellos came through it.
+// its zone was read, and the phones whose hellos came through it. closed:
+// the relay refused it FORBIDDEN (promoted or expired there); it is kept
+// until pruned only so that a later event never opens it again.
 type pairSlot struct {
 	opened  time.Time
 	cursor  uint64
 	devices []string
 	watched bool
+	closed  bool
 }
 
 // pairWatcher is the hosted relay's subscription to a pair zone
@@ -94,8 +97,11 @@ func (c *Center) OnPairingOpened(ctx context.Context, t transport.Transport, slo
 		c.pairs[slot] = s
 		c.prunePairSlots()
 	}
-	since, watched := s.cursor, s.watched
+	since, watched, closed := s.cursor, s.watched, s.closed
 	c.pairMu.Unlock()
+	if closed {
+		return nil
+	}
 	if w, ok := t.(pairWatcher); ok && !watched {
 		if err := w.WatchPairZone(ctx, slot); err != nil {
 			log.Printf("hub link: pair zone not subscribed (%s): retried on the next call", transportClass(err))
@@ -116,7 +122,7 @@ func (c *Center) OnPairingOpened(ctx context.Context, t transport.Transport, slo
 		}
 	})
 	if err != nil {
-		return fmt.Errorf("link: reading the pair zone: %w", err)
+		return c.pairClosed(slot, fmt.Errorf("link: reading the pair zone: %w", err))
 	}
 	var (
 		answered []string
@@ -155,27 +161,44 @@ func (c *Center) OnPairingOpened(ctx context.Context, t transport.Transport, slo
 	if len(hellos) > 0 {
 		log.Printf("hub link: pair zone: %d hellos read, %d answered", len(hellos), len(answered))
 	}
-	return errors.Join(failed, c.writePairKeyboxes(ctx, t, zone, answered))
+	return errors.Join(failed, c.pairClosed(slot, c.writePairKeyboxes(ctx, t, zone, answered)))
+}
+
+// pairClosed drops slot when err is the relay's FORBIDDEN (the slot was
+// promoted or expired there), so the slot is neither written nor read again
+// and its error is not returned; any other err is returned as is.
+func (c *Center) pairClosed(slot string, err error) error {
+	if !errors.Is(err, transport.ErrForbidden) {
+		return err
+	}
+	c.pairMu.Lock()
+	defer c.pairMu.Unlock()
+	if s := c.pairs[slot]; s != nil && !s.closed {
+		s.closed, s.devices = true, nil
+		log.Printf("hub link: a pairing slot was closed on the relay: dropped")
+	}
+	return nil
 }
 
 // PublishPairKeyboxes writes, in every pairing slot still open, the current
 // keybox of each phone whose hello came through it: after Confirm it carries
 // the keys, after a refusal or an expiry the reason. Every open slot's boxes
 // are rewritten on each publish: bounded by maxPairSlots slots of at most
-// MaxGrantRecords phones each, and only within pairSlotLifetime.
+// MaxGrantRecords phones each, and only within pairSlotLifetime and until the
+// relay refuses the slot FORBIDDEN (pairClosed).
 func (c *Center) PublishPairKeyboxes(ctx context.Context, t transport.Transport) error {
 	c.pairMu.Lock()
 	c.prunePairSlots()
 	todo := map[string][]string{}
 	for slot, s := range c.pairs {
-		if len(s.devices) > 0 {
+		if !s.closed && len(s.devices) > 0 {
 			todo[slot] = slices.Clone(s.devices)
 		}
 	}
 	c.pairMu.Unlock()
 	var errs []error
 	for slot, devices := range todo {
-		errs = append(errs, c.writePairKeyboxes(ctx, t, transport.PairZone(slot), devices))
+		errs = append(errs, c.pairClosed(slot, c.writePairKeyboxes(ctx, t, transport.PairZone(slot), devices)))
 	}
 	return errors.Join(errs...)
 }

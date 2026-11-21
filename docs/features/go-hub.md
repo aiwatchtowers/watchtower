@@ -315,6 +315,11 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   `get_account_state` the hub is `paused`/`needs_relay` — `Publisher.Pause`, `Processor.SetPaused(true)`, state kept,
   no handler run, sessions untouched; re-read every 5 min (`NeedsRelayPoll`) and at once on `ENTITLEMENT_EXPIRED`,
   `SLOT_REMOVED` or `ENTITLEMENT_INACTIVE`; pairing is never paused. Resume publishes one full diff.
+- **A closed pairing slot is dropped** (#1127): the hub answers in a `pair/<slot>` zone for `pairSlotLifetime` (600 s)
+  after it heard of it, rewriting the slot's keyboxes on every link upkeep. Once the relay refuses the slot
+  `FORBIDDEN` (the phone promoted it, or it expired there), the first refused read or write marks the slot closed
+  (`link.Center.pairClosed`, one log line): it is not written or read again, a resync marker or zone event does not
+  open it again, and the refusal is no error.
 - **Vouched admission** (spec §7, §12a; relay `bcca870` "Vouched hubs"; `internal/hub/admission.go`): the hub registers
   as `DEVICE_KIND_HUB` with an empty attestation in test and live mode alike (the relay treats `DEVICE_KIND_MAC` as the
   same hub kind, so a sidecar an older build registered as a Mac keeps its device) and logs in by Ed25519 only. Until
