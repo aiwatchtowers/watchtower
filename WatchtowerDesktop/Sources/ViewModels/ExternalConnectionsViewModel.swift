@@ -46,13 +46,19 @@ final class ExternalConnectionsViewModel {
     /// The running `connections import` command (`cancelImport()` cancels it).
     private var importTask: Task<Data, Error>?
     private var authProcess: Process?
+    /// The connection whose browser sign-in is waiting; nil when none is.
+    private(set) var signInConnectionID: Int?
+    /// Resolves the CLI binary for the sign-in; tests run a stand-in.
+    private let cliPath: () -> String?
 
     init(dbPool: DatabasePool,
          makeRunner: @escaping () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() },
-         importSignIn: ((ExternalConnection) async -> Void)? = nil) {
+         importSignIn: ((ExternalConnection) async -> Void)? = nil,
+         cliPath: @escaping () -> String? = Constants.findCLIPath) {
         self.dbPool = dbPool
         self.makeRunner = makeRunner
         self.importSignIn = importSignIn
+        self.cliPath = cliPath
     }
 
     // MARK: - Refresh
@@ -172,19 +178,28 @@ final class ExternalConnectionsViewModel {
     /// `cancelSignIn()` can terminate it mid-flow. Structural copy of
     /// `SlackAccountsViewModel.runAuthFlow`/`addAccount`.
     func signIn(_ connection: ExternalConnection) async {
-        await runAuthFlow(args: Self.oauthArgs(id: Int64(connection.id)), failurePrefix: "Sign in failed")
+        await runAuthFlow(
+            args: Self.oauthArgs(id: Int64(connection.id)), connectionID: connection.id, failurePrefix: "Sign in failed"
+        )
         await reloadShownTools(connection) // a sign-in re-lists the tools
     }
 
-    /// Terminates an in-flight sign-in process, if any. Mirrors
-    /// `SlackAccountsViewModel.cancelConnect` — the terminated process exits
-    /// with SIGTERM/SIGKILL, which `applyResult` treats as a user cancel, not
-    /// an error.
+    /// The waiting line's texts while `connection`'s sign-in waits in the
+    /// browser (service = the connection's name); nil otherwise.
+    func signInWait(for connection: ExternalConnection) -> SignInWaitCopy? {
+        signInConnectionID == connection.id ? SignInWaitCopy(service: connection.name) : nil
+    }
+
+    /// Terminates an in-flight sign-in process, if any, silently: the busy
+    /// state resets at once, no error is set, and the run's own completion
+    /// writes nothing (it is no longer the current process). Mirrors
+    /// `SlackAccountsViewModel.cancelConnect`.
     func cancelSignIn() {
         if let process = authProcess, process.isRunning {
             process.terminate()
         }
         authProcess = nil
+        signInConnectionID = nil
         isBusy = false
     }
 
@@ -422,12 +437,12 @@ final class ExternalConnectionsViewModel {
     /// Browser-consent flow (`oauth`) — holds the detached Process in
     /// `authProcess` so `cancelSignIn()` can terminate it while this awaits.
     /// Structural copy of `SlackAccountsViewModel.runAuthFlow`.
-    private func runAuthFlow(args: [String], failurePrefix: String) async {
+    private func runAuthFlow(args: [String], connectionID: Int, failurePrefix: String) async {
         guard !isBusy else {
             error = "Another operation is already in progress."
             return
         }
-        guard let cliPath = Constants.findCLIPath() else {
+        guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
             return
         }
@@ -440,6 +455,7 @@ final class ExternalConnectionsViewModel {
         process.arguments = args
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
+        signInConnectionID = connectionID
 
         // The login environment is awaited with the flow already shown as
         // running (Cancel visible); a Cancel or a newer attempt meanwhile
@@ -448,7 +464,10 @@ final class ExternalConnectionsViewModel {
         guard authProcess === process else { return }
 
         let result = await Self.runProcess(process)
+        // A Cancel (or a newer attempt) meanwhile owns the state now.
+        guard authProcess === process else { return }
         authProcess = nil
+        signInConnectionID = nil
         isBusy = false
         applyResult(result, failurePrefix: failurePrefix)
     }
