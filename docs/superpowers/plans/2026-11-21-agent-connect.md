@@ -131,7 +131,7 @@ Each lane is its own worktree and branch off `feature/agent-connect`. The contro
   - `type Playbook struct { ID, Path, Service, Vendor string; Domains, Tools, Secrets, Options []string; Text string; Steps []Step }`. `ID` is the file basename (`slack`, `company-google`, `own-google-project`). `Service` is one of `slack|google|email|calendar|jira|linear|quickConnections|company` (Swift `ConnectionService` raw values plus `company`). `Vendor` is set only for `company`.
   - `type Step struct { N int; Actor string; Text string }`, where `Actor` is one of `agent|customer|customer_only|check`.
   - `func Load(id string) (Playbook, error)`, `func All() ([]Playbook, error)`, `func ForService(service, vendor string) ([]Playbook, error)`.
-  - `var KnownTools = []string{"connect_status","connect_start","connect_wait","connect_cancel","request_secret","set_fields","choose","company_draft","company_check","company_publish"}`.
+  - `var KnownTools = []string{"connect_status","connect_start","connect_wait","connect_cancel","request_secret","set_fields","choose","company_draft","company_check","company_publish","slack_live_probe"}`. `slack_live_probe` is allowed only in `slack.md` (its Live section): the Desktop runs `slack live probe --provider <p> --json` and returns the row's status; Task 10's driver implements it.
   - `var KnownSecrets = []string{"slack_config_token","imap_password","caldav_password","ics_url","linear_api_key","mcp_secret","google_client_secret","atlassian_client_secret"}`.
   - `revealPages map[string][]string` (vendor → phrases naming a secret-revealing page or button: Google "Create" on the OAuth client form / the client "dialog"; Atlassian app "Settings"; Slack "Generate Token").
 - The `connect` block format (one `key: a, b` per line):
@@ -147,6 +147,7 @@ Each lane is its own worktree and branch off `feature/agent-connect`. The contro
 - The step line format, under `## Steps`: `1. **Agent:** …`, `2. **You:** …`, `3. **You only:** …` (customer_only), `4. **Check:** …`.
 
 - [ ] **Step 1: Write the failing tests** in `internal/connectplay/playbook_test.go`:
+  - `TestPlaybooks_SlackLiveSection`: `slack.md` has a `## Slack Live` section, its steps are all customer steps (no agent browser step), and `slack_live_probe` appears in `Tools` of `slack.md` and of no other playbook.
   - `TestPlaybooks_AllParse`: for every file under `connect/`, `Load` succeeds, `Service` is known, `Domains` is non-empty and each one is a bare host (`url.Parse("https://"+d).Host == d`, no scheme, no path, no wildcard), and every entry of `Tools`/`Secrets` is in `KnownTools`/`KnownSecrets`.
   - `TestPlaybooks_TemplateSections`: each page has `## What you get`, `## Before you start`, `## Steps`, `## If something goes wrong`, in that order.
   - `TestPlaybooks_RevealStepsAreCustomerOnly`: a step whose text matches `revealPages[vendor]` has `Actor == "customer_only"`. A synthetic playbook with `**Agent:** press Generate Token` fails with `slack: step 3 reveals a secret but is not "You only"`.
@@ -232,7 +233,7 @@ Each lane is its own worktree and branch off `feature/agent-connect`. The contro
 - Produces (Swift, WatchtowerCore):
   - `package enum ConnectCapability: String, Sendable { case browser, words, none }`
   - `package struct ConnectHarness: Equatable, Hashable, Sendable { package let id: String; package let name: String; package let capability: ConnectCapability }`
-  - `package enum ConnectHarnessCatalog { package static func offered(providers: [AIModelCatalog.Provider], allowed: [String]?, base: String) -> (harnesses: [ConnectHarness], initial: ConnectHarness?) }`. It drops `.none` entries and policy-blocked ids. `initial` is the base provider when it's offered, else the first one offered, else nil (no button anywhere).
+  - `package enum ConnectHarnessCatalog { package static func offered(providers: [AIModelCatalog.Provider], allowed: [String]?, base: String) -> (harnesses: [ConnectHarness], initial: ConnectHarness?) }`. It drops `.none` entries and policy-blocked ids. `offered` also takes `ready: Set<String>` (providers whose CLI is installed and signed in, from the existing `ai test --json` readiness the Desktop already caches; onboarding runs it) and drops the rest. `initial` is the base provider when it's offered and ready, else the first offered and ready one, else nil (no button anywhere). Test `testHarnessNotReadyIsNotOffered` (Ollama base, Claude not signed in → nil).
   - `ConnectAssistantPresentation.init(service:harness: ConnectHarness, mode:browserAvailable:state:)`. `browserAvailable` is false whenever `harness.capability != .browser`. The no-browser intro becomes one capability-driven string per case: `.browser` but not detected → "\(name) in Chrome isn't connected, so I can't use your browser."; `.words` → "\(name) can't use your browser yet."
 - Produces (Go): `caps.Capabilities.Connect`, exposed in `ai models --json` under `capabilities.connect`.
 
@@ -245,6 +246,7 @@ Each lane is its own worktree and branch off `feature/agent-connect`. The contro
     - `testNoHarnessMeansNoButton` (every provider `none` → `initial == nil`)
     - `testCodexWordsOnlyUntilBrowserCapability`: a `words` harness yields `wordsOnly == true`, actions `[.start, .setUpByHand]` with no **Guide me in words**, and the mode line "I'll tell you each step".
   - Update `ConnectAssistantPresentationTests` to build `ConnectHarness` values and keep every string assertion as it is.
+  - Add `ConnectAssistantFailure.timedOut` ("I stopped waiting after 15 minutes. Press Retry when you're ready.") and `ConnectAssistantConfirm.slackConnect` ("Connect a Slack workspace?"; used only if Q1 is answered no) with their string tests `testTimedOutCopy`, `testSlackConnectConfirmCopy`.
 - [ ] **Step 2: Run** `go test ./internal/providers/... ./cmd -run 'Caps|AIModels|LLMTRANSPORT01'` and `make test-swift FILTER='ConnectHarnessCatalogTests|ConnectAssistantPresentationTests|ProviderCapabilitiesTests|LLMTransportGuardTests'`. Expected: FAIL.
 - [ ] **Step 3: Implement** the Go column, regenerate the fixture with the test's `-update` flag, then the Swift decode and `ConnectHarness`/`ConnectHarnessCatalog`. Delete `ConnectAssistantHarness` and every `.claude`/`.codex` case.
 - [ ] **Step 4: Run** the Step 2 commands, then `make lint-diff` and `make lint-swift`. Expected: PASS and clean. `LLMTransportGuardTests` passes with no baseline line added.
@@ -307,7 +309,7 @@ Each lane is its own worktree and branch off `feature/agent-connect`. The contro
 - Modify: `cmd/ai.go` (flags `--connect-service <svc>`, `--connect-mode browser|words`; `--tools connect` skips the `KnownChatSurface` check, refuses `--read-folder*`, `--persist` and `--owner-instructions`, and refuses before any model call when `Caps.Connect == none` or `providers.Allowed` fails)
 - Modify: `cmd/generator.go` (`newQueryClient`: with `aiFlagTools == "connect"`, `opts.MCPArgs = []string{"--connect", svc}`, `opts.MCPEnvVars = {SocketEnv, TokenEnv}`, `opts.Browser = mode == browser && caps.Connect == browser`; no Quick Connections; never runtime B)
 - Modify: `internal/providers/transport/transport.go` (`Options.Browser bool`, `Options.MCPEnvVars []string`; wire both into `newClaudeQuerier`/`newCodexQuerier`)
-- Modify: `internal/ai/client.go` (`SetBrowser(on bool)`: adds `--chrome` and the browser tool token(s) from S1 to `--allowedTools`, plus the S2 settings when enforceable; `SetMCPEnvVars(names)`: copies the named variables from the process environment into the watchtower server's `env` in `ChatMCPConfig`)
+- Modify: `internal/ai/client.go` (`SetBrowser(on bool)`: adds `--chrome` and the browser tool token(s) from S1 to `--allowedTools`, plus the S2 settings when enforceable; `SetMCPEnvVars(names)`: copies the named variables from the process environment into the watchtower server's `env` in `ChatMCPConfig`. A config carrying such a value counts as holding a secret, so `hasSecret` is true and the config goes through the inherited `/dev/fd` pipe, never inline in `--mcp-config` argv. Test `TestBuildArgs_ConnectTokenNeverInArgv`: with `WT_CONNECT_TOKEN=tok-sample` set, no argv element contains `tok-sample`)
 - Modify: `internal/codex/client.go` (`SetBrowser(on bool)` is a no-op until Task 7; `SetMCPEnvVars` already exists)
 - Modify: `internal/connectplay/prompt.go` (new): `func SystemPrompt(pbs []Playbook, mode Mode) string`, `type Mode string` (`ModeBrowser`, `ModeWords`)
 - Tests: `internal/ai/client_test.go`, `internal/connectplay/prompt_test.go` + `testdata/connect_prompt_{browser,words}.golden`, `cmd/ai_query_connect_test.go`
@@ -450,6 +452,7 @@ If S3 failed, mark this task skipped in the ledger and leave codex `connect = wo
   - `testPolicyBlockedStartRefusedBeforeDriver` (`policyAllows() == false` → `policy`; the driver's `start` is never called)
   - `testNoToolResolvesConfirm`: a `connect_start` needing PKCE shows `.confirm(.slackPKCE)`. No later request (any tool, including a second `connect_start`) resolves it; only `answerConfirm(true)` starts the flow, and `answerConfirm(false)` returns `declined`.
   - `testConfirmWaitReturnsWaitingAfterBudget` (45 s of the test clock → `{"state":"waiting"}`; a re-call re-attaches to the same card)
+  - `testWaitBudgetExhaustedEndsWithTimeout`: waiting calls (`connect_wait`, `request_secret`, confirm-gated calls) share one budget per pending step of 15 min (`static let maxWaitPerStep: Duration = .seconds(900)`, at most 20 re-calls); past it the call returns `{"state":"timeout"}`, the card is dropped and the panel shows the error state with **Retry** (`ConnectAssistantFailure.timedOut`). The connect prompt (Task 6) tells the agent to tell the customer it is waiting and not to talk between re-calls.
   - `testRequestSecretReturnsOnlyAfterSend`
   - `testRequestSecretKindOutsidePlaybookRefused`
   - `testSecretNeverInResponseOrState`: the value "s3cr3t-sample" appears in no `ConnectWireResponse` bytes, not in `state`, and not in `pendingCard` after send.
@@ -464,7 +467,7 @@ If S3 failed, mark this task skipped in the ledger and leave codex `connect = wo
 
 ### Task 10: Slack driver
 
-**Depends on:** Task 9. Merges only after the owner answers Q1 (SLACKFULL-01).
+**Depends on:** Task 9. Q1 (SLACKFULL-01) is answered in ask #1721 before this task starts; the brief carries the answer. Yes → **Start** is the press. No → `confirmNeeded(tool:"connect_start")` returns `.slackConnect` ("Connect a Slack workspace?") for every Slack start; test `testSlackStartShowsConnectConfirm`. Only the branch the owner picked is built.
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/Services/Connect/SlackConnectDriver.swift` (app target: it wraps `SlackAccountsViewModel`)
@@ -484,6 +487,7 @@ If S3 failed, mark this task skipped in the ledger and leave codex `connect = wo
   - `testConfigTokenGoesOnStdinOnly` (the fake runner's argv has no token; stdin line 1 is the token)
   - `testPendingCreateReportedInStatus`
   - `testPolicyBlockedSlack`
+  - `testLiveProbeReturnsRowStatus` (`slack_live_probe` runs `slack live probe --provider claude --json` on the fake runner and returns its row status)
   - `testDriverAddsNoWriter`: the only CLI verbs invoked are the ones the existing buttons invoke (`slack connect serve` commands, `slack app create|adopt`).
 - [ ] **Step 2: Run** `make test-swift FILTER=SlackConnectDriverTests`. Expected: FAIL; implement; then PASS.
 - [ ] **Step 3: Run the guards** `go test ./cmd -run 'Slack(TokenWriters|Connect|App)'`, `go test ./internal/slackauth -run LockRace` and `make test-swift FILTER='SlackConnectFlowModelTests|SlackAppSetupModelTests'`. Expected: PASS, untouched.
@@ -630,7 +634,7 @@ If S3 failed, mark this task skipped in the ledger and leave codex `connect = wo
 - Modify: each service detail's **Add account** menu (grep the `Add account` menus under `Sources/Views/Settings/*Detail*.swift` and `Sources/Views/Connections/`): add the **Connect with <harness>** item
 - Modify: `WatchtowerDesktop/Sources/Views/Onboarding/OnboardingConnectStepView.swift`: each source offers **Connect with <harness>** first and today's flow second
 - Modify: the Jira empty state's **Set up for my company** row and the **Use my own Google project** entry: add the agent button beside each
-- Modify: `Tests/DesignShots/DesignShotCatalog.swift` and fixtures: new shots `connect-detail-add-account`, `connect-onboarding-step`
+- Modify: `Tests/DesignShots/DesignShotCatalog.swift` and fixtures: the real views replace the design-only fixtures of `connect-detail-add-account` and `connect-onboarding-step` (mockups approved with the plan, `docs/superpowers/specs/assets/2026-11-21-agent-connect/`); compare the new shots with them
 
 **Interfaces:**
 - Consumes: `AppState.openConnectAssistant(service:)`, `AppState.connectAssistantButton(for:)`.
@@ -680,6 +684,6 @@ For each cell, check: connected (or the expected failure stage), no secret in th
   - §6 → Task 6 (prompt and host rule), Task 9 (limits, confirms), Tasks 10–12 (policy), Task 14 (button hidden).
   - §7 → Tasks 14–15. §8 → Tasks 9 and 13 (close, reopen, extension loss, quota) and Task 10 (writers and token lock guards).
   - §9 → the tests named per task, plus the Task 16 matrix. §10 → Task 0 and Task 14 (help text).
-  - Slack Live: covered by the Slack playbook's words-only section (`slack live probe`) in Task 1; no driver change.
+  - Slack Live: the Slack playbook's **Slack Live** section (Task 1, words only: how to turn the vendor's Slack connector on), checked by `slack_live_probe` (Task 5 tool list, Task 10 driver, tests `TestPlaybooks_SlackLiveSection` and `testLiveProbeReturnsRowStatus`).
 - **Type names used across tasks:** `ConnectHarness`/`ConnectCapability` (T4), `ConnectWireRequest`/`Response` (T8, mirroring `connectwire` of T5), `ConnectServiceDriving`/`ConnectCompanyDriving` (T9, implemented in T10–12), `ConnectRunController.sendSecret`/`answerConfirm` (T9, called in T14), `AppState.openConnectAssistant(service:)` (T14, used in T15).
 - **Review Focus lines map to tests:** 1 → T1/T9, 2 → T9/T13, 3 → T9, 4 → T9/T10, 5 → T13/T4.
