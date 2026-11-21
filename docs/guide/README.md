@@ -128,6 +128,19 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 ## Connect with an agent
 
 - [Connect Slack with the assistant](connect/slack.md) — the assistant connects your workspace in Full, creates or updates its Watchtower app, and checks Live
+- [Connect Google with the assistant](connect/google.md) — Calendar through Watchtower's Google app, and Gmail where that app may ask for it
+- [Connect mail with the assistant](connect/mail.md) — an Outlook account by your sign-in, or any IMAP mailbox with its password in a secure card
+- [Connect a calendar with the assistant](connect/calendar.md) — a CalDAV calendar or a private ICS link, the password or link in a secure card
+- [Connect Jira with the assistant](connect/jira.md) — a Jira site through your company's Atlassian app, then the boards to sync
+- [Connect Confluence with the assistant](connect/confluence.md) — a site with Confluence on the same sign-in, then the spaces to sync
+- [Connect Linear with the assistant](connect/linear.md) — a Linear workspace by sign-in or a personal API key, then the teams to sync
+- [Connect a Quick Connection with the assistant](connect/quick-connections.md) — another tool's MCP server, its key in a secure card, turned on by your confirm
+- [Connect your own Google project with the assistant](connect/own-google-project.md) — the assistant builds your own Google Cloud project for Gmail and Calendar; you copy its secret into a secure card
+- [Set up your company's Slack app with the assistant](connect/company-slack.md) — the company setup in the wizard's order, the company's Slack app created or updated, the link deny list and Publish
+- [Set up your company's Google app with the assistant](connect/company-google.md) — the company's Google Cloud project, checked by your sign-in
+- [Set up your company's Atlassian app with the assistant](connect/company-atlassian.md) — the company's Jira and Confluence app in the developer console, checked by your sign-in
+- [Set up your company's Linear app with the assistant](connect/company-linear.md) — the company's Linear OAuth application, checked without a sign-in
+- [Set up your company's Microsoft 365 app with the assistant](connect/company-microsoft.md) — the company's Outlook app in Microsoft Entra, and the admin consent it needs
 
 ## Reference
 
