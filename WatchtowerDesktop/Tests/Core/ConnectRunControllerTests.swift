@@ -1,6 +1,7 @@
 import Foundation
 @testable import WatchtowerCore
 import WatchtowerInterface
+import WatchtowerTestSupport
 import XCTest
 
 /// The rules of one connect assistant run (agent connect spec §5.3, §5.4,
@@ -244,12 +245,60 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(tooLong, "error:bad_args")
         XCTAssertNil(controller.pendingCard)
 
-        // The company's Slack token comes only through company_publish.
+        // A kind the company driver does not declare is refused there too.
         let company = FakeCompanyDriver()
         let companyRun = makeController(company)
-        let token = await call(companyRun, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
-        XCTAssertEqual(token, "error:bad_args")
+        let imap = await call(companyRun, "request_secret", #"{"kind":"imap_password","label":"Password"}"#)
+        XCTAssertEqual(imap, "error:bad_args")
         XCTAssertNil(companyRun.pendingCard)
+    }
+
+    /// F3 relaxed: the company's Slack step takes the configuration token
+    /// through request_secret; an existing app's update waits on the
+    /// customer's confirm card on the same step.
+    func testCompanySlackTokenThenUpdateConfirm() async {
+        let company = FakeConfirmingCompanyDriver()
+        let controller = makeController(company)
+        let held = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
+        await clock.sleepers(1)
+        XCTAssertEqual(controller.pendingCard, .secret(kind: "slack_config_token", label: "Token"))
+        let update = ConnectAssistantConfirm.slackUpdate(changes: ["Turn on PKCE sign-in"], pkce: true)
+        company.secretConfirms["slack_config_token"] = update
+        controller.sendSecret("xoxe-sample")
+        await untilObserved { controller.pendingCard == .confirm(update) }
+        XCTAssertEqual(company.secrets.map(\.kind), ["slack_config_token"])
+        XCTAssertTrue(company.published.isEmpty, "the Slack step's token is no Publish")
+        controller.answerConfirm(true)
+        let answer = await held.value
+        XCTAssertEqual(answer, #"{"result":{"result":"ok"},"state":"sent"}"#)
+        XCTAssertEqual(company.confirmAnswers, [true])
+
+        let declined = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
+        await clock.sleepers(1)
+        company.secretConfirms["slack_config_token"] = update
+        controller.sendSecret("xoxe-sample")
+        await untilObserved { controller.pendingCard == .confirm(update) }
+        controller.answerConfirm(false)
+        let declinedAnswer = await declined.value
+        XCTAssertEqual(declinedAnswer, #"{"state":"declined"}"#)
+        XCTAssertEqual(company.confirmAnswers, [true, false], "the driver hears the decline and drops the update")
+    }
+
+    func testCompanyPublishWithoutSlackNeedsNoToken() async {
+        let company = FakeCompanyDriver()
+        company.publishNeedsToken = false
+        let controller = makeController(company)
+        let held = hold(controller, "company_publish")
+        await clock.sleepers(1)
+        controller.answerConfirm(true)
+        let answer = await held.value
+        XCTAssertEqual(answer, #"{"published":true}"#)
+        XCTAssertEqual(company.published, [""], "no token card, no token")
+
+        company.confirms["company_publish"] = nil
+        company.publishBlockedReason = "Publish waits for the Google check"
+        let response = await controller.handle(request("company_publish"))
+        XCTAssertEqual(response.error?.message, "Publish waits for the Google check")
     }
 
     func testSecretNeverInResponseOrState() async throws {
@@ -1033,13 +1082,16 @@ final class ConnectRunControllerTests: XCTestCase {
             case "pending": try Self.reencode(ConnectPending.self, result)
             case "choices": try Self.reencode(ConnectChoices.self, result)
             case "company_draft": try Self.reencode(ConnectCompanyDraft.self, result)
+            case "company_checked": try Self.reencode(ConnectCompanyChecked.self, result)
+            case "company_published": try Self.reencode(ConnectCompanyPublished.self, result)
             case "done": try Self.reencode(ConnectDone.self, result)
             default: Data()
             }
             XCTAssertEqual(String(bytes: try RawJSON(data: encoded).data, encoding: .utf8),
                            String(bytes: result.data, encoding: .utf8), wireCase.name)
         }
-        XCTAssertEqual(seen, ["status", "started", "waited", "secret", "pending", "choices", "company_draft", "done"])
+        XCTAssertEqual(seen, ["status", "started", "waited", "secret", "pending", "choices", "company_draft",
+                              "company_checked", "company_published", "done"])
     }
 
     private static func reencode<T: Codable>(_ type: T.Type, _ raw: RawJSON) throws -> Data {

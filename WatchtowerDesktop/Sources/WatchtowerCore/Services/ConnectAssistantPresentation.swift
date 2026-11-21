@@ -21,6 +21,9 @@ package enum ConnectAssistantFailure: Equatable, Sendable {
 /// A step only the customer may press (§5.3, §5.4): the model cannot.
 package enum ConnectAssistantConfirm: Equatable, Sendable {
     case slackPKCE
+    /// The company Slack step updates an app the company already has:
+    /// `changes` are the wizard's diff lines; `pkce` when one turns on PKCE.
+    case slackUpdate(changes: [String], pkce: Bool)
     case ownGoogleClient
     case quickConnection(name: String)
     case companyPublish(company: String)
@@ -238,6 +241,8 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
         switch confirm {
         case .slackPKCE:
             ("Turn on PKCE for the Slack app?", "This can't be undone.")
+        case let .slackUpdate(changes, pkce):
+            ("Update the company's Slack app?", slackUpdateDetail(changes, pkce: pkce))
         case .ownGoogleClient:
             ("Use your own Google project to sign in?", "Watchtower will trust the client you created.")
         case .quickConnection(let name):
@@ -247,5 +252,11 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
         case .companyReplace(let company):
             ("Replace the stored setup for \(company)?", "Accounts on the old apps will need to sign in again.")
         }
+    }
+
+    /// "Add scopes: reactions:read. Turn on PKCE sign-in. PKCE can't be turned off again."
+    private static func slackUpdateDetail(_ changes: [String], pkce: Bool) -> String {
+        let lines = changes.isEmpty ? "Its settings already match Watchtower's." : changes.map { $0 + "." }.joined(separator: " ")
+        return pkce ? lines + " PKCE can't be turned off again." : lines
     }
 }

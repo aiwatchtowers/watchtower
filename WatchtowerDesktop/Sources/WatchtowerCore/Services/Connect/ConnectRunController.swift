@@ -104,6 +104,9 @@ package final class ConnectRunController {
     package func answerConfirm(_ yes: Bool) {
         guard let step = cardStep, case .confirm = pendingCard else { return }
         pendingCard = nil
+        if case let .secret(kind) = step.purpose, let confirming = driver as? any ConnectSecretConfirming {
+            return answerSecretConfirm(step, kind: kind, yes: yes, confirming)
+        }
         guard yes else { return finish(step, .result(Self.json(ConnectPending(state: "declined")))) }
         switch step.purpose {
         case let .start(options):
@@ -119,7 +122,16 @@ package final class ConnectRunController {
                 self?.started(result, step: step)
             }
         case .publish:
+            guard let company = driver as? any ConnectCompanyDriving else { return }
             step.resetBudget()
+            guard company.publishNeedsToken else {
+                // A setup without Slack publishes with no token (`no_slack`).
+                step.work = Task { [weak self] in
+                    let reply = Self.reply(await company.publish(token: ""))
+                    self?.finish(step, reply)
+                }
+                return
+            }
             pendingCard = .secret(kind: Self.publishTokenKind, label: Self.publishTokenLabel)
         case .replaceCheck:
             guard let company = driver as? any ConnectCompanyDriving, let vendor = step.vendor else { return }
@@ -144,9 +156,28 @@ package final class ConnectRunController {
             }
         } else {
             step.work = Task { [weak self] in
-                let reply = Self.sent(await driver.submitSecret(kind: kind, value: value))
-                self?.finish(step, reply)
+                let sent = await driver.submitSecret(kind: kind, value: value)
+                guard let self else { return }
+                // The verb only read so far (the company Slack update): the
+                // customer confirms its changes on the same step.
+                if case .success = sent, !ended, cardStep === step, step.outcome == nil,
+                   let confirm = (driver as? any ConnectSecretConfirming)?.secretConfirm(kind: kind) {
+                    step.resetBudget()
+                    pendingCard = .confirm(confirm)
+                    return
+                }
+                finish(step, Self.sent(sent))
             }
+        }
+    }
+
+    /// The confirm card a secret's verb asked for: yes runs the change, no
+    /// drops it; either way the driver hears the answer.
+    private func answerSecretConfirm(_ step: Step, kind: String, yes: Bool, _ confirming: any ConnectSecretConfirming) {
+        step.resetBudget()
+        step.work = Task { [weak self] in
+            let result = await confirming.answerSecretConfirm(kind: kind, yes: yes)
+            self?.finish(step, yes ? Self.sent(result) : .result(Self.json(ConnectPending(state: "declined"))))
         }
     }
 
@@ -383,8 +414,9 @@ package final class ConnectRunController {
               !label.isEmpty, label.count <= 80 else {
             return .error(.badArgs, "request_secret needs a kind and a label of at most 80 characters")
         }
-        guard driver.secretKinds.contains(kind),
-              !(driver is any ConnectCompanyDriving && kind == Self.publishTokenKind) else {
+        // The company's Slack token is a secret of its own too (the Slack
+        // step's create or update, F3 relaxed); Publish asks for it on its own card.
+        guard driver.secretKinds.contains(kind) else {
             return .error(.badArgs, "kind \(kind) is not a \(driver.service) secret")
         }
         if let step = cardStep {
@@ -442,7 +474,7 @@ package final class ConnectRunController {
                 return await attach(step)
             }
             guard let confirm = company.confirmNeeded(tool: "company_publish", options: [:]) else {
-                return .error(.failed, "the company setup is not ready to publish")
+                return .error(.failed, company.publishBlockedReason ?? "the company setup is not ready to publish")
             }
             return await attach(showCard(.confirm(confirm), purpose: .publish))
         }

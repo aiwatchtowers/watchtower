@@ -529,6 +529,14 @@ package final class CompanySetupWizardModel {
         return false
     }
 
+    /// Publish went through from the connect assistant: the page shows
+    /// Publish's result (link, code, **Connect this Mac**) whatever step it was on.
+    package func showPublished() {
+        guard isPublished else { return }
+        reached.formUnion(steps)
+        move(to: .publish)
+    }
+
     /// **Done** after Publish: the page starts fresh next time.
     package func finish() {
         guard isPublished else { return }
@@ -548,6 +556,17 @@ package final class CompanySetupWizardModel {
         }
         saving = next
         return await next.value
+    }
+
+    /// The connect assistant's save (agent connect spec §5.4): `company
+    /// draft save` of the state in memory now, queued behind any save in
+    /// flight like the page's own. The wizard sheet and the assistant panel
+    /// share this model, so the last save of either writes the whole draft
+    /// and wins. True when it went through (else `storageProblem` says why).
+    @discardableResult
+    package func saveNow() async -> Bool {
+        touched = true
+        return await saveDraft()
     }
 
     private func writeDraft() async -> Bool {
@@ -779,6 +798,14 @@ package final class CompanySetupWizardModel {
     package func setAtlassianSite(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         edit(\.atlassian, .init()) { $0.site = trimmed.isEmpty || trimmed.contains("://") ? trimmed : "https://\(trimmed)" }
+        if checks[.atlassian] != .running { checks[.atlassian] = nil }
+    }
+
+    /// Confluence on or off for the company's Atlassian app (the connect
+    /// assistant's `company_draft` save; the page keeps the default, on).
+    package func setAtlassianConfluence(_ on: Bool) {
+        touched = true
+        edit(\.atlassian, .init()) { $0.confluence = on }
         if checks[.atlassian] != .running { checks[.atlassian] = nil }
     }
 

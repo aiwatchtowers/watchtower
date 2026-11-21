@@ -1,5 +1,5 @@
 {
-  "about": "Every line of the connect wire (internal/connectwire). Each case's line is the exact bytes on the socket, without the newline. kind is hello, hello_reply, request or response; a response's shape names its result type (status, started, waited, secret, pending, choices, company_draft, done) and is empty for an error. Go round-trips each line byte-identically; the Swift ConnectWire decodes the same file.",
+  "about": "Every line of the connect wire (internal/connectwire). Each case's line is the exact bytes on the socket, without the newline. kind is hello, hello_reply, request or response; a response's shape names its result type (status, started, waited, secret, pending, choices, company_draft, company_checked, company_published, done) and is empty for an error. Go round-trips each line byte-identically; the Swift ConnectWire decodes the same file.",
   "cases": [
     {"name": "hello", "kind": "hello", "line": "{\"v\":1,\"token\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"service\":\"slack\"}"},
     {"name": "hello_ok", "kind": "hello_reply", "line": "{\"ok\":true}"},
@@ -37,6 +37,12 @@
     {"name": "publish_timeout", "kind": "response", "tool": "company_publish", "shape": "pending", "line": "{\"id\":8,\"result\":{\"state\":\"timeout\"}}"},
     {"name": "check_waiting", "kind": "response", "tool": "company_check", "shape": "pending", "line": "{\"id\":9,\"result\":{\"state\":\"waiting\"}}"},
     {"name": "check_timeout", "kind": "response", "tool": "company_check", "shape": "pending", "line": "{\"id\":9,\"result\":{\"state\":\"timeout\"}}"},
+    {"name": "check_ok", "kind": "response", "tool": "company_check", "shape": "company_checked", "line": "{\"id\":9,\"result\":{\"result\":\"ok\",\"account\":\"alice@example.com\"}}"},
+    {"name": "check_dry_ok", "kind": "response", "tool": "company_check", "shape": "company_checked", "line": "{\"id\":9,\"result\":{\"result\":\"ok\"}}"},
+    {"name": "check_admin_consent", "kind": "response", "tool": "company_check", "shape": "company_checked", "line": "{\"id\":9,\"result\":{\"result\":\"admin_consent\",\"admin_consent_url\":\"https://login.microsoftonline.com/acme-tenant/adminconsent?client_id=acme-client\"}}"},
+    {"name": "check_replace_needed", "kind": "response", "tool": "company_check", "shape": "company_checked", "line": "{\"id\":9,\"result\":{\"result\":\"replace_needed\"}}"},
+    {"name": "publish_ok", "kind": "response", "tool": "company_publish", "shape": "company_published", "line": "{\"id\":8,\"result\":{\"result\":\"ok\",\"slug\":\"acme\"}}"},
+    {"name": "publish_no_slack", "kind": "response", "tool": "company_publish", "shape": "company_published", "line": "{\"id\":8,\"result\":{\"result\":\"no_slack\",\"slug\":\"acme\"}}"},
 
     {"name": "choose_items", "kind": "response", "tool": "choose", "shape": "choices", "line": "{\"id\":6,\"result\":{\"items\":[{\"id\":\"10\",\"name\":\"Acme board\",\"selected\":true},{\"id\":\"11\",\"name\":\"Acme support\",\"selected\":false}]}}"},
     {"name": "company_draft", "kind": "response", "tool": "company_draft", "shape": "company_draft", "line": "{\"id\":10,\"result\":{\"company\":\"Acme\",\"vendors\":{\"atlassian\":{\"client_id\":\"acme-client\",\"site\":\"acme.atlassian.net\",\"client_secret_set\":false},\"google\":{\"client_id\":\"acme.apps.googleusercontent.com\",\"client_secret_set\":true}}}}"},

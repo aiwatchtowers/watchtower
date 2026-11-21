@@ -55,14 +55,16 @@ func strictRoundTrip[T any](t *testing.T, b []byte) []byte {
 }
 
 var shapes = map[string]func(*testing.T, []byte) []byte{
-	"status":        strictRoundTrip[Status],
-	"started":       strictRoundTrip[Started],
-	"waited":        strictRoundTrip[Waited],
-	"secret":        strictRoundTrip[SecretSent],
-	"pending":       strictRoundTrip[Pending],
-	"choices":       strictRoundTrip[Choices],
-	"company_draft": strictRoundTrip[CompanyDraft],
-	"done":          strictRoundTrip[Done],
+	"status":            strictRoundTrip[Status],
+	"started":           strictRoundTrip[Started],
+	"waited":            strictRoundTrip[Waited],
+	"secret":            strictRoundTrip[SecretSent],
+	"pending":           strictRoundTrip[Pending],
+	"choices":           strictRoundTrip[Choices],
+	"company_draft":     strictRoundTrip[CompanyDraft],
+	"company_checked":   strictRoundTrip[CompanyChecked],
+	"company_published": strictRoundTrip[CompanyPublished],
+	"done":              strictRoundTrip[Done],
 }
 
 func TestWire_GoldenCases(t *testing.T) {

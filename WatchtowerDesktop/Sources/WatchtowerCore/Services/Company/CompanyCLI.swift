@@ -309,6 +309,13 @@ package struct GoogleClientFile: Equatable, Sendable {
     package var clientSecret: String
     package var projectID: String
 
+    /// A client typed rather than dropped (the connect assistant's own project).
+    package init(clientID: String, clientSecret: String, projectID: String = "") {
+        self.clientID = clientID
+        self.clientSecret = clientSecret
+        self.projectID = projectID
+    }
+
     /// Nil when `data` is not a Google client JSON with an id and a secret.
     package init?(data: Data) {
         struct Wrapper: Decodable {

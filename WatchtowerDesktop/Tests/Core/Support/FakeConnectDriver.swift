@@ -160,7 +160,7 @@ class FakeConnectDriver: ConnectServiceDriving {
 /// The company setup's fake: its draft view carries the stored client
 /// secrets as a careless driver might; the controller must drop them.
 @MainActor
-final class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
+class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
     var draft = Data()
     private(set) var published: [String] = []
     private(set) var checks: [String] = []
@@ -193,6 +193,26 @@ final class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
     func publish(token: String) async -> Result<Data, ConnectDriverError> {
         published.append(token)
         return .success(Data(#"{"published":true}"#.utf8))
+    }
+
+    var publishNeedsToken = true
+    var publishBlockedReason: String?
+}
+
+/// A company driver whose Slack token first reads the app, then the panel
+/// confirms the update (`ConnectSecretConfirming`).
+@MainActor
+final class FakeConfirmingCompanyDriver: FakeCompanyDriver, ConnectSecretConfirming {
+    /// The card after a submitted secret of this kind.
+    var secretConfirms: [String: ConnectAssistantConfirm] = [:]
+    private(set) var confirmAnswers: [Bool] = []
+
+    func secretConfirm(kind: String) -> ConnectAssistantConfirm? { secretConfirms[kind] }
+
+    func answerSecretConfirm(kind: String, yes: Bool) async -> Result<Data, ConnectDriverError> {
+        confirmAnswers.append(yes)
+        secretConfirms[kind] = nil
+        return .success(Data(#"{"result":"ok"}"#.utf8))
     }
 }
 

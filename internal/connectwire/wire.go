@@ -178,6 +178,26 @@ type VendorDraft struct {
 	ClientSecretSet bool   `json:"client_secret_set"`
 }
 
+// CompanyChecked is company_check's own result: ok (Account is the
+// signed-in address, empty for a dry check), admin_consent
+// (AdminConsentURL for the tenant's IT admin) or replace_needed (check
+// again: the panel asks the customer to replace the stored app). A failed
+// check is an error.
+type CompanyChecked struct {
+	Result          string `json:"result"`
+	Account         string `json:"account,omitempty"`
+	AdminConsentURL string `json:"admin_consent_url,omitempty"`
+}
+
+// CompanyPublished is company_publish's own result: ok (the link is on the
+// Slack app's About page) or no_slack. Slug names the stored company; the
+// link and code stay on the wizard's Publish page. A failed Publish is an
+// error.
+type CompanyPublished struct {
+	Result string `json:"result"`
+	Slug   string `json:"slug"`
+}
+
 // Done is the result of a call with nothing to return (connect_cancel,
 // set_fields): {}.
 type Done struct{}

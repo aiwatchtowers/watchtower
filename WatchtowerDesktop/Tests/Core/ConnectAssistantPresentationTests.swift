@@ -114,6 +114,14 @@ struct ConnectAssistantPresentationTests {
         #expect([pkce.confirm, pkce.cancel] == ["Confirm", "Cancel"])
         #expect(publish.question == "Publish the setup for Acme?")
         #expect(publish.detail == "Everyone at Acme will see the Slack app's new About text.")
+
+        let changes = ["Add scopes: reactions:read", "Turn on PKCE sign-in"]
+        guard case .confirm(let update) = slack(.confirm(.slackUpdate(changes: changes, pkce: true))).card,
+              case .confirm(let same) = slack(.confirm(.slackUpdate(changes: [], pkce: false))).card
+        else { Issue.record("no update card"); return }
+        #expect(update.question == "Update the company's Slack app?")
+        #expect(update.detail == "Add scopes: reactions:read. Turn on PKCE sign-in. PKCE can't be turned off again.")
+        #expect(same.detail == "Its settings already match Watchtower's.")
     }
 
     @Test("done counts the service's accounts in its own word")
