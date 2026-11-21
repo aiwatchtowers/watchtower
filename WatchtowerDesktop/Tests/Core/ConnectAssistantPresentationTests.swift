@@ -64,6 +64,13 @@ struct ConnectAssistantPresentationTests {
         #expect(waiting.actions.map(\.title) == ["Cancel"])
     }
 
+    @Test("listening: the agent waits on the composer, no status line, Cancel stays")
+    func listening() {
+        let listening = slack(.listening)
+        #expect(listening.status == nil && listening.card == nil && listening.intro == nil)
+        #expect(listening.actions.map(\.title) == ["Cancel"])
+    }
+
     @Test("every failure offers Retry and Set up by hand")
     func failed() {
         let quota = slack(.failed(.quota))
