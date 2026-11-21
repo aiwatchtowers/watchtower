@@ -19,6 +19,7 @@ The first real night with Watchman (2026-11-20) showed four gaps. This spec clos
 - D4 — The stall ping must tell a stopped agent from one whose sub-agents or background jobs still run (ask #1699, owner's comment "надо понимать что бегут там агенты или фоновая задача"). The thresholds (3 min, 3 pings) were this spec's proposal, **approved with the spec (ask #1705)** (he answered "тут надо смотреть"); they are constants in one place (`watchmanact.StallAfter`, `StallMaxPings`) so a later change is one line.
 - D5 — **Approved with the spec (ask #1705):** asks, checks, handovers and reviews asked while learning **wait queued** instead of being parked and requeued later — the outcome ask #1699 approved ("decided after learning") with one state fewer. Permission prompts are the exception: they keep parking to the owner while learning (§3), since an agent blocks on one.
 - D6 — **Approved with the spec (ask #1705):** the PROJ-13 amendment of §4a (a handed session reads the owner as away in the Stop guard).
+- D8 — No mode word on the arming surfaces: "Sleep" (phase 2's only mode) means nothing to the owner (conversation, 2026-11-21). The strip chip reads `Watchman · since <HH:MM>` (no time: `Watchman · on`), the target panel `Watchman has this target · since <HH:MM>`, the tray `Watchman · since <HH:MM> · <n> sessions`; `WatchmanArmingCopy.sleepSince` becomes `since(_:)`. Done in Task 2b.
 - D7 — The instruction outlives **Take back** (stored per session/target, not on the arming row), so handing over again pre-fills it (review round 1).
 
 ## 1. Icon (Task 1)
@@ -71,7 +72,7 @@ All copy lives in `WatchmanArmingCopy` (WatchtowerCore) with tests.
 - Learning starts when Watchman is turned on for a workbench, by any of: Settings **Start Learning**, `watchman learn --start`, the first hand-over on the workbench. All three already set `watchman_workbenches.enabled_at`; they now also wake the daemon.
 - A new daemon goroutine, the **learner** (`startWatchmanLearner`), woken by that wake and checked each cycle: for each workbench that is on and not learned (`learned_through` unset or `relabel_pending > 0`), it runs `watchman.Learn` and the relabel pass batch after batch with no time budget until both are done. Between batches it checks the context (shutdown) and background-AI consent (BGAI-01: paused → it stops and resumes on the next wake or cycle).
 - One learner at a time per workbench: the learner and `watchman learn --start`'s own pass take `<workspace>/watchman/learn-<workbench>.lock` (flock, non-blocking); the other skips. The per-cycle `phaseWatchmanLearn` then handles only learned workbenches (new decisions, 5-min budget as today).
-- Progress shows as today: Settings `Learning… <written> of <estimated>`; the strip chip of an armed session on a workbench still learning reads `Watchman · learning <p>%` instead of `Sleep since <HH:MM>`.
+- Progress shows as today: Settings `Learning… <written> of <estimated>`; the strip chip of an armed session on a workbench still learning reads `Watchman · learning <p>%` instead of `since <HH:MM>`.
 
 ### Questions asked meanwhile (D5)
 

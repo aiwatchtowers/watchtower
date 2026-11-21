@@ -88,7 +88,7 @@ enum WatchmanTuningMockCopy {
         + "wait and are decided once it finishes — or answer them yourself."
     static let analyticsLine = "Agent analytics turned on — Watchman learns from your sessions"
     static let limitsLine = "Merges to main, releases, pushes of tags and outward messages always wait for you"
-    static let stripArmed = "Watchman · Sleep since 23:10"
+    static let stripArmed = "Watchman · since 23:10"
     static let stripLearning = "Watchman · learning 42%"
     static let instructionButton = "Instruction…"
     static let takeBack = "Take back"
