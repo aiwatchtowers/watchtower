@@ -99,7 +99,7 @@ text: Once a session finishes, its merged or pushed worktrees go, and kept ones 
 area: development
 level: next
 kind: feature
-since: next
+since: 0.29.1
 action: nav:projects
 -->
 

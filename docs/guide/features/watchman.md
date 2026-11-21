@@ -63,7 +63,7 @@ text: Press **Hand to Watchman** on a session's strip, say what it should prefer
 area: development
 level: power
 kind: feature
-since: next
+since: 0.29.1
 replaces: [watchman-hand-over]
 changed: Each hand-over takes an instruction, learning runs first, and a stopped agent is nudged.
 -->
