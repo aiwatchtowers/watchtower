@@ -773,12 +773,16 @@ final class WatchmanArmingTests: XCTestCase {
         let runner = ArmingRunner(status: Self.unarmed)
         runner.reply("check", #"{"ok":true,"first_time":false,"sessions":[]}"#)
         let center = await center(runner)
-        let reads = ReadCounter()
-        /// #4's read waits on `gate` once `entered` opens; others answer at once.
+        var reads = ReadCounter()
+        /// Only the first read of #4 waits on `gate` (once `entered` opens);
+        /// every other read answers at once, so a broken guard fails an
+        /// assertion instead of hanging on the closed gate.
         func slowTarget(_ entered: AsyncGate, _ gate: AsyncGate) {
+            let counter = ReadCounter()
+            reads = counter
             center.readInstruction = { scope in
-                await reads.add()
-                if scope == .target(4) {
+                let first = await counter.add(scope) == 1
+                if scope == .target(4), first {
                     entered.release()
                     await gate.wait()
                 }
@@ -797,7 +801,7 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertFalse(again, "the same scope's sheet is opening")
         gate.release()
         await first.value
-        let count = await reads.count
+        let count = await reads.count(.target(4))
         XCTAssertEqual(count, 1)
         let sheet = try XCTUnwrap(center.sheet)
         XCTAssertEqual(sheet.content.mode, .edit)
@@ -834,6 +838,25 @@ final class WatchmanArmingTests: XCTestCase {
         gate.release()
         await late.value
         XCTAssertNil(center.sheet)
+
+        // A stale open does not block a fresh one: #4's slow read, #5's
+        // sheet opened and cancelled, then #4 clicked again reads anew and
+        // opens; the old read's late completion changes nothing.
+        entered = AsyncGate()
+        gate = AsyncGate()
+        slowTarget(entered, gate)
+        let stale = Task { await center.editInstruction(.target(4)) }
+        await entered.wait()
+        await center.editInstruction(.session(5))
+        center.sheet = nil // Cancel
+        await center.editInstruction(.target(4))
+        let fresh = try XCTUnwrap(center.sheet, "the fresh click opens its sheet")
+        XCTAssertEqual(fresh.scope, .target(4))
+        let freshReads = await reads.count(.target(4))
+        XCTAssertEqual(freshReads, 2, "a new read")
+        gate.release()
+        await stale.value
+        XCTAssertEqual(center.sheet?.token, fresh.token, "the stale completion is ignored")
     }
 
     /// The tray's confirm re-check failing, or finding nothing running,
@@ -1015,8 +1038,15 @@ final class WatchmanArmingTests: XCTestCase {
 
 /// How many instruction reads a test's reader served.
 private actor ReadCounter {
-    private(set) var count = 0
-    func add() { count += 1 }
+    private var counts: [WatchmanArmScope: Int] = [:]
+
+    /// Counts a read of `scope`; its number among `scope`'s reads.
+    func add(_ scope: WatchmanArmScope) -> Int {
+        counts[scope, default: 0] += 1
+        return counts[scope] ?? 0
+    }
+
+    func count(_ scope: WatchmanArmScope) -> Int { counts[scope] ?? 0 }
 }
 
 private extension WatchmanCenter {

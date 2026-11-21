@@ -61,8 +61,22 @@ final class WatchmanCenter {
     /// Bumped by every sheet change (opened, replaced, cancelled): a sheet
     /// whose read started before one is not opened.
     @ObservationIgnored private var sheetGeneration = 0
-    /// Scopes whose sheet is being opened (the check, the read).
-    @ObservationIgnored private var opening: Set<WatchmanArmScope> = []
+    /// Scopes whose sheet is being opened (the check, the read), with the
+    /// sheet generation each open started in. An open that another sheet
+    /// made stale (the generation moved on) no longer blocks a fresh one.
+    @ObservationIgnored private var opening: [WatchmanArmScope: Int] = [:]
+
+    /// Starts opening `scope`'s sheet; nil while a current open of it runs.
+    private func beginOpening(_ scope: WatchmanArmScope) -> Int? {
+        if let started = opening[scope], started == sheetGeneration { return nil }
+        opening[scope] = sheetGeneration
+        return sheetGeneration
+    }
+
+    /// Ends an open: only its own entry (a fresh open may have replaced it).
+    private func endOpening(_ scope: WatchmanArmScope, _ generation: Int) {
+        if opening[scope] == generation { opening[scope] = nil }
+    }
     /// The sheet's confirm runs now (the check again, the arm or the save):
     /// its buttons wait.
     private(set) var confirming = false
@@ -269,10 +283,9 @@ final class WatchmanCenter {
     @discardableResult
     func handTo(_ scope: WatchmanArmScope, workbench: String?, title: String? = nil) async -> Bool {
         if sheet != nil { return true }
-        guard !opening.contains(scope), armingHere.insert(scope).inserted else { return false }
-        opening.insert(scope)
-        defer { opening.remove(scope) }
-        let generation = sheetGeneration
+        if let started = opening[scope], started == sheetGeneration { return false }
+        guard armingHere.insert(scope).inserted, let generation = beginOpening(scope) else { return false }
+        defer { endOpening(scope, generation) }
         armNotices[scope] = nil
         let check = await check(scope)
         armingHere.remove(scope)
@@ -324,9 +337,8 @@ final class WatchmanCenter {
     /// with the scope's stored instruction (`storedInstruction`).
     /// The same one-sheet rule as `handTo`.
     func editInstruction(_ scope: WatchmanArmScope, title: String? = nil) async {
-        guard scope != .allRunning, sheet == nil, opening.insert(scope).inserted else { return }
-        defer { opening.remove(scope) }
-        let generation = sheetGeneration
+        guard scope != .allRunning, sheet == nil, let generation = beginOpening(scope) else { return }
+        defer { endOpening(scope, generation) }
         let stored = await storedInstruction(scope)
         guard sheet == nil, sheetGeneration == generation else { return }
         sheet = WatchmanArmSheetRequest(
