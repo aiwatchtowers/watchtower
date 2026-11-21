@@ -699,6 +699,17 @@ func TestProj13_CodexAskGuardStopUsesLastAssistantMessage(t *testing.T) {
 		assert.Equal(t, guardBlock(t, askGuardReasonAway), out)
 		assert.Nil(t, storedChatQuestion(t, database, row))
 	})
+	t.Run("armed with the owner present: sent back", func(t *testing.T) {
+		database, _, row := codexRowFixture(t, codexTUISession)
+		setOwnerPresence(t, database, row, time.Now())
+		armSessionForGuard(t, database, row)
+		useAskGuardGen(t, &stubAskGuardGen{reply: e1Verdict})
+
+		out, _ := runCodexAskStop(t, codexPayload(t, "stop", map[string]any{"last_assistant_message": e1Message}))
+
+		assert.Equal(t, guardBlock(t, askGuardReasonAway), out)
+		assert.Nil(t, storedChatQuestion(t, database, row))
+	})
 	t.Run("continued turn: never blocks", func(t *testing.T) {
 		_, _, _ = codexRowFixture(t, codexTUISession)
 		useAskGuardGen(t, &stubAskGuardGen{reply: verdictJSON("full")})
