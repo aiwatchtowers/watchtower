@@ -860,18 +860,42 @@ func TestALinkLeftOpenByAnEarlierRunIsClosedAtTheNextBuild(t *testing.T) {
 	r := newCKRig(t)
 	r.issueCK()
 	next := r.ckCenter(DefaultSweep)
-	if err := next.CloseLink(r.ctx, r.s, CloseRestart); err != nil {
+	if err := next.CloseOnStart(r.ctx, r.s); err != nil {
 		t.Fatal(err)
 	}
 	if r.s.isOpen() {
 		t.Error("left open")
 	}
 	r.s.takeCalls()
-	if err := next.CloseLink(r.ctx, r.s, CloseRestart); err != nil {
+	if err := next.CloseOnStart(r.ctx, r.s); err != nil {
 		t.Fatal(err)
 	}
 	if calls := r.s.takeCalls(); len(calls) != 0 {
 		t.Errorf("a closed link needs no share call: %v", calls)
+	}
+}
+
+// A code issued before the start's close ran (a pairing that came first)
+// is this run's: the start's close leaves its public link open, the code on
+// screen and the sweep marked, so its own close (or the stop's) closes it.
+func TestTheStartsCloseLeavesACodeThisRunIssued(t *testing.T) {
+	r := newCKRig(t)
+	p := r.issueCK()
+	r.s.takeCalls()
+	if err := r.c.CloseOnStart(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if calls := r.s.takeCalls(); len(calls) != 0 {
+		t.Errorf("the start's close made share calls: %v", calls)
+	}
+	if !r.s.isOpen() || !r.c.LinkUrgent() || r.sweepMark() != "1" {
+		t.Fatalf("open %v urgent %v mark %q: the start's close shut this run's code", r.s.isOpen(), r.c.LinkUrgent(), r.sweepMark())
+	}
+	if err := r.c.CloseOnStop(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() {
+		t.Errorf("the stop left code %s's link open", p.Nonce)
 	}
 }
 

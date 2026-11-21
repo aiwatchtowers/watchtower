@@ -166,8 +166,10 @@ func (h *hubRuntime) passTick(ctx context.Context) {
 }
 
 // cloudKitStart closes, once at start, a CloudKit link an earlier run left
-// open (a crash with the QR on screen): CloseLink(CloseRestart), which
-// sweeps only when the sweep is marked pending (worker only).
+// open (a crash with the QR on screen): link.Center.CloseOnStart, which
+// sweeps only when the sweep is marked pending and leaves alone a code this
+// run already issued (a pair can come before the worker gets here) (worker
+// only).
 func (h *hubRuntime) cloudKitStart(ctx context.Context) {
 	s, ok := h.shares()
 	if !ok {
@@ -175,7 +177,7 @@ func (h *hubRuntime) cloudKitStart(ctx context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	if err := h.center.CloseLink(ctx, s, link.CloseRestart); err != nil {
+	if err := h.center.CloseOnStart(ctx, s); err != nil {
 		log.Printf("hub: closing the link an earlier run left open failed (%s): retried", errClass(err))
 	}
 }

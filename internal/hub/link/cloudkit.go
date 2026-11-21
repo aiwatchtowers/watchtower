@@ -175,6 +175,10 @@ type ckState struct {
 	codeGen uint64
 	// issuing counts the IssueCloudKit calls running (the Swift issuing).
 	issuing int
+	// issued: this center began opening the public link for a CloudKit
+	// code; from then on the link is this run's, so the start's close of an
+	// earlier run's link (CloseOnStart) stands down.
+	issued bool
 	// graceEnd: an answering close's grace runs until then.
 	graceEnd time.Time
 	// sweepAt: a deferred sweep (the grace's end, a retry, an unlink) is due
@@ -276,6 +280,7 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 	// a refused one leaves both as they were.
 	c.ck.mu.Lock()
 	c.ck.sweepAt, c.ck.sweepTries, c.ck.linkCloseAt, c.ck.linkCloseTries = time.Time{}, 0, time.Time{}, 0
+	c.ck.issued = true
 	c.ck.mu.Unlock()
 	c.setRetired(retiredCode{}) // the new code retires every open one: their hellos read expired_code
 	fields := &cloudKitFields{container: c.container, ownerUser: owner}
@@ -576,6 +581,30 @@ func (c *Center) CloseLink(ctx context.Context, s transport.Shares, reason Close
 	c.ck.open = nil
 	c.ck.mu.Unlock()
 	return c.closeLink(ctx, s, reason, closed, closeScope{})
+}
+
+// CloseOnStart closes, once at a run's start, a link an earlier run left
+// open (a crash with the QR on screen): CloseLink(CloseRestart), which
+// sweeps only when the sweep is marked pending. It runs one at a time with
+// IssueCloudKit and stands down (nil, no share call) once this center began
+// a CloudKit code: a pairing can come before the start's close runs, and its
+// code's link and sweep mark are then this run's — closing them would take
+// the code off screen with its public link shut, and a stop would find no
+// code to close.
+func (c *Center) CloseOnStart(ctx context.Context, s transport.Shares) error {
+	select {
+	case c.issueSem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-c.issueSem }()
+	c.ck.mu.Lock()
+	issued := c.ck.issued
+	c.ck.mu.Unlock()
+	if issued {
+		return nil
+	}
+	return c.CloseLink(ctx, s, CloseRestart)
 }
 
 // CloseOnStop closes the link of a code still on screen when the hub stops
