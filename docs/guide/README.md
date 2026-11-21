@@ -118,6 +118,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [iPhone: permission prompts and interrupts](features/iphone-agent-prompts.md) — allow or deny a Claude Code permission prompt and interrupt a working agent from your phone
 - [iPhone: AI chat](features/iphone-chat.md) — ask and read your AI chats from the phone; a turn started there is answered by your Mac. Needs Relay, which isn't in the current version of Watchtower for iPhone
 - [iPhone: the workchat](features/iphone-workbench.md) — follow a session's chat, answer what waits on you and write to the agent from your phone, even while it works
+- [iPhone: what the agent is doing](features/iphone-workchat-live.md) — see the step an agent runs now, the turn's steps and each subagent's work on your phone
 - [iPhone: changes that are not delivered](features/iphone-not-delivered.md) — what Waiting to send and Not delivered mean on the phone, Retry and Dismiss All
 - [iPhone: work alerts](features/iphone-alerts.md) — alerts when work stops while you are away from your Mac; tap one to open its ask or session
 - [iPhone: Relay](features/iphone-relay.md) — Relay isn't in the current version of Watchtower for iPhone.

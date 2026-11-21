@@ -44,9 +44,24 @@ func AskLookupFor(d *db.DB, workbenchID int64) AskLookup {
 // one-off drill-in: it parses every subagent on the way, correctness over
 // speed.
 func FindSubagent(convs []Conversation, toolUseID string) (*Result, string, error) {
+	res, path, _, err := FindSubagentReads(convs, toolUseID)
+	return res, path, err
+}
+
+// FindSubagentReads is FindSubagent that also returns every file and
+// directory it read on the way (Feed.Paths' meaning): the parent
+// transcripts, sidecars and subagents directories, each subagent transcript
+// parsed, and each Codex rollout and child rollout read.
+func FindSubagentReads(convs []Conversation, toolUseID string) (*Result, string, []string, error) {
+	reads := &readSet{}
+	res, path, err := findSubagentIn(convs, toolUseID, reads)
+	return res, path, reads.list, err
+}
+
+func findSubagentIn(convs []Conversation, toolUseID string, reads *readSet) (*Result, string, error) {
 	for _, c := range convs {
 		if c.Codex {
-			res, path, err := findCodexSubagent(c, toolUseID, 0)
+			res, path, err := findCodexSubagent(c, toolUseID, 0, reads)
 			if err != nil {
 				return nil, "", err
 			}
@@ -59,8 +74,9 @@ func FindSubagent(convs []Conversation, toolUseID string) (*Result, string, erro
 		if err != nil {
 			return nil, "", err
 		}
+		reads.add(feed.Paths...)
 		dir := strings.TrimSuffix(c.Path, ".jsonl")
-		res, path, err := findSubagent(dir, feed.Subagents, toolUseID, 0)
+		res, path, err := findSubagent(dir, feed.Subagents, toolUseID, 0, reads)
 		if err != nil {
 			return nil, "", err
 		}
@@ -71,7 +87,7 @@ func FindSubagent(convs []Conversation, toolUseID string) (*Result, string, erro
 	return nil, "", fmt.Errorf("subagent %s not found", toolUseID)
 }
 
-func findSubagent(sessionDir string, entries []Entry, toolUseID string, depth int) (*Result, string, error) {
+func findSubagent(sessionDir string, entries []Entry, toolUseID string, depth int, reads *readSet) (*Result, string, error) {
 	for _, e := range entries {
 		ref := e.Subagent
 		if e.Kind != KindSubagent || ref == nil || ref.AgentID == "" {
@@ -83,6 +99,9 @@ func findSubagent(sessionDir string, entries []Entry, toolUseID string, depth in
 		}
 		path := filepath.Join(sessionDir, "subagents", "agent-"+ref.AgentID+".jsonl")
 		res, err := ParseSubagent(path, ref.ParentReport)
+		if err == nil {
+			reads.add(path)
+		}
 		if err != nil {
 			if match {
 				return nil, "", err
@@ -93,14 +112,14 @@ func findSubagent(sessionDir string, entries []Entry, toolUseID string, depth in
 		if match {
 			return res, path, nil
 		}
-		if found, foundPath, err := findSubagent(sessionDir, res.Entries, toolUseID, depth+1); err != nil || found != nil {
+		if found, foundPath, err := findSubagent(sessionDir, res.Entries, toolUseID, depth+1, reads); err != nil || found != nil {
 			return found, foundPath, err
 		}
 	}
 	return nil, "", nil
 }
 
-func findCodexSubagent(c Conversation, selector string, depth int) (*Result, string, error) {
+func findCodexSubagent(c Conversation, selector string, depth int, reads *readSet) (*Result, string, error) {
 	if depth >= MaxSubagentDepth || !strings.HasPrefix(selector, "codex:") {
 		return nil, "", nil
 	}
@@ -108,13 +127,15 @@ func findCodexSubagent(c Conversation, selector string, depth int) (*Result, str
 	if err != nil {
 		return nil, "", err
 	}
+	reads.add(live.paths...)
 	// A broken sibling is irrelevant to a direct selection. Resolve all
 	// direct matches before descending into unrelated child branches.
 	for _, a := range live.Agents {
 		if a.Ref.ToolUseID != selector {
 			continue
 		}
-		path, ok := codexChildPath(c.Path, c.AgentSessionID, a.Ref.AgentID)
+		path, ok, examined := codexChildPath(c.Path, c.AgentSessionID, a.Ref.AgentID)
+		reads.add(examined...)
 		if !ok {
 			return nil, "", &selectedCodexSubagentError{fmt.Errorf("subagent transcript unavailable")}
 		}
@@ -123,6 +144,7 @@ func findCodexSubagent(c Conversation, selector string, depth int) (*Result, str
 		if err != nil {
 			return nil, "", &selectedCodexSubagentError{err}
 		}
+		reads.add(nested.paths...)
 		f, _, err := rollout.Open(path)
 		if err != nil {
 			return nil, "", &selectedCodexSubagentError{err}
@@ -136,12 +158,13 @@ func findCodexSubagent(c Conversation, selector string, depth int) (*Result, str
 		return res, path, nil
 	}
 	for _, a := range live.Agents {
-		path, ok := codexChildPath(c.Path, c.AgentSessionID, a.Ref.AgentID)
+		path, ok, examined := codexChildPath(c.Path, c.AgentSessionID, a.Ref.AgentID)
+		reads.add(examined...)
 		if !ok {
 			continue
 		}
 		child := Conversation{Path: path, AgentSessionID: a.Ref.AgentID, Codex: true}
-		res, path, err := findCodexSubagent(child, selector, depth+1)
+		res, path, err := findCodexSubagent(child, selector, depth+1, reads)
 		if res != nil {
 			return res, path, err
 		}

@@ -4,6 +4,7 @@ import DesignKit
 import SwiftUI
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerChatText
 
 /// Workchat agents and live steps (#2065), the built views: one shot per
 /// mockup state (`WorkchatAgentsMockShotFixtures`, `workchat-agents-NN-…`),

@@ -47,6 +47,9 @@ let package = Package(
         // generated Sources/WatchtowerRelayProto/relay.pb.swift: moving this
         // pin means `make relay-proto` again (VERSION line 2 must match).
         .package(url: "https://github.com/apple/swift-protobuf", exact: "1.39.0"),
+        // The Workchat live model and its presentation, shared with the Mac
+        // (#2112). WatchtowerKit links it; WatchtowerSync never does.
+        .package(path: "../WatchtowerChatText"),
     ],
     targets: [
         .target(
@@ -60,6 +63,7 @@ let package = Package(
             dependencies: [
                 "WatchtowerSync",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "WatchtowerChatText", package: "WatchtowerChatText"),
             ],
             // The session capability rows, a copy of Go's
             // internal/sessionagent/agent_capabilities.json

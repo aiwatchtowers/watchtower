@@ -2,6 +2,7 @@ import ChatUI
 import ChatWire
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// A subagent's run opened in place in the session chat pane: the task it
 /// was given, what it said on the way and its final report. Read when it
@@ -54,7 +55,7 @@ struct SessionChatSubagentView: View {
                              done: WorkchatLivePresentation.done(from: entries), paneKey: paneKey, memory: memory,
                              feedLoaded: !loading, feedError: error,
                              onRetry: { refreshID = UUID() }, onRetryList: { refreshID = UUID() },
-                             onOpenAgent: onOpenSubagent)
+                             onOpenAgent: onOpenSubagent, isWatched: isWatched)
         }
             .task(id: SessionSubagentFollowKey(follow: followKey, retry: refreshID, parentToolUseID: parentToolUseID)) {
                 await store.followSubagent(
@@ -91,6 +92,9 @@ struct SessionChatSubagentView: View {
                 if !isActive() { live = nil }
             }
     }
+
+    /// The follow's watch sees every change: the line is then current however quiet.
+    private func isWatched() -> Bool { store.isSubagentWatched(subagent.toolUseID) }
 
     @ViewBuilder
     private var content: some View {

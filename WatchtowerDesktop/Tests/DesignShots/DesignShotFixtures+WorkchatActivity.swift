@@ -3,6 +3,7 @@ import DesignKit
 import XCTest
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerChatText
 
 /// Proposed change only: a single caption line. No production view is changed.
 struct WorkchatLiveShotModel: Equatable {

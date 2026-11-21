@@ -864,7 +864,7 @@ report milestones of `session_timeline` — still follow the state change's `sig
 - **Bursts.** Requests sent while a pass runs cost exactly one follow-up pass, started at once: the wait that ends
   takes every pending signal of both kinds (`TestABurstOfUrgentSignalsDuringAPassMakesOneFollowUpPass`). Report
   requests start passes at most once per 60 s per session (`RequestSpacing`; a refused request sends no signal); a
-  chat pass reads only watches that are due (`Every` 3 s per watch), so a burst of chat requests reads nothing more.
+  chat pass reads only watches that are due, so a burst of chat requests reads nothing more.
   A pass in flight is not interrupted: the request waits for it to end (up to its runs' timeouts, 30 s per report).
 - **Failure modes.** The host closing mid-pass (the runner's ctx ends): the run in flight stores nothing and the
   request stays due with the network for the next pass (`TestSessionReportARequestCutByStopStaysDue`); the ended ctx
@@ -877,6 +877,15 @@ report milestones of `session_timeline` — still follow the state change's `sig
   first pass after the start runs every live session and every session without a stored report (offline, no gh) and
   republishes the stored reports (`TestSessionReportAChangeWhileTheHubWasOffRunsOnTheFirstPass`); the phone repeats
   `session_chat_request` every minute and may repeat a report request.
+- **Session chat reads on file events (#2112).** A watched chat is no longer read every 3 s: the `session_chat`
+  source holds an fsnotify watch on its transcript files only (no directory: kqueue opens every file of a watched
+  directory) and reads 250 ms after the last event, at most once per second while events keep coming
+  (`ChatTiming.Debounce`/`MinGap`, `chat_files.go`). The Wake loop (2 s) finds a new conversation by the session's
+  agent-session id set (one database query) and a stat on files not there yet, without reading a transcript. The 3 s
+  `Every` tick is a fallback only for files that cannot be watched, a running agent whose transcript is not resolved
+  or watched yet, a chat whose first read failed, and an agent record with nothing armed. Each read also carries the
+  live block (`activity_live`, FEED-05 widened) and echoes the request's `open_id`. Hub share from append to
+  `OnChange`: median 254 ms, p90 262 ms ([session-chat-feed.md](session-chat-feed.md), "The live line on the phone").
 - **Writers.** The cached report (sidecar `session_reports`) is written only by the report runner's loop
   (`save`, pruned by `RunDue`), and the session chat payloads only by the chat loop's `run`: background and requested
   passes are the same loop, serial, so the later pass's value wins. The request state (`reportEntry.networkRequested`,

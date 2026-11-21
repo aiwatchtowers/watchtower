@@ -223,6 +223,9 @@ type Options struct {
 	runnerGap    time.Duration       // 0 = the runners' standard 5 s
 	liveEvery    time.Duration       // 0 = livenessEvery
 	away         platform.Away       // nil = platform.NewAway(), the console's state
+	// chatWatcher is the session chat's file watcher (nil = fsnotify, which
+	// blocks in a syscall and so never lets a synctest bubble's clock move).
+	chatWatcher func() (sources.FileWatcher, error)
 	// payTimer is the PayingWatch's poll timer (nil = a real one).
 	payTimer func(time.Duration) (<-chan time.Time, func())
 	// soonTimer is the link check's short retry after a link change (nil =

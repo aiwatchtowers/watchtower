@@ -111,7 +111,7 @@ func TestSessionFeedJSON_PinnedKeys(t *testing.T) {
 		feedUser("u3", "<task-notification>\n<task-id>t1</task-id>\n<summary>CI done</summary>\n</task-notification>"),
 	)
 	got := fx.feedJSON(t)
-	assert.Equal(t, []string{"activity", "cursor", "entries", "live", "live_ok", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(got))
+	assert.Equal(t, []string{"activity", "cursor", "entries", "live", "live_ok", "paths", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(got))
 	entries := got["entries"].([]any)
 	require.Len(t, entries, 5)
 	assert.Equal(t, []string{"at", "conversation", "id", "kind", "text"}, feedKeys(entries[0].(map[string]any)))
@@ -223,7 +223,7 @@ func TestSessionFeed_SubagentDrillIn(t *testing.T) {
 
 	top := fx.feedJSON(t, "--subagent", "toolu_1")
 	assert.Equal(t, "", top["cursor"])
-	assert.Equal(t, []string{"activity", "cursor", "entries", "live", "live_ok", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(top))
+	assert.Equal(t, []string{"activity", "cursor", "entries", "live", "live_ok", "paths", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(top))
 	assert.Len(t, top["subagents"], 1)
 	assert.Equal(t, "toolu_2", top["subagents"].([]any)[0].(map[string]any)["id"])
 
@@ -300,6 +300,32 @@ func TestSessionFeed_ActivityOpenTool(t *testing.T) {
 	assert.Equal(t, "Bash", act["tool"])
 	assert.Equal(t, "make test", act["summary"])
 	assert.Equal(t, "2026-10-01T10:00:09Z", act["started_at"])
+}
+
+// After a /clear the activity line and the live snapshot read the last
+// conversation only (sessionfeed.ReadChat's LiveConv), also with a cursor
+// still inside the first one; paths stay absolute and listed once.
+func TestSessionFeed_LiveAndActivityReadTheLastConversation(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1", "conv-2")
+	fx.transcript(t, "conv-1", feedUser("u1", "go"),
+		feedToolUse("a1", "toolu_a", "Bash", map[string]any{"command": "make old"}))
+	fx.transcript(t, "conv-2", feedUser("u2", "again"),
+		feedToolUse("a2", "toolu_b", "Bash", map[string]any{"command": "make new"}))
+	for _, args := range [][]string{nil, {"--after", "conv-1:0"}} {
+		got := fx.feedJSON(t, args...)
+		act, ok := got["activity"].(map[string]any)
+		require.True(t, ok, "%v", got["activity"])
+		assert.Equal(t, "make new", act["summary"])
+		live, ok := got["live"].(map[string]any)
+		require.True(t, ok, "%v", got["live"])
+		assert.Equal(t, "conv-2", live["conversation"])
+		assert.Equal(t, "make new", live["current"].(map[string]any)["summary"])
+		paths := feedPaths(t, got)
+		assert.Equal(t, []string{filepath.Join(fx.dir, "conv-1.jsonl"), filepath.Join(fx.dir, "conv-2.jsonl")}, paths)
+		for _, p := range paths {
+			assert.True(t, filepath.IsAbs(p), p)
+		}
+	}
 }
 
 func TestActivity_EmptyTailKeepsOpenTool(t *testing.T) {
@@ -410,4 +436,82 @@ func TestSessionFeed_TailFlagRules(t *testing.T) {
 	_, err = fx.run(t, "--tail", "2", "--subagent", "toolu_x")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "none of the others can be")
+}
+
+func feedPaths(t *testing.T, m map[string]any) []string {
+	t.Helper()
+	raw, ok := m["paths"].([]any)
+	require.True(t, ok, "paths is a list: %v", m["paths"])
+	out := make([]string, 0, len(raw))
+	for _, p := range raw {
+		out = append(out, p.(string))
+	}
+	return out
+}
+
+// paths names what a watcher needs: the conversation transcript, the
+// session's subagents directory and the transcript of each subagent read.
+func TestSessionFeed_JSONPrintsPaths(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1")
+	conv := filepath.Join(fx.dir, "conv-1.jsonl")
+	fx.transcript(t, "conv-1", feedUser("u1", "go"),
+		feedToolUse("a1", "toolu_1", "Agent", map[string]any{"subagent_type": "Explore", "description": "look"}))
+	subDir := filepath.Join(fx.dir, "conv-1", "subagents")
+	require.NoError(t, os.MkdirAll(subDir, 0o755))
+	meta := filepath.Join(subDir, "agent-aa.meta.json")
+	require.NoError(t, os.WriteFile(meta, []byte(`{"toolUseId":"toolu_1","finished":false,"agentType":"Explore"}`), 0o600))
+	agent := filepath.Join(subDir, "agent-aa.jsonl")
+	require.NoError(t, os.WriteFile(agent, []byte(feedUser("s1", "task")), 0o600))
+
+	got := feedPaths(t, fx.feedJSON(t))
+	assert.Equal(t, []string{conv, subDir, meta, agent}, got)
+	for _, p := range got {
+		assert.True(t, filepath.IsAbs(p), p)
+	}
+
+	// The drill-in reads the subagent's transcript, the directory and its
+	// sidecars, and the parent transcript it found the marker in.
+	sub := feedPaths(t, fx.feedJSON(t, "--subagent", "toolu_1"))
+	assert.Equal(t, agent, sub[0])
+	assert.ElementsMatch(t, []string{agent, subDir, meta, conv}, sub)
+}
+
+// A /clear: conv-1's markers stay in the subagents list, read from its
+// sidecars, so its directory and meta files stay listed — also when the
+// cursor is past conv-1 and when the live snapshot of conv-2 fails.
+func TestSessionFeed_JSONPathsKeepEarlierConversationSidecars(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1", "conv-2")
+	fx.transcript(t, "conv-1", feedUser("u1", "go"),
+		feedToolUse("a1", "toolu_1", "Agent", map[string]any{"subagent_type": "Explore", "description": "look"}))
+	fx.transcript(t, "conv-2", `{"type":"future_record"}`+"\n")
+	subDir := filepath.Join(fx.dir, "conv-1", "subagents")
+	require.NoError(t, os.MkdirAll(subDir, 0o755))
+	meta := filepath.Join(subDir, "agent-aa.meta.json")
+	require.NoError(t, os.WriteFile(meta, []byte(`{"toolUseId":"toolu_1","finished":false,"agentType":"Explore"}`), 0o600))
+	c1, c2 := filepath.Join(fx.dir, "conv-1.jsonl"), filepath.Join(fx.dir, "conv-2.jsonl")
+
+	full := fx.feedJSON(t)
+	assert.Equal(t, false, full["live_ok"], "conv-2 has no activity records: the snapshot fails")
+	assert.Equal(t, []string{c1, subDir, meta, c2}, feedPaths(t, full))
+	after := fx.feedJSON(t, "--after", full["cursor"].(string))
+	assert.Equal(t, []string{subDir, meta, c2}, feedPaths(t, after))
+}
+
+func TestSessionFeed_JSONPathsWithoutSubagentsDir(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1")
+	fx.transcript(t, "conv-1", feedUser("u1", "hello"), feedAgent("a1", "m1", "hi"))
+	got := feedPaths(t, fx.feedJSON(t))
+	assert.Equal(t, []string{filepath.Join(fx.dir, "conv-1.jsonl")}, got)
+}
+
+// A conversation before the cursor is not read, so it is not listed.
+func TestSessionFeed_JSONPathsAfterCursorOnlyRead(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1", "conv-2")
+	fx.transcript(t, "conv-1", feedUser("u1", "one"))
+	fx.transcript(t, "conv-2", feedUser("u2", "two"))
+	c1, c2 := filepath.Join(fx.dir, "conv-1.jsonl"), filepath.Join(fx.dir, "conv-2.jsonl")
+	full := fx.feedJSON(t)
+	assert.Equal(t, []string{c1, c2}, feedPaths(t, full))
+	after := fx.feedJSON(t, "--after", full["cursor"].(string))
+	assert.Equal(t, []string{c2}, feedPaths(t, after))
 }

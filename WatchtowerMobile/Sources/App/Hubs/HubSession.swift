@@ -182,6 +182,8 @@ final class HubSession {
     let overlays: OverlayBook
     /// The owner's unsent ask answers, per ask: they survive navigation.
     let askDrafts = AskDraftStore()
+    /// The owner's steps toggles on the workchat's live line, per session (#2112 spec §5).
+    let workchatSteps = WorkchatStepsMemory()
     /// The phone's ask answers and what the Mac did with them.
     let askAnswerer: AskAnswerer
     /// The phone's session starts (with their progress) and stops.
@@ -564,7 +566,8 @@ final class HubSession {
             transport: secure, store: store, deviceID: device?.deviceID, route: route ?? .cloudKit(.private), now: now)
         self.outbox = outbox
         reportRequests = SessionReportRequester.sending(through: outbox)
-        chatRequests = SessionChatRequester.sending(through: outbox, store: store)
+        // The demo's records answer no request: no hub echoes an `open_id` there.
+        chatRequests = SessionChatRequester.sending(through: outbox, store: store, hubEchoesOpenID: backend != .inMemoryDemo)
         (overlays, boardWriter, askAnswerer) = Self.makeWriters(outbox: outbox, store: store, drafts: askDrafts, hubID: hubID, route: route)
         sessionStarts = SessionStarter.sending(through: outbox, store: store)
         sessionInputs = SessionInputSender.sending(through: outbox, store: store)

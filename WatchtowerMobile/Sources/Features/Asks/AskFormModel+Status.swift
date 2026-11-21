@@ -54,4 +54,35 @@ extension AskFormModel {
         if case .notOpen = status { return true }
         return false
     }
+
+    // MARK: - The bottom bar
+
+    /// What the ask's bottom bar holds (#2114): its main action, Previous, Close without answering and the footer.
+    struct Bar: Equatable {
+        enum Main: Equatable {
+            /// Next question, on a question page before the last.
+            case next
+            case send
+            /// The review's note over Request changes · Approve.
+            case verdicts
+            /// None: a too-large ask is answered on the Mac; the bar is Close without answering alone.
+            case none
+        }
+
+        let main: Main
+        let showsPrevious: Bool
+        let showsClose: Bool
+        /// "The answer is typed into the session on the tower"; not under a bar that sends no answer.
+        let showsFooter: Bool
+    }
+
+    static func bar(open: Bool, tooLarge: Bool, question: QuestionPage?, isReview: Bool, showsClose: Bool) -> Bar? {
+        guard open else { return nil }
+        if tooLarge {
+            return showsClose ? Bar(main: .none, showsPrevious: false, showsClose: true, showsFooter: false) : nil
+        }
+        let previous = !isReview && (question?.index ?? 0) > 0
+        let main: Bar.Main = isReview ? .verdicts : question.map { $0.isLast ? .send : .next } ?? .send
+        return Bar(main: main, showsPrevious: previous, showsClose: showsClose, showsFooter: true)
+    }
 }

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -223,6 +224,37 @@ func TestRequestKindsAreRegisteredWithNudges(t *testing.T) {
 	for _, k := range []string{"session_report_request", "session_chat_request"} {
 		if len(NudgeTable[k]) == 0 {
 			t.Fatalf("%s has no NudgeTable entry", k)
+		}
+	}
+}
+
+// recordingWatches keeps every Watch call.
+type recordingWatches struct {
+	*ChatWatchRegistry
+	got []ChatWatch
+}
+
+func (w *recordingWatches) Watch(cw ChatWatch) {
+	w.got = append(w.got, cw)
+	w.ChatWatchRegistry.Watch(cw)
+}
+
+// open_id names the opening of the chat screen: it reaches the source with
+// the watch; a non-text or over-long one is refused.
+func TestChatRequestPassesOpenID(t *testing.T) {
+	r := newReqEnv(t)
+	r.windows.published[7] = true
+	rec := &recordingWatches{ChatWatchRegistry: r.watches}
+	r.h.d.ChatWatches = rec
+
+	wantOutcome(t, r.chat(7, map[string]any{"open_id": "open-1"}, 0), wire.StatusApplied, "")
+	wantOutcome(t, r.chat(7, nil, 0), wire.StatusApplied, "")
+	if len(rec.got) != 2 || rec.got[0].OpenID != "open-1" || rec.got[1].OpenID != "" {
+		t.Fatalf("watches = %+v", rec.got)
+	}
+	for name, v := range map[string]any{"number": 3, "empty": "", "too long": strings.Repeat("x", maxOpenID+1)} {
+		if got := r.chat(7, map[string]any{"open_id": v}, 0); got.Reason != reasonInvalidParams {
+			t.Errorf("%s open_id: outcome = %+v, want invalid_params", name, got)
 		}
 	}
 }

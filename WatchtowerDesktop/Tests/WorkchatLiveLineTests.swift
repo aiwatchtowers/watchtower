@@ -4,6 +4,7 @@ import XCTest
 import ViewInspector
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerChatText
 
 @MainActor
 final class WorkchatLiveLineTests: XCTestCase {

@@ -101,6 +101,7 @@ struct WorkchatModel: Equatable {
         permission: PermissionCardModel?,
         mac: MacReachability,
         now: Date,
+        tower: TowerFreshness = TowerFreshness(),
         sentRequestID: Int64? = nil,
         finishDelivery: SessionInputDelivery? = nil
     ) {
@@ -112,7 +113,11 @@ struct WorkchatModel: Equatable {
         banner = MacAwayBanner(mac, name: snapshot.heartbeat?.macName ?? "", now: now)
         finishNotice = finishDelivery.map { "Finish · \($0.resolved(for: session).text)" }
         entries = WorkchatAgents.dialog(chat?.entries ?? [])
-        agents = WorkchatAgents(entries: chat?.entries ?? [], sessionID: session.id)
+        agents = WorkchatAgents(
+            entries: chat?.entries ?? [], sessionID: session.id, live: chat?.activityLive, liveError: chat?.liveError,
+            sessionWorking: WorkchatLiveLine.working(session),
+            tower: tower, now: now
+        )
         let asks = snapshot.asks
             .filter { $0.status == .open && $0.sessionID == session.id }
             .sorted(by: WorkbenchReplicaSnapshot.newestFirst)

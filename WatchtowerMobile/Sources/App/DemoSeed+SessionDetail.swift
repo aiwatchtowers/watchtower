@@ -44,7 +44,33 @@ extension DemoSeed {
                 "text": "All 42 tests pass. Next I'll update the Desktop card so the link opens in the browser."
             ]
         ]
-        return ["session_id": 10, "live": true, "entries_more": 0, "entries": entries]
+        return [
+            "session_id": 10, "live": true, "entries_more": 0, "entries": entries,
+            "activity_live": workingLive(now: now), "live_version": 1
+        ]
+    }
+
+    /// The working session's live block (#2112, mockup L1): the turn's steps, the running one last.
+    static func workingLive(now: Date) -> [String: Any] {
+        let at: (TimeInterval) -> String = { now.addingTimeInterval(-$0).ISO8601Format() }
+        func step(_ id: Int, _ tool: String, _ summary: String, from start: TimeInterval, to end: TimeInterval?) -> [String: Any] {
+            var step: [String: Any] = ["id": "toolu_s\(id)", "tool": tool, "summary": summary, "started_at": at(start), "more": 0]
+            if let end { step["completed_at"] = at(end) }
+            return step
+        }
+        let steps = [
+            step(1, "Read", "internal/sessionreport/header.go", from: 107, to: 106),
+            step(2, "Grep", "\"renderHeader\" in internal/", from: 100, to: 99),
+            step(3, "Edit", "header.go", from: 90, to: 88),
+            step(4, "Edit", "header_test.go", from: 80, to: 78),
+            step(5, "Bash", "go build ./...", from: 60, to: 45),
+            step(6, "Bash", "go test ./internal/sessionreport", from: 12, to: nil)
+        ]
+        return [
+            "observed_at": at(1), "conversation": "demo-conversation", "turn_at": at(107), "turn_active": true,
+            "current": steps[5], "latest": steps[4], "agents": [] as [Any], "agents_state": "known", "agents_more": 0,
+            "steps": steps, "steps_more": 3
+        ]
     }
 
     static func sessionChatPayload(now: Date) -> [String: Any] {
