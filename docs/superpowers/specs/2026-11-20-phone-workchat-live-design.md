@@ -119,7 +119,7 @@ draining the battery.
 
 ### 3. Getting it to the phone (unchanged path)
 
-- A stored payload that differs calls `OnChange` → the publisher's fast lane → a save over the open relay socket →
+- A stored payload that differs calls `OnChange` → the publisher's `PublishSoon` (150 ms trailing debounce) → a save over the open relay socket →
   `ZoneChanged` with the inline record → the phone applies it (live link R1–R3). No new transport.
 - Coalescing (C3) keeps a busy turn to ≤ 1 save per second per chat, inside the relay's 50 ops/s per phone.
 
@@ -292,7 +292,7 @@ a `PASSWORD=` env and a `user:pass@` URL reaches the payload as `[secret]`); the
 | Sheet Working rows with step + timer; without `live` "Running" | `WorkchatAgents` test |
 | Badge from `live`, finished-in-live counts as done | `WorkchatAgents` test |
 | No new phone timer outside the visible line | review check + the tests in §9; energy log not run (needs a device, owner hand-off) |
-| Event-to-phone latency ~1 s | hub side measured (≥ 0.4 s to the saved record, relay + phone not included), see "Latency, as measured" below; relay + phone part is an owner hand-off |
+| Event-to-phone latency ~1 s | hub side measured (about 0.4 s to the saved record, relay + phone not included), see "Latency, as measured" below; relay + phone part is an owner hand-off |
 
 ### Latency, as measured (Task 10, 2026-11-21)
 
@@ -307,7 +307,8 @@ debounce plus about 4 ms of kqueue delivery, read and encode. It does not cover 
 actions, not transcript appends), and the stand's `wrangler` was not installed in the relay checkout on this machine.
 The stand's `nudge_saved` numbers (live-link.md) time the `PublishNow` path, which skips the 150 ms debounce
 `session_chat` goes through, and percentiles of separate runs do not add, so no end-to-end figure is derived from them.
-What is known: append → record saved is at least the measured hub time plus the 150 ms debounce (about 0.4 s),
+What is known: append → record saved is typically the measured hub time plus the 150 ms debounce (about 0.4 s; less
+when another kind dirtied the publisher earlier, since a debounce never waits past 1 s from its first mark),
 before the relay hop and the phone's apply. Left for the owner: the same leg on the real relay with the phone
 (append on the Mac → record applied on the phone, 10 samples), and the energy log above.
 
