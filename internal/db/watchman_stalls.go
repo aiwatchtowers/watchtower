@@ -30,8 +30,6 @@ type WatchmanStallRow struct {
 	// LastDelivery is how the last counted ping went: "submitted" or
 	// "typed" ("" = none since the last reset).
 	LastDelivery string
-	// ResetAt is the last progress or Mark done that reset the count.
-	ResetAt *time.Time
 }
 
 // wmStallTime keeps the stall stamps' nanoseconds, so a stop and the ping
@@ -60,10 +58,10 @@ func wmParseStallTime(column string, s sql.NullString) (*time.Time, error) {
 func (db *DB) WatchmanStall(sessionID int64) (*WatchmanStallRow, error) {
 	r := WatchmanStallRow{SessionID: sessionID}
 	var stopped string
-	var lastPing, parked, reset sql.NullString
-	err := db.QueryRow(`SELECT stopped_at, pings, last_ping_at, head, asks_seen, parked_at, last_delivery, reset_at
+	var lastPing, parked sql.NullString
+	err := db.QueryRow(`SELECT stopped_at, pings, last_ping_at, head, asks_seen, parked_at, last_delivery
 		FROM watchman_stalls WHERE session_id = ?`, sessionID).
-		Scan(&stopped, &r.Pings, &lastPing, &r.Head, &r.AsksSeen, &parked, &r.LastDelivery, &reset)
+		Scan(&stopped, &r.Pings, &lastPing, &r.Head, &r.AsksSeen, &parked, &r.LastDelivery)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -79,9 +77,6 @@ func (db *DB) WatchmanStall(sessionID int64) (*WatchmanStallRow, error) {
 	if r.ParkedAt, err = wmParseStallTime("parked_at", parked); err != nil {
 		return nil, err
 	}
-	if r.ResetAt, err = wmParseStallTime("reset_at", reset); err != nil {
-		return nil, err
-	}
 	return &r, nil
 }
 
@@ -95,13 +90,13 @@ func (db *DB) UpsertWatchmanStall(row WatchmanStallRow) error {
 
 func upsertWatchmanStall(ex sqlExecer, row WatchmanStallRow) error {
 	_, err := ex.Exec(`INSERT INTO watchman_stalls (session_id, stopped_at, pings, last_ping_at, head, asks_seen, parked_at,
-			last_delivery, reset_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			last_delivery)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_id) DO UPDATE SET stopped_at = excluded.stopped_at, pings = excluded.pings,
 			last_ping_at = excluded.last_ping_at, head = excluded.head, asks_seen = excluded.asks_seen,
-			parked_at = excluded.parked_at, last_delivery = excluded.last_delivery, reset_at = excluded.reset_at`,
+			parked_at = excluded.parked_at, last_delivery = excluded.last_delivery`,
 		row.SessionID, wmStallTime(row.StoppedAt), row.Pings, wmStallNullTime(row.LastPingAt), row.Head, row.AsksSeen,
-		wmStallNullTime(row.ParkedAt), row.LastDelivery, wmStallNullTime(row.ResetAt))
+		wmStallNullTime(row.ParkedAt), row.LastDelivery)
 	return err //nolint:wrapcheck // the callers name the session
 }
 

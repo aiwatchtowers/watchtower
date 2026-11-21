@@ -176,8 +176,7 @@ func TestParkWatchmanStall_RechecksArming(t *testing.T) {
 	wb := newTestWorkbench(t, d)
 	s := newTestSession(t, d, wb)
 	at := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
-	reset := at.Add(-time.Hour)
-	row := WatchmanStallRow{SessionID: s, StoppedAt: at.Add(-10 * time.Minute), Pings: 1, LastDelivery: "typed", ResetAt: &reset}
+	row := WatchmanStallRow{SessionID: s, StoppedAt: at.Add(-10 * time.Minute), Pings: 1, LastDelivery: "typed"}
 
 	parked, err := d.ParkWatchmanStall(row, 0, wb, "reason", at)
 	require.NoError(t, err)
@@ -199,8 +198,6 @@ func TestParkWatchmanStall_RechecksArming(t *testing.T) {
 	require.NotNil(t, st.ParkedAt)
 	assert.True(t, st.ParkedAt.Equal(at))
 	assert.Equal(t, "typed", st.LastDelivery)
-	require.NotNil(t, st.ResetAt)
-	assert.True(t, st.ResetAt.Equal(reset))
 }
 
 // A stall item waits for the owner (the Inbox count) until Mark done, and

@@ -493,8 +493,8 @@ func TestStall_TypedThenStuckParks(t *testing.T) {
 	}
 }
 
-// Mark done on a parked row, then a held offer: the stuck clock starts at
-// the reset, so it is not re-parked; the next submitted ping counts from 1.
+// Mark done on a parked row, then a held offer: the reset clears the last
+// ping, so it is not re-parked; the next submitted ping counts from 1.
 func TestStall_MarkDoneThenHeldOfferNotReparked(t *testing.T) {
 	e := newStallEnv(t)
 	at := e.parkAfterThreePings(stallT0)
@@ -504,7 +504,7 @@ func TestStall_MarkDoneThenHeldOfferNotReparked(t *testing.T) {
 	reset := at.Add(StallStuckAfter) // the stop is long past 9 min
 	e.check(reset)
 	st := e.row()
-	if st.ParkedAt != nil || st.Pings != 0 || st.ResetAt == nil || !st.ResetAt.Equal(reset) {
+	if st.ParkedAt != nil || st.Pings != 0 || st.LastPingAt != nil || st.LastDelivery != "" {
 		t.Fatalf("row = %+v, want reset and not parked", st)
 	}
 	e.port.set("", nil)
@@ -526,7 +526,7 @@ func TestStall_HeadMovedOnParkedRowResets(t *testing.T) {
 	e.setHead("beef00")
 	e.check(at.Add(StallAfter))
 	st := e.row()
-	if st.ParkedAt != nil || st.ResetAt == nil || st.Head != "beef00" {
+	if st.ParkedAt != nil || st.Head != "beef00" {
 		t.Fatalf("row = %+v, want reset by the HEAD move", st)
 	}
 	if st.Pings != 1 {
@@ -881,8 +881,12 @@ func TestStall_PingAfterResetKeepsHead(t *testing.T) {
 	e.setHead("beef00")
 	moved := at.Add(2 * time.Minute)
 	e.check(moved)
-	if st := e.row(); st.ResetAt == nil || !st.ResetAt.Equal(moved) || st.Head != "beef00" {
+	// Progress resets the count and the same stop is pinged once more.
+	if st := e.row(); st.Pings != 1 || st.LastPingAt == nil || !st.LastPingAt.Equal(moved) || st.Head != "beef00" {
 		t.Fatalf("row = %+v, want the commit seen as progress", st)
+	}
+	if n := len(e.port.delivered()); n != StallMaxPings+2 {
+		t.Fatalf("pings = %d, want %d", n, StallMaxPings+2)
 	}
 }
 
@@ -928,5 +932,67 @@ func TestStall_RowWriteFailedNotCounted(t *testing.T) {
 	}
 	if st := e.row(); st == nil || st.Pings != 1 {
 		t.Fatalf("row = %+v, want 1 ping", st)
+	}
+}
+
+// A ping delivered whose count cannot be written ends the tick: no stuck
+// park on the older typed ping the row still holds, though it is 9 min old.
+func TestStall_DeliveredNotSavedNoStuckPark(t *testing.T) {
+	e := newStallEnv(t)
+	e.port.set(askanswer.DeliverTyped, nil)
+	e.stop(stallT0)
+	typed := stallT0.Add(StallAfter)
+	e.check(typed)
+	if st := e.row(); st == nil || st.LastDelivery != askanswer.DeliveryTyped {
+		t.Fatalf("row = %+v, want the typed ping counted", st)
+	}
+	// The owner clears the line, the agent stops again; the count's write
+	// fails (a park, which keeps the count, would still be written).
+	e.port.set("", nil)
+	stop := typed.Add(time.Minute)
+	e.stop(stop)
+	_, err := e.db.Exec(`CREATE TRIGGER stall_write_fails BEFORE UPDATE ON watchman_stalls
+		WHEN NEW.pings <> OLD.pings BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
+	e.must(err)
+	at := typed.Add(StallStuckAfter + time.Minute)
+	if n := e.check(at); n != 2 {
+		t.Fatalf("offers = %d, want the ping delivered", n)
+	}
+	if st := e.row(); st.ParkedAt != nil || st.Pings != 1 {
+		t.Fatalf("row = %+v, want no park the tick a ping got through", st)
+	}
+	if n := len(e.stallItems()); n != 0 {
+		t.Fatalf("stall items = %d", n)
+	}
+}
+
+// HEAD unreadable in step 1, readable again on the fallback read before the
+// offer: a new commit there is progress — the count resets before the ping.
+func TestStall_RecoveredHeadIsProgress(t *testing.T) {
+	e := newStallEnv(t)
+	at := e.pingCycle(stallT0)
+	at = e.pingCycle(at.Add(time.Second))
+	if st := e.row(); st.Pings != 2 {
+		t.Fatalf("row = %+v, want 2 pings", st)
+	}
+	stop := at.Add(time.Second)
+	e.stop(stop)
+	// The hook runs after a read: the first read fails, the next sees a commit.
+	e.mu.Lock()
+	e.head, e.headErr = "", errors.New("git: index.lock")
+	e.mu.Unlock()
+	reads := 0
+	e.onHead = func() {
+		reads++
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		e.head, e.headErr = "beef00", nil
+	}
+	e.check(stop.Add(StallAfter))
+	if reads != 2 {
+		t.Fatalf("HEAD reads = %d, want the fallback read", reads)
+	}
+	if st := e.row(); st.Pings != 1 || st.Head != "beef00" || st.ParkedAt != nil {
+		t.Fatalf("row = %+v, want reset by the recovered HEAD and pinged once", st)
 	}
 }

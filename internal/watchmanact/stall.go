@@ -129,15 +129,18 @@ func (t *Twin) liveChildren(ctx context.Context, id int64) (int, error) {
 //
 //  1. progress first, on the stored count whatever the state: a new ask,
 //     the worktree's HEAD moved since the last ping, or the owner's Mark
-//     done on a parked row resets it (pings, park, last ping) and stamps
-//     reset_at, persisted at once;
+//     done on a parked row resets it (pings, park, last ping), persisted at
+//     once;
 //  2. the state: only a live run Resolve reads as stopped (its live
 //     sub-sessions counted) for StallAfter goes on;
 //  3. the decision: a parked row waits; after a stop later than the last
 //     ping, StallMaxPings counted → park with StallReason, else offer the
 //     ping through SubmitLineNow (never queued; the arming read again
-//     right before, WATCHMAN-04) — submitted or typed counts; and when no
-//     ping got through this tick and the last counted one was typed, a
+//     right before, WATCHMAN-04) — a delivered ping (submitted or typed)
+//     ends the tick, counted when its row is written; a HEAD step 1 could
+//     not read is read again first, and one that moved resets the count as
+//     step 1 would; and when no ping got through this tick and the last
+//     counted one was typed, a
 //     session stuck StallStuckAfter past that ping and the current stop
 //     parks with StallStuckReason.
 //
@@ -185,13 +188,7 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 			}
 		}
 		if progress {
-			st.Pings, st.ParkedAt, st.LastPingAt, st.LastDelivery, st.ResetAt = 0, nil, nil, "", &now
-			st.AsksSeen = asks
-			if head != "" {
-				st.Head = head
-			}
-			if err := t.d.DB.UpsertWatchmanStall(*st); err != nil {
-				log.Printf("watchman stall: %v", err)
+			if !t.resetStall(st, head, asks) {
 				return
 			}
 			parked = false
@@ -227,6 +224,13 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 	}
 
 	// 3. The decision.
+	if head == "" { // step 1 did not read it (a parked row just reset) or the read failed
+		head = t.readHead(ctx, s)
+		memo.headAt = now
+		if st != nil && head != "" && st.Head != "" && head != st.Head && !t.resetStall(st, head, asks) {
+			return
+		}
+	}
 	if st == nil {
 		st = &db.WatchmanStallRow{SessionID: id, Head: head, AsksSeen: asks}
 	}
@@ -235,9 +239,6 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 		if st.Pings >= StallMaxPings {
 			t.parkStall(s, st, StallReason, now)
 			return
-		}
-		if head == "" { // not read this tick (a parked row just reset)
-			head = t.readHead(ctx, s)
 		}
 		if t.offerPing(ctx, s, st, head, asks, now) {
 			return
@@ -258,11 +259,29 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 	}
 }
 
+// resetStall is progress (or Mark done): the count, the park and the last
+// ping cleared, asks and HEAD (when read) taken as the new baseline, written
+// at once; false when the write fails (the tick stops).
+func (t *Twin) resetStall(st *db.WatchmanStallRow, head string, asks int) bool {
+	next := *st
+	next.Pings, next.ParkedAt, next.LastPingAt, next.LastDelivery, next.AsksSeen = 0, nil, nil, "", asks
+	if head != "" {
+		next.Head = head
+	}
+	if err := t.d.DB.UpsertWatchmanStall(next); err != nil {
+		log.Printf("watchman stall: %v", err)
+		return false
+	}
+	*st = next
+	return true
+}
+
 // offerPing offers the ping, the arming read again right before; true when
 // it reached the session (submitted or typed — never submitted or cleared
-// here, the prompt may hold the owner's text) and was counted; a row write
-// that fails leaves st as it was and counts nothing (tried again next tick).
-// A HEAD that could not be read keeps the stored one.
+// here, the prompt may hold the owner's text), which ends the tick. It is
+// counted only when its row is written: a failed write leaves st as it was
+// (offered again next tick). A HEAD that could not be read keeps the stored
+// one.
 func (t *Twin) offerPing(ctx context.Context, s db.ArmedSession, st *db.WatchmanStallRow, head string, asks int, now time.Time) bool {
 	id := s.SessionID
 	if armed, err := t.d.DB.WatchmanSessionArmed(id); err != nil || !armed {
@@ -283,8 +302,8 @@ func (t *Twin) offerPing(ctx context.Context, s db.ArmedSession, st *db.Watchman
 		next.Head = head
 	}
 	if err := t.d.DB.UpsertWatchmanStall(next); err != nil {
-		log.Printf("watchman stall: session %d: ping not counted: %v", id, err)
-		return false
+		log.Printf("watchman stall: session %d: ping delivered but not counted: %v", id, err)
+		return true
 	}
 	*st = next
 	log.Printf("watchman stall: session %d pinged (%d of %d, %s)", id, st.Pings, StallMaxPings, delivery)
