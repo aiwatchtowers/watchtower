@@ -161,6 +161,40 @@ func TestInsertWatchmanStallItem_OnePerOpenStall(t *testing.T) {
 	assert.False(t, done)
 }
 
+// ParkWatchmanStall writes the item and the parked row in one transaction
+// that re-checks the arming: a session taken back gets neither.
+func TestParkWatchmanStall_RechecksArming(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	at := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	reset := at.Add(-time.Hour)
+	row := WatchmanStallRow{SessionID: s, StoppedAt: at.Add(-10 * time.Minute), Pings: 1, LastDelivery: "typed", ResetAt: &reset}
+
+	parked, err := d.ParkWatchmanStall(row, 0, wb, "reason", at)
+	require.NoError(t, err)
+	assert.False(t, parked, "not armed")
+	assert.Empty(t, stallItems(t, d, s))
+	st, err := d.WatchmanStall(s)
+	require.NoError(t, err)
+	assert.Nil(t, st)
+
+	wmArmSession(t, d, s)
+	parked, err = d.ParkWatchmanStall(row, 0, wb, "reason", at)
+	require.NoError(t, err)
+	assert.True(t, parked)
+	items := stallItems(t, d, s)
+	require.Len(t, items, 1)
+	assert.Equal(t, "reason", items[0].ParkReason)
+	st, err = d.WatchmanStall(s)
+	require.NoError(t, err)
+	require.NotNil(t, st.ParkedAt)
+	assert.True(t, st.ParkedAt.Equal(at))
+	assert.Equal(t, "typed", st.LastDelivery)
+	require.NotNil(t, st.ResetAt)
+	assert.True(t, st.ResetAt.Equal(reset))
+}
+
 // A stall item waits for the owner (the Inbox count) until Mark done, and
 // is never counted as a decision.
 func TestWatchmanJournalSummary_StallWaitsUntilMarkDone(t *testing.T) {

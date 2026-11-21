@@ -27,6 +27,11 @@ type WatchmanStallRow struct {
 	AsksSeen int
 	// ParkedAt is when the stall was journalled (kind 'stall'); nil = not.
 	ParkedAt *time.Time
+	// LastDelivery is how the last counted ping went: "submitted" or
+	// "typed" ("" = none since the last reset).
+	LastDelivery string
+	// ResetAt is the last progress or Mark done that reset the count.
+	ResetAt *time.Time
 }
 
 // wmStallTime keeps the stall stamps' nanoseconds, so a stop and the ping
@@ -55,10 +60,10 @@ func wmParseStallTime(column string, s sql.NullString) (*time.Time, error) {
 func (db *DB) WatchmanStall(sessionID int64) (*WatchmanStallRow, error) {
 	r := WatchmanStallRow{SessionID: sessionID}
 	var stopped string
-	var lastPing, parked sql.NullString
-	err := db.QueryRow(`SELECT stopped_at, pings, last_ping_at, head, asks_seen, parked_at
+	var lastPing, parked, reset sql.NullString
+	err := db.QueryRow(`SELECT stopped_at, pings, last_ping_at, head, asks_seen, parked_at, last_delivery, reset_at
 		FROM watchman_stalls WHERE session_id = ?`, sessionID).
-		Scan(&stopped, &r.Pings, &lastPing, &r.Head, &r.AsksSeen, &parked)
+		Scan(&stopped, &r.Pings, &lastPing, &r.Head, &r.AsksSeen, &parked, &r.LastDelivery, &reset)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -74,21 +79,30 @@ func (db *DB) WatchmanStall(sessionID int64) (*WatchmanStallRow, error) {
 	if r.ParkedAt, err = wmParseStallTime("parked_at", parked); err != nil {
 		return nil, err
 	}
+	if r.ResetAt, err = wmParseStallTime("reset_at", reset); err != nil {
+		return nil, err
+	}
 	return &r, nil
 }
 
 // UpsertWatchmanStall writes row as the session's stall row.
 func (db *DB) UpsertWatchmanStall(row WatchmanStallRow) error {
-	if _, err := db.Exec(`INSERT INTO watchman_stalls (session_id, stopped_at, pings, last_ping_at, head, asks_seen, parked_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(session_id) DO UPDATE SET stopped_at = excluded.stopped_at, pings = excluded.pings,
-			last_ping_at = excluded.last_ping_at, head = excluded.head, asks_seen = excluded.asks_seen,
-			parked_at = excluded.parked_at`,
-		row.SessionID, wmStallTime(row.StoppedAt), row.Pings, wmStallNullTime(row.LastPingAt), row.Head, row.AsksSeen,
-		wmStallNullTime(row.ParkedAt)); err != nil {
+	if err := upsertWatchmanStall(db, row); err != nil {
 		return fmt.Errorf("writing the watchman stall of session %d: %w", row.SessionID, err)
 	}
 	return nil
+}
+
+func upsertWatchmanStall(ex sqlExecer, row WatchmanStallRow) error {
+	_, err := ex.Exec(`INSERT INTO watchman_stalls (session_id, stopped_at, pings, last_ping_at, head, asks_seen, parked_at,
+			last_delivery, reset_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET stopped_at = excluded.stopped_at, pings = excluded.pings,
+			last_ping_at = excluded.last_ping_at, head = excluded.head, asks_seen = excluded.asks_seen,
+			parked_at = excluded.parked_at, last_delivery = excluded.last_delivery, reset_at = excluded.reset_at`,
+		row.SessionID, wmStallTime(row.StoppedAt), row.Pings, wmStallNullTime(row.LastPingAt), row.Head, row.AsksSeen,
+		wmStallNullTime(row.ParkedAt), row.LastDelivery, wmStallNullTime(row.ResetAt))
+	return err //nolint:wrapcheck // the callers name the session
 }
 
 // DeleteWatchmanStall removes sessionID's stall row (none is fine).
@@ -139,20 +153,52 @@ func (db *DB) WatchmanStallItemDone(sessionID int64) (bool, error) {
 // one the owner marked done (shown nowhere since) gives way to the new one
 // in the same transaction (the item is UNIQUE by ref and kind).
 func (db *DB) InsertWatchmanStallItem(sessionID, targetID, workbenchID int64, reason string, at time.Time) error {
-	err := db.WithTx(func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`DELETE FROM watchman_items
-			WHERE ref_kind = 'session' AND ref_id = ? AND kind = 'stall' AND owner_done_at IS NOT NULL`, sessionID); err != nil {
-			return err
-		}
-		_, err := tx.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, state, outcome,
-				unsure, park_reason, created_at, decided_at)
-			VALUES (?, ?, ?, 'stall', 'session', ?, 'done', 'parked', 1, ?, ?, ?)
-			ON CONFLICT(ref_kind, ref_id, kind) DO NOTHING`,
-			workbenchID, sessionID, wmNullID(targetID), sessionID, reason, wmTime(at), wmTime(at))
-		return err
-	})
-	if err != nil {
+	if err := db.WithTx(func(tx *sql.Tx) error {
+		return insertWatchmanStallItem(tx, sessionID, targetID, workbenchID, reason, at)
+	}); err != nil {
 		return fmt.Errorf("journalling the watchman stall of session %d: %w", sessionID, err)
 	}
 	return nil
+}
+
+func insertWatchmanStallItem(tx *sql.Tx, sessionID, targetID, workbenchID int64, reason string, at time.Time) error {
+	if _, err := tx.Exec(`DELETE FROM watchman_items
+		WHERE ref_kind = 'session' AND ref_id = ? AND kind = 'stall' AND owner_done_at IS NOT NULL`, sessionID); err != nil {
+		return err //nolint:wrapcheck // the callers name the session
+	}
+	_, err := tx.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, state, outcome,
+			unsure, park_reason, created_at, decided_at)
+		VALUES (?, ?, ?, 'stall', 'session', ?, 'done', 'parked', 1, ?, ?, ?)
+		ON CONFLICT(ref_kind, ref_id, kind) DO NOTHING`,
+		workbenchID, sessionID, wmNullID(targetID), sessionID, reason, wmTime(at), wmTime(at))
+	return err //nolint:wrapcheck // the callers name the session
+}
+
+// ParkWatchmanStall parks row's session for the owner in one transaction
+// that first re-checks the arming (WATCHMAN-04): still armed → the stall
+// item (InsertWatchmanStallItem's rule) and the row with parked_at = at;
+// taken back meanwhile → nothing is written and parked is false.
+func (db *DB) ParkWatchmanStall(row WatchmanStallRow, targetID, workbenchID int64, reason string, at time.Time) (parked bool, err error) {
+	err = db.WithTx(func(tx *sql.Tx) error {
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM (`+armedSessionsFrom+` AND ts.id = ?)`, row.SessionID).Scan(&n); err != nil {
+			return err //nolint:wrapcheck // wrapped below
+		}
+		if n == 0 {
+			return nil
+		}
+		if err := insertWatchmanStallItem(tx, row.SessionID, targetID, workbenchID, reason, at); err != nil {
+			return err
+		}
+		row.ParkedAt = &at
+		if err := upsertWatchmanStall(tx, row); err != nil {
+			return err
+		}
+		parked = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("parking the watchman stall of session %d: %w", row.SessionID, err)
+	}
+	return parked, nil
 }

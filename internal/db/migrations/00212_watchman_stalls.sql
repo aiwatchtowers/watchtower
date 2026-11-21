@@ -71,7 +71,9 @@ CREATE TABLE IF NOT EXISTS watchman_stalls (
     last_ping_at TEXT,                         -- RFC 3339 UTC
     head         TEXT NOT NULL DEFAULT '',     -- the worktree's HEAD at the last ping
     asks_seen    INTEGER NOT NULL DEFAULT 0,   -- the session's ask count at the last ping
-    parked_at    TEXT                          -- the stall was journalled (kind 'stall')
+    parked_at    TEXT,                         -- the stall was journalled (kind 'stall')
+    last_delivery TEXT NOT NULL DEFAULT '',    -- the last counted ping: 'submitted' or 'typed'
+    reset_at     TEXT                          -- the last progress or Mark done (the stuck clock's floor)
 );
 COMMIT;
 -- +goose StatementEnd

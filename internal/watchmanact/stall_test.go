@@ -464,30 +464,120 @@ func TestStall_TypedThenStuckParks(t *testing.T) {
 				t.Fatalf("row = %+v, want the typed ping counted", st)
 			}
 			e.port.set(askanswer.DeliverHeld, nil)
+			since := typed // the stuck clock: the later of the attempt and the stop
 			if newStop {
-				e.stop(typed.Add(30 * time.Second)) // the owner's own turn
+				since = typed.Add(30 * time.Second) // the owner's own turn
+				e.stop(since)
 			}
 			for m := 1; m < 9; m++ {
-				e.check(typed.Add(time.Duration(m) * time.Minute))
+				e.check(since.Add(time.Duration(m) * time.Minute))
 				if st := e.row(); st.ParkedAt != nil {
-					t.Fatalf("parked %d min after the typed ping", m)
+					t.Fatalf("parked %d min in", m)
 				}
 			}
-			e.check(typed.Add(StallStuckAfter))
+			e.check(since.Add(StallStuckAfter))
 			st := e.row()
 			if st.ParkedAt == nil || st.Pings != 1 {
 				t.Fatalf("row = %+v, want parked after 9 min", st)
 			}
 			items := e.stallItems()
-			if len(items) != 1 || items[0].ParkReason != StallReason {
-				t.Fatalf("stall items = %+v", items)
+			if len(items) != 1 || items[0].ParkReason != StallStuckReason {
+				t.Fatalf("stall items = %+v, want one with the stuck reason", items)
 			}
 			n := len(e.port.delivered())
-			e.check(typed.Add(StallStuckAfter + 5*time.Minute))
+			e.check(since.Add(StallStuckAfter + 5*time.Minute))
 			if len(e.port.delivered()) != n || len(e.stallItems()) != 1 {
 				t.Fatal("offers or items after the park")
 			}
 		})
+	}
+}
+
+// Mark done on a parked row, then a held offer: the stuck clock starts at
+// the reset, so it is not re-parked; the next submitted ping counts from 1.
+func TestStall_MarkDoneThenHeldOfferNotReparked(t *testing.T) {
+	e := newStallEnv(t)
+	at := e.parkAfterThreePings(stallT0)
+	_, err := e.db.Exec(`UPDATE watchman_items SET owner_done_at = ? WHERE kind = 'stall'`, at.Format(time.RFC3339))
+	e.must(err)
+	e.port.set(askanswer.DeliverHeld, nil)
+	reset := at.Add(StallStuckAfter) // the stop is long past 9 min
+	e.check(reset)
+	st := e.row()
+	if st.ParkedAt != nil || st.Pings != 0 || st.ResetAt == nil || !st.ResetAt.Equal(reset) {
+		t.Fatalf("row = %+v, want reset and not parked", st)
+	}
+	e.port.set("", nil)
+	e.check(reset.Add(time.Minute))
+	if st := e.row(); st.Pings != 1 || st.ParkedAt != nil {
+		t.Fatalf("row = %+v, want normal counting", st)
+	}
+	var done sql.NullString
+	e.must(e.db.QueryRow(`SELECT owner_done_at FROM watchman_items WHERE kind = 'stall'`).Scan(&done))
+	if !done.Valid {
+		t.Fatal("the marked-done item was replaced")
+	}
+}
+
+// HEAD moving on a parked row resets it on the next tick, with no new stop.
+func TestStall_HeadMovedOnParkedRowResets(t *testing.T) {
+	e := newStallEnv(t)
+	at := e.parkAfterThreePings(stallT0)
+	e.setHead("beef00")
+	e.check(at.Add(StallAfter))
+	st := e.row()
+	if st.ParkedAt != nil || st.ResetAt == nil || st.Head != "beef00" {
+		t.Fatalf("row = %+v, want reset by the HEAD move", st)
+	}
+	if st.Pings != 1 {
+		t.Fatalf("pings = %d, want the same stop pinged once after the reset", st.Pings)
+	}
+}
+
+// A submitted ping that starts a long turn: at the next stop a held offer
+// never stuck-parks (the last counted ping was submitted), and in any case
+// not before 9 minutes of this stop.
+func TestStall_LongTurnThenHeldOfferNoEarlyPark(t *testing.T) {
+	e := newStallEnv(t)
+	e.stop(stallT0)
+	ping := stallT0.Add(StallAfter)
+	e.check(ping)
+	e.state("working", ping.Add(time.Second))
+	for m := 1; m < 15; m++ {
+		e.check(ping.Add(time.Duration(m) * time.Minute))
+	}
+	stop := ping.Add(15 * time.Minute)
+	e.stop(stop)
+	e.port.set(askanswer.DeliverHeld, nil)
+	for m := 3; m <= 20; m++ {
+		e.check(stop.Add(time.Duration(m) * time.Minute))
+		if st := e.row(); st.ParkedAt != nil {
+			t.Fatalf("parked %d min into this stop", m)
+		}
+	}
+	if st := e.row(); st.Pings != 1 {
+		t.Fatalf("pings = %d", st.Pings)
+	}
+}
+
+// Take back between the decision and the park: the park's own transaction
+// re-reads the arming and writes nothing.
+func TestStall_TakeBackBeforeParkNoItem(t *testing.T) {
+	e := newStallEnv(t)
+	at := stallT0
+	for i := 1; i <= StallMaxPings; i++ {
+		at = e.pingCycle(at.Add(time.Second))
+	}
+	e.onHead = func() {
+		_, err := e.db.DeleteWatchmanArming("session", e.session)
+		e.must(err)
+	}
+	e.pingCycle(at.Add(time.Second))
+	if items := e.stallItems(); len(items) != 0 {
+		t.Fatalf("stall items = %d after Take back", len(items))
+	}
+	if st := e.row(); st.ParkedAt != nil {
+		t.Fatalf("row = %+v, parked after Take back", st)
 	}
 }
 
