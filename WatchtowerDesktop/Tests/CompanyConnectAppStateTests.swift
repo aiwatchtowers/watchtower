@@ -102,10 +102,13 @@ final class CompanyConnectAppStateTests: XCTestCase {
     // MARK: - The card's waiting sign-in (#2132 C1)
 
     /// A chain left running behind a closed sheet: the card names the vendor
-    /// it waits on, and its Cancel is the chain's Stop — the chain ends with
-    /// no problem and the card's line goes.
+    /// it waits on, and its Cancel is the chain's Stop plus one re-read of
+    /// the companies — the chain ends with no problem and the card's line goes.
     func testCardCancelStopsTheHiddenChain() async throws {
         let (appState, host, fake) = wired()
+        let zoneCLI = FakeCLILineStream(replies: Array(repeating: .init(lines: [], exitCode: 1), count: 4))
+        appState.companiesZone = CompaniesZoneModel { zoneCLI }
+        let lists = { zoneCLI.invocations.filter { $0.args.starts(with: ["company", "list"]) }.count }
         host.ensureRunning()
         let child = await fake.session(number: 1)
         child.emit(#"{"event":"listening","port":18551}"#)
@@ -117,6 +120,7 @@ final class CompanyConnectAppStateTests: XCTestCase {
         fake.enqueue(.init(lines: [#"{"result":"stored","slug":"acme","marked":[]}"#]))
         await flow.connect()
         XCTAssertEqual(flow.phase, .chain)
+        await zoneCLI.signal.until { lists() >= 1 } // the store's own re-read
         host.onCompanyEvent?(.companyVendor(CompanyVendorStep(flow: "f1", vendor: .slack, state: .waiting, label: "", message: "")))
         XCTAssertNil(appState.companyConnecting, "the open sheet shows the chain itself")
 
@@ -124,8 +128,11 @@ final class CompanyConnectAppStateTests: XCTestCase {
         XCTAssertEqual(appState.companyConnecting?.slug, "acme")
         XCTAssertEqual(appState.companyConnecting?.vendor, .slack)
 
+        let before = lists()
         appState.companiesZoneActions.stopChain()
         XCTAssertEqual(child.writtenLines.last, #"{"cmd":"company_stop","flow":"f1"}"#)
+        await zoneCLI.signal.until { lists() >= before + 1 }
+        XCTAssertEqual(lists(), before + 1, "Cancel re-reads the companies once")
         fake.enqueue(inspect)
         host.onCompanyEvent?(.companyDone(flow: "f1", states: [.slack: .skipped]))
         XCTAssertEqual(flow.phase, .done)

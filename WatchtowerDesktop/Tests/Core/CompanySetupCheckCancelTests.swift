@@ -83,6 +83,24 @@ final class CompanySetupCheckCancelTests: XCTestCase {
         XCTAssertEqual(model.checks[.atlassian], .passed)
     }
 
+    /// A sign-in killed while Go saved: the company it stored keeps its
+    /// slug (one draft re-read), the step stays not-run, nothing is shown.
+    func testCancelRereadsTheDraftOnce() async {
+        let (model, cli, run) = await waiting()
+        let stored = atlassianDraft.replacingOccurrences(of: #""company":"Acme","#, with: #""company":"Acme","slug":"acme","#)
+        cli.on(["company", "draft", "show"], [#"{"state":"ok","draft":"# + stored
+            + #","bad_file":"","checked_vendors":["atlassian"]}"#])
+        model.cancelCheck(.atlassian)
+        await model.rereadAfterCancel?.value
+        await run.value
+        XCTAssertEqual(cli.calls(["company", "draft", "show"]).count, 2, "open, then the one re-read")
+        XCTAssertEqual(model.draft.slug, "acme")
+        XCTAssertEqual(model.draft.company, "Acme", "a stored company keeps its name")
+        assertNotRun(model)
+        XCTAssertNil(model.storageProblem)
+        cli.release(check, [])
+    }
+
     func testDryChecksHaveNoWaitingLine() {
         let model = Model(streamer: CompanyScriptedCLI(), slack: SlackAppSetupModel(streamer: nil, mode: .wizard))
         for vendor in CompanyVendor.allCases { XCTAssertNil(model.checkWait(vendor)) }

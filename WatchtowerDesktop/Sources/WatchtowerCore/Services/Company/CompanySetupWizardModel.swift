@@ -202,6 +202,9 @@ package final class CompanySetupWizardModel {
     /// no longer its vendor's (cancelled, or a new check started) writes nothing.
     @ObservationIgnored private var checkRuns: [CompanyVendor: CheckRun] = [:]
 
+    /// The draft re-read that the last `cancelCheck` started.
+    @ObservationIgnored package private(set) var rereadAfterCancel: Task<Void, Never>?
+
     private final class CheckRun {
         var task: Task<String?, Never>?
     }
@@ -875,13 +878,24 @@ package final class CompanySetupWizardModel {
 
     /// **Cancel** on a sign-in check's waiting line (#2132 C2): ends the run
     /// (its stream's task is cancelled, and `CLILineStream` kills the process
-    /// group) and puts the step back to not-run, with no failed line. What a
-    /// sign-in already stored stays Go's; the step is left to a new check.
+    /// group) and puts the step back to not-run, with no failed line. A run
+    /// killed while Go saved may have stored the company already: the draft
+    /// is re-read (refresh only, silent on failure) so its slug is kept, and
+    /// the name is released only when nothing was stored.
     package func cancelCheck(_ v: CompanyVendor) {
         guard checks[v] == .running, let run = checkRuns.removeValue(forKey: v) else { return }
         run.task?.cancel()
         checks[v] = nil
-        releaseUnstoredName()
+        let started = generation
+        rereadAfterCancel = Task { [self] in
+            let line = await lastJSONLine(["company", "draft", "show", "--json"], stdin: nil)
+            guard generation == started else { return }
+            if let line, let show = try? JSONDecoder().decode(CompanyDraftShow.self, from: Data(line.utf8)),
+               show.state == "ok", let read = show.draft, !read.slug.isEmpty, draft.slug.isEmpty {
+                draft.slug = read.slug
+            }
+            releaseUnstoredName()
+        }
     }
 
     /// The waiting line of a running check that signs in through the
