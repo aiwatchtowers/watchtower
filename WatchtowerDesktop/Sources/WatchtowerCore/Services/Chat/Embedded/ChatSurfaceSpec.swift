@@ -212,23 +212,35 @@ package struct ChatSurfaceSpec {
         /// (no `--context-type`/`--context-id`): the "New automation" chat,
         /// which has no automation yet.
         case actionsWithoutContext(surface: String)
+        /// The connect assistant (agent connect spec §5.2): `ai query --tools
+        /// connect` with the run's service and mode. Not a chat surface: no
+        /// conversation and no `--tool-mode` (AGENT-04's `chat_surfaces.txt`
+        /// does not list it). Its tools reach the run's own socket.
+        case connect(service: String, mode: ConnectAssistantMode)
 
         /// Whether the surface mounts the chat-history reads (`get_chat_history`,
         /// `list_chat_artifacts`, `get_chat_artifact`): Go's
         /// `chatHistorySurfaces` in `internal/tools/chat_history.go`.
         package var readsChatHistory: Bool {
             switch self {
-            case .draftOnly:
+            case .draftOnly, .connect:
                 return false
             case .actions(let surface), .actionsWithoutContext(let surface):
                 return ["main", "target", "automation_editor"].contains(surface)
             }
         }
 
+        /// The connect run's `ai query` flags (the CLI contract of
+        /// `--tools connect`); nil for every other access.
+        package var connectArgs: [String]? {
+            guard case let .connect(service, mode) = self else { return nil }
+            return ["--tools", "connect", "--connect-service", service, "--connect-mode", mode.rawValue]
+        }
+
         package func toolMode(key: EmbeddedChatKey, turnID: String) -> ChatToolMode? {
             guard let conversationID = key.conversationID else { return nil }
             switch self {
-            case .draftOnly:
+            case .draftOnly, .connect:
                 return nil
             case .actions(let surface):
                 return ChatToolMode(surface: surface, conversationID: conversationID, turnID: turnID,
@@ -275,6 +287,10 @@ package struct ChatSurfaceSpec {
     /// Read when each turn starts, so a choice stored between turns (the
     /// code question's model picker) applies to the next one.
     package let runOptions: @MainActor () -> ChatRunOptions
+    /// Entries merged over the `ai query` child's environment, for that
+    /// child only: the connect run's socket and token, which never go in
+    /// argv. Read when each turn starts; empty on every other surface.
+    package let extraEnvironment: @MainActor () -> [String: String]
 
     package init(
         key: EmbeddedChatKey,
@@ -288,7 +304,8 @@ package struct ChatSurfaceSpec {
         mayContinue: @escaping @MainActor () -> Bool = { true },
         emptyHint: String,
         starterPrompts: [ChatStarterPrompt] = [],
-        runOptions: @escaping @MainActor () -> ChatRunOptions = { ChatRunOptions() }
+        runOptions: @escaping @MainActor () -> ChatRunOptions = { ChatRunOptions() },
+        extraEnvironment: @escaping @MainActor () -> [String: String] = { [:] }
     ) {
         self.key = key
         self.persistence = persistence
@@ -302,5 +319,6 @@ package struct ChatSurfaceSpec {
         self.emptyHint = emptyHint
         self.starterPrompts = starterPrompts
         self.runOptions = runOptions
+        self.extraEnvironment = extraEnvironment
     }
 }

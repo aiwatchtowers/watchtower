@@ -50,6 +50,7 @@ func connectClaudeStub(t *testing.T, out string) string {
 out='%s'
 cat > /dev/null
 printf '%%s\n' "$@" > "$out/argv"
+env > "$out/env"
 while [ $# -gt 0 ]; do
   case "$1" in
     --mcp-config) cat "$2" > "$out/mcp" ;;
@@ -130,6 +131,9 @@ func TestAIQueryConnect_ClaudeBrowserRun(t *testing.T) {
 	assert.Contains(t, args, "--chrome")
 	assert.NotContains(t, string(argv), "tok-sample", "the token never rides argv")
 	assert.Contains(t, string(argv), "ai connect-guard --host 'api.slack.com' --host 'app.slack.com'")
+	env, err := os.ReadFile(filepath.Join(out, "env"))
+	require.NoError(t, err)
+	assert.Contains(t, string(env), connectwire.SocketEnv, "a run's child inherits them (the probe's does not)")
 
 	mcp, err := os.ReadFile(filepath.Join(out, "mcp"))
 	require.NoError(t, err)
@@ -150,6 +154,91 @@ func TestAIQueryConnect_ClaudeBrowserRun(t *testing.T) {
 	pbs, err := connectplay.ForService("slack", "")
 	require.NoError(t, err)
 	assert.Equal(t, connectplay.SystemPrompt(pbs, connectplay.ModeBrowser)+"\n\nSTATE: no Slack account yet", string(system))
+}
+
+// TestAIQueryConnect_ProbeRun: `--connect-mode probe` end to end on claude
+// (spec §10 S1): --chrome, list_connected_browsers as the only allowed
+// tool, no --mcp-config (the connect MCP server is absent, so neither the
+// socket nor the token reaches the child), and the Desktop's system prompt
+// alone, with no playbook.
+func TestAIQueryConnect_ProbeRun(t *testing.T) {
+	out := t.TempDir()
+	cfgPath, dbPath := connectFixture(t, "claude", connectClaudeStub(t, out), "")
+	t.Setenv(connectwire.SocketEnv, "/tmp/connect.sock")
+	t.Setenv(connectwire.TokenEnv, "tok-sample")
+
+	code, stdout, stderr := runConnectCLI(t, cfgPath, dbPath, "--connect-service", "slack", "--connect-mode", "probe")
+	require.Equal(t, 0, code, "stderr: %s\nstdout: %v", stderr, stdout)
+
+	argv, err := os.ReadFile(filepath.Join(out, "argv"))
+	require.NoError(t, err)
+	args := strings.Split(strings.TrimSpace(string(argv)), "\n")
+	assert.Contains(t, args, "--chrome")
+	assert.Contains(t, args, "--strict-mcp-config")
+	assert.Equal(t, ai.BrowserProbeTool, args[slices.Index(args, "--allowedTools")+1])
+	assert.Empty(t, args[slices.Index(args, "--tools")+1])
+	assert.NotContains(t, args, "--mcp-config")
+	assert.NotContains(t, string(argv), "tok-sample")
+	assert.NotContains(t, string(argv), "connect-guard")
+	_, err = os.Stat(filepath.Join(out, "mcp"))
+	assert.True(t, os.IsNotExist(err), "no MCP config reached the child")
+	assert.Contains(t, strings.Split(args[slices.Index(args, "--disallowedTools")+1], ","), ai.BrowserNavigateTool)
+
+	env, err := os.ReadFile(filepath.Join(out, "env"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(env), connectwire.SocketEnv, "set in the parent, dropped for the probe child")
+	assert.NotContains(t, string(env), connectwire.TokenEnv)
+	assert.NotContains(t, string(env), "tok-sample")
+
+	system, err := os.ReadFile(filepath.Join(out, "system"))
+	require.NoError(t, err)
+	assert.Equal(t, "STATE: no Slack account yet", string(system), "no playbook prompt")
+}
+
+// TestAIQueryConnect_ProbeEnvFailsClosed: an environment holding only the
+// connect variables gives the probe child an empty one, never nil (which
+// the transport reads as "inherit this process's", socket and token too).
+func TestAIQueryConnect_ProbeEnvFailsClosed(t *testing.T) {
+	env := connectProbeEnv([]string{connectwire.SocketEnv + "=/tmp/connect.sock", connectwire.TokenEnv + "=tok-sample"})
+	require.NotNil(t, env)
+	assert.Empty(t, env)
+	assert.Equal(t, []string{"HOME=/tmp"},
+		connectProbeEnv([]string{"HOME=/tmp", connectwire.TokenEnv + "=tok-sample"}))
+}
+
+// TestAIQueryConnect_ProbeRefusals: a probe needs a browser: codex (words),
+// ollama (none) and a policy-blocked claude are refused before any model
+// call, at the CLI's check and in the client factory.
+func TestAIQueryConnect_ProbeRefusals(t *testing.T) {
+	policytest.Set(t, nil)
+	setConnectFlags(t, "slack", "probe")
+	for _, provider := range []string{"codex", "ollama"} {
+		var failure *providers.Failure
+		require.ErrorAs(t, connectProbeCheck(provider), &failure, provider)
+		assert.Equal(t, providers.Capability, failure.Category, provider)
+		client, _, err := newQueryClient(&config.Config{AI: config.AIConfig{Provider: provider}}, "/tmp/wt.db", transport.Options{})
+		require.Error(t, err, provider)
+		assert.Nil(t, client, provider)
+	}
+	client, _, err := newQueryClient(&config.Config{AI: config.AIConfig{Provider: "claude"}}, "/tmp/wt.db", transport.Options{})
+	require.NoError(t, err)
+	args := client.(*ai.Client).ArgsForTest("sys", "hi")
+	assert.NotContains(t, args, "--mcp-config")
+	assert.Contains(t, args, "--chrome")
+
+	policytest.Set(t, map[string]any{"AllowedAIProviders": []any{"codex"}})
+	var failure *providers.Failure
+	require.ErrorAs(t, connectProbeCheck("claude"), &failure)
+	assert.Equal(t, providers.Policy, failure.Category)
+
+	// End to end: codex is refused with a v2 error and no model run.
+	policytest.Set(t, nil)
+	cfgPath, dbPath := connectFixture(t, "codex", "", "")
+	code, stdout, _ := runConnectCLI(t, cfgPath, dbPath, "--connect-service", "slack", "--connect-mode", "probe")
+	assert.NotEqual(t, 0, code)
+	ev := v2ErrorOf(t, stdout)
+	require.NotNil(t, ev, "%v", stdout)
+	assert.Equal(t, "required_capability_missing", ev.Reason)
 }
 
 // TestAIQueryConnect_RefusesNoneCapability: ollama's agent cannot guide a
@@ -187,8 +276,8 @@ func TestAIQueryConnect_FlagRefusals(t *testing.T) {
 		args []string
 		want string
 	}{
-		"no mode":            {[]string{"--tools", "connect", "--connect-service", "slack"}, "--connect-mode must be browser or words"},
-		"bad mode":           {[]string{"--tools", "connect", "--connect-service", "slack", "--connect-mode", "auto"}, "--connect-mode must be browser or words"},
+		"no mode":            {[]string{"--tools", "connect", "--connect-service", "slack"}, "--connect-mode must be browser, words or probe"},
+		"bad mode":           {[]string{"--tools", "connect", "--connect-service", "slack", "--connect-mode", "auto"}, "--connect-mode must be browser, words or probe"},
 		"unknown service":    {[]string{"--tools", "connect", "--connect-service", "acme", "--connect-mode", "words"}, `connect service "acme": unknown`},
 		"persist":            {[]string{"--tools", "connect", "--connect-service", "slack", "--connect-mode", "words", "--persist"}, "without --persist"},
 		"owner instructions": {[]string{"--tools", "connect", "--connect-service", "slack", "--connect-mode", "words", "--owner-instructions"}, "without --owner-instructions"},

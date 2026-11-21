@@ -222,6 +222,8 @@ type Client struct {
 	// hosts its navigate tool may open (SetBrowserHosts).
 	browser      bool
 	browserHosts []string
+	// browserProbe is the connect assistant's S1 probe (SetBrowserProbe).
+	browserProbe bool
 }
 
 // EmitToolEvents switches Query onto the chat events `ai query --events v2`
@@ -329,6 +331,12 @@ func (c *Client) SetBrowser(on bool) { c.browser = on }
 // SetBrowser on; none means every navigation is refused.
 func (c *Client) SetBrowserHosts(hosts []string) { c.browserHosts = hosts }
 
+// SetBrowserProbe makes the run spike S1's probe turn (agent connect spec
+// §10 "Task 0 outcome"): --chrome with BrowserProbeTool as the only allowed
+// tool, no built-in, and no --mcp-config at all (no watchtower server, no
+// Quick Connections), under --strict-mcp-config.
+func (c *Client) SetBrowserProbe(on bool) { c.browserProbe = on }
+
 // SetExternalMCPServers registers owner-added external MCP servers to merge
 // into the chat's mcp-config and tool allowlist alongside the built-in
 // watchtower server.
@@ -406,7 +414,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 		// must not be able to run shell commands. The task-chat agent still
 		// changes targets ONLY via watchtower-action approval cards, never by
 		// writing to the DB directly.
-		"--allowedTools", c.withStreamTools(c.withBrowserTools(c.allowedToolsFlag(), BrowserToolsToken), c.streamHooks.ExtraAllowed),
+		"--allowedTools", c.allowedToolsArg(),
 		// Built-in allowlist: the model sees exactly the Claude Code built-ins
 		// named here (MCP tools are unaffected), so a built-in a future CLI
 		// release adds stays hidden by default instead of slipping past the
@@ -429,7 +437,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 		// The deny list is defence in depth behind --tools: it keeps every
 		// known built-in hidden even if a CLI release stopped honouring the
 		// allowlist. A read-folder run unhides only the file reads.
-		"--disallowedTools", c.withStreamTools(c.withBrowserTools(WithExternalDisallowed(c.disallowedTools(), c.externalServers), BrowserDeniedTools), c.streamHooks.ExtraDisallowed),
+		"--disallowedTools", c.withStreamTools(c.withBrowserTools(WithExternalDisallowed(c.disallowedTools(), c.externalServers), c.browserDeniedTools()), c.streamHooks.ExtraDisallowed),
 		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
 		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
 		// those probes trigger macOS TCC prompts attributed to Watchtower.app.
@@ -444,7 +452,10 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 	if c.streamJSON {
 		args, stdin = c.streamJSONArgs(args), "" // the message goes as a stream-json line
 	}
-	if c.browser {
+	switch {
+	case c.browserProbe:
+		args = append(args, "--chrome") // no navigate allowed: no host guard
+	case c.browser:
 		args = append(args, "--chrome", "--settings", browserSettings(c.browserHosts))
 	}
 	if c.maxTurns > 0 {
@@ -454,7 +465,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 	if outputFormat == "stream-json" {
 		args = append(args, "--verbose")
 	}
-	if c.dbPath != "" {
+	if c.dbPath != "" && !c.browserProbe {
 		env := c.mcpEnv()
 		mcpConfig := chatMCPConfig(c.dbPath, c.mcpArgs, env, c.externalServers)
 		if c.hasSecret() || len(env) > 0 {
@@ -491,7 +502,7 @@ func (c *Client) builtinTools() string {
 	if c.readFolder != "" {
 		return ReadFolderBuiltinTools
 	}
-	if c.browser {
+	if c.browser || c.browserProbe {
 		// No built-in at all, as the live-checked S3.argv (agent connect
 		// spec §10): the MCP tools are listed without ToolSearch.
 		return ""

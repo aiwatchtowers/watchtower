@@ -24,10 +24,55 @@ const (
 	BrowserGuardCommand = "ai connect-guard"
 )
 
+// BrowserProbeTool is the probe turn's one allowed tool (S1): the run
+// asks Claude in Chrome which browsers are connected, nothing else.
+const BrowserProbeTool = "mcp__claude-in-chrome__list_connected_browsers"
+
+// browserToolNames are Claude in Chrome's tools (the 20 the S1/S3 init
+// events listed, Claude Code 2.1.330), list_connected_browsers among them.
+var browserToolNames = []string{
+	"browser_batch", "computer", "file_upload", "find", "form_input", "get_page_text", "gif_creator",
+	"javascript_tool", "list_connected_browsers", "navigate", "read_console_messages", "read_network_requests",
+	"read_page", "resize_window", "select_browser", "switch_browser", "tabs_close_mcp", "tabs_context_mcp",
+	"tabs_create_mcp", "upload_image",
+}
+
+// BrowserProbeDeniedTools hides every Claude in Chrome tool but
+// BrowserProbeTool from the probe: --allowedTools alone would leave them in
+// the model's list (and navigate there has no host guard). A tool a later
+// extension adds is still not allowed, only not hidden.
+var BrowserProbeDeniedTools = func() string {
+	var denied []string
+	for _, name := range browserToolNames {
+		if tool := "mcp__claude-in-chrome__" + name; tool != BrowserProbeTool {
+			denied = append(denied, tool)
+		}
+	}
+	return strings.Join(denied, ",")
+}()
+
+// browserDeniedTools is what a browser run (S2's list) or the probe (every
+// browser tool but its own) adds to --disallowedTools.
+func (c *Client) browserDeniedTools() string {
+	if c.browserProbe {
+		return BrowserProbeDeniedTools
+	}
+	return BrowserDeniedTools
+}
+
+// allowedToolsArg is the --allowedTools value: BrowserProbeTool alone on a
+// probe; otherwise the run's tools, the browser's on a browser run.
+func (c *Client) allowedToolsArg() string {
+	if c.browserProbe {
+		return BrowserProbeTool
+	}
+	return c.withStreamTools(c.withBrowserTools(c.allowedToolsFlag(), BrowserToolsToken), c.streamHooks.ExtraAllowed)
+}
+
 // withBrowserTools appends extra to a comma-separated tool list on a
-// browser run only.
+// browser run (or the probe) only.
 func (c *Client) withBrowserTools(list, extra string) string {
-	if !c.browser {
+	if !c.browser && !c.browserProbe {
 		return list
 	}
 	if list == "" {

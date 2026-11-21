@@ -92,6 +92,13 @@ package final class EmbeddedChatEngine {
     /// a database chat whose spec carries the owner's instructions; remember
     /// in place hangs here. Never awaited: it cannot delay the turn.
     @ObservationIgnored package var onOwnerMessageStored: ((String, Int64, Int64) -> Void)?
+    /// Each tool step's start and end of the running turn, as it streams
+    /// (the connect assistant watches the browser's tool results here).
+    @ObservationIgnored package var onToolEvent: ((StreamEvent) -> Void)?
+    /// The latest failed turn's classified failure (its code survives here,
+    /// `TurnOutcome.failed` carries only the text). Set before that turn's
+    /// `onTurnFinished`.
+    @ObservationIgnored package private(set) var lastFailure: EmbeddedChatErrorClassifier.Failure?
 
     package var isStreaming: Bool { liveTurn != nil }
     /// The turn ended and its final state is being written — for a reply
@@ -500,6 +507,13 @@ package final class EmbeddedChatEngine {
                                   previousOwnerMessageAt: request.previousOwnerMessageAt, turnID: turnID,
                                   alreadyApplied: request.alreadyApplied)
         let prompt = (replayBlock(before: turnID, prompt: request.promptText) ?? "") + spec.turnPrompt(input)
+        if let connectArgs = spec.toolAccess.connectArgs {
+            // A connect run is a memory chat: it never persists, and its
+            // socket and token go in the child's environment only.
+            return aiService.stream(prompt: prompt, systemPrompt: spec.systemPrompt(), dbPath: store.dbPath,
+                                    model: options.model, provider: options.provider, connectArgs: connectArgs,
+                                    extraEnvironment: spec.extraEnvironment())
+        }
         let toolMode = spec.toolAccess.toolMode(key: spec.key, turnID: turnID)
         if let persist {
             return aiService.stream(prompt: prompt, systemPrompt: spec.systemPrompt(), dbPath: store.dbPath,
@@ -598,6 +612,12 @@ package final class EmbeddedChatEngine {
         let now = clock()
         let store = store
         let messageID = turn.messageID
+        switch event {
+        case .toolStart, .toolEnd:
+            onToolEvent?(event)
+        default:
+            break
+        }
         switch event {
         case .toolStart(let start):
             let seq = turn.startStep(start, at: now)
@@ -854,6 +874,7 @@ package final class EmbeddedChatEngine {
         let sessionError = ChatSessionError(turnID: turn.turnID, code: failure.code ?? .internalError,
                                             message: failure.message, retryable: failure.retryable)
         turn.finish(.failed(sessionError), at: clock())
+        lastFailure = failure
         if persist {
             let status = failure.code == .quotaExhausted && !text.isEmpty ? "partial" : "error"
             await persistFinal(turn, text: text, status: status, failure: failure)

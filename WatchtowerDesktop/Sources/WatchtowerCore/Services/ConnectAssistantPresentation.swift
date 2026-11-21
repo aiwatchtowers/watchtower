@@ -1,7 +1,8 @@
 import Foundation
 
 /// Whether the agent drives the browser itself or tells the customer each step (§5.2).
-package enum ConnectAssistantMode: Equatable, Sendable {
+/// The raw value is `ai query --connect-mode`'s.
+package enum ConnectAssistantMode: String, Equatable, Sendable {
     case browser
     case words
 }
@@ -33,6 +34,9 @@ package enum ConnectAssistantState: Equatable, Sendable {
     case empty
     /// The agent is working.
     case thinking
+    /// The agent's turn ended and it waits on the customer's answer in the
+    /// composer: no status line, the run can still be cancelled.
+    case listening
     /// The agent waits on the customer in the browser; `step` is what they must do,
     /// e.g. "press Allow in Slack".
     case waiting(step: String)
@@ -173,6 +177,8 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
             }
         case .thinking:
             status = Status(kind: .progress, text: "Working on it…")
+            actions = [.cancel]
+        case .listening:
             actions = [.cancel]
         case .waiting(let step):
             status = Status(kind: .progress, text: "Waiting for you to \(step)")

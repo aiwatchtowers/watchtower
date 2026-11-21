@@ -106,9 +106,36 @@ package protocol AIServiceProtocol: Sendable {
         readFolderRoundID: Int64?,
         persist: ChatQueryPersist
     ) -> AsyncThrowingStream<StreamEvent, Error>
+
+    /// A connect assistant turn (agent connect spec §5.2): `connectArgs` are
+    /// the `--tools connect` flags, `extraEnvironment` is merged over the
+    /// child's environment for this run only (the run's socket and token,
+    /// never argv). A double that does not model it fails the turn: a connect
+    /// turn never runs without its tools.
+    func stream(
+        prompt: String,
+        systemPrompt: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        connectArgs: [String],
+        extraEnvironment: [String: String]
+    ) -> AsyncThrowingStream<StreamEvent, Error>
 }
 
 extension AIServiceProtocol {
+    package func stream(
+        prompt: String,
+        systemPrompt: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        connectArgs: [String],
+        extraEnvironment: [String: String]
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream { $0.finish(throwing: WatchtowerAIError.launchFailed("this AI service runs no connect turns")) }
+    }
+
     package func stream( // swiftlint:disable:this function_parameter_count
         prompt: String,
         systemPrompt: String?,
