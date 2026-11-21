@@ -163,7 +163,7 @@ class FakeConnectDriver: ConnectServiceDriving {
 /// The company setup's fake: its draft view carries the stored client
 /// secrets as a careless driver might; the controller must drop them.
 @MainActor
-final class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
+class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
     var draft = Data()
     private(set) var published: [String] = []
     private(set) var checks: [String] = []
@@ -174,7 +174,7 @@ final class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
         confirms["company_publish"] = .companyPublish(company: "Acme")
     }
 
-    func draftView() -> Data { draft }
+    func draftView() async -> Result<Data, ConnectDriverError> { .success(draft) }
 
     func saveDraft(vendor: String, fields: [String: String]) async -> Result<Void, ConnectDriverError> { .success(()) }
 
@@ -197,6 +197,59 @@ final class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
         published.append(token)
         return .success(Data(#"{"published":true}"#.utf8))
     }
+
+    var publishNeedsToken = true
+    var publishBlockedReason: String?
+}
+
+/// A company driver whose Slack token first reads the app, then the panel
+/// confirms the update (`ConnectSecretConfirming`).
+@MainActor
+final class FakeConfirmingCompanyDriver: FakeCompanyDriver, ConnectSecretConfirming {
+    /// The card after a submitted secret of this kind.
+    var secretConfirms: [String: ConnectAssistantConfirm] = [:]
+    private(set) var confirmAnswers: [Bool] = []
+
+    func secretConfirm(kind: String) -> ConnectAssistantConfirm? { secretConfirms[kind] }
+
+    func answerSecretConfirm(kind: String, yes: Bool) async -> Result<Data, ConnectDriverError> {
+        confirmAnswers.append(yes)
+        secretConfirms[kind] = nil
+        return .success(Data(#"{"result":"ok"}"#.utf8))
+    }
+
+    private(set) var dropped: [String] = []
+
+    func secretConfirmDropped(kind: String) {
+        dropped.append(kind)
+    }
+
+    /// The next submitted secret's read waits until `releaseSubmit`.
+    var holdSubmit = false
+    private var heldSubmit: CheckedContinuation<Void, Never>?
+    var isSubmitting: Bool { heldSubmit != nil }
+
+    func releaseSubmit() {
+        heldSubmit?.resume()
+        heldSubmit = nil
+    }
+
+    override func submitSecret(kind: String, value: String) async -> Result<Data, ConnectDriverError> {
+        if holdSubmit {
+            holdSubmit = false
+            await withCheckedContinuation {
+                heldSubmit = $0
+                changed()
+            }
+        }
+        let result = await super.submitSecret(kind: kind, value: value)
+        // Waiters resume after the caller's code that follows this return has run.
+        submitsReturned += 1
+        changed()
+        return result
+    }
+
+    private(set) var submitsReturned = 0
 }
 
 /// A Slack driver that can run the Slack Live probe.

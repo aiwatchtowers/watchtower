@@ -104,6 +104,9 @@ package final class ConnectRunController {
     package func answerConfirm(_ yes: Bool) {
         guard let step = cardStep, case .confirm = pendingCard else { return }
         pendingCard = nil
+        if case let .secret(kind) = step.purpose, let confirming = driver as? any ConnectSecretConfirming {
+            return answerSecretConfirm(step, kind: kind, yes: yes, confirming)
+        }
         guard yes else { return finish(step, .result(Self.json(ConnectPending(state: "declined")))) }
         switch step.purpose {
         case let .start(options):
@@ -119,7 +122,16 @@ package final class ConnectRunController {
                 self?.started(result, step: step)
             }
         case .publish:
+            guard let company = driver as? any ConnectCompanyDriving else { return }
             step.resetBudget()
+            guard company.publishNeedsToken else {
+                // A setup without Slack publishes with no token (`no_slack`).
+                step.work = Task { [weak self] in
+                    let reply = Self.reply(await company.publish(token: ""))
+                    self?.finish(step, reply)
+                }
+                return
+            }
             pendingCard = .secret(kind: Self.publishTokenKind, label: Self.publishTokenLabel)
         case .replaceCheck:
             guard let company = driver as? any ConnectCompanyDriving, let vendor = step.vendor else { return }
@@ -144,9 +156,39 @@ package final class ConnectRunController {
             }
         } else {
             step.work = Task { [weak self] in
-                let reply = Self.sent(await driver.submitSecret(kind: kind, value: value))
-                self?.finish(step, reply)
+                let sent = await driver.submitSecret(kind: kind, value: value)
+                guard let self else { return }
+                // The verb only read so far (the company Slack update): the
+                // customer confirms its changes on the same step.
+                if case .success = sent, let confirming = driver as? any ConnectSecretConfirming,
+                   let confirm = confirming.secretConfirm(kind: kind) {
+                    guard !ended, cardStep === step, step.outcome == nil else {
+                        // The run ended or the step timed out during the read: nobody can answer.
+                        return confirming.secretConfirmDropped(kind: kind)
+                    }
+                    step.resetBudget()
+                    pendingCard = .confirm(confirm)
+                    return
+                }
+                finish(step, Self.sent(sent))
             }
+        }
+    }
+
+    /// A secret step leaves without its confirm answered: the driver drops
+    /// what waits on it (a no-op when nothing does).
+    private func dropSecretConfirm(_ step: Step) {
+        guard case let .secret(kind) = step.purpose, let confirming = driver as? any ConnectSecretConfirming else { return }
+        confirming.secretConfirmDropped(kind: kind)
+    }
+
+    /// The confirm card a secret's verb asked for: yes runs the change, no
+    /// drops it; either way the driver hears the answer.
+    private func answerSecretConfirm(_ step: Step, kind: String, yes: Bool, _ confirming: any ConnectSecretConfirming) {
+        step.resetBudget()
+        step.work = Task { [weak self] in
+            let result = await confirming.answerSecretConfirm(kind: kind, yes: yes)
+            self?.finish(step, yes ? Self.sent(result) : .result(Self.json(ConnectPending(state: "declined"))))
         }
     }
 
@@ -166,6 +208,7 @@ package final class ConnectRunController {
         pendingCard = nil
         waitingStep = nil
         flowStep?.work?.cancel()  // only the wait on the flow, never the flow
+        if let card = cardStep { dropSecretConfirm(card) }
         for step in [cardStep, flowStep, checkStep].compactMap(\.self) {
             step.wakeAll(.closed)
         }
@@ -384,8 +427,9 @@ package final class ConnectRunController {
               !label.isEmpty, label.count <= 80 else {
             return .error(.badArgs, "request_secret needs a kind and a label of at most 80 characters")
         }
-        guard driver.secretKinds.contains(kind),
-              !(driver is any ConnectCompanyDriving && kind == Self.publishTokenKind) else {
+        // The company's Slack token is a secret of its own too (the Slack
+        // step's create or update, F3 relaxed); Publish asks for it on its own card.
+        guard driver.secretKinds.contains(kind) else {
             return .error(.badArgs, "kind \(kind) is not a \(driver.service) secret")
         }
         if let step = cardStep {
@@ -426,7 +470,12 @@ package final class ConnectRunController {
     private func companyCall(_ tool: String, _ args: [String: Any], _ company: any ConnectCompanyDriving) async -> Reply {
         switch tool {
         case "company_draft":
-            guard let rawFields = args["fields"] else { return Self.draftRead(company.draftView()) }
+            guard let rawFields = args["fields"] else {
+                switch await company.draftView() {
+                case let .success(view): return Self.draftRead(view)
+                case let .failure(error): return Self.reply(error)
+                }
+            }
             guard let vendor = args["vendor"] as? String, let fields = rawFields as? [String: String] else {
                 return .error(.badArgs, "company_draft save needs a vendor and string fields")
             }
@@ -443,7 +492,7 @@ package final class ConnectRunController {
                 return await attach(step)
             }
             guard let confirm = company.confirmNeeded(tool: "company_publish", options: [:]) else {
-                return .error(.failed, "the company setup is not ready to publish")
+                return .error(.failed, company.publishBlockedReason ?? "the company setup is not ready to publish")
             }
             return await attach(showCard(.confirm(confirm), purpose: .publish))
         }
@@ -551,11 +600,14 @@ package final class ConnectRunController {
             return reply
         }
         // The run shows the error with Retry: no card stays open behind it.
+        let cardShowing = pendingCard != nil
         pendingCard = nil
-        if let card = cardStep, card !== step, card.work == nil {  // still unanswered
+        if let card = cardStep, card !== step, cardShowing {  // still unanswered
             finish(card, reply)
             _ = consume(card)
+            dropSecretConfirm(card)
         }
+        if step === cardStep { dropSecretConfirm(step) }
         let abandonedFlow = step === flowStep ? step.flowID : nil
         if step === flowStep || step === checkStep {
             step.work?.cancel()

@@ -171,11 +171,38 @@ type CompanyDraft struct {
 	Vendors map[string]VendorDraft `json:"vendors"`
 }
 
-// VendorDraft is one vendor's part of the draft.
+// VendorDraft is one vendor's part of the draft: its non-secret values,
+// whether its secret is set, whether its check passed for these values
+// (Checked) or the customer skipped it. Slack has no check: Ready says
+// whether its app is set up on this Mac (absent for the other vendors).
 type VendorDraft struct {
 	ClientID        string `json:"client_id,omitempty"`
+	TenantID        string `json:"tenant_id,omitempty"`
 	Site            string `json:"site,omitempty"`
 	ClientSecretSet bool   `json:"client_secret_set"`
+	Checked         bool   `json:"checked"`
+	Skipped         bool   `json:"skipped"`
+	Ready           *bool  `json:"ready,omitempty"`
+}
+
+// CompanyChecked is company_check's own result: ok (Account is the
+// signed-in address, empty for a dry check), admin_consent
+// (AdminConsentURL for the tenant's IT admin) or replace_needed (check
+// again: the panel asks the customer to replace the stored app). A failed
+// check is an error.
+type CompanyChecked struct {
+	Result          string `json:"result"`
+	Account         string `json:"account,omitempty"`
+	AdminConsentURL string `json:"admin_consent_url,omitempty"`
+}
+
+// CompanyPublished is company_publish's own result: ok (the link is on the
+// Slack app's About page) or no_slack. Slug names the stored company; the
+// link and code stay on the wizard's Publish page. A failed Publish is an
+// error.
+type CompanyPublished struct {
+	Result string `json:"result"`
+	Slug   string `json:"slug"`
 }
 
 // Done is the result of a call with nothing to return (connect_cancel,

@@ -32,7 +32,7 @@ Press **Connect with Claude** (or Codex) beside **Use my own Google project** in
 The assistant's panel always offers **Set up by hand**, which opens **Use my own Google project**: drop the client JSON there and press **Connect**.
 
 - **Own projects are blocked** (`policy`). Your organization does not allow them; accounts already on one say "Stopped by your organization — data kept". Ask IT for your company's link.
-- **"Another connection is already in progress."** (`busy`). Another Google sign-in is running. Wait for it, or cancel it, then start again.
+- **"Another connection is already in progress."** (`busy`). Another Google sign-in is running. Wait for it to finish, then start again.
 - **Google Cloud Console refuses a new project.** Your account may not make projects. Use a personal Google account, or your company's setup.
 - **The dialog closed before you copied the secret.** Google shows it only there. Make a new client (step 5) and copy its secret.
 - **"Google does not accept this client" with a code.** The Client ID or the secret is wrong. Check the Client ID on **Credentials**, or make a new client.

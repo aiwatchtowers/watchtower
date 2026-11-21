@@ -267,6 +267,9 @@ package final class SlackAppSetupModel {
     /// ends on a form leaves `phase == .editing` with the new `form`, which the
     /// wizard observes.
     @ObservationIgnored package var onFinished: ((SlackSetupOutcome) -> Void)?
+    /// The last create or adopt run, done once its records are re-read and
+    /// `onFinished` was called (the connect assistant awaits it).
+    @ObservationIgnored package private(set) var runTask: Task<Void, Never>?
     /// A status read has succeeded: `records` (and `record(appID:)`) say what
     /// this Mac has, not merely that nothing was read yet.
     package private(set) var recordsRead = false
@@ -524,7 +527,7 @@ package final class SlackAppSetupModel {
         phase = .running
         adminNoteCopied = false
         createdApp = false
-        Task { [self] in
+        runTask = Task { [self] in
             await body(token)
             heldToken = nil
             // Taken before the read: a new run may start while it is pending.

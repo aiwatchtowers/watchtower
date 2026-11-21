@@ -57,15 +57,39 @@ extension ConnectServiceDriving {
 package protocol ConnectCompanyDriving: ConnectServiceDriving {
     /// The `company_draft` read as JSON (`ConnectCompanyDraft`). The
     /// controller re-encodes it through `ConnectCompanyDraft`, so a key the
-    /// shape does not name (a secret) never leaves.
-    func draftView() -> Data
+    /// shape does not name (a secret) never leaves. It reads the stored
+    /// draft first; a draft it cannot read is an error, never an empty one.
+    func draftView() async -> Result<Data, ConnectDriverError>
     func saveDraft(vendor: String, fields: [String: String]) async -> Result<Void, ConnectDriverError>
     /// `company check <vendor>`; a Google or Atlassian check opens a sign-in.
+    /// Success is `ConnectCompanyChecked`.
     func check(vendor: String) async -> Result<Data, ConnectDriverError>
     /// Publishes the setup with the Slack configuration token. The
-    /// controller calls it only after the Publish confirm card and the
-    /// token's secret card.
+    /// controller calls it only after the Publish confirm card and, when
+    /// `publishNeedsToken`, the token's secret card (else with "").
+    /// Success is `ConnectCompanyPublished`.
     func publish(token: String) async -> Result<Data, ConnectDriverError>
+    /// Slack is part of the setup: Publish takes the configuration token.
+    var publishNeedsToken: Bool { get }
+    /// Why Publish cannot run yet (no confirm card shows), nil when it can.
+    var publishBlockedReason: String? { get }
+}
+
+/// A driver whose secret may need the customer's confirm before its verb
+/// changes anything: the company Slack step reads an existing app with the
+/// token first, then the panel shows the update's changes (spec §5.4, F3
+/// relaxed). The controller asks right after `submitSecret` succeeded.
+@MainActor
+package protocol ConnectSecretConfirming: AnyObject {
+    /// The card for the secret `kind` just submitted; nil when its verb is done.
+    func secretConfirm(kind: String) -> ConnectAssistantConfirm?
+    /// The customer's answer to that card: yes runs the change and returns
+    /// the verb's JSON; no drops it (nothing changed, the result is unused).
+    func answerSecretConfirm(kind: String, yes: Bool) async -> Result<Data, ConnectDriverError>
+    /// The card went unanswered (the run ended, the step timed out, or the
+    /// read finished after the run ended): drop what waits on it (the token,
+    /// the shown changes). A no-op when nothing waits.
+    func secretConfirmDropped(kind: String)
 }
 
 /// A driver that can check Slack Live (`slack live probe --provider <p> --json`).
@@ -201,20 +225,52 @@ package struct ConnectPending: Codable, Equatable, Sendable {
 
 /// `company_draft`'s read (Go `CompanyDraft`): no secret, only whether each is set.
 package struct ConnectCompanyDraft: Codable, Equatable, Sendable {
+    /// One vendor: its non-secret values, whether its secret is set, whether
+    /// its check passed for these values or the customer skipped it; Slack
+    /// (no check) says instead whether its app is `ready` on this Mac.
     package struct Vendor: Codable, Equatable, Sendable {
         package var clientID: String?
+        package var tenantID: String?
         package var site: String?
         package let clientSecretSet: Bool
+        package let checked: Bool
+        package let skipped: Bool
+        /// Absent for every vendor but Slack (Go `*bool`).
+        package var ready: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
         private enum CodingKeys: String, CodingKey {
-            case site
+            case site, checked, skipped, ready
             case clientID = "client_id"
+            case tenantID = "tenant_id"
             case clientSecretSet = "client_secret_set"
         }
     }
 
     package let company: String
     package let vendors: [String: Vendor]
+}
+
+/// `company_check`'s own result (Go `CompanyChecked`): `ok` (`account` is
+/// the signed-in address, absent for a dry check), `admin_consent`
+/// (`admin_consent_url` for the tenant's IT admin) or `replace_needed`
+/// (check again: the panel asks the customer to replace the stored app).
+package struct ConnectCompanyChecked: Codable, Equatable, Sendable {
+    package let result: String
+    package var account: String?
+    package var adminConsentURL: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case result, account
+        case adminConsentURL = "admin_consent_url"
+    }
+}
+
+/// `company_publish`'s own result (Go `CompanyPublished`): `ok` (the link
+/// is on the Slack app's About page) or `no_slack`; `slug` names the stored
+/// company. The link and code stay on the wizard's Publish page.
+package struct ConnectCompanyPublished: Codable, Equatable, Sendable {
+    package let result: String
+    package let slug: String
 }
 
 /// The result of a call with nothing to return (Go `Done`): `{}`.
