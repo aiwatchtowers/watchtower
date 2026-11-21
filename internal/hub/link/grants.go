@@ -52,7 +52,9 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
-	var linked, rest []wire.Keybox
+	// replaced: the keyboxes shown in place of a linked row (a re-link's
+	// waiting request or refusal), never capped, as the row they replace.
+	var linked, replaced, rest []wire.Keybox
 	keyed := false
 	err := c.st.ReadTx(context.Background(), func(tx *sql.Tx) error {
 		pending, err := pendingDevicesTx(tx)
@@ -74,7 +76,18 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 		for _, p := range pending {
 			relinking[strings.ToUpper(p.deviceID)] = true
 		}
-		linked = slices.DeleteFunc(linked, func(kb wire.Keybox) bool { return relinking[kb.Grant.DeviceID] })
+		shadowed := map[string]bool{}
+		linked = slices.DeleteFunc(linked, func(kb wire.Keybox) bool {
+			shadowed[kb.Grant.DeviceID] = relinking[kb.Grant.DeviceID]
+			return relinking[kb.Grant.DeviceID]
+		})
+		place := func(kb wire.Keybox) {
+			if shadowed[kb.Grant.DeviceID] {
+				replaced = append(replaced, kb)
+			} else {
+				rest = append(rest, kb)
+			}
+		}
 		answered := map[string]bool{}
 		for _, r := range linked {
 			answered[r.Grant.DeviceID] = true
@@ -88,14 +101,16 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 				if raw, err := base64.RawURLEncoding.DecodeString(p.linkNonce); err == nil {
 					g.LinkCodeTag = ptr(secure.LinkCodeTag(raw))
 				}
-				rest = append(rest, wire.Keybox{Grant: g})
+				place(wire.Keybox{Grant: g})
 			}
 		}
 		refused, err := c.refusedRows(tx, now, answered)
 		if err != nil {
 			return err
 		}
-		rest = append(rest, refused...)
+		for _, kb := range refused {
+			place(kb)
+		}
 		revoked, err := c.revokedRows(tx, now, answered)
 		if err != nil {
 			return err
@@ -131,8 +146,8 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 			linked[i].Keys = &keys
 		}
 	}
-	room := max(0, MaxGrantRecords-len(linked))
-	return append(linked, rest[:min(room, len(rest))]...), nil
+	room := max(0, MaxGrantRecords-len(linked)-len(replaced))
+	return append(append(linked, replaced...), rest[:min(room, len(rest))]...), nil
 }
 
 // newGrant is the grant every row starts from; ok is false for a phone

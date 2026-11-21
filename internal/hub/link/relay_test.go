@@ -834,3 +834,27 @@ func TestARefusedRelinkIsAnsweredAndKeepsTheLink(t *testing.T) {
 		})
 	}
 }
+
+// #1127: a re-link's waiting keybox takes its linked row's place, so it is
+// never cut by MaxGrantRecords however many phones are linked and wait.
+func TestARelinkKeepsItsRoomUnderTheGrantCap(t *testing.T) {
+	r := newRig(t)
+	phones := make([]phone, MaxGrantRecords)
+	for i := range phones {
+		phones[i] = newPhone(t)
+		r.confirmLinked(phones[i])
+	}
+	a := phones[0]
+	code := r.issue()
+	if got := r.handle(a, code.Nonce); got.Code == "" {
+		t.Fatalf("re-link not waiting: %+v", got)
+	}
+	r.advance(time.Second)
+	if got := r.handle(newPhone(t), code.Nonce); got.Code == "" { // a newer request ahead of it
+		t.Fatalf("stranger not waiting: %+v", got)
+	}
+	kb, ok := r.keybox(a)
+	if !ok || kb.Grant.ConfirmNonce == nil {
+		t.Fatalf("the re-link's waiting keybox was cut by the cap: %v %+v", ok, kb.Grant)
+	}
+}
