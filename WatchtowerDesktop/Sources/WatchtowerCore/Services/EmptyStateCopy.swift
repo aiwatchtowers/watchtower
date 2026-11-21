@@ -122,7 +122,7 @@ package enum EmptyStateCopyTable {
             feature: nil, primaryAction: nil),
         // The Inbox's Watchman entry before its first night (C1, `WatchmanJournalCopy.emptyCopyKey`).
         "inboxWatchman": EmptyStateCopy(
-            icon: "moon.stars", title: "No night yet",
+            icon: WatchmanStyle.icon, title: "No night yet",
             landsHere: "When you hand a session to Watchman and leave, the decisions it takes for you land here: "
                 + "what was asked, what it chose, why, and how sure it was.",
             feature: nil, primaryAction: nil),

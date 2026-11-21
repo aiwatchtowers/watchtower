@@ -149,7 +149,7 @@ struct WatchmanArmControl: View {
     private func armedCard(_ target: Int64) -> some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
             HStack(spacing: Spacing.regular) {
-                Image(systemName: "moon.stars").foregroundStyle(Self.tone)
+                Image(systemName: WatchmanStyle.icon).foregroundStyle(Self.tone)
                 Text(Copy.targetArmed(since: since, calendar: calendar))
                     .font(.callout.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
@@ -172,7 +172,7 @@ struct WatchmanArmControl: View {
         Button {
             Task { await center.handTo(scope, workbench: workbench) }
         } label: {
-            Label(Copy.handTo, systemImage: "moon.stars")
+            Label(Copy.handTo, systemImage: WatchmanStyle.icon)
         }
         .buttonStyle(.kitSecondary)
         .fixedSize()
