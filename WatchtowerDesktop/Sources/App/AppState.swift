@@ -1736,7 +1736,7 @@ final class AppState {
     /// "Grant Confluence access" runs the Jira account's own login flow with
     /// `--with-confluence` on `jiraAccountsViewModel`, so its in-flight state
     /// and errors land where every other Jira re-login's do; "Allow editing"
-    /// does the same with `--with-confluence-write`.
+    /// does the same with `--with-confluence-write`; their Cancel ends it.
     @discardableResult
     func confluenceSpacesViewModel(
         forJiraAccount accountID: Int64,
@@ -1759,8 +1759,8 @@ final class AppState {
                 await jira.reloginWithConfluenceWrite(accountID: Int(id))
                 return jira.error
             },
-            // Best-effort, the tray's Sync Now: a failure only means the
-            // daemon picks the space up on its next poll instead.
+            onCancelReconsent: { [weak self] id in self?.jiraAccountsViewModel?.cancelConfluenceGrant(accountID: Int(id)) },
+            // Best-effort, the tray's Sync Now: on a failure the daemon's next poll picks the space up.
             onSelected: syncNow ?? { [weak self] in await self?.daemonManager.syncNow() }
         )
         confluenceSpacesViewModels[accountID] = vm
