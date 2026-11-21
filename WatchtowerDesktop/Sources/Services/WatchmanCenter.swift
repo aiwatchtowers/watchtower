@@ -318,6 +318,7 @@ final class WatchmanCenter {
             let stored = scope == .allRunning ? StoredInstruction(field: "", known: "") : await storedInstruction(scope)
             // Another sheet opened (or one was opened and cancelled) meanwhile: it wins.
             guard sheet == nil, sheetGeneration == generation else { return sheet != nil }
+            remember(stored, scope)
             sheet = makeSheet(scope, workbench: workbench, title: title, reply: reply,
                               instruction: stored.field, stored: stored.known)
             return true
@@ -334,13 +335,19 @@ final class WatchmanCenter {
 
     /// The scope's stored instruction. Only a successful database read makes
     /// it known; when the read fails the last text this app saw only fills
-    /// the field, since another writer may have changed it since.
+    /// the field, since another writer may have changed it since. Nothing is
+    /// remembered here: the caller does (`remember`) once its read is still
+    /// current, so a stale read never puts old text in the chip's tooltip.
     private func storedInstruction(_ scope: WatchmanArmScope) async -> StoredInstruction {
         if let readInstruction, let text = try? await readInstruction(scope) {
-            instructions[scope] = text
             return StoredInstruction(field: text, known: text)
         }
         return StoredInstruction(field: instructions[scope] ?? "", known: nil)
+    }
+
+    /// Keeps a fresh read's text as the last one this app saw.
+    private func remember(_ stored: StoredInstruction, _ scope: WatchmanArmScope) {
+        if let known = stored.known { instructions[scope] = known }
     }
 
     /// The tray's Hand all running sessions to Watchman: the same check and
@@ -357,6 +364,7 @@ final class WatchmanCenter {
         defer { endOpening(scope, generation) }
         let stored = await storedInstruction(scope)
         guard sheet == nil, sheetGeneration == generation else { return }
+        remember(stored, scope)
         sheet = WatchmanArmSheetRequest(
             scope: scope, sessions: [], instruction: stored.field, stored: stored.known,
             content: .edit(subject: subject(scope, title)))
@@ -462,12 +470,27 @@ final class WatchmanCenter {
     }
 
     /// Edit mode's Save: `watchman instruct … --text-file -`, the text on
-    /// stdin; the stored text as Go kept it (trimmed, clipped).
+    /// stdin; the stored text as Go kept it (trimmed, clipped). An empty
+    /// field over a stored text the sheet could not read reads it again
+    /// first (Retry does too): none stored saves; a stored one replaces the
+    /// sheet pre-filled with it, so it is cleared only once seen; a failed
+    /// read refuses.
     private func saveInstruction(_ request: WatchmanArmSheetRequest, text: String) async {
         // An empty file clears: never over a stored text the owner did not see.
         if Self.blank(text), request.stored == nil {
-            sheetError = WatchmanArmingCopy.instructionUnread
-            return
+            let stored = await storedInstruction(request.scope)
+            guard sheet?.token == request.token else { return }
+            guard let known = stored.known else {
+                sheetError = WatchmanArmingCopy.instructionUnread
+                return
+            }
+            remember(stored, request.scope)
+            if !Self.blank(known) {
+                sheet = WatchmanArmSheetRequest(
+                    scope: request.scope, sessions: [], instruction: known, stored: known,
+                    content: .edit(subject: request.content.subject ?? "", notice: WatchmanArmingCopy.instructionShown))
+                return
+            }
         }
         let args = ["watchman", "instruct"] + request.scope.flags() + ["--text-file", "-", "--json"]
         let outcome = await call(args, stdin: Data(text.utf8), timeout: Self.editTimeout)

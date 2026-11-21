@@ -454,9 +454,11 @@ final class WatchmanJournalViewModel {
 
     /// Open session: the item's session (or the one its correction started)
     /// on its workbench's page; one that stopped is shown, never started.
+    /// A session whose row is gone is never opened (its id would land on
+    /// another session).
     func openSession(_ itemID: Int64) {
-        guard let item = item(itemID), !(item.isStall && !item.sessionExists) else { return }
-        let sessionID = startedSessions[itemID] ?? item.sessionID
+        guard let item = item(itemID) else { return }
+        let sessionID = startedSessions[itemID] ?? (item.sessionExists ? item.sessionID : 0)
         guard sessionID > 0 else { return }
         actions.open(WorkbenchRoute(projectID: item.workbenchID, pane: .terminal, subjectID: sessionID))
     }
@@ -633,7 +635,7 @@ final class WatchmanJournalViewModel {
                     question: WatchmanJournalCopy.question(item), badge: nil,
                     reason: WatchmanJournalCopy.waitingReason(item), choice: nil, rationale: nil, precedents: [],
                     meta: WatchmanJournalCopy.meta(item), outcome: nil, handed: item.outcome == "handed",
-                    canOpen: item.sessionID > 0, canMarkDone: true)
+                    canOpen: item.sessionID > 0 && item.sessionExists, canMarkDone: true)
     }
 
     /// A stalled session: titled by the session, the stored reason, Open

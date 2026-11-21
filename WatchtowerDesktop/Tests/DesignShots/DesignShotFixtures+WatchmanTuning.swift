@@ -110,7 +110,7 @@ private typealias Copy = WatchmanTuningMockCopy
 
 /// The real `WatchmanArmSheet` in one state: the content its hand-over or
 /// Instruction… builds, the field's text, busy or failed.
-private struct InstructionSheetShot: View {
+struct InstructionSheetShot: View {
     let content: WatchmanArmSheetContent
     var text = ""
     var busy = false

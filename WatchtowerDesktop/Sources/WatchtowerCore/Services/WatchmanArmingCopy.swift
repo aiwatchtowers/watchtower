@@ -164,6 +164,10 @@ package enum WatchmanArmingCopy {
     /// empty file would clear a text the owner never saw.
     package static let instructionUnread = "Watchman's stored instruction could not be read, so an empty one "
         + "would erase it unseen — type the new instruction, or Cancel"
+    /// Save on an empty field, the stored text read again and found: the
+    /// sheet now shows it, so emptying it clears a text the owner saw.
+    package static let instructionShown = "Watchman's stored instruction is in the field now — "
+        + "empty it and Save to clear it"
     /// A confirm while the same scope's hand-over or Take back still runs.
     package static let armInProgress = "Watchman is still handing this over or taking it back — try again in a moment"
 
@@ -193,8 +197,9 @@ package enum WatchmanArmingCopy {
 
     /// D21, verbatim.
     package static let analyticsLine = "Agent analytics turned on — Watchman learns from your sessions"
-    /// The first-time sheet's learning line (tuning spec §3): what happens
-    /// to questions asked while Watchman learns the workbench.
+    /// The first-time sheet's learning line (tuning spec §3): how much
+    /// Watchman learns first and what happens to questions asked meanwhile —
+    /// the sheet's one line about learning.
     package static func learningLine(_ estimate: WatchmanEstimate?) -> String {
         let first = estimate.map {
             "Watchman learns this workbench first (about \(WatchmanSettingsCopy.count($0.decisions)) decisions)."
@@ -235,13 +240,6 @@ package enum WatchmanArmingCopy {
 
     /// The tray's sheet after the running set changed while it was open.
     package static let sessionsChanged = "The running sessions changed since this opened — this is the new set."
-
-    /// "Learning from your history: ~1 850 decisions, est. 1.6 M tokens".
-    package static func historyLine(_ estimate: WatchmanEstimate?) -> String {
-        guard let estimate else { return "Learning from your history first" }
-        return "Learning from your history: ~\(WatchmanSettingsCopy.count(estimate.decisions)) decisions, "
-            + "est. \(WatchmanSettingsCopy.tokens(estimate.tokens)) tokens"
-    }
 
     private static func clock(_ date: Date, _ calendar: Calendar) -> String {
         let parts = calendar.dateComponents([.hour, .minute], from: date)
@@ -327,10 +325,11 @@ package struct WatchmanArmSheetContent: Equatable, Sendable {
                     sessions: [], notice: notice)
     }
 
-    /// Instruction… on an armed chip or panel.
-    package static func edit(subject: String) -> Self {
+    /// Instruction… on an armed chip or panel; `notice` when it reopens
+    /// with the stored text read again.
+    package static func edit(subject: String, notice: String? = nil) -> Self {
         Self(mode: .edit, title: WatchmanArmingCopy.editTitle, reply: WatchmanArmReply(), subject: subject,
-             sessions: [], notice: nil)
+             sessions: [], notice: notice)
     }
 
     private init(
@@ -350,7 +349,6 @@ package struct WatchmanArmSheetContent: Equatable, Sendable {
         if full {
             if reply.firstTime {
                 lines.append(Line(icon: "chart.bar.xaxis", text: Copy.analyticsLine))
-                lines.append(Line(icon: "books.vertical", text: Copy.historyLine(reply.estimate)))
                 lines.append(Line(icon: WatchmanStyle.icon, text: Copy.learningLine(reply.estimate)))
             }
             lines.append(Line(icon: "hand.raised", text: Copy.limitsLine))

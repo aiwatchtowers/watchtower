@@ -123,7 +123,7 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertEqual(sheet.content.mode, .firstTime)
         let lines = sheet.content.lines.map(\.text)
         XCTAssertTrue(lines.contains(Copy.analyticsLine))
-        XCTAssertTrue(lines.contains("Learning from your history: ~1 850 decisions, est. 1.6 M tokens"))
+        XCTAssertFalse(lines.contains { $0.hasPrefix("Learning from your history") }, "the count is said once")
         XCTAssertTrue(lines.contains("Watchman learns this workbench first (about 1 850 decisions). Questions asked "
             + "meanwhile wait and are decided once it finishes — or answer them yourself."))
         XCTAssertEqual(sheet.content.confirm, "Hand over")
@@ -184,7 +184,7 @@ final class WatchmanArmingTests: XCTestCase {
         await center.handTo(.target(1820), workbench: "acme-web")
         let sheet = try XCTUnwrap(center.sheet)
         XCTAssertEqual(sheet.scope, .target(1820))
-        XCTAssertTrue(sheet.content.lines.map(\.text).contains("Learning from your history: ~620 decisions, est. 500 k tokens"))
+        XCTAssertTrue(sheet.content.lines.map(\.text).contains { $0.hasPrefix("Watchman learns this workbench first (about 620 decisions).") })
         XCTAssertEqual(sheet.content.warnings, [
             Copy.protectionWarning,
             "Watchman's git guard cannot be installed in /tmp/acme: shared core.worktree/core.bare — the other layers still apply"
@@ -869,9 +869,12 @@ final class WatchmanArmingTests: XCTestCase {
         let slow = Task { await center.editInstruction(.target(4)) }
         await entered.wait()
         await center.editInstruction(.session(5))
-        let other = try XCTUnwrap(center.sheet?.token)
+        let otherToken = center.sheet?.token
+        // The gate opens and the slow task ends before any unwrap: a
+        // regression fails an assertion, it never hangs on the closed gate.
         gate.release()
         await slow.value
+        let other = try XCTUnwrap(otherToken)
         XCTAssertEqual(center.sheet?.token, other)
 
         // Cancelled meanwhile: the late read opens nothing.
@@ -899,13 +902,106 @@ final class WatchmanArmingTests: XCTestCase {
         await center.editInstruction(.session(5))
         center.sheet = nil // Cancel
         await center.editInstruction(.target(4))
-        let fresh = try XCTUnwrap(center.sheet, "the fresh click opens its sheet")
-        XCTAssertEqual(fresh.scope, .target(4))
+        let freshSheet = center.sheet
         let freshReads = await reads.count(.target(4))
-        XCTAssertEqual(freshReads, 2, "a new read")
         gate.release()
         await stale.value
+        let fresh = try XCTUnwrap(freshSheet, "the fresh click opens its sheet")
+        XCTAssertEqual(fresh.scope, .target(4))
+        XCTAssertEqual(freshReads, 2, "a new read")
         XCTAssertEqual(center.sheet?.token, fresh.token, "the stale completion is ignored")
+    }
+
+    /// A read that finishes after another sheet opened leaves the chip's
+    /// tooltip alone: only a read whose sheet opens is remembered.
+    func testStaleReadLeavesTheTooltip() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", #"{"ok":true,"first_time":false,"sessions":[]}"#)
+        let center = await center(runner)
+        let entered = AsyncGate()
+        let gate = AsyncGate()
+        let counter = ReadCounter()
+        center.readInstruction = { scope in
+            if scope == .target(4), await counter.add(scope) == 1 {
+                entered.release()
+                await gate.wait()
+                return "old text"
+            }
+            return "new text"
+        }
+        let stale = Task { await center.editInstruction(.target(4)) }
+        await entered.wait()
+        await center.editInstruction(.session(5))
+        gate.release()
+        await stale.value
+        XCTAssertEqual(center.sheet?.scope, .session(5))
+        XCTAssertNil(center.instructions[.target(4)], "a stale read is not remembered")
+        XCTAssertEqual(center.instructions[.session(5)], "new text")
+
+        // The same for a hand-over's read.
+        center.sheet = nil
+        let entered2 = AsyncGate()
+        let gate2 = AsyncGate()
+        let counter2 = ReadCounter()
+        center.readInstruction = { scope in
+            if scope == .target(4), await counter2.add(scope) == 1 {
+                entered2.release()
+                await gate2.wait()
+                return "old text"
+            }
+            return "new text"
+        }
+        let staleHand = Task { await center.handTo(.target(4), workbench: "acme-api") }
+        await entered2.wait()
+        await center.editInstruction(.session(6))
+        gate2.release()
+        _ = await staleHand.value
+        XCTAssertEqual(center.sheet?.scope, .session(6))
+        XCTAssertNil(center.instructions[.target(4)], "a stale hand-over read is not remembered")
+    }
+
+    /// Save on an empty edit field whose stored text could not be read reads
+    /// it again (Retry too): none stored saves the empty text; a stored one
+    /// reopens the sheet pre-filled with it and a notice, so it is cleared
+    /// only once seen; a read that fails again refuses as before.
+    func testUnreadSaveRereadsTheStoredText() async throws {
+        struct Locked: Error {}
+        let runner = ArmingRunner(status: Self.unarmed)
+        let center = await center(runner)
+        center.readInstruction = { _ in throw Locked() }
+        await center.editInstruction(.target(4), title: "Ship the export")
+        XCTAssertNil(center.sheet?.stored)
+        await center.confirmShown("")
+        XCTAssertEqual(center.sheetError, Copy.instructionUnread, "the read fails again: refused")
+
+        // Retry after the database came back: the stored text shows.
+        center.readInstruction = { _ in "keep the public API" }
+        let token = try XCTUnwrap(center.sheet?.token)
+        await center.confirmShown("")
+        XCTAssertFalse(runner.verbs.contains { $0.dropFirst().first == "instruct" }, "nothing saved unseen")
+        let reopened = try XCTUnwrap(center.sheet)
+        XCTAssertNotEqual(reopened.token, token)
+        XCTAssertEqual(reopened.instruction, "keep the public API")
+        XCTAssertEqual(reopened.stored, "keep the public API")
+        XCTAssertEqual(reopened.content.mode, .edit)
+        XCTAssertEqual(reopened.content.notice, Copy.instructionShown)
+        XCTAssertNil(center.sheetError)
+        XCTAssertEqual(center.instructions[.target(4)], "keep the public API")
+        // Now seen: emptied and saved, it clears.
+        runner.reply("instruct", #"{"ok":true,"scope":"target","ref_id":4,"instructions":"","error":""}"#)
+        await center.confirmShown("")
+        XCTAssertEqual(runner.verbs.last, ["watchman", "instruct", "--target", "4", "--text-file", "-", "--json"])
+        XCTAssertEqual(runner.stdinCalls.last?.text, "")
+        XCTAssertNil(center.sheet)
+
+        // Nothing stored after all: the empty Save goes through.
+        center.readInstruction = { _ in throw Locked() }
+        await center.editInstruction(.session(5))
+        center.readInstruction = { _ in "" }
+        runner.reply("instruct", #"{"ok":true,"scope":"session","ref_id":5,"instructions":"","error":""}"#)
+        await center.confirmShown("")
+        XCTAssertEqual(runner.verbs.last, ["watchman", "instruct", "--session", "5", "--text-file", "-", "--json"])
+        XCTAssertNil(center.sheet)
     }
 
     /// The tray's confirm re-check failing, or finding nothing running,

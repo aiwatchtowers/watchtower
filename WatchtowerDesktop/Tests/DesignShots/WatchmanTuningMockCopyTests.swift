@@ -42,6 +42,14 @@ final class WatchmanTuningMockCopyTests: XCTestCase {
                        Copy.learningLine.replacingOccurrences(of: "1,850", with: "1 850"))
     }
 
+    /// The first-time sheet says the learning count once: the spec's
+    /// learning line, no separate history line beside it.
+    func testFirstTimeSheetSaysTheCountOnce() {
+        let lines = InstructionSheetShot.firstTime.lines.map(\.text)
+        XCTAssertEqual(lines.filter { $0.contains("1 850") }.count, 1)
+        XCTAssertTrue(lines.contains(Copy.learningLine.replacingOccurrences(of: "1,850", with: "1 850")))
+    }
+
     /// The learning chip and the journal's wait line are built (Task 3b).
     func testLearningCopyMatchesTheMock() {
         XCTAssertEqual(WatchmanArmingCopy.stripLearning(percent: 42), Copy.stripLearning)

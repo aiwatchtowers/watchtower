@@ -51,7 +51,6 @@ final class WatchmanMockCopyTests: XCTestCase {
             armedSessions: [3, 5, 7].map { WatchmanArmedSession(id: $0) }), calendar: utc))
         XCTAssertEqual([Copy.handTo, Copy.takeBack], [Real.handTo, Real.takeBack])
         XCTAssertEqual(Copy.armAnalytics, Real.analyticsLine)
-        XCTAssertEqual(Copy.armHistory, Real.historyLine(WatchmanEstimate(decisions: 1850, needLabels: 1200, tokens: 1_600_000)))
         XCTAssertEqual(Copy.armLimits, Real.limitsLine)
         XCTAssertEqual(Copy.trayHandAll, Real.trayHandAll)
     }

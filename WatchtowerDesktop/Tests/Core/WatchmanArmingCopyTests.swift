@@ -145,12 +145,6 @@ final class WatchmanArmingCopyTests: XCTestCase {
         XCTAssertFalse(Copy.stripArmed(since: Self.since).contains("Sleep"))
     }
 
-    func testHistoryLine() {
-        XCTAssertEqual(Copy.historyLine(WatchmanEstimate(decisions: 1850, needLabels: 1200, tokens: 1_600_000)),
-                       "Learning from your history: ~1 850 decisions, est. 1.6 M tokens")
-        XCTAssertEqual(Copy.historyLine(nil), "Learning from your history first")
-    }
-
     func testTrayStatusLine() throws {
         XCTAssertNil(Copy.trayStatus(nil))
         let off = WatchmanStatus(workbenches: [], daemon: .running)
@@ -167,7 +161,8 @@ final class WatchmanArmingCopyTests: XCTestCase {
         XCTAssertEqual(Copy.trayStatus(stopped), Copy.daemonStopped)
     }
 
-    /// A first time: the D21 line, the estimate and the learning line;
+    /// A first time: the D21 line and the learning line (the estimate in it,
+    /// said once);
     /// always the limits and the residual risk; the warning line only when
     /// `protection_warning` is non-empty.
     func testSheetContent() {
@@ -180,8 +175,10 @@ final class WatchmanArmingCopyTests: XCTestCase {
         XCTAssertEqual(content.title, "Hand acme-api to Watchman?")
         XCTAssertEqual(content.body, Copy.sheetBody)
         XCTAssertEqual(content.lines.map(\.text), [
-            Copy.analyticsLine, "Learning from your history: ~1 850 decisions, est. 1.6 M tokens",
-            Copy.learningLine(estimate), Copy.limitsLine, Copy.residualRisk
+            Copy.analyticsLine,
+            "Watchman learns this workbench first (about 1 850 decisions). Questions asked meanwhile wait "
+                + "and are decided once it finishes — or answer them yourself.",
+            Copy.limitsLine, Copy.residualRisk
         ])
         XCTAssertEqual(content.warnings, [Copy.protectionWarning, "guard cannot be installed in /tmp/acme-a",
                                           "guard cannot be installed in /tmp/acme-b"])

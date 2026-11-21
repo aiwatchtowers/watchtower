@@ -320,6 +320,38 @@ final class WatchmanCorrectTests: XCTestCase {
         XCTAssertEqual(recorder.writes, [.ownerDone(1834)])
     }
 
+    /// A parked or handed waiting card whose session was deleted: no Open
+    /// session either (the id would land on another session), Mark done
+    /// still offered.
+    func testWaitingCardWithSessionGoneOffersMarkDoneOnly() async {
+        let recorder = Recorder()
+        var parked = item(1835, outcome: "parked")
+        parked.sessionID = 41
+        parked.sessionExists = false
+        var handed = item(1836, outcome: "handed")
+        handed.sessionID = 42
+        handed.sessionExists = false
+        var live = item(1837, outcome: "parked")
+        live.sessionID = 43
+        let night = WatchmanNight(date: date("2026-11-16T12:00:00Z"), waiting: [parked, handed, live])
+        var actions = WatchmanJournalViewModel.Actions.none
+        actions.open = { recorder.routes.append($0) }
+        let vm = WatchmanJournalViewModel(read: { .init(nights: [night], deciding: []) }, calendar: calendar,
+                                          actions: actions)
+        vm.apply(.success(.init(nights: [night], deciding: [])))
+        let cards = Dictionary(uniqueKeysWithValues: (vm.page?.waiting ?? []).map { ($0.id, $0) })
+        XCTAssertEqual(cards[1835]?.canOpen, false)
+        XCTAssertEqual(cards[1836]?.canOpen, false)
+        XCTAssertEqual(cards[1837]?.canOpen, true)
+        XCTAssertEqual(cards[1835]?.canMarkDone, true)
+        XCTAssertEqual(cards[1836]?.canMarkDone, true)
+        vm.openSession(1835)
+        vm.openSession(1836)
+        XCTAssertEqual(recorder.routes, [], "nothing opens")
+        vm.openSession(1837)
+        XCTAssertEqual(recorder.routes, [WorkbenchRoute(projectID: 1, pane: .terminal, subjectID: 43)])
+    }
+
     /// A handover whose next session did not start waits too: Mark done
     /// clears it with owner_done_at, never check_done_at.
     func testMarkDoneClearsAFailedHandoverStart() async {
