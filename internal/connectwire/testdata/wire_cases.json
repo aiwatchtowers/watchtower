@@ -37,6 +37,7 @@
     {"name": "publish_timeout", "kind": "response", "tool": "company_publish", "shape": "pending", "line": "{\"id\":8,\"result\":{\"state\":\"timeout\"}}"},
     {"name": "check_waiting", "kind": "response", "tool": "company_check", "shape": "pending", "line": "{\"id\":9,\"result\":{\"state\":\"waiting\"}}"},
     {"name": "check_timeout", "kind": "response", "tool": "company_check", "shape": "pending", "line": "{\"id\":9,\"result\":{\"state\":\"timeout\"}}"},
+    {"name": "probe_waiting", "kind": "response", "tool": "slack_live_probe", "shape": "pending", "line": "{\"id\":10,\"result\":{\"state\":\"waiting\"}}"},
     {"name": "check_ok", "kind": "response", "tool": "company_check", "shape": "company_checked", "line": "{\"id\":9,\"result\":{\"result\":\"ok\",\"account\":\"alice@example.com\"}}"},
     {"name": "check_dry_ok", "kind": "response", "tool": "company_check", "shape": "company_checked", "line": "{\"id\":9,\"result\":{\"result\":\"ok\"}}"},
     {"name": "check_admin_consent", "kind": "response", "tool": "company_check", "shape": "company_checked", "line": "{\"id\":9,\"result\":{\"result\":\"admin_consent\",\"admin_consent_url\":\"https://login.microsoftonline.com/acme-tenant/adminconsent?client_id=acme-client\"}}"},

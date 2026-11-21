@@ -52,7 +52,7 @@ Live is the Slack connector of your own Claude or ChatGPT account. Turning it on
 
 1. **You:** In Claude, open **Settings → Connectors** and connect **Slack**. In ChatGPT, open **Settings → Apps** and connect **Slack**. Sign in to your workspace when Slack asks.
 2. **You:** Tell the assistant which one you turned on.
-3. **Check:** Call `slack_live_probe` with provider `claude` or `codex`. `ok` means Live works. `not_connected`: the connector is off, or your organization's policy keeps it off. `needs_admin`: a Slack admin must approve the connector. `no_plan`: your plan has no connectors. `unavailable`: try again later.
+3. **Check:** Call `slack_live_probe` with provider `claude` or `codex`. `ok` means Live works. `not_connected`: the connector is off, or your organization's policy keeps it off. `needs_admin`: a Slack admin must approve the connector. `no_plan`: your plan has no connectors. `unavailable`: try again later. `waiting`: the check still runs; call it again with the same provider.
 
 ## If something goes wrong
 

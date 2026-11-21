@@ -187,7 +187,7 @@ func tool(name string, ts toolSet) *mcpsdk.Tool {
 		desc = "Publish the company setup. The panel shows a confirm card, then a card for the Slack configuration token." + waitNote
 		schema = object(nil)
 	case "slack_live_probe":
-		desc = "Check Slack Live (the Slack connector of the customer's own Claude or ChatGPT account): ok, not_connected, needs_admin, no_plan or unavailable."
+		desc = "Check Slack Live (the Slack connector of the customer's own Claude or ChatGPT account): ok, not_connected, needs_admin, no_plan or unavailable." + waitNote
 		schema = object(map[string]*jsonschema.Schema{"provider": enum("claude or codex", []string{"claude", "codex"})}, "provider")
 	default:
 		return nil

@@ -183,7 +183,11 @@ func (c *Client) Call(ctx context.Context, tool string, args json.RawMessage) (j
 
 // reattachTools are the calls a repeat cannot start anything new with: a
 // read, or a re-attach to the same waiting step.
-var reattachTools = map[string]bool{"connect_status": true, "connect_wait": true, "request_secret": true}
+var reattachTools = map[string]bool{
+	"connect_status": true, "connect_wait": true, "request_secret": true,
+	// The Desktop holds a running Live probe as a step: a repeat re-attaches to it.
+	"slack_live_probe": true,
+}
 
 // noAnswer is a timed-out call's message. The outcome is unknown: only a
 // re-attach tool may simply be called again; anything else may have
