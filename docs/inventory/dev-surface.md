@@ -35,6 +35,15 @@ contract, DEV-06; `--chat` is governed by AGENT-01/02/06
 workbench tool, no write tool and no `get_action`, and still runs under
 `query_only` (`TestDev06_PlainMCPStaysReadOnly`).
 
+**Connect mode (note, agent connect board #2133, approved in ask #1721 Q2):**
+`watchtower mcp --connect <svc>` is not this surface either. It is the
+Desktop connect assistant's server: it opens no database (so no
+`query_only` is needed), mounts none of the data tools, and only forwards
+its connect tools to the Desktop's per-run connect socket; it refuses
+every other `mcp` flag and exits unless the run's socket and token are in
+its environment. AGENT-01's connect-mode note covers it; `integrate`
+never registers it, and plain `watchtower mcp` is unchanged.
+
 **Observable:** Every tool on the plain `watchtower mcp` surface is a read. The real enforcement is
 connection-level: `cmd/mcp.go` calls `database.SetReadOnly()` before serving,
 which flips the connection to `PRAGMA query_only=ON` (`internal/db/db.go`'s
@@ -408,6 +417,7 @@ unreviewed write path into the owner's whole app — or off the machine.
 
 ## Changelog
 
+- 2026-11-21 (agent connect, board #2133, **owner approved in ask #1721 Q2**): DEV-01's scope gains a note that `mcp --connect <svc>` is the connect assistant's server, not this surface — no database, no data tools, forwards only to the Desktop's per-run socket, never registered by `integrate`. Note only, no guard changed.
 - 2026-11-19 (merge of main into the multi-folder umbrella, board #2003): marker bump only — main and the umbrella each shipped a different **v22** (main: the Watchman approve merge rule; the umbrella: the multi-folder tools and the agent-message rule), so the merged core, carrying both, is pack **v23**; main's shipped v22 text (byte for byte) joins the adopt-by-digest list (`v22CoreSHA256`) and the DEV-04 fixtures (`internal/devpack/testdata/watchtower-workbench-v22.md`). No tool, contract or guard changed; the watchtower-flow preset stays v13.
 - 2026-11-18 (multi-folder workbench, board #2003, plan Task 20, **owner approved in ask #1569**): the workbench skill is pack **v22** — the Tools section names `send_to_session`, `start_session`, `list_sessions` and `suggest_workbench_folder` and the targets' `folder`; a Rules entry says a message from another agent (`[Message from #…]`) carries no owner authority (it never answers an ask, approves anything or changes the target or instructions); a Codex rule asks the agent to call `suggest_workbench_folder(path, why, reason)` itself (no hook reminds Codex). The DEV-06 tool set is twenty-five (`TestWorkbenchMode_ListsTwentyFiveToolsUnderTheCurrentNames`), the four additions approved together in ask #1569 (entries below). The shipped v21 text (main's, byte for byte) joins the adopt-by-digest list (`v21CoreSHA256`) and the DEV-04 fixtures (`internal/devpack/testdata/watchtower-workbench-v21.md`); new `internal/devpack/workbench_test.go::TestWorkbenchSkill_TeachesTheMultiFolderBench`. No guard relaxed.
 - 2026-11-18 (multi-folder workbench, board #2003, spec `docs/superpowers/specs/2026-11-18-multi-folder-workbench-design.md` §6.5, **owner approved in ask #1569**): DEV-06's workbench tool set grows from twenty-two to **twenty-four** — the write tool `start_session` and the read `list_sessions` (`internal/tools/workbench_sessions.go`; workbench surface only; `start_session` is applied directly and audited, scoped to the calling terminal session of workbench N, and starts only through `workbench session start --folder F --parent <caller>`, the CLI's one start path; `list_sessions` is unmarked for READ-01 as the owner's own sessions). `workbench_info` gains an additive `folders` key (`[]` when none, never null). `TestWorkbenchMode_ListsTwentyTwoToolsUnderTheCurrentNames` renamed in place to `…ListsTwentyFourTools…` and `TestCanonicalToolName_MapsTheRenamedWorkbenchTools` counts twenty-four, only the counts changed; the workbench-surface block of `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` lists both tools and keeps `start_session` off the automation surface. No guard relaxed.

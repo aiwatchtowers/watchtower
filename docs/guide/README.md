@@ -127,6 +127,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 ## Connect with an agent
 
+- [Connect with an agent](features/connect-with-an-agent.md) — let your own Claude or Codex set up a source with you: what it does, what it never sees, browser or words, and Set up by hand
 - [Connect Slack with the assistant](connect/slack.md) — the assistant connects your workspace in Full, creates or updates its Watchtower app, and checks Live
 - [Connect Google with the assistant](connect/google.md) — Calendar through Watchtower's Google app, and Gmail where that app may ask for it
 - [Connect mail with the assistant](connect/mail.md) — an Outlook account by your sign-in, or any IMAP mailbox with its password in a secure card
