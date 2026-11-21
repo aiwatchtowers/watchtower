@@ -18,7 +18,7 @@ The Google places G1–G4 (account row, Connect Google Calendar, the Calendar ba
 
 ## What matches
 
-Every place shows the spinner, the line and the hint from `SignInWaitCopy`, and a visible **Cancel**. A waiting row's dot is grey, never red. A waiting row (Slack, Jira, Quick Connections) shows only the spinner and Cancel in its trailing slot, as the mockup does; the place's own start button (Re-login, Sign in again, Grant Confluence access, Connect, Connect the rest) is gone or disabled while the sign-in waits. **Remove** is red on the Slack, Jira, Google and Quick Connections rows, as in the mockups. The chat card shows no Retry while its sign-in waits; Retry comes back when the wait ends.
+Every place shows the spinner, the line and the hint from `SignInWaitCopy`, and a visible **Cancel**. A waiting row's dot is grey, never red. A waiting row (Slack, Jira, Quick Connections) shows only the spinner and Cancel in its trailing slot, as the mockup does; the place's own start button (Re-login, Sign in again, Grant Confluence access, Connect, Connect the rest) is gone or disabled while the sign-in waits. **Remove** is red on the Slack, Jira, Google and Quick Connections rows, as in the mockups. The chat card shows neither Retry nor the orange retry note while its sign-in waits; both come back when the wait ends.
 
 ## Differences from the mockups, and why
 
@@ -26,6 +26,9 @@ Every place shows the spinner, the line and the hint from `SignInWaitCopy`, and 
 - **Confluence puts the line first.** The waiting line sits at the top of the section, above the consent text, so it stays when a reload switches the section's content; the mockup draws it under the explanation.
 - **Own Google project and the wizard check are whole steps.** They show the step's guide and the dropped client file above the line, and **Connect** disabled; the mockups draw the line on its own.
 - **Company card** shows **Connect the rest** disabled at the trailing edge, which the mockup leaves out.
+- **Chat card** keeps the red failure line and the card's header and body above the waiting line, as the mockup's card does in outline; the mockup's short "Slack needs a new sign-in" stands in for the real failure text.
+- **Controls outside #2132 stay enabled.** During a row's wait, Slack's legacy Workspace **Reconnect Slack** and Jira's **Paste a company code** stay enabled; neither is a place this change covers.
+- **The Confluence shot's last line** ("Confluence access not granted — run: …") is the fixture runner's consent error, shown as the section's consent message.
 - **The Jira shot is cropped** to the sites and Add an account: the sections below read the live CLI, which the shots' test process does not have.
 
 Render them again with:

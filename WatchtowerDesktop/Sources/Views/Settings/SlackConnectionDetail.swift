@@ -386,11 +386,12 @@ struct SlackConnectionDetail: View {
     }
 
     /// One workspace: its title and the §4.3 status of a company's account,
-    /// the switch, Re-login (or the status's own action), Rename, Remove.
+    /// the switch, Re-login (or the status's own action), Rename, Remove;
+    /// while its sign-in waits, Cancel in place of the row's controls.
     private func workspaceRow(_ vm: SlackAccountsViewModel, account: SlackAccount, ref: AccountRef) -> some View {
         let status = appState.companyRowStatus(ref)
-        // This row's browser sign-in waits: Cancel in place of Re-login, the
-        // waiting line under the title.
+        // This row's browser sign-in waits: Cancel in place of the row's
+        // controls, the waiting line under the title.
         let signInWait = vm.signInWait(forAccount: account.id)
         return HStack {
             VStack(alignment: .leading, spacing: Spacing.tight) {

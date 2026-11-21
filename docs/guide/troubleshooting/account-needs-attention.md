@@ -38,7 +38,7 @@ After the fix, the next sync fetches the days the account missed, up to 30 days 
 
 ## A sign-in waits in the browser
 
-A row or section says **Waiting for the … sign-in in your browser…** with **Cancel**, and the connection's other buttons are greyed out. The sign-in waits for the browser page to come back to Watchtower, which never happens when the page shows an error (such as Google's "Access blocked") or you closed it.
+A row, section or card says **Waiting for the … sign-in in your browser…** with **Cancel**. A row shows only **Cancel**; a section or card greys out its other buttons. The sign-in waits for the browser page to come back to Watchtower, which never happens when the page shows an error (such as Google's "Access blocked") or you closed it.
 
 1. Press **Cancel**. The sign-in stops at once, with no error, and the row offers its own button again (**Re-login**, **Sign in again**, **Grant Confluence access**).
 2. Press that button to try again.

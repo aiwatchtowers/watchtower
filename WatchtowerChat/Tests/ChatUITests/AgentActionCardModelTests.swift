@@ -243,7 +243,10 @@ final class AgentActionCardModelTests: XCTestCase {
         var running: Set<Int64> = [3]
         services.reconnectSlackWaiting = { id in running.contains(id) ? AnyView(Text("waiting")) : nil }
         XCTAssertTrue(AgentActionCard.signInWaits(scope, services: services))
+        let waits = AgentActionCard.signInWaits(scope, services: services)
+        XCTAssertFalse(AgentActionCard.showsRetryNote(scope, signInWaits: waits), "the retry note goes with Retry")
         running = []
+        XCTAssertTrue(AgentActionCard.showsRetryNote(scope, signInWaits: AgentActionCard.signInWaits(scope, services: services)))
         XCTAssertFalse(AgentActionCard.signInWaits(scope, services: services), "ended: Retry again")
         running = [3]
         XCTAssertFalse(AgentActionCard.signInWaits(action(), services: services), "a card with no Slack account to reconnect")
