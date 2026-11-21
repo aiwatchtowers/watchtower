@@ -276,8 +276,10 @@ Each lane is its own worktree and branch off `feature/agent-connect`. The contro
 - Result shapes, pinned in `wire_cases.json`:
   - `connect_status`: `{service, accounts:[{name,status}], policy_locked, flow:{id,state}|null, setup:{stage}|null}`
   - `connect_start`: `{flow_id}`
-  - `connect_wait`: `{state:"connected",account}|{state:"failed",reason}|{state:"waiting"}`
-  - `request_secret`: `{state:"sent",result}|{state:"waiting"}|{state:"cancelled"}`
+  - `connect_wait`: `{state:"connected",account}|{state:"failed",reason}|{state:"waiting"}|{state:"timeout"}`
+  - `request_secret`: `{state:"sent",result}|{state:"waiting"}|{state:"cancelled"}|{state:"timeout"}`
+  - a confirm-gated call (`connect_start`, `company_publish`, `set_fields` enable): its own result, or `{state:"waiting"}`, `{state:"declined"}`, `{state:"timeout"}`
+  - `timeout` = the step's 15-minute wait budget is spent (Task 9); each shape, `timeout` included, has a case in `wire_cases.json`, and the Swift `ConnectWire` decodes the same file (parity test in Task 8)
   - `choose`: `{items:[{id,name,selected}]}`
   - `company_draft`: `{company, vendors:{google:{client_id, client_secret_set}, atlassian:{client_id, site, client_secret_set}, …}}`
 - Produces (`internal/connectmcp`): `func Tools(pb connectplay.Playbook) []mcp.Tool`, which returns exactly `pb.Tools` with JSON schemas. `request_secret.label` has `maxLength: 80` and `kind` is an enum of `pb.Secrets`. `set_fields` refuses any key containing `password|token|secret|key` (`bad_args`).
@@ -309,7 +311,7 @@ Each lane is its own worktree and branch off `feature/agent-connect`. The contro
 - Modify: `cmd/ai.go` (flags `--connect-service <svc>`, `--connect-mode browser|words`; `--tools connect` skips the `KnownChatSurface` check, refuses `--read-folder*`, `--persist` and `--owner-instructions`, and refuses before any model call when `Caps.Connect == none` or `providers.Allowed` fails)
 - Modify: `cmd/generator.go` (`newQueryClient`: with `aiFlagTools == "connect"`, `opts.MCPArgs = []string{"--connect", svc}`, `opts.MCPEnvVars = {SocketEnv, TokenEnv}`, `opts.Browser = mode == browser && caps.Connect == browser`; no Quick Connections; never runtime B)
 - Modify: `internal/providers/transport/transport.go` (`Options.Browser bool`, `Options.MCPEnvVars []string`; wire both into `newClaudeQuerier`/`newCodexQuerier`)
-- Modify: `internal/ai/client.go` (`SetBrowser(on bool)`: adds `--chrome` and the browser tool token(s) from S1 to `--allowedTools`, plus the S2 settings when enforceable; `SetMCPEnvVars(names)`: copies the named variables from the process environment into the watchtower server's `env` in `ChatMCPConfig`. A config carrying such a value counts as holding a secret, so `hasSecret` is true and the config goes through the inherited `/dev/fd` pipe, never inline in `--mcp-config` argv. Test `TestBuildArgs_ConnectTokenNeverInArgv`: with `WT_CONNECT_TOKEN=tok-sample` set, no argv element contains `tok-sample`)
+- Modify: `internal/ai/client.go` (`SetBrowser(on bool)`: adds `--chrome` and the browser tool token(s) from S1 to `--allowedTools`, plus the S2 settings when enforceable; `SetMCPEnvVars(names)`: copies the named variables from the process environment into the watchtower server's `env` in `ChatMCPConfig`. A config carrying such a value counts as holding a secret, so `hasSecret` is true and the config goes through the inherited `/dev/fd` pipe, never inline in `--mcp-config` argv. Test `TestBuildArgs_ConnectTokenNeverInArgv`: with `connectwire.TokenEnv` (`WATCHTOWER_CONNECT_TOKEN`) set to `tok-sample` and `SetMCPEnvVars([]string{connectwire.SocketEnv, connectwire.TokenEnv})`, the config read back from the `/dev/fd` pipe holds `tok-sample` (so the copy really happened) and no argv element contains it)
 - Modify: `internal/codex/client.go` (`SetBrowser(on bool)` is a no-op until Task 7; `SetMCPEnvVars` already exists)
 - Modify: `internal/connectplay/prompt.go` (new): `func SystemPrompt(pbs []Playbook, mode Mode) string`, `type Mode string` (`ModeBrowser`, `ModeWords`)
 - Tests: `internal/ai/client_test.go`, `internal/connectplay/prompt_test.go` + `testdata/connect_prompt_{browser,words}.golden`, `cmd/ai_query_connect_test.go`
@@ -324,6 +326,7 @@ Each lane is its own worktree and branch off `feature/agent-connect`. The contro
   - "Never read, copy or repeat a secret; stop before a **You only** step and call request_secret"
   - the words-mode rule ("tell the customer each browser step, then check it with connect_status")
   - "If a browser tool fails, continue in words and say so"
+  - the waiting rule: "When a tool answers `waiting`, call it again without writing to the customer; say once, before the first wait, what they should do. On `timeout`, tell the customer you stopped waiting and that **Retry** starts again."
   - the playbook texts
   The prompt isn't owner-customisable (it is a safety contract) and so isn't registered in `internal/prompts`. Say so in a code comment, per the add-ai-prompt skill's exception.
 
@@ -338,6 +341,7 @@ Each lane is its own worktree and branch off `feature/agent-connect`. The contro
   - `TestAIQueryConnect_CodexArgvUnchanged`: the codex argv equals the plain tool-run argv plus the `--connect` MCP args; browser features stay off; `TestDisabledFeatures_MatchSnapshot` still passes.
   - `TestConnectSystemPrompt_Golden` (both modes, over the Slack playbook).
   - `TestConnectSystemPrompt_NamesEveryDomain`.
+  - `TestConnectSystemPrompt_HasWaitingRule`: the prompt holds the waiting rule's text and names `timeout` (the golden covers it too).
   - Every test that spawns a stub reaps its process group in `t.Cleanup`.
 - [ ] **Step 2: Run** `go test ./internal/ai ./internal/codex ./internal/connectplay ./internal/providers/... ./cmd -run 'Connect|Args|DisabledFeatures|LLMTRANSPORT01'`. Expected: FAIL.
 - [ ] **Step 3: Implement** the flags, the transport options and the setters. The browser decision is read from `caps`, never from a provider name (LLMTRANSPORT-01).
