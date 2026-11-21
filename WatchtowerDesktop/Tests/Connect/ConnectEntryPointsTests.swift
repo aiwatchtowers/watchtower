@@ -521,6 +521,12 @@ final class ConnectEntryPointsTests: XCTestCase {
         XCTAssertFalse(noAdd.showsAddAccount)
         let hidden = SlackWorkspacesAddRow(section: noAdd, agent: (.fixture("claude"), {}), add: {}, openFold: {})
         XCTAssertFalse(try buttonTitles(hidden).contains("Connect with Claude"))
+        // Full without a built-in app: no Add, but the connect section is the
+        // manual path (the code/link flow the driver runs), so the agent shows.
+        let fullNoApp = SlackModePresentation.ConnectSection(
+            display: .full, portBusy: false, expanded: false, organizationApps: [], accounts: [], builtinApp: false)
+        let full = SlackWorkspacesAddRow(section: fullNoApp, agent: (.fixture("claude"), {}), add: {}, openFold: {})
+        XCTAssertEqual(try buttonTitles(full), ["Connect with Claude", fullNoApp.foldButton])
     }
 
     private func sections(

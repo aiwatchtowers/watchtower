@@ -239,6 +239,13 @@ package final class SlackConnectFlowModel {
     /// driver); a link, a manual start or the step going idle clears it.
     package private(set) var startedByAssistant = false
 
+    /// The assistant's run ended (its panel closed) with this flow still on:
+    /// the flow keeps today's behaviour (spec §8), so its sheet (with
+    /// **Cancel**, then **Done**) shows again in Connections and onboarding.
+    package func handToSheet() {
+        startedByAssistant = false
+    }
+
     // MARK: - Starting
 
     /// The paste field's **Connect**: a link or code skips the confirm (the

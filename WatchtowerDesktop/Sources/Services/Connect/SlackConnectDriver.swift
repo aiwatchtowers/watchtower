@@ -351,6 +351,14 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
         return flows[flowID]?.outcome ?? .waiting
     }
 
+    /// The run ended (panel closed) while a sign-in it started still runs:
+    /// the flow goes on as today's (spec §8), so its sheet and **Cancel**
+    /// show again. A reopened panel still finds it through `status`/`wait`.
+    func runEnded() {
+        guard let flow = connectFlow, flow.startedByAssistant, flow.isRunning else { return }
+        flow.handToSheet()
+    }
+
     func cancel(flowID: String) async {
         guard let flow = flows[flowID], flow.outcome == nil else { return }
         switch flow.kind {
