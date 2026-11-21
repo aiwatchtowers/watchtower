@@ -24,10 +24,23 @@ const (
 	BrowserGuardCommand = "ai connect-guard"
 )
 
+// BrowserProbeTool is the probe turn's one allowed tool (S1): the run
+// asks Claude in Chrome which browsers are connected, nothing else.
+const BrowserProbeTool = "mcp__claude-in-chrome__list_connected_browsers"
+
+// allowedToolsArg is the --allowedTools value: BrowserProbeTool alone on a
+// probe; otherwise the run's tools, the browser's on a browser run.
+func (c *Client) allowedToolsArg() string {
+	if c.browserProbe {
+		return BrowserProbeTool
+	}
+	return c.withStreamTools(c.withBrowserTools(c.allowedToolsFlag(), BrowserToolsToken), c.streamHooks.ExtraAllowed)
+}
+
 // withBrowserTools appends extra to a comma-separated tool list on a
-// browser run only.
+// browser run (or the probe) only.
 func (c *Client) withBrowserTools(list, extra string) string {
-	if !c.browser {
+	if !c.browser && !c.browserProbe {
 		return list
 	}
 	if list == "" {

@@ -184,7 +184,7 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagTools, "tools", "",
 		"tool mode: chat = mount the assistant's write tools as proposals; connect = the connect assistant's tools (--connect-service, --connect-mode)")
 	aiQueryCmd.Flags().StringVar(&aiFlagConnectService, "connect-service", "", "connect service for --tools connect (slack, google, company, …)")
-	aiQueryCmd.Flags().StringVar(&aiFlagConnectMode, "connect-mode", "", "connect mode for --tools connect: browser|words")
+	aiQueryCmd.Flags().StringVar(&aiFlagConnectMode, "connect-mode", "", "connect mode for --tools connect: browser|words|probe (probe = only list the connected browsers)")
 	aiQueryCmd.Flags().StringVar(&aiFlagSurface, "surface", "main", "chat surface for --tools chat: main|target|automation_editor|tuning")
 	aiQueryCmd.Flags().Int64Var(&aiFlagConversation, "conversation", 0, "chat conversation id for --tools chat")
 	aiQueryCmd.Flags().StringVar(&aiFlagTurn, "turn", "", "turn id for --tools chat")
@@ -359,7 +359,12 @@ func runAIQuery(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	var queryOpts transport.Options
-	if aiFlagTools == toolsConnect {
+	if aiFlagTools == toolsConnect && connectProbing() {
+		// The probe turn: no playbook prompt, no hosts (no navigation).
+		if err := connectProbeCheck(cfg.AI.Provider); err != nil {
+			return refuseQuery(enc, err)
+		}
+	} else if aiFlagTools == toolsConnect {
 		// Refused before any model call: a provider whose agent cannot
 		// guide a connection, or one the organization's policy blocks.
 		mode, err := connectRunMode(cfg.AI.Provider)

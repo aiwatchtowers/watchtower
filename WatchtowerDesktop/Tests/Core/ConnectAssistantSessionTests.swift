@@ -94,7 +94,9 @@ final class ConnectAssistantSessionTests: XCTestCase {
         addTeardownBlock { @MainActor in browser.close() }
         let browserTurn = await startRun(browser, probe: #"[{"id":"b1","name":"Chrome"}]"#)
         XCTAssertEqual(ai.calls[browserTurn - 1].prompt, ConnectBrowserProbe.prompt)
-        XCTAssertEqual(ai.calls[browserTurn - 1].connectArgs?.last, "browser")
+        XCTAssertEqual(ai.calls[browserTurn - 1].connectArgs,
+                       ["--tools", "connect", "--connect-service", "jira", "--connect-mode", "probe"])
+        XCTAssertEqual(ai.calls[browserTurn - 1].extraEnvironment, [:], "the probe gets no socket and no token")
         XCTAssertEqual(ai.calls[browserTurn].connectArgs,
                        ["--tools", "connect", "--connect-service", "jira", "--connect-mode", "browser"])
         XCTAssertEqual(browser.presentation.modeLine, "Using Agent B in Chrome")
@@ -165,6 +167,53 @@ final class ConnectAssistantSessionTests: XCTestCase {
         XCTAssertEqual(ai.calls.count, before + 1)
         XCTAssertEqual(ai.calls[before].connectArgs?.last, "words")
         XCTAssertTrue(chosen.browserAvailable)
+    }
+
+    /// Defence in depth behind `--connect-mode probe`: a connect tool call
+    /// that reaches the socket while the probe runs never gets to the controller.
+    func testProbeNeverReachesTheController() async {
+        let session = make(browserHarness)
+        session.start()
+        await ai.untilCalls(1)
+        XCTAssertEqual(ai.calls[0].connectArgs, ConnectBrowserProbe.connectArgs(service: "slack"))
+        XCTAssertEqual(ai.calls[0].extraEnvironment, [:])
+
+        for tool in ["connect_start", "request_secret", "connect_status"] {
+            let answer = await session.handle(request(tool, #"{"kind":"slack_config_token","label":"Token"}"#))
+            XCTAssertEqual(answer.error?.code, .closed, tool)
+            XCTAssertEqual(answer.error?.message, ConnectAssistantSession.probingMessage, tool)
+        }
+        XCTAssertTrue(driver.starts.isEmpty)
+        XCTAssertNil(session.controller?.pendingCard)
+        XCTAssertEqual(session.state, .thinking)
+
+        ai.emit(.toolStart(ChatToolStart(turnID: "p", id: "probe", name: "claude-in-chrome:list_connected_browsers",
+                                         argsJSON: "{}")),
+                .toolEnd(ChatToolEnd(turnID: "p", id: "probe", ok: true, summary: "[]", sources: [])), call: 0)
+        await session.prepared()
+        let status = await session.handle(request("connect_status"))
+        XCTAssertNil(status.error, "after the probe the run's calls reach the controller")
+    }
+
+    /// The probe's answer holds for one run only: closed with no browser,
+    /// reopened once the extension is connected, the run drives the browser.
+    func testEveryRunProbesAgain() async {
+        let session = make(browserHarness)
+        let first = await startRun(session, probe: "[]")
+        XCTAssertEqual(session.mode, .words)
+        XCTAssertEqual(ai.calls[first].connectArgs?.last, "words")
+
+        session.close()
+        XCTAssertTrue(session.browserAvailable)
+        let second = await startRun(session, probe: #"[{"id":"b1"}]"#)
+        XCTAssertEqual(ai.calls[second - 1].prompt, ConnectBrowserProbe.prompt, "the reopened run probed")
+        XCTAssertEqual(session.mode, .browser)
+        XCTAssertEqual(ai.calls[second].connectArgs?.last, "browser")
+
+        // Retry probes again too.
+        session.retry()
+        await ai.untilCalls(second + 2)
+        XCTAssertEqual(ai.calls[second + 1].prompt, ConnectBrowserProbe.prompt)
     }
 
     func testProbeReadsResultDefensively() {

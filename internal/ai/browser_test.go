@@ -103,6 +103,43 @@ func TestClaudeArgs_BrowserKeepsStrictMCP(t *testing.T) {
 	assert.True(t, slices.Contains(strings.Split(flagValue(t, args, "--disallowedTools"), ","), "Bash"))
 }
 
+// TestClaudeArgs_BrowserProbe: the S1 probe (agent connect spec §10) is
+// --chrome with list_connected_browsers as its only allowed tool, no
+// built-in, and no --mcp-config: no watchtower server (no connect tools),
+// no socket or token, even when the client has a db path and MCP args. The
+// argv is pinned in testdata/connect_probe_argv.golden (-update rewrites it).
+func TestClaudeArgs_BrowserProbe(t *testing.T) {
+	t.Setenv(connectwire.SocketEnv, "/tmp/connect.sock")
+	t.Setenv(connectwire.TokenEnv, "tok-sample")
+	c := connectClient(false)
+	c.SetBrowserProbe(true)
+	args, _, payloads := c.buildArgs("sys", "hi", "stream-json")
+
+	assert.Equal(t, 1, count(args, "--chrome"))
+	assert.Equal(t, BrowserProbeTool, flagValue(t, args, "--allowedTools"))
+	assert.Empty(t, flagValue(t, args, "--tools"), "no built-in")
+	assert.Equal(t, 1, count(args, "--strict-mcp-config"))
+	assert.Zero(t, count(args, "--mcp-config"), "no MCP server of ours")
+	assert.Zero(t, count(args, "--settings"), "no navigate allowed, so no host guard")
+	disallowed := strings.Split(flagValue(t, args, "--disallowedTools"), ",")
+	for _, tool := range strings.Split(BrowserDeniedTools, ",") {
+		assert.Contains(t, disallowed, tool)
+	}
+	joined := strings.Join(append(slices.Clone(args), payloads...), "\n")
+	for _, s := range []string{"tok-sample", "/tmp/connect.sock", "mcp__watchtower", "--connect"} {
+		assert.NotContains(t, joined, s)
+	}
+
+	golden := strings.Join(args, "\n") + "\n"
+	path := filepath.Join("testdata", "connect_probe_argv.golden")
+	if *updateGolden {
+		require.NoError(t, os.WriteFile(path, []byte(golden), 0o644))
+	}
+	want, err := os.ReadFile(path)
+	require.NoError(t, err, "run with -update")
+	assert.Equal(t, string(want), golden)
+}
+
 // TestChatMCPConfig_EnvVarsCopied: the named variables reach the
 // watchtower server's env; an unset or empty one is left out, and none at
 // all leaves the entry without env.

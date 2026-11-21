@@ -40,14 +40,37 @@ func checkConnectQuery(cmd *cobra.Command) ([]connectplay.Playbook, error) {
 			return nil, fmt.Errorf("--tools connect runs without --%s", name)
 		}
 	}
-	if m := connectplay.Mode(aiFlagConnectMode); m != connectplay.ModeBrowser && m != connectplay.ModeWords {
-		return nil, fmt.Errorf("--connect-mode must be browser or words, got %q", aiFlagConnectMode)
+	if m := connectplay.Mode(aiFlagConnectMode); m != connectplay.ModeBrowser && m != connectplay.ModeWords && !connectProbing() {
+		return nil, fmt.Errorf("--connect-mode must be browser, words or probe, got %q", aiFlagConnectMode)
 	}
 	pbs, err := connectplay.ForService(aiFlagConnectService, "")
 	if err != nil {
 		return nil, fmt.Errorf("--connect-service: %w", err)
 	}
 	return pbs, nil
+}
+
+// connectModeProbe is `--connect-mode probe`: spike S1's probe turn (agent
+// connect spec §10 "Task 0 outcome"). Before a browser run's first turn
+// the Desktop asks whether the customer's browser extension is connected:
+// the run has Claude in Chrome with list_connected_browsers as its only
+// allowed tool, no built-in and no MCP server of ours (no connect tools,
+// no socket, no token), and no playbook prompt.
+const connectModeProbe = "probe"
+
+func connectProbing() bool { return aiFlagConnectMode == connectModeProbe }
+
+// connectProbeCheck refuses a probe on a provider whose agent cannot drive
+// the browser, or one the organization's policy blocks.
+func connectProbeCheck(provider string) error {
+	if err := providers.Allowed(provider); err != nil {
+		return err
+	}
+	if providers.CapsOf(provider).Connect != caps.ConnectBrowser {
+		return providers.CapabilityError(provider, providers.ToolPreflight,
+			fmt.Errorf("the %s provider has no browser to probe", providers.ByID(provider).ID))
+	}
+	return nil
 }
 
 // connectGuides reports whether a provider's agent can guide a connection.

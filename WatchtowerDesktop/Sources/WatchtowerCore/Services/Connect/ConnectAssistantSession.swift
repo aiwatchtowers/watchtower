@@ -26,7 +26,8 @@ package final class ConnectAssistantSession {
     /// The offered harnesses (`ConnectHarnessCatalog.offered(...).harnesses`), for the header's picker.
     package let harnesses: [ConnectHarness]
     package private(set) var harness: ConnectHarness
-    /// False once the probe or a browser tool said the extension is not connected.
+    /// False once this run's probe or a browser tool said the extension is not
+    /// connected; every run start (Start, Retry, a reopen) asks again.
     package private(set) var browserAvailable = true
     /// The current run's chat; the last run's after Cancel, nil after Close.
     package private(set) var engine: EmbeddedChatEngine?
@@ -43,6 +44,8 @@ package final class ConnectAssistantSession {
     @ObservationIgnored private var run = 0
     @ObservationIgnored private var startTask: Task<Void, Never>?
     @ObservationIgnored private var statusJSON = "{}"
+    /// The S1 probe turn is in flight: the socket refuses every call.
+    @ObservationIgnored private var probing = false
     /// The running turn's browser steps, by step id.
     @ObservationIgnored private var browserSteps: Set<String> = []
 
@@ -103,14 +106,15 @@ package final class ConnectAssistantSession {
         let run = run
         runFailure = nil
         browserSteps = []
+        // Each run asks again: an extension connected since the last run counts.
+        browserAvailable = true
         let controller = ConnectRunController(driver: driver)
         // Weak: the server's handlers must not keep the run alive (Task 8).
-        let server = ConnectRunServer(service: service) { [weak controller] request in
-            guard let controller else {
-                return ConnectWireResponse(id: request.id, error: .closed,
-                                           message: Self.runEndedMessage)
+        let server = ConnectRunServer(service: service) { [weak self] request in
+            guard let self else {
+                return ConnectWireResponse(id: request.id, error: .closed, message: Self.runEndedMessage)
             }
-            return await controller.handle(request)
+            return await handle(request)
         }
         self.controller = controller
         phase = .starting
@@ -122,9 +126,21 @@ package final class ConnectAssistantSession {
             return
         }
         self.server = server
-        startTask = Task { [weak self, weak server] in
-            await self?.prepare(run: run, environment: server?.environment ?? [:])
+        startTask = Task { [weak self] in
+            await self?.prepare(run: run)
         }
+    }
+
+    /// One call from the run's socket. Refused while the probe runs: the
+    /// probe turn has no connect tools and no socket (`--connect-mode
+    /// probe`), so a call then is out of place, and it never reaches the
+    /// controller.
+    package func handle(_ request: ConnectWireRequest) async -> ConnectWireResponse {
+        guard !probing, let controller else {
+            return ConnectWireResponse(id: request.id, error: .closed,
+                                       message: probing ? Self.probingMessage : Self.runEndedMessage)
+        }
+        return await controller.handle(request)
     }
 
     /// Guide me in words: a run that never drives the browser.
@@ -167,6 +183,7 @@ package final class ConnectAssistantSession {
         engine = nil
         phase = .idle
         wordsChosen = false
+        browserAvailable = true
     }
 
     /// Returns once a started run's first turn is under way (or the run
@@ -177,13 +194,15 @@ package final class ConnectAssistantSession {
 
     // MARK: - Run
 
-    private func prepare(run: Int, environment: [String: String]) async {
+    private func prepare(run: Int) async {
         let status = await driver.status()
         guard run == self.run else { return }
         statusJSON = Self.json(status)
         if mode == .browser {
-            let probed = await probe.mode(for: harness, service: service, environment: environment)
-            guard run == self.run else { return }
+            probing = true
+            let probed = await probe.mode(for: harness, service: service)
+            guard run == self.run else { return }  // endRun cleared `probing`
+            probing = false
             if probed == .words { browserAvailable = false }
         }
         startTask = nil
@@ -255,12 +274,14 @@ package final class ConnectAssistantSession {
         server = nil
         engine?.shutdown(quietly: true)
         browserSteps = []
+        probing = false
         runFailure = nil
     }
 
     // MARK: - Strings and mapping
 
     static let runEndedMessage = "this run has ended"
+    static let probingMessage = "the assistant is still checking the browser"
     static let socketFailedMessage = "Couldn't open the assistant's line to Watchtower."
 
     /// Watchtower's part of the run's system prompt (the CLI puts the connect

@@ -203,6 +203,16 @@ func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (
 		return nil, noop, err
 	}
 	model := aiFlagModel
+	if aiFlagTools == toolsConnect && connectProbing() {
+		// The S1 probe: Claude in Chrome's list_connected_browsers only, and
+		// no MCP server of ours — no connect tool, no socket, no token.
+		if err := connectProbeCheck(cfg.AI.Provider); err != nil {
+			return nil, noop, err
+		}
+		opts.DBPath, opts.Model = dbPath, model
+		opts.BrowserProbe = true
+		return buildQuerier(cfg, opts), noop, nil
+	}
 	if aiFlagTools == toolsConnect {
 		// A connect run: only `mcp --connect <service>`, never the Quick
 		// Connections nor runtime B; the browser comes from the row's

@@ -23,10 +23,17 @@ package struct ConnectBrowserProbe: Sendable {
     package static let lostFollowUp = "The browser isn't available any more. Continue in words from the current step."
     package static let prompt = """
         Call the tool mcp__\(browserServer)__\(listTool) once, with no arguments. \
-        Call no other tool and start no step of the playbook. \
-        Then reply with the tool's raw result only.
+        Call no other tool. Then reply with the tool's raw result only.
         """
     package static let systemPrompt = "This turn only checks which browsers are connected."
+
+    /// The probe's `ai query` flags: `--connect-mode probe` runs Claude in
+    /// Chrome with `list_connected_browsers` as its only tool and no MCP
+    /// server of ours, so no connect tool can be called and no socket or
+    /// token is handed over.
+    package static func connectArgs(service: String) -> [String] {
+        ["--tools", "connect", "--connect-service", service, "--connect-mode", "probe"]
+    }
 
     private let aiService: any AIServiceProtocol
     private let dbPath: String?
@@ -40,20 +47,16 @@ package struct ConnectBrowserProbe: Sendable {
     /// browser (no probe turn), else the probe's answer. A probe that fails,
     /// is cancelled or calls no browser tool answers words; the run's first
     /// turn then reports a harness failure itself.
-    package func mode(
-        for harness: ConnectHarness,
-        service: String,
-        environment: [String: String]
-    ) async -> ConnectAssistantMode {
+    package func mode(for harness: ConnectHarness, service: String) async -> ConnectAssistantMode {
         guard harness.capability == .browser else { return .words }
-        let connectArgs = ChatSurfaceSpec.ToolAccess.connect(service: service, mode: .browser).connectArgs ?? []
+        let connectArgs = Self.connectArgs(service: service)
         let (answers, answer) = AsyncStream<ConnectAssistantMode>.makeStream()
         let (aiService, dbPath, provider) = (aiService, dbPath, harness.id)
         return await withTaskGroup(of: Void.self) { group in
             group.addTask {
                 let events = aiService.stream(prompt: Self.prompt, systemPrompt: Self.systemPrompt, dbPath: dbPath,
                                               model: nil, provider: provider, connectArgs: connectArgs,
-                                              extraEnvironment: environment)
+                                              extraEnvironment: [:])
                 await Self.read(events, into: answer)
                 answer.finish()
             }

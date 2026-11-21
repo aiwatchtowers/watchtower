@@ -46,6 +46,10 @@ type Options struct {
 	// the hosts the browser may navigate to.
 	Browser      bool
 	BrowserHosts []string
+	// BrowserProbe is the connect assistant's S1 probe turn: the browser
+	// with its list_connected_browsers tool only and no MCP server of ours.
+	// Set only for a provider whose Caps.Connect is browser.
+	BrowserProbe bool
 	// ExternalMCP are the owner's Quick Connections mounted beside the
 	// watchtower server; nil = none.
 	ExternalMCP []ai.ExternalMCPServer
@@ -146,6 +150,7 @@ func newClaudeQuerier(o Options) ai.Provider {
 	c.SetMCPEnvVars(o.MCPEnvVars)
 	c.SetBrowser(o.Browser)
 	c.SetBrowserHosts(o.BrowserHosts)
+	c.SetBrowserProbe(o.BrowserProbe)
 	if o.ExternalMCP != nil {
 		c.SetExternalMCPServers(o.ExternalMCP)
 	}
@@ -164,7 +169,8 @@ func newCodexQuerier(o Options) ai.Provider {
 	c.SetMCPEnvVars(o.MCPEnvVars)
 	// No Browser: the codex CLI has no browser that drives the customer's
 	// Chrome (agent connect spec §10 S3.verdict), so its row's Connect is
-	// words and its browser features stay forced off (disabledFeatures).
+	// words and its browser features stay forced off (disabledFeatures);
+	// a BrowserProbe never reaches it (cmd refuses a probe without a browser).
 	if o.ExternalMCP != nil {
 		c.SetExternalMCPServers(o.ExternalMCP)
 	}
