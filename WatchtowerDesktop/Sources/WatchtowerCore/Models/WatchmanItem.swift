@@ -15,6 +15,9 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
     /// The session's title (`terminal_sessions.title`); empty when it has
     /// none or the row is gone. A stall card is titled by it.
     package var sessionTitle: String
+    /// The session's row is still there (the journal's join found it); a
+    /// read without the join counts it as there.
+    package var sessionExists: Bool
     package var targetID: Int64
     /// `ask`, `review_doc`, `check`, `handover`, `permission`, `review_code`, `guard`, `stall`.
     package var kind: String
@@ -54,6 +57,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         workbenchName: String = "",
         sessionID: Int64 = 0,
         sessionTitle: String = "",
+        sessionExists: Bool = true,
         targetID: Int64 = 0,
         kind: String = "ask",
         state: String = "done",
@@ -82,6 +86,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         self.workbenchName = workbenchName
         self.sessionID = sessionID
         self.sessionTitle = sessionTitle
+        self.sessionExists = sessionExists
         self.targetID = targetID
         self.kind = kind
         self.state = state
@@ -112,6 +117,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         workbenchName = row["workbench_name"] ?? ""
         sessionID = row["session_id"] ?? 0
         sessionTitle = row["session_title"] ?? ""
+        sessionExists = (row["session_exists"] as Int64? ?? 1) != 0
         targetID = row["target_id"] ?? 0
         kind = row["kind"]
         state = row["state"]

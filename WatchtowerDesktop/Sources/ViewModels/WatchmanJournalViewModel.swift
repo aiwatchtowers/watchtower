@@ -455,7 +455,7 @@ final class WatchmanJournalViewModel {
     /// Open session: the item's session (or the one its correction started)
     /// on its workbench's page; one that stopped is shown, never started.
     func openSession(_ itemID: Int64) {
-        guard let item = item(itemID) else { return }
+        guard let item = item(itemID), !(item.isStall && !item.sessionExists) else { return }
         let sessionID = startedSessions[itemID] ?? item.sessionID
         guard sessionID > 0 else { return }
         actions.open(WorkbenchRoute(projectID: item.workbenchID, pane: .terminal, subjectID: sessionID))
@@ -637,13 +637,16 @@ final class WatchmanJournalViewModel {
     }
 
     /// A stalled session: titled by the session, the stored reason, Open
-    /// session and Mark done (it is not a decision: no OK, no Correct…).
+    /// session while its row is there and Mark done (it is not a decision:
+    /// no OK, no Correct…).
     private func stallCard(_ item: WatchmanItem) -> Card {
+        // The waiting card draws `place` as its meta line; `meta` is the
+        // decided card's.
         Card(id: item.id, place: WatchmanJournalCopy.stallMeta(item, calendar: calendar),
              question: WatchmanJournalCopy.stallTitle(item), badge: nil,
              reason: WatchmanJournalCopy.stallReason(item), choice: nil, rationale: nil, precedents: [],
              meta: "", outcome: nil, handed: false, stall: true,
-             canOpen: item.sessionID > 0, canMarkDone: true)
+             canOpen: item.sessionID > 0 && item.sessionExists, canMarkDone: true)
     }
 
     private func decidedCard(_ item: WatchmanItem) -> Card {

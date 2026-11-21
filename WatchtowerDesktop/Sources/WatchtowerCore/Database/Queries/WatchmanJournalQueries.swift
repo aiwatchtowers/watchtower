@@ -12,7 +12,8 @@ package enum WatchmanJournalQueries {
     package static let observedTables = ["watchman_items", "watchman_gaps", "owner_asks", "terminal_sessions"]
 
     private static let itemColumns = """
-        i.id, i.workbench_id, p.name AS workbench_name, i.session_id, ts.title AS session_title, i.target_id, i.kind, i.state, i.outcome,
+        i.id, i.workbench_id, p.name AS workbench_name, i.session_id, ts.title AS session_title,
+        ts.id IS NOT NULL AS session_exists, i.target_id, i.kind, i.state, i.outcome,
         i.question, i.choice, i.rationale, i.precedent_ids, i.confidence, i.category, i.unsure, i.park_reason,
         i.delivery, i.error, i.cost_usd, i.created_at, i.decided_at, i.feedback, i.feedback_text, i.check_done_at,
         i.owner_done_at, i.correction_sent_at
