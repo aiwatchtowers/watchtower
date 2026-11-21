@@ -29,13 +29,17 @@ func (c *Center) Grants() ([]wire.DeviceGrant, error) {
 
 // Keyboxes is the device_grant slice (the Swift DeviceGrantSlice), what the
 // data zone carries: one keybox per phone the hub answers, sealed later to
-// that phone's key under keybox-<id>: every linked phone (never capped,
-// newest link first; only a phone linked through a confirmed hello carries
-// the epoch keys, and only while Config.KeysInZone says yes for it), then the
-// waiting requests (awaiting_confirmation, confirm_nonce, link_code_tag),
-// the refusals younger than RefusalLifetime and the revoked phones younger
-// than RevokedLifetime, each newest first, filling what is left of
-// MaxGrantRecords. A phone appears once: linked, waiting, refused, revoked.
+// that phone's key under keybox-<id>: every phone the hub lists as linked,
+// never capped and newest link first (only a phone linked through a confirmed
+// hello carries the epoch keys, and only while Config.KeysInZone says yes for
+// it) — except a re-link (#1127: the hub still lists the phone as linked, but
+// the phone ended its own link, by Forget or a reinstall, and sent a new
+// hello; a phone that considers itself linked never sends one), which reads
+// its waiting request, then its refusal, in that row's place, uncapped too;
+// then the other waiting requests (awaiting_confirmation, confirm_nonce,
+// link_code_tag), the refusals younger than RefusalLifetime and the revoked
+// phones younger than RevokedLifetime, each newest first, filling what is
+// left of MaxGrantRecords. A phone appears once.
 // Every grant announces ordered_actions 1, the hub's transports and its relay
 // identity. It holds the center's lock across the device read and the key
 // read, so an Unlink (which rotates) never lands between them: a phone read
@@ -65,11 +69,12 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 		if linked, keyed, err = c.linkedRows(tx); err != nil {
 			return err
 		}
-		// A linked phone that links again (a new hello, no unlink) reads
-		// its waiting grant until the owner answers: the compare code, and
-		// no keys meanwhile. Confirm links it again with its grants kept; a
-		// refusal or an expiry is answered with the refusal for its
-		// lifetime, then its linked row is back.
+		// A re-link — the hub still lists the phone as linked, but the
+		// phone ended its own link (Forget, a reinstall) and sent a new
+		// hello — reads its waiting grant until the owner answers: the
+		// compare code, and no keys meanwhile. Confirm links it again with
+		// its grants kept; a refusal or an expiry is answered with the
+		// refusal until Sweep forgets it, then its linked row is back.
 		relinking, err := refusedRelinksTx(tx)
 		if err != nil {
 			return err

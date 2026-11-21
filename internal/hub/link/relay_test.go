@@ -563,7 +563,8 @@ func TestPairZoneKeyboxCarriesKeysOutsideTheZoneRule(t *testing.T) {
 	}
 }
 
-// #1127: a linked phone that links again with a new code (no unlink first)
+// #1127: a phone the hub still lists as linked that ended its own link and
+// links again with a new code (no unlink on the hub)
 // reads the waiting grant — awaiting_confirmation, confirm_nonce,
 // link_code_tag, no keys — until the owner confirms, in the data zone and in
 // its pairing slot alike, so it shows the compare code; after Confirm it is

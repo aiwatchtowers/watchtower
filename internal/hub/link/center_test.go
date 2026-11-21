@@ -1092,7 +1092,8 @@ func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
 	}
 }
 
-// A linked phone that scans a new QR waits for the owner like any phone, and
+// A phone the hub still lists as linked that ended its own link (Forget, a
+// reinstall) and scans a new QR waits for the owner like any phone, and
 // its keybox is the waiting one (#1127: it shows the compare code), with no
 // keys until the owner confirms; a phone still appears once.
 func TestALinkedPhoneRescanningReadsItsWaitingKeybox(t *testing.T) {
