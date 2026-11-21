@@ -291,6 +291,11 @@ package final class CompanySetupWizardModel {
 
     /// The values a vendor's check uses (Go `checkValues`); nil: none yet.
     func checkValues(_ v: CompanyVendor) -> [String]? {
+        Self.checkValues(v, in: draft)
+    }
+
+    /// The values a vendor's check runs with, in a given draft.
+    private static func checkValues(_ v: CompanyVendor, in draft: CompanyDraft) -> [String]? {
         switch v {
         case .slack: draft.slack.appID.isEmpty ? nil : [draft.slack.appID]
         case .google: draft.google.map { [$0.clientID, $0.clientSecret] }
@@ -907,15 +912,19 @@ package final class CompanySetupWizardModel {
                show.state == "ok", let read = show.draft {
                 landed(v, read: read, checked: show.checkedVendors.contains(v.rawValue), values: run.values)
             }
-            releaseUnstoredName()
+            // Another vendor's check may still sign in under the name.
+            if checkRuns.isEmpty { releaseUnstoredName() }
         }
     }
 
     /// What a cancelled sign-in stored before it was killed.
     private func landed(_ v: CompanyVendor, read: CompanyDraft, checked: Bool, values: [String]) {
         if draft.slug.isEmpty, !read.slug.isEmpty { draft.slug = read.slug }
-        // As `apply(_:)` takes Go's marks on open, for the values the run checked.
-        guard checked, checkValues(v) == values, ticked.contains(v) else { return }
+        // As `apply(_:)` takes Go's marks on open, and only for the values the
+        // run checked: on disk (Go saved them before it marked) and in the form.
+        guard checked, Self.checkValues(v, in: read) == values, checkValues(v) == values, ticked.contains(v) else {
+            return
+        }
         checkedValues[v] = values
         // This session's sign-in, as a finished check: its checklist is still to tick.
         if v == .atlassian { atlassianNeedsConfirm = true }

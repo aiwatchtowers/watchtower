@@ -133,6 +133,62 @@ final class CompanySetupCheckCancelTests: XCTestCase {
         XCTAssertEqual(cli.calls(["company", "draft", "show"]).count, 2)
     }
 
+    /// The re-read draft still holds an older client Go marked checked:
+    /// that mark is not about the values the cancelled run checked (A28).
+    func testCancelBeforeTheNewValuesWereSavedStaysNotRun() async {
+        let cli = CompanyScriptedCLI()
+        cli.on(["company", "draft", "show"], [#"{"state":"ok","draft":"# + atlassianDraft
+            + #","bad_file":"","checked_vendors":["atlassian"]}"#])
+        let model = Model(streamer: cli, slack: SlackAppSetupModel(streamer: cli, mode: .wizard))
+        await model.open()
+        XCTAssertTrue(model.isChecked(.atlassian))
+        model.setField(.atlassian, .clientID, "7b20c1d9e04")
+        cli.hold(check)
+        let run = Task { await model.check(.atlassian) }
+        await cli.waitFor(check)
+        // Killed before Go saved the new client: the disk has the old one, marked.
+        cli.on(["company", "draft", "show"], [#"{"state":"ok","draft":"# + atlassianDraft
+            + #","bad_file":"","checked_vendors":["atlassian"]}"#])
+        model.cancelCheck(.atlassian)
+        await model.rereadAfterCancel?.value
+        await run.value
+        XCTAssertFalse(model.isChecked(.atlassian))
+        XCTAssertNil(model.checks[.atlassian])
+        cli.release(check, [])
+    }
+
+    /// Cancel on one vendor's check while another still signs in under the
+    /// company name: the name stays.
+    func testCancelKeepsTheNameWhileAnotherCheckRuns() async {
+        let both = #"{"company":"Acme","services":["google","atlassian"],"step":"atlassian","#
+            + #""started_at":"2026-11-17T09:00:00Z","slack":{},"#
+            + #""google":{"client_id":"1234-abcd.apps.googleusercontent.com","client_secret":"sample-secret"},"#
+            + #""atlassian":{"client_id":"9f3a8d0e4b7c21","client_secret":"sample-secret","#
+            + #""site":"https://acme.atlassian.net","confluence":true}}"#
+        let cli = CompanyScriptedCLI()
+        cli.on(["company", "draft", "show"], [#"{"state":"ok","draft":"# + both + #","bad_file":"","checked_vendors":[]}"#])
+        let model = Model(streamer: cli, slack: SlackAppSetupModel(streamer: cli, mode: .wizard))
+        await model.open()
+        let google = ["company", "check", "google"]
+        cli.hold(google)
+        cli.hold(check)
+        let googleRun = Task { await model.check(.google) }
+        await cli.waitFor(google)
+        let atlassianRun = Task { await model.check(.atlassian) }
+        await cli.waitFor(check)
+
+        model.cancelCheck(.atlassian)
+        await model.rereadAfterCancel?.value
+        await atlassianRun.value
+        XCTAssertNil(model.checks[.atlassian])
+        XCTAssertEqual(model.checks[.google], .running)
+        XCTAssertEqual(model.draft.company, "Acme", "Google still signs in under the name")
+
+        cli.release(google, [])
+        await googleRun.value
+        cli.release(check, [])
+    }
+
     func testDryChecksHaveNoWaitingLine() {
         let model = Model(streamer: CompanyScriptedCLI(), slack: SlackAppSetupModel(streamer: nil, mode: .wizard))
         for vendor in CompanyVendor.allCases { XCTAssertNil(model.checkWait(vendor)) }
