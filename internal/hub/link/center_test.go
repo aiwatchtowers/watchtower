@@ -1092,10 +1092,11 @@ func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
 	}
 }
 
-// A linked phone that scans a new QR waits for the owner like any phone, but
-// its keybox stays the linked one (the Swift DeviceGrantSlice: linked rows
-// first, a phone appears once), with its keys and no confirm nonce.
-func TestALinkedPhoneRescanningKeepsItsLinkedKeybox(t *testing.T) {
+// A phone the hub still lists as linked that ended its own link (Forget, a
+// reinstall) and scans a new QR waits for the owner like any phone, and
+// its keybox is the waiting one (#1127: it shows the compare code), with no
+// keys until the owner confirms; a phone still appears once.
+func TestALinkedPhoneRescanningReadsItsWaitingKeybox(t *testing.T) {
 	r := newRig(t)
 	a := newPhone(t)
 	r.confirmLinked(a)
@@ -1107,7 +1108,7 @@ func TestALinkedPhoneRescanningKeepsItsLinkedKeybox(t *testing.T) {
 		t.Fatalf("waiting %v", ids)
 	}
 	kb := r.mustKeybox(a)
-	if !kb.Grant.Linked || kb.Keys == nil || kb.Grant.ConfirmNonce != nil || kb.Grant.AwaitingConfirmation != nil {
+	if kb.Grant.Linked || kb.Keys != nil || kb.Grant.ConfirmNonce == nil || kb.Grant.AwaitingConfirmation == nil {
 		t.Errorf("keybox %+v", kb)
 	}
 	grants, err := r.c.Grants()
@@ -1429,5 +1430,47 @@ func TestSecondPhoneIndependentOffers(t *testing.T) {
 	}
 	if got := r.zoneKeybox(b); got.Keys != nil {
 		t.Fatalf("b out of the zone still has keys: %+v", got.Keys)
+	}
+}
+
+// #1127 review: a linked keybox (with the epoch keys) read before a re-link's
+// hello lands is sealed, after it, to the key it was read with — the link's —
+// never to the hello's unconfirmed key.
+func TestALinkedKeyboxReadBeforeARelinkIsSealedToTheLink(t *testing.T) {
+	r := newRig(t)
+	a := newPhone(t)
+	r.confirmLinked(a)
+	boxes, err := r.c.Keyboxes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kb := r.keyboxIn(boxes, a)
+	if !kb.Grant.Linked || kb.Keys == nil || kb.To == nil {
+		t.Fatalf("captured %+v (keys %v, to %v)", kb.Grant, kb.Keys != nil, kb.To != nil)
+	}
+	again := phoneWith(t, a.sig)
+	code := r.issue()
+	if got := r.handle(again, code.Nonce); got.Code == "" { // lands between the read and the seal
+		t.Fatalf("re-link not waiting: %+v", got)
+	}
+	payload, err := wire.Marshal(kb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := secure.NewSealer(r.kr).KeyboxTo("data", a.id, payload, kb.To)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := r.kr.HubID()
+	open := func(p phone) error {
+		_, _, err := secure.OpenHPKE(rec.Envelope(), secure.ClassKeybox, p.kx, secure.KeyboxInfo(hub, p.id),
+			secure.Context{Zone: secure.ZoneData, WireName: rec.WireName()}, r.kr.Signer().Public().(ed25519.PublicKey))
+		return err
+	}
+	if err := open(again); err == nil {
+		t.Fatal("the hello's unconfirmed key opens a keybox with the epoch keys")
+	}
+	if err := open(a); err != nil {
+		t.Fatalf("the link's key cannot open it: %v", err)
 	}
 }

@@ -35,7 +35,7 @@ func (g grantSource) Items(context.Context) ([]Item, error) {
 			}
 			return nil, fmt.Errorf("slices: encoding a keybox: %w", err)
 		}
-		out = append(out, Item{ID: kb.Grant.DeviceID, Payload: payload})
+		out = append(out, Item{ID: kb.Grant.DeviceID, Payload: payload, KeyboxTo: kb.To})
 	}
 	return out, nil
 }

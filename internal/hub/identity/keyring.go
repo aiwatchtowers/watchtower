@@ -926,23 +926,41 @@ func (k *Keyring) makeMaterial(row state.Device) *relayMaterial {
 	}
 }
 
-// KeyboxRecipient is the key a keybox for device is sealed to: a linked
-// phone's relay key offer when it holds one (relay client Phase 5), else the
-// agreement key of a linked, pending, revoked or refused device (F5).
-// ErrNoKeyboxRecipient when none is stored or it does not parse.
+// KeyboxRecipient is the key a keybox for device is sealed to: a re-link's
+// key (state.Store.RelinkKey: the keybox then shows the waiting request or
+// its refusal), else a linked phone's relay key offer when it holds one
+// (relay client Phase 5), else the agreement key of a linked, pending,
+// revoked or refused device (F5). ErrNoKeyboxRecipient when none is stored or
+// it does not parse.
 func (k *Keyring) KeyboxRecipient(device secure.ID) (*ecdh.PublicKey, error) {
-	if row, linked, err := k.st.Device(device.String()); err != nil {
+	raw, err := k.st.RelinkKey(device.String())
+	if err != nil {
 		return nil, err
-	} else if linked && row.KXOffer != nil {
-		if pub, err := ecdh.X25519().NewPublicKey(row.KXOffer); err == nil {
-			return pub, nil
-		}
-		log.Printf("hub: stored relay key offer of device %s does not parse", device)
+	}
+	if raw != nil {
+		return agreementKey(device, raw)
+	}
+	return k.LinkedKeyboxRecipient(device)
+}
+
+// LinkedKeyboxRecipient is the key a linked phone's own keybox (linked, with
+// its keys) is sealed to: its relay key offer, else its link's agreement key
+// — never a re-link's (KeyboxRecipient); for a device not linked, the
+// stored pending, revoked or refused one. ErrNoKeyboxRecipient as there.
+func (k *Keyring) LinkedKeyboxRecipient(device secure.ID) (*ecdh.PublicKey, error) {
+	if pub, ok, err := k.relayKeyOffer(device); err != nil || ok {
+		return pub, err
 	}
 	raw, err := k.st.KeyboxRecipientKey(device.String())
 	if err != nil {
 		return nil, err
 	}
+	return agreementKey(device, raw)
+}
+
+// agreementKey parses device's stored agreement key raw:
+// ErrNoKeyboxRecipient when none is stored or it does not parse (logged).
+func agreementKey(device secure.ID, raw []byte) (*ecdh.PublicKey, error) {
 	if raw == nil {
 		return nil, ErrNoKeyboxRecipient
 	}
@@ -952,6 +970,21 @@ func (k *Keyring) KeyboxRecipient(device secure.ID) (*ecdh.PublicKey, error) {
 		return nil, ErrNoKeyboxRecipient
 	}
 	return pub, nil
+}
+
+// relayKeyOffer is a linked phone's relay key offer (relay client Phase 5);
+// ok is false when it holds none that parses.
+func (k *Keyring) relayKeyOffer(device secure.ID) (*ecdh.PublicKey, bool, error) {
+	row, linked, err := k.st.Device(device.String())
+	if err != nil || !linked || row.KXOffer == nil {
+		return nil, false, err
+	}
+	if pub, err := ecdh.X25519().NewPublicKey(row.KXOffer); err == nil {
+		return pub, true, nil
+	}
+	// As before: an unparsable offer falls back to the agreement key.
+	log.Printf("hub: stored relay key offer of device %s does not parse", device)
+	return nil, false, nil
 }
 
 // Check implements secure.RollbackGuard over relay_seen.

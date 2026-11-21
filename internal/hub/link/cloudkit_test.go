@@ -1709,3 +1709,100 @@ func TestAPrivateHelloOnAnUnreadableOwnerIsRetried(t *testing.T) {
 		t.Fatalf("a real stranger: %v", err)
 	}
 }
+
+// #1127: a CloudKit code refused for the account changes nothing of the code
+// before it: the closed code's late hello still reads the close's refusal,
+// and the close's grace sweep still runs at the grace's end.
+func TestARefusedCloudKitCodeKeepsTheLastClose(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	r.s.join("_colleague-b")
+	if err := r.c.CloseLink(r.ctx, r.s, CloseSheetClosed); err != nil {
+		t.Fatal(err)
+	}
+	r.s.mu.Lock()
+	r.s.account = transport.AccountNoAccount
+	r.s.mu.Unlock()
+	if _, _, err := r.c.IssueCloudKit(r.ctx, r.s); err == nil {
+		t.Fatal("a code issued without an iCloud account")
+	}
+	b := newPhone(t)
+	if _, err := r.ckHello(b, code.Nonce, sharedHello("_colleague-b")); err != nil {
+		t.Fatal(err)
+	}
+	if got := refusal(r.mustKeybox(b)); got != wire.RefusedNotConfirmed {
+		t.Errorf("late hello after a refused code: %q, want %q", got, wire.RefusedNotConfirmed)
+	}
+	r.advance(DefaultSweep.AnswerGrace)
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.s.names(ckZones[0]); len(got) != 0 {
+		t.Errorf("the grace sweep was cancelled by the refused code: %v", got)
+	}
+}
+
+// #1127 review: an abandoned stream's close of its code, interleaved with a
+// newer CloudKit code issued between taking the old code and closing its
+// link, leaves the newer code alone: its public link stays open and the
+// phone waiting under it is not refused.
+func TestAStaleCodeCloseLeavesANewerCloudKitCode(t *testing.T) {
+	r := newCKRig(t)
+	old := r.issueCK()
+	closed, scope, ok := r.c.takeCode(old.Nonce)
+	if !ok {
+		t.Fatal("the old code is not on screen")
+	}
+	newer := r.issueCK() // lands between the take and the close
+	b := newPhone(t)
+	if got, err := r.ckHello(b, newer.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("hello under the newer code: %+v, %v", got, err)
+	}
+	r.c.ck.mu.Lock()
+	graceEnd, sweepAt := r.c.ck.graceEnd, r.c.ck.sweepAt
+	r.c.ck.mu.Unlock()
+	if err := r.c.closeLink(r.ctx, r.s, CloseSheetClosed, closed, scope); err != nil {
+		t.Fatal(err)
+	}
+	if !r.s.isOpen() {
+		t.Error("the stale close shut the newer code's public link")
+	}
+	r.c.ck.mu.Lock()
+	if !r.c.ck.graceEnd.Equal(graceEnd) || !r.c.ck.sweepAt.Equal(sweepAt) {
+		t.Errorf("the stale close moved the newer code's grace/sweep: %v/%v → %v/%v",
+			graceEnd, sweepAt, r.c.ck.graceEnd, r.c.ck.sweepAt)
+	}
+	r.c.ck.mu.Unlock()
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(b)) {
+		t.Errorf("waiting after the stale close: %v", ids)
+	}
+}
+
+// #1127 review: a relay code issued after a CloudKit one replaces it: the
+// CloudKit code is off screen (an abandoned stream's close of it refuses
+// nobody waiting on the relay code), and its public link still closes at the
+// next share sweep.
+func TestARelayCodeReplacesTheCloudKitCodeOnScreen(t *testing.T) {
+	r := newCKRig(t)
+	ck := r.issueCK()
+	relayCode := r.issue()
+	b := newPhone(t)
+	if got := r.handle(b, relayCode.Nonce); got.Code == "" {
+		t.Fatalf("hello under the relay code: %+v", got)
+	}
+	if err := r.c.CloseCode(r.ctx, r.s, ck.Nonce, CloseSheetClosed); err != nil {
+		t.Fatal(err)
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(b)) {
+		t.Fatalf("the old CloudKit code's close refused the relay code's request: %v", ids)
+	}
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() {
+		t.Error("the replaced CloudKit code's public link stayed open")
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(b)) {
+		t.Fatalf("the sweep refused the relay code's request: %v", ids)
+	}
+}

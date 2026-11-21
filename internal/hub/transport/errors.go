@@ -1,6 +1,9 @@
 package transport
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Transport errors (RC §7's mapping of the relay's error codes). Callers test
 // them with errors.Is; implementations wrap them with their own detail.
@@ -15,6 +18,11 @@ var (
 	ErrEntitlementInactive = errors.New("transport: entitlement inactive")
 	// ErrForbidden: this device may not touch that zone or attachment.
 	ErrForbidden = errors.New("transport: forbidden")
+	// ErrZoneForbidden: the relay refused this op's zone (FORBIDDEN), e.g. a
+	// pairing slot promoted or expired there; it is ErrForbidden too. A
+	// refusal of the device itself (UNAUTHENTICATED, attestation) is only
+	// ErrForbidden.
+	ErrZoneForbidden = fmt.Errorf("transport: zone forbidden: %w", ErrForbidden)
 	// ErrHubQuota: the hub's data zone is over its quota.
 	ErrHubQuota = errors.New("transport: hub quota exceeded")
 	// ErrMailboxQuota: a mailbox or pairing zone is over its quota.

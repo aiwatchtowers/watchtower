@@ -950,3 +950,40 @@ func TestACheckpointNotDoneIsRetried(t *testing.T) {
 		t.Fatalf("%d checkpoints after one completed, want no more", *cp)
 	}
 }
+
+// #1127: a linked phone with a relay key offer that links again reads its
+// waiting request, then the refusal of it, sealed to the key its hello sent
+// — not its link's offer or agreement key.
+func TestKeyboxRecipientOfARelinkIsTheHellosKey(t *testing.T) {
+	st := openStore(t)
+	k := newKeyring(t, st, newClock())
+	p := linkRelayPhone(t, st, 0x11)
+	p.offer(t, st, 1)
+	hello, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	for _, step := range []struct{ name, q string }{
+		{"pending", `INSERT INTO pending_devices (device_id, agreement_key) VALUES (?, ?)`},
+		{"refused", `INSERT INTO link_refusals (device_id, name, scope, reason, at, agreement_key) VALUES (?, 'P', 'private', 'not_confirmed', 1, ?)`},
+	} {
+		if err := st.WithTx(context.Background(), func(tx *sql.Tx) error {
+			if _, err := tx.Exec(`DELETE FROM pending_devices`); err != nil {
+				return err
+			}
+			_, err := tx.Exec(step.q, p.id.String(), hello.PublicKey().Bytes())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if pub, err := k.KeyboxRecipient(p.id); err != nil || !bytes.Equal(pub.Bytes(), hello.PublicKey().Bytes()) {
+			t.Fatalf("%s re-link: recipient %v, want the hello's key", step.name, err)
+		}
+	}
+	if err := st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		_, err := tx.Exec(`DELETE FROM link_refusals`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if pub, err := k.KeyboxRecipient(p.id); err != nil || !bytes.Equal(pub.Bytes(), p.eph.PublicKey().Bytes()) {
+		t.Fatalf("the refusal forgotten: recipient %v, want the offer again", err)
+	}
+}

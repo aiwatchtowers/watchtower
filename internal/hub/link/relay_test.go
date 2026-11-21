@@ -562,3 +562,300 @@ func TestPairZoneKeyboxCarriesKeysOutsideTheZoneRule(t *testing.T) {
 		t.Fatalf("the data zone's keybox has keys: %+v", zone.Keys)
 	}
 }
+
+// #1127: a phone the hub still lists as linked that ended its own link and
+// links again with a new code (no unlink on the hub)
+// reads the waiting grant — awaiting_confirmation, confirm_nonce,
+// link_code_tag, no keys — until the owner confirms, in the data zone and in
+// its pairing slot alike, so it shows the compare code; after Confirm it is
+// linked with the keys and keeps the owner's grants.
+func TestARelinkWithoutUnlinkWaitsWithTheCompareCode(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	f := memfake.New(transport.KindRelay, r.clock)
+	a := newPhone(t)
+	r.confirmLinked(a)
+	if err := r.c.Allow(a.id.String(), GrantChat, false); err != nil {
+		t.Fatal(err)
+	}
+	code := r.issue()
+	r.writeHello(f, "slot1", a, code.Nonce, withRelayID(relayID(t)))
+	if err := r.c.OnPairingOpened(ctx, f, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	if r.code(a) == "" {
+		t.Fatal("the re-link does not wait for the owner")
+	}
+	waiting := func(where string, kb wire.Keybox) {
+		t.Helper()
+		g := kb.Grant
+		if g.AwaitingConfirmation == nil || !*g.AwaitingConfirmation || g.ConfirmNonce == nil || g.LinkCodeTag == nil {
+			t.Fatalf("%s: not the waiting grant: %+v", where, g)
+		}
+		if g.Linked || kb.Keys != nil {
+			t.Fatalf("%s: linked %v, keys %v before the owner confirmed", where, g.Linked, kb.Keys != nil)
+		}
+	}
+	waiting("data zone", r.mustKeybox(a))
+	kb, ok := r.pairKeybox(f, "slot1", a)
+	if !ok {
+		t.Fatal("no keybox in the pair zone")
+	}
+	waiting("pair zone", kb)
+
+	if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
+		t.Fatal(err)
+	}
+	got := r.mustKeybox(a)
+	if !got.Grant.Linked || got.Keys == nil || got.Grant.AwaitingConfirmation != nil {
+		t.Fatalf("after Confirm: %+v (keys %v)", got.Grant, got.Keys != nil)
+	}
+	if got.Grant.Chat == nil || *got.Grant.Chat {
+		t.Fatalf("after Confirm the owner's chat grant is %v, want still off", got.Grant.Chat)
+	}
+	if err := r.c.PublishPairKeyboxes(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	if kb, _ := r.pairKeybox(f, "slot1", a); !kb.Grant.Linked || kb.Keys == nil {
+		t.Fatalf("pair zone after Confirm: %+v (keys %v)", kb.Grant, kb.Keys != nil)
+	}
+}
+
+// closedSlots is a relay fake whose pairing slots, once closed (promoted or
+// expired on the relay), refuse reads and writes FORBIDDEN, counting them.
+type closedSlots struct {
+	*memfake.Fake
+	mu            sync.Mutex
+	closed        map[string]bool
+	reads, writes map[string]int
+	// refusal is what a closed slot answers: the zone's FORBIDDEN by default.
+	refusal error
+}
+
+func newClosedSlots(clock func() time.Time) *closedSlots {
+	return &closedSlots{Fake: memfake.New(transport.KindRelay, clock), closed: map[string]bool{},
+		reads: map[string]int{}, writes: map[string]int{}, refusal: transport.ErrZoneForbidden}
+}
+
+func (z *closedSlots) close(slot string) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.closed[transport.PairZone(slot)] = true
+}
+
+func (z *closedSlots) counts(slot string) (reads, writes int) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.reads[transport.PairZone(slot)], z.writes[transport.PairZone(slot)]
+}
+
+func (z *closedSlots) Changes(ctx context.Context, zone string, since uint64) (transport.Batch, error) {
+	z.mu.Lock()
+	z.reads[zone]++
+	closed := z.closed[zone]
+	z.mu.Unlock()
+	if closed {
+		return transport.Batch{}, z.refusal
+	}
+	return z.Fake.Changes(ctx, zone, since)
+}
+
+func (z *closedSlots) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
+	z.mu.Lock()
+	closed := false
+	for _, it := range items {
+		z.writes[it.Record.Zone()]++
+		closed = closed || z.closed[it.Record.Zone()]
+	}
+	z.mu.Unlock()
+	if closed {
+		return nil, z.refusal
+	}
+	return z.Fake.Save(ctx, items)
+}
+
+// #1127: once the relay closed a pairing slot (the phone promoted it), the
+// hub's first FORBIDDEN there drops the slot: no more keybox writes on each
+// link upkeep, no read on a later resync marker, no error to log again.
+func TestAClosedPairingSlotIsDroppedOnItsFirstForbidden(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	z := newClosedSlots(r.clock)
+	code := r.issue()
+	p := newPhone(t)
+	r.writeHello(z.Fake, "slot1", p, code.Nonce, withRelayID(relayID(t)))
+	if err := r.c.OnPairingOpened(ctx, z, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.Confirm(p.id.String(), r.code(p), true); err != nil {
+		t.Fatal(err)
+	}
+	z.close("slot1")
+	if err := r.c.PublishPairKeyboxes(ctx, z); err != nil {
+		t.Fatalf("the first FORBIDDEN of a closed slot: %v", err)
+	}
+	reads, writes := z.counts("slot1")
+	for range 3 {
+		if err := r.c.PublishPairKeyboxes(ctx, z); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.c.OnPairingOpened(ctx, z, "slot1"); err != nil { // a resync marker
+			t.Fatal(err)
+		}
+	}
+	if gotR, gotW := z.counts("slot1"); gotR != reads || gotW != writes {
+		t.Fatalf("after the drop: %d reads, %d writes (was %d, %d)", gotR, gotW, reads, writes)
+	}
+
+	// A read refused FORBIDDEN drops the slot too.
+	z.close("slot2")
+	if err := r.c.OnPairingOpened(ctx, z, "slot2"); err != nil {
+		t.Fatalf("the first FORBIDDEN read: %v", err)
+	}
+	if err := r.c.OnPairingOpened(ctx, z, "slot2"); err != nil {
+		t.Fatal(err)
+	}
+	if reads, _ := z.counts("slot2"); reads != 1 {
+		t.Fatalf("slot2 read %d times, want 1", reads)
+	}
+}
+
+// A refusal of the hub itself (UNAUTHENTICATED, attestation: ErrForbidden
+// without the zone's FORBIDDEN) closes no slot: it is returned, and the slot
+// is read and written again once the hub is let in.
+func TestAHubWideForbiddenKeepsThePairingSlot(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	z := newClosedSlots(r.clock)
+	z.refusal = transport.ErrForbidden
+	code := r.issue()
+	p := newPhone(t)
+	r.writeHello(z.Fake, "slot1", p, code.Nonce, withRelayID(relayID(t)))
+	if err := r.c.OnPairingOpened(ctx, z, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	z.close("slot1")
+	if err := r.c.PublishPairKeyboxes(ctx, z); !errors.Is(err, transport.ErrForbidden) {
+		t.Fatalf("a hub-wide refusal on a write: %v, want it returned", err)
+	}
+	if err := r.c.OnPairingOpened(ctx, z, "slot1"); !errors.Is(err, transport.ErrForbidden) {
+		t.Fatalf("a hub-wide refusal on a read: %v, want it returned", err)
+	}
+	z.mu.Lock()
+	z.closed = map[string]bool{}
+	z.mu.Unlock()
+	reads, writes := z.counts("slot1")
+	if err := r.c.PublishPairKeyboxes(ctx, z); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.OnPairingOpened(ctx, z, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	if gotR, gotW := z.counts("slot1"); gotR == reads || gotW == writes {
+		t.Fatalf("the slot was dropped: %d/%d reads, %d/%d writes", gotR, reads, gotW, writes)
+	}
+}
+
+// #1127: a phone the hub still lists as linked that ended its own link
+// (Forget, a reinstall keeping its signing key, a new agreement key) and
+// links again reads its waiting keybox sealed to the key it sent now.
+func TestARelinkWithANewAgreementKeyOpensItsWaitingKeybox(t *testing.T) {
+	r := newRig(t)
+	a := newPhone(t)
+	r.confirmLinked(a)
+	again := phoneWith(t, a.sig) // the same device id, a new agreement key
+	code := r.issue()
+	if got := r.handle(again, code.Nonce); got.Code == "" {
+		t.Fatalf("re-link not waiting: %+v", got)
+	}
+	if kb := r.mustKeybox(again); kb.Grant.AwaitingConfirmation == nil || kb.Keys != nil {
+		t.Fatalf("waiting keybox %+v", kb)
+	}
+	if err := r.c.Confirm(again.id.String(), r.code(again), true); err != nil {
+		t.Fatal(err)
+	}
+	if kb := r.mustKeybox(again); !kb.Grant.Linked || kb.Keys == nil {
+		t.Fatalf("after Confirm: %+v", kb)
+	}
+}
+
+// #1127: a re-link the owner refuses, or whose code expires, is answered with
+// a refusal the phone reads (link_refused, decided now) for RefusalLifetime,
+// sealed to the key it sent; the phone's link on the hub stays, and its
+// linked keybox is back once the refusal is forgotten.
+func TestARefusedRelinkIsAnsweredAndKeepsTheLink(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		refuse func(r *rig, p phone)
+		want   string
+	}{
+		{"refused", func(r *rig, p phone) {
+			if err := r.c.Confirm(p.id.String(), r.code(p), false); err != nil {
+				r.t.Fatal(err)
+			}
+		}, wire.RefusedNotConfirmed},
+		{"expired", func(r *rig, p phone) {
+			r.advance(wire.LinkLifetime + time.Second)
+			if err := r.c.Sweep(); err != nil {
+				r.t.Fatal(err)
+			}
+		}, wire.RefusedExpiredCode},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			a := newPhone(t)
+			r.confirmLinked(a)
+			again := phoneWith(t, a.sig)
+			code := r.issue()
+			if got := r.handle(again, code.Nonce); got.Code == "" {
+				t.Fatalf("re-link not waiting: %+v", got)
+			}
+			asked := r.clock()
+			tc.refuse(r, again)
+			kb := r.mustKeybox(again)
+			if kb.Grant.LinkRefused == nil || *kb.Grant.LinkRefused != tc.want || kb.Grant.Linked || kb.Keys != nil ||
+				kb.Grant.DecidedAt == nil || kb.Grant.DecidedAt.Before(asked.Truncate(time.Second)) {
+				t.Fatalf("refusal keybox %+v (keys %v)", kb.Grant, kb.Keys != nil)
+			}
+			if !r.linked(a) {
+				t.Fatal("a refused re-link unlinked the phone")
+			}
+			r.advance(RefusalLifetime + time.Second)
+			published := 0
+			r.c.publish = func(...string) { published++ }
+			if err := r.c.Sweep(); err != nil {
+				t.Fatal(err)
+			}
+			if published == 0 {
+				t.Fatal("the refusal forgotten, the grants were not published at once")
+			}
+			if kb := r.mustKeybox(a); !kb.Grant.Linked || kb.Keys == nil {
+				t.Fatalf("after the refusal's lifetime: %+v (keys %v)", kb.Grant, kb.Keys != nil)
+			}
+		})
+	}
+}
+
+// #1127: a re-link's waiting keybox takes its linked row's place, so it is
+// never cut by MaxGrantRecords however many phones are linked and wait.
+func TestARelinkKeepsItsRoomUnderTheGrantCap(t *testing.T) {
+	r := newRig(t)
+	phones := make([]phone, MaxGrantRecords)
+	for i := range phones {
+		phones[i] = newPhone(t)
+		r.confirmLinked(phones[i])
+	}
+	a := phones[0]
+	code := r.issue()
+	if got := r.handle(a, code.Nonce); got.Code == "" {
+		t.Fatalf("re-link not waiting: %+v", got)
+	}
+	r.advance(time.Second)
+	if got := r.handle(newPhone(t), code.Nonce); got.Code == "" { // a newer request ahead of it
+		t.Fatalf("stranger not waiting: %+v", got)
+	}
+	kb, ok := r.keybox(a)
+	if !ok || kb.Grant.ConfirmNonce == nil {
+		t.Fatalf("the re-link's waiting keybox was cut by the cap: %v %+v", ok, kb.Grant)
+	}
+}
