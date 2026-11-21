@@ -232,6 +232,20 @@ func TestWatchmanStatus_JSONKeysPinned(t *testing.T) {
 	var src map[string]map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(w["sources"], &src))
 	assert.Equal(t, []string{"done", "written"}, mapKeys(src["ask"]))
+
+	// An armed session: its row carries the session's own instruction.
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	_, out, err = armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--instructions-file", instructionFile(t, "ship task 3 only"))
+	require.NoError(t, err, out)
+	out, err = runWatchman(t, "status", "--json")
+	require.NoError(t, err)
+	var armed struct {
+		ArmedSessions []map[string]json.RawMessage `json:"armed_sessions"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &armed))
+	require.Len(t, armed.ArmedSessions, 1)
+	assert.Equal(t, []string{"armed_at", "id", "instructions", "target"}, mapKeys(armed.ArmedSessions[0]))
+	assert.JSONEq(t, `"ship task 3 only"`, string(armed.ArmedSessions[0]["instructions"]))
 }
 
 func TestWatchmanStatus_RunningWhileLocked(t *testing.T) {

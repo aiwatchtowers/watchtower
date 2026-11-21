@@ -3764,6 +3764,15 @@ started_at TEXT NOT NULL,
 ended_at TEXT NOT NULL
 )
 
+table	watchman_instructions
+CREATE TABLE watchman_instructions (
+scope TEXT NOT NULL CHECK (scope IN ('session','target')),
+ref_id INTEGER NOT NULL, -- session or target id
+text TEXT NOT NULL, -- trimmed, at most 2000 runes
+updated_at TEXT NOT NULL, -- RFC 3339 UTC
+PRIMARY KEY (scope, ref_id)
+)
+
 table	watchman_items
 CREATE TABLE "watchman_items" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -7307,6 +7316,12 @@ GROUP BY up.ancestor
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	started_at	TEXT	notnull=1	dflt=NULL	pk=0
 2	ended_at	TEXT	notnull=1	dflt=NULL	pk=0
+
+## watchman_instructions
+0	scope	TEXT	notnull=1	dflt=NULL	pk=1
+1	ref_id	INTEGER	notnull=1	dflt=NULL	pk=2
+2	text	TEXT	notnull=1	dflt=NULL	pk=0
+3	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## watchman_items
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

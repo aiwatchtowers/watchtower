@@ -342,7 +342,7 @@ func (t *Twin) handleReviewCode(parent context.Context, it db.WatchmanItem) {
 		return
 	}
 	dec, err := t.d.Decide(ctx, watchman.Item{
-		WorkbenchID: it.WorkbenchID, Category: watchman.CategoryReviewCode, Options: ReviewOptions,
+		WorkbenchID: it.WorkbenchID, ItemID: it.ID, SessionID: it.SessionID, Category: watchman.CategoryReviewCode, Options: ReviewOptions,
 		Situation: watchman.Redact(reviewSituation(it.Question, place)), DecidedBefore: j.now(),
 	})
 	if err != nil {

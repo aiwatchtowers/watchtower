@@ -444,6 +444,7 @@ var cliNoContentCommands = map[string]bool{
 	"watchman arm":                    true, // arming state and the arm sheet's estimate only
 	"watchman backtest":               true,
 	"watchman disarm":                 true,
+	"watchman instruct":               true, // the owner's own instruction, echoed back
 	"watchman learn":                  true,
 	"watchman limits add":             true, // the owner's own extra limits
 	"watchman limits list":            true,

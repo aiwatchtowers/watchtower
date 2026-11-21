@@ -34,6 +34,8 @@ var (
 	watchmanArmFlagOnly       []int64
 	watchmanArmFlagCheck      bool
 	watchmanArmFlagJSON       bool
+	// watchmanArmFlagInstructionsFile: "" = keep the stored instruction.
+	watchmanArmFlagInstructionsFile string
 
 	watchmanDisarmFlagSession int64
 	watchmanDisarmFlagTarget  int64
@@ -59,6 +61,8 @@ func init() {
 		"with --all-running: arm only these sessions (the ones a --check reported); a session started since is left out")
 	arm.Flags().BoolVar(&watchmanArmFlagCheck, "check", false, "write nothing; report first_time and the learning estimate")
 	arm.Flags().BoolVar(&watchmanArmFlagJSON, "json", false, "print JSON")
+	arm.Flags().StringVar(&watchmanArmFlagInstructionsFile, "instructions-file", "",
+		"set the instruction of what is handed over from this file (- = stdin; an empty file clears it); without it the stored one is kept")
 	disarm := &cobra.Command{
 		Use:   "disarm",
 		Short: "Take a session, a target or everything back from Watchman",
@@ -394,6 +398,16 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	if len(watchmanArmFlagOnly) > 0 && !watchmanArmFlagAllRunning {
 		return errors.New("--only goes with --all-running")
 	}
+	// The instruction is read before anything is written, so a file that
+	// cannot be read arms nothing. --check writes nothing and ignores it.
+	var instruction *string
+	if watchmanArmFlagInstructionsFile != "" && !watchmanArmFlagCheck {
+		text, err := readWatchmanInstruction(cmd, watchmanArmFlagInstructionsFile)
+		if err != nil {
+			return err
+		}
+		instruction = &text
+	}
 	cfg, err := workspaceConfigFromFlags()
 	if err != nil {
 		return err
@@ -484,15 +498,16 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	}
 	// A row already there keeps its armed_at: re-arming does not move
 	// "Sleep since" (one INSERT … DO NOTHING, so no check-then-write race).
+	// The whole set and, with --instructions-file, each row's instruction go
+	// in one transaction: a failure arms nothing and changes no text.
+	// Without the flag the stored instructions are kept.
 	now := time.Now()
-	changed := false
-	for _, r := range rows {
-		r.ArmedAt, r.ArmedBy = now, "cli"
-		inserted, err := database.ArmWatchman(r)
-		if err != nil {
-			return err
-		}
-		changed = changed || inserted
+	for i := range rows {
+		rows[i].ArmedAt, rows[i].ArmedBy = now, "cli"
+	}
+	changed, err := database.ArmWatchmanSet(rows, instruction)
+	if err != nil {
+		return err
 	}
 	// The daemon's upkeep takes the hold and its learning phase does the
 	// backfill; arm never runs either.
