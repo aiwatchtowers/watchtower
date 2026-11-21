@@ -5,11 +5,14 @@ import GRDB
 /// (spec §10). Pure reads: the Desktop writes only the feedback columns,
 /// in `WatchmanFeedbackQueries`.
 package enum WatchmanJournalQueries {
-    /// The tables a journal observation tracks.
-    package static let observedTables = ["watchman_items", "watchman_gaps"]
+    /// The tables a journal observation tracks: the journal's own, and those
+    /// the wait-for-learning count and the stall card read that this
+    /// process writes (an ask answered here, a session renamed or deleted).
+    /// The rest (arming, learning) follow the 30 s tick.
+    package static let observedTables = ["watchman_items", "watchman_gaps", "owner_asks", "terminal_sessions"]
 
     private static let itemColumns = """
-        i.id, i.workbench_id, p.name AS workbench_name, i.session_id, i.target_id, i.kind, i.state, i.outcome,
+        i.id, i.workbench_id, p.name AS workbench_name, i.session_id, ts.title AS session_title, i.target_id, i.kind, i.state, i.outcome,
         i.question, i.choice, i.rationale, i.precedent_ids, i.confidence, i.category, i.unsure, i.park_reason,
         i.delivery, i.error, i.cost_usd, i.created_at, i.decided_at, i.feedback, i.feedback_text, i.check_done_at,
         i.owner_done_at, i.correction_sent_at
@@ -46,6 +49,7 @@ package enum WatchmanJournalQueries {
         let items = try WatchmanItem.fetchAll(db, sql: """
             SELECT \(itemColumns)
             FROM watchman_items i LEFT JOIN projects p ON p.id = i.workbench_id
+            LEFT JOIN terminal_sessions ts ON ts.id = i.session_id
             WHERE i.created_at >= ? AND i.created_at < ?
             ORDER BY i.created_at, i.id
             """, arguments: [AutomationDates.format(max(oldest, since ?? oldest)), until])
@@ -61,6 +65,7 @@ package enum WatchmanJournalQueries {
         try WatchmanItem.fetchAll(db, sql: """
             SELECT \(itemColumns)
             FROM watchman_items i LEFT JOIN projects p ON p.id = i.workbench_id
+            LEFT JOIN terminal_sessions ts ON ts.id = i.session_id
             WHERE i.state = 'deciding'
             ORDER BY i.created_at, i.id
             """)

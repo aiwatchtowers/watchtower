@@ -261,6 +261,39 @@ final class WatchmanCorrectTests: XCTestCase {
         XCTAssertEqual(recorder.writes, [.ownerDone(1830)])
     }
 
+    /// A stalled session waits (tuning spec §4b): titled by the session,
+    /// the stored reason, Open session and Mark done, never OK/Correct…;
+    /// Mark done clears it with owner_done_at.
+    func testStallCardOffersOpenAndMarkDoneOnly() async {
+        let recorder = Recorder()
+        var stall = item(1833, outcome: "parked")
+        stall.kind = "stall"
+        stall.sessionID = 41
+        stall.sessionTitle = "Ship task 3 of the billing plan"
+        stall.question = ""
+        stall.parkReason = "The agent stopped and did not go on after 3 pings"
+        let night = WatchmanNight(date: date("2026-11-16T12:00:00Z"), waiting: [stall])
+        var actions = WatchmanJournalViewModel.Actions.none
+        actions.write = { recorder.writes.append($0); return true }
+        actions.open = { recorder.routes.append($0) }
+        let vm = WatchmanJournalViewModel(read: { .init(nights: [night], deciding: []) }, calendar: calendar,
+                                          actions: actions)
+        vm.apply(.success(.init(nights: [night], deciding: [])))
+        let card = vm.page?.waiting.first
+        XCTAssertEqual(card?.stall, true)
+        XCTAssertEqual(card?.question, "#41 Ship task 3 of the billing plan")
+        XCTAssertEqual(card?.reason, "The agent stopped and did not go on after 3 pings")
+        XCTAssertEqual(card?.place, "acme-api · 02:15 · stopped", "the time it was parked")
+        XCTAssertEqual(card?.canOpen, true)
+        XCTAssertEqual(card?.canMarkDone, true)
+        XCTAssertEqual(card?.canJudge, false, "not a decision: no OK, no Correct…")
+        XCTAssertEqual(vm.page?.decided, [])
+        vm.openSession(1833)
+        XCTAssertEqual(recorder.routes, [WorkbenchRoute(projectID: 1, pane: .terminal, subjectID: 41)])
+        await vm.markDone(1833)
+        XCTAssertEqual(recorder.writes, [.ownerDone(1833)])
+    }
+
     /// A handover whose next session did not start waits too: Mark done
     /// clears it with owner_done_at, never check_done_at.
     func testMarkDoneClearsAFailedHandoverStart() async {

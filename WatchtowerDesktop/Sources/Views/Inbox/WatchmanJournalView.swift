@@ -296,7 +296,7 @@ private struct WatchmanNightPage: View {
     }
 }
 
-/// A parked or handed item: what the owner has to do.
+/// A parked, handed or stalled item: what the owner has to do.
 private struct WatchmanWaitingCard: View {
     let card: WatchmanJournalViewModel.Card
     let model: WatchmanJournalViewModel
@@ -304,8 +304,7 @@ private struct WatchmanWaitingCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                Image(systemName: card.handed ? "person.fill.questionmark" : "hand.raised.fill")
-                    .foregroundStyle(Tone.warning)
+                Image(systemName: icon).foregroundStyle(Tone.warning)
                 Text(card.question).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
             }
             if let reason = card.reason { Text(reason).font(.callout).fixedSize(horizontal: false, vertical: true) }
@@ -323,6 +322,11 @@ private struct WatchmanWaitingCard: View {
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
+    }
+
+    private var icon: String {
+        if card.stall { return WatchmanJournalViewModel.stallIcon }
+        return card.handed ? "person.fill.questionmark" : "hand.raised.fill"
     }
 }
 

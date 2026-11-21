@@ -8,11 +8,9 @@ import WatchtowerCore
 /// `docs/superpowers/specs/2026-11-21-watchman-tuning-design.md`). The
 /// instruction sheet in each state and the armed strip with Instruction…
 /// are the real views (`WatchmanArmSheet`, `WorkbenchSessionStrip`, Task
-/// 2b), as are the strip while learning and the journal's wait-for-learning
-/// line (`WatchmanJournalContent`, Task 3b); a stall card is still design
-/// only, in `WatchmanTuningMockCopy` strings that its task moves into the
-/// copy types. Sample data only (`acme`,
-/// made-up ids).
+/// 2b), as are the strip while learning, the journal's wait-for-learning
+/// line (`WatchmanJournalContent`, Task 3b) and its stall cards (Task 4c).
+/// Sample data only (`acme`, made-up ids).
 @MainActor
 enum WatchmanTuningShotFixtures {
     enum Frame: String, CaseIterable {
@@ -57,7 +55,7 @@ enum WatchmanTuningShotFixtures {
                 WatchmanArmingShotFixture.strip(armed: true, instructions: Copy.sampleInstruction,
                                                 learning: (written: 777, estimated: 1850))
             case .journalWaitingLearning: JournalWaitingShot()
-            case .journalStall: JournalStallMock()
+            case .journalStall: JournalStallShot()
             }
         }
     }
@@ -101,14 +99,13 @@ enum WatchmanTuningMockCopy {
     static let waitingHeader = "WAITING FOR YOU"
     static let stallTitle = "#41 Ship task 3 of the billing plan"
     static let stallReason = "The agent stopped and did not go on after 3 pings"
+    static let stallReasonStuck = "The agent stopped and Watchman could not get a ping through for 9 minutes"
     static let stallMeta = "acme-api · 02:14 · stopped"
     static let openSession = "Open session"
     static let markDone = "Mark done"
 }
 
 private typealias Copy = WatchmanTuningMockCopy
-
-private let watchmanTone = Tone.status("purple")
 
 // MARK: - The instruction sheet
 
@@ -176,33 +173,31 @@ private struct JournalWaitingShot: View {
     }
 }
 
-private struct JournalStallMock: View {
+/// The real journal tonight with two stalled sessions under Waiting for
+/// you, one per stall reason (tuning spec §4b).
+private struct JournalStallShot: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.medium) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: Copy.icon).foregroundStyle(watchmanTone)
-                Text(Copy.tonight).font(.title3.weight(.semibold))
-            }
-            Text(Copy.waitingHeader).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                    Image(systemName: "pause.circle").foregroundStyle(Tone.warning)
-                    Text(Copy.stallTitle).font(.callout.weight(.semibold))
-                }
-                Text(Copy.stallReason).font(.callout).fixedSize(horizontal: false, vertical: true)
-                Text(Copy.stallMeta).font(.caption).foregroundStyle(.secondary)
-                HStack(spacing: Spacing.regular) {
-                    Button(Copy.openSession) {}.buttonStyle(.kitSecondary).fixedSize()
-                    Button(Copy.markDone) {}.buttonStyle(.kitSecondary).fixedSize()
-                }
-            }
-            .padding(Spacing.medium)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .card()
+        WatchmanJournalContent(model: Self.model(), scrolls: false)
+    }
+
+    private static func model() -> WatchmanJournalViewModel {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = .gmt
+        func at(_ text: String) -> Date { AutomationDates.parse(text) ?? .distantPast }
+        func stall(_ id: Int64, session: Int64, title: String, reason: String, _ parked: String) -> WatchmanItem {
+            WatchmanItem(id: id, workbenchName: "acme-api", sessionID: session, sessionTitle: title, kind: "stall",
+                         outcome: "parked", parkReason: reason, createdAt: at(parked), decidedAt: at(parked))
         }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
+        let waiting = [
+            stall(1850, session: 41, title: "Ship task 3 of the billing plan", reason: Copy.stallReason,
+                  "2026-11-17T02:14:00Z"),
+            stall(1851, session: 42, title: "Fix the login redirect", reason: Copy.stallReasonStuck,
+                  "2026-11-17T02:40:00Z")
+        ]
+        let night = WatchmanNight(date: at("2026-11-16T12:00:00Z"), waiting: waiting)
+        let now = at("2026-11-17T03:00:00Z")
+        let vm = WatchmanJournalViewModel(read: { throw CancellationError() }, now: { now }, calendar: utc)
+        vm.apply(.success(.init(nights: [night], deciding: [])))
+        return vm
     }
 }

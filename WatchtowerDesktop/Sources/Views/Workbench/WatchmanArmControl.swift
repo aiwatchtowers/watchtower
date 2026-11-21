@@ -123,10 +123,10 @@ struct WatchmanArmControl: View {
             }
         }
         // Each appearance rereads the arming (an arm made elsewhere shows);
-        // the strip keeps rereading while its workbench learns, from the
-        // moment learning starts (a first hand-over turns it on).
-        .task(id: FollowKey(scope: scope, learning: learning)) {
-            await center.reread(followingLearning: workbenchID)
+        // a handed strip keeps rereading while its workbench learns, from
+        // the moment learning starts (a first hand-over turns it on).
+        .task(id: FollowKey(scope: scope, learning: followed != nil)) {
+            await center.reread(followingLearning: followed)
         }
     }
 
@@ -135,9 +135,17 @@ struct WatchmanArmControl: View {
         let learning: Bool
     }
 
-    private var learning: Bool {
-        workbenchID.flatMap { center.lastStatus?.workbench($0)?.isStillLearning } ?? false
+    /// The workbench whose learning a strip follows: its own, only while
+    /// the strip is handed to Watchman and the workbench still learns — an
+    /// unarmed strip reads the status once and never polls.
+    static func followedWorkbench(_ workbench: Int64?, arming: Arming, in status: WatchmanStatus?) -> Int64? {
+        guard arming != .unarmed, let workbench, status?.workbench(workbench)?.isStillLearning == true else {
+            return nil
+        }
+        return workbench
     }
+
+    private var followed: Int64? { Self.followedWorkbench(workbenchID, arming: arming, in: center.lastStatus) }
 
     // MARK: - Strip
 

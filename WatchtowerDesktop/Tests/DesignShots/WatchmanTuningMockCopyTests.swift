@@ -47,4 +47,21 @@ final class WatchmanTuningMockCopyTests: XCTestCase {
         XCTAssertEqual(WatchmanArmingCopy.stripLearning(percent: 42), Copy.stripLearning)
         XCTAssertEqual(WatchmanJournalCopy.waitingForLearning(percent: 42, count: 3), Copy.waitingLearning)
     }
+
+    /// The stall card is built (Task 4c): its real lines are the spec's.
+    func testStallCopyMatchesTheMock() {
+        let created = AutomationDates.parse("2026-11-17T02:14:00Z") ?? .distantPast
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = .gmt
+        let stall = WatchmanItem(id: 1, workbenchName: "acme-api", sessionID: 41,
+                                 sessionTitle: "Ship task 3 of the billing plan", kind: "stall", outcome: "parked",
+                                 parkReason: Copy.stallReason, createdAt: created)
+        XCTAssertEqual(WatchmanJournalCopy.stallTitle(stall), Copy.stallTitle)
+        XCTAssertEqual(WatchmanJournalCopy.stallReason(stall), Copy.stallReason)
+        XCTAssertEqual(WatchmanJournalCopy.stallMeta(stall, calendar: utc), Copy.stallMeta)
+        XCTAssertEqual(WatchmanJournalCopy.waitingTitle, Copy.waitingHeader)
+        XCTAssertEqual(WatchmanJournalCopy.openSession, Copy.openSession)
+        XCTAssertEqual(WatchmanJournalCopy.markDone, Copy.markDone)
+        XCTAssertEqual(WatchmanJournalViewModel.stallIcon, "pause.circle")
+    }
 }

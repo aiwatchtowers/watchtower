@@ -18,6 +18,30 @@ final class WatchmanJournalCopyTests: XCTestCase {
         XCTAssertEqual(Copy.waitingForLearning(percent: 42, count: 3), "Waiting for learning (42%): 3 questions")
         XCTAssertEqual(Copy.waitingForLearning(percent: 7, count: 1), "Waiting for learning (7%): 1 question")
         XCTAssertEqual(Copy.waitingForLearningPaused, "Waiting for learning — background AI is paused")
+        XCTAssertEqual(Copy.waitingForLearning(percent: nil, count: 3), "Waiting for learning: 3 questions",
+                       "no percent known yet")
+        XCTAssertEqual(Copy.waitingForLearning(percent: nil, count: 1), "Waiting for learning: 1 question")
+    }
+
+    /// The stall card (tuning spec §4b): the session's title, the reason Go
+    /// stored (either one), "<workbench> · <HH:MM> · stopped".
+    func testStallCardLines() {
+        let created = date("2026-11-17T02:14:00Z")
+        let pings = WatchmanItem(id: 1, workbenchName: "acme-api", sessionID: 41,
+                                 sessionTitle: "Ship task 3 of the billing plan", kind: "stall", outcome: "parked",
+                                 parkReason: "The agent stopped and did not go on after 3 pings", createdAt: created)
+        XCTAssertEqual(Copy.stallTitle(pings), "#41 Ship task 3 of the billing plan")
+        XCTAssertEqual(Copy.stallReason(pings), "The agent stopped and did not go on after 3 pings")
+        XCTAssertEqual(Copy.stallMeta(pings, calendar: calendar), "acme-api · 02:14 · stopped")
+        let stuck = WatchmanItem(id: 2, sessionID: 42, kind: "stall", outcome: "parked",
+                                 parkReason: "The agent stopped and Watchman could not get a ping through for 9 minutes",
+                                 createdAt: created)
+        XCTAssertEqual(Copy.stallTitle(stuck), "Session 42", "a session with no title: by its id")
+        XCTAssertEqual(Copy.stallReason(stuck),
+                       "The agent stopped and Watchman could not get a ping through for 9 minutes")
+        XCTAssertEqual(Copy.stallMeta(stuck, calendar: calendar), "02:14 · stopped")
+        XCTAssertEqual(Copy.stallReason(WatchmanItem(id: 3, kind: "stall", outcome: "parked", createdAt: created)),
+                       "The agent stopped")
     }
 
     func testHomeRowText() {

@@ -159,7 +159,10 @@ final class WatchmanJournalViewModelTests: XCTestCase {
             nights: [night(decided: [item(1)], pending: [queued])], deciding: [], waitingForLearning: [1: 2, 2: 1])
         let vm = model(Replies([.success(snapshot)]))
         await vm.load()
-        XCTAssertEqual(vm.page?.busyLine, "Waiting for learning (0%): 3 questions", "no status read yet: 0%")
+        XCTAssertEqual(vm.page?.busyLine, "Waiting for learning: 3 questions", "no status read yet: no percent")
+        vm.learningPercents = [2: 71]
+        XCTAssertEqual(vm.page?.busyLine, "Waiting for learning (71%): 3 questions",
+                       "an unknown percent does not pull the least to 0")
         vm.learningPercents = [1: 42, 2: 71]
         XCTAssertEqual(vm.page?.busyLine, "Waiting for learning (42%): 3 questions")
         vm.scope = 1

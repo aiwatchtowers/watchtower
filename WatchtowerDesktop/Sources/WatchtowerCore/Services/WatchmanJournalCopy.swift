@@ -38,9 +38,13 @@ package enum WatchmanJournalCopy {
     }
 
     /// The busy line while questions wait for their workbench's learning to
-    /// end (tuning spec §3, D5): "Waiting for learning (42%): 3 questions".
-    package static func waitingForLearning(percent: Int, count: Int) -> String {
-        "Waiting for learning (\(percent)%): \(count) \(count == 1 ? "question" : "questions")"
+    /// end (tuning spec §3, D5): "Waiting for learning (42%): 3 questions";
+    /// "Waiting for learning: 3 questions" while no percent is known yet
+    /// (before the first status read).
+    package static func waitingForLearning(percent: Int?, count: Int) -> String {
+        let questions = "\(count) \(count == 1 ? "question" : "questions")"
+        guard let percent else { return "Waiting for learning: \(questions)" }
+        return "Waiting for learning (\(percent)%): \(questions)"
     }
 
     /// The busy line while they wait and background AI is paused: learning
@@ -126,6 +130,34 @@ package enum WatchmanJournalCopy {
         }
         return item.parkReason.isEmpty ? "Parked" : "Parked: \(oneLine(item.parkReason))"
     }
+
+    /// A stall card's title (tuning spec §4b): the session, "#41 Ship task 3
+    /// of the billing plan" ("Session 41" when it has no title).
+    package static func stallTitle(_ item: WatchmanItem) -> String {
+        let title = oneLine(item.sessionTitle)
+        return title.isEmpty ? "Session \(item.sessionID)" : "#\(item.sessionID) \(title)"
+    }
+
+    /// A stall card's reason: the park reason Go stored, as written (either
+    /// stall reason — 3 pings, or a ping not through for 9 minutes).
+    package static func stallReason(_ item: WatchmanItem) -> String {
+        let reason = oneLine(item.parkReason)
+        return reason.isEmpty ? stalled : reason
+    }
+
+    /// A stall card's meta: "acme-api · 02:14 · stopped".
+    package static func stallMeta(_ item: WatchmanItem, calendar: Calendar) -> String {
+        var parts: [String] = []
+        if !item.workbenchName.isEmpty { parts.append(item.workbenchName) }
+        parts.append(format(item.decidedAt ?? item.createdAt, "HH:mm", calendar))
+        parts.append(stopped)
+        return parts.joined(separator: " · ")
+    }
+
+    /// The stall meta's last part.
+    package static let stopped = "stopped"
+    /// A stall item Go stored no reason for.
+    package static let stalled = "The agent stopped"
 
     /// "confidence low · design"; the parts Watchman left empty are left out.
     package static func meta(_ item: WatchmanItem) -> String {

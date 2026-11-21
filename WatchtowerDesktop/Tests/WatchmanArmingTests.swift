@@ -452,6 +452,31 @@ final class WatchmanArmingTests: XCTestCase {
                        "Watchman · since 01:40")
     }
 
+    /// Only a handed strip polls its workbench's learning: an unarmed one
+    /// reads the status once, and a learned workbench is not followed.
+    func testOnlyAHandedStripFollowsLearning() throws {
+        func status(_ learning: String) throws -> WatchmanStatus {
+            try WatchmanStatusFixtures.decode(#"""
+                {"ok":true,"mode":"sleep","mode_since":"2026-11-17T01:40:00Z",
+                 "workbenches":[{"workbench":1,"name":"acme-api","enabled_at":"2026-11-17T01:40:00Z",
+                                 "analytics_on":true,"running":false,"learning":\#(learning)}],
+                 "armed":[{"scope":"session","id":5,"armed_at":"2026-11-17T01:40:00Z"}],
+                 "armed_sessions":[{"id":5,"target":0,"armed_at":"2026-11-17T01:40:00Z"}]}
+                """#)
+        }
+        let learning = try status(#"{"written":777,"estimated":1850,"done":false}"#)
+        let followed = { (scope: WatchmanArmScope, workbench: Int64?, status: WatchmanStatus?) in
+            WatchmanArmControl.followedWorkbench(workbench, arming: WatchmanArmControl.arming(scope, in: status),
+                                                 in: status)
+        }
+        XCTAssertEqual(followed(.session(5), 1, learning), 1, "handed, learning: followed")
+        XCTAssertNil(followed(.session(6), 1, learning), "unarmed: never polls")
+        XCTAssertNil(followed(.session(5), nil, learning), "no workbench: nothing to follow")
+        XCTAssertNil(followed(.session(5), 1, nil), "no status read yet")
+        XCTAssertNil(followed(.session(5), 1, try status(#"{"written":1850,"estimated":1850,"done":true}"#)),
+                     "learned: nothing to follow")
+    }
+
     /// `arm` exited 0 but its reply could not be read: say the state is
     /// being reread (not that it failed), and reread it.
     func testUnreadableArmReplyRereads() async {

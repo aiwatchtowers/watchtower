@@ -48,6 +48,9 @@ final class WatchmanJournalViewModel {
         let meta: String
         let outcome: String?
         let handed: Bool
+        /// A stalled session (tuning spec §4b): its own symbol, Open session
+        /// and Mark done only.
+        var stall = false
         /// OK and Correct… are offered: a twin decision not judged yet.
         var canJudge = false
         /// What the owner said about it: OK'd, or his correction.
@@ -77,6 +80,8 @@ final class WatchmanJournalViewModel {
     /// The symbol of a superseded item's line (its ask was withdrawn), apart
     /// from the owner-answered one.
     static let supersededIcon = "arrow.uturn.backward.circle"
+    /// The symbol of a stall card (tuning spec §4b), in `Tone.warning`.
+    static let stallIcon = "pause.circle"
 
     /// The Correct… sheet's draft.
     struct CorrectDraft: Identifiable, Equatable {
@@ -581,15 +586,16 @@ final class WatchmanJournalViewModel {
     }
 
     /// "Waiting for learning (42%): 3 questions" over the workbenches in
-    /// scope, at the least learned one's percent (0 before a status read
-    /// gives it); the paused line while background AI is paused; nil while
-    /// nothing waits.
+    /// scope, at the least learned one's percent among those a status read
+    /// gave (an unknown percent is unknown, not 0; none known: no percent);
+    /// the paused line while background AI is paused; nil while nothing
+    /// waits.
     private var waitingForLearningLine: String? {
         let waiting = snapshot.waitingForLearning.filter { scope == nil || $0.key == scope }
         let count = waiting.values.reduce(0, +)
         guard count > 0 else { return nil }
         if backgroundAIPaused { return WatchmanJournalCopy.waitingForLearningPaused }
-        let percent = waiting.keys.map { learningPercents[$0] ?? 0 }.min() ?? 0
+        let percent = waiting.keys.compactMap { learningPercents[$0] }.min()
         return WatchmanJournalCopy.waitingForLearning(percent: percent, count: count)
     }
 
@@ -622,10 +628,21 @@ final class WatchmanJournalViewModel {
     }
 
     private func waitingCard(_ item: WatchmanItem) -> Card {
-        Card(id: item.id, place: WatchmanJournalCopy.place(item, calendar: calendar),
-             question: WatchmanJournalCopy.question(item), badge: nil,
-             reason: WatchmanJournalCopy.waitingReason(item), choice: nil, rationale: nil, precedents: [],
-             meta: WatchmanJournalCopy.meta(item), outcome: nil, handed: item.outcome == "handed",
+        if item.isStall { return stallCard(item) }
+        return Card(id: item.id, place: WatchmanJournalCopy.place(item, calendar: calendar),
+                    question: WatchmanJournalCopy.question(item), badge: nil,
+                    reason: WatchmanJournalCopy.waitingReason(item), choice: nil, rationale: nil, precedents: [],
+                    meta: WatchmanJournalCopy.meta(item), outcome: nil, handed: item.outcome == "handed",
+                    canOpen: item.sessionID > 0, canMarkDone: true)
+    }
+
+    /// A stalled session: titled by the session, the stored reason, Open
+    /// session and Mark done (it is not a decision: no OK, no Correct…).
+    private func stallCard(_ item: WatchmanItem) -> Card {
+        Card(id: item.id, place: WatchmanJournalCopy.stallMeta(item, calendar: calendar),
+             question: WatchmanJournalCopy.stallTitle(item), badge: nil,
+             reason: WatchmanJournalCopy.stallReason(item), choice: nil, rationale: nil, precedents: [],
+             meta: "", outcome: nil, handed: false, stall: true,
              canOpen: item.sessionID > 0, canMarkDone: true)
     }
 

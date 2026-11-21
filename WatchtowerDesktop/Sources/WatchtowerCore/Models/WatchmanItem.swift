@@ -12,8 +12,11 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
     package var workbenchName: String
     /// 0 = none.
     package var sessionID: Int64
+    /// The session's title (`terminal_sessions.title`); empty when it has
+    /// none or the row is gone. A stall card is titled by it.
+    package var sessionTitle: String
     package var targetID: Int64
-    /// `ask`, `review_doc`, `check`, `handover`, `permission`, `review_code`, `guard`.
+    /// `ask`, `review_doc`, `check`, `handover`, `permission`, `review_code`, `guard`, `stall`.
     package var kind: String
     /// `queued`, `deciding`, `done`.
     package var state: String
@@ -50,6 +53,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         workbenchID: Int64 = 1,
         workbenchName: String = "",
         sessionID: Int64 = 0,
+        sessionTitle: String = "",
         targetID: Int64 = 0,
         kind: String = "ask",
         state: String = "done",
@@ -77,6 +81,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         self.workbenchID = workbenchID
         self.workbenchName = workbenchName
         self.sessionID = sessionID
+        self.sessionTitle = sessionTitle
         self.targetID = targetID
         self.kind = kind
         self.state = state
@@ -106,6 +111,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         workbenchID = row["workbench_id"]
         workbenchName = row["workbench_name"] ?? ""
         sessionID = row["session_id"] ?? 0
+        sessionTitle = row["session_title"] ?? ""
         targetID = row["target_id"] ?? 0
         kind = row["kind"]
         state = row["state"]
@@ -190,6 +196,10 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
     package var correctionUnsent: Bool {
         feedback == "corrected" && correctionSentAt == nil
     }
+
+    /// An armed session that stopped and did not go on after Watchman's
+    /// pings (tuning spec §4b): parked to the owner, never a decision.
+    package var isStall: Bool { kind == "stall" }
 
     /// A check Watchman passed on that nobody has run since.
     package var isCheckNobodyRan: Bool {
