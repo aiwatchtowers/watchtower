@@ -1758,12 +1758,21 @@ func TestAStaleCodeCloseLeavesANewerCloudKitCode(t *testing.T) {
 	if got, err := r.ckHello(b, newer.Nonce); err != nil || got.Code == "" {
 		t.Fatalf("hello under the newer code: %+v, %v", got, err)
 	}
+	r.c.ck.mu.Lock()
+	graceEnd, sweepAt := r.c.ck.graceEnd, r.c.ck.sweepAt
+	r.c.ck.mu.Unlock()
 	if err := r.c.closeLink(r.ctx, r.s, CloseSheetClosed, closed, scope); err != nil {
 		t.Fatal(err)
 	}
 	if !r.s.isOpen() {
 		t.Error("the stale close shut the newer code's public link")
 	}
+	r.c.ck.mu.Lock()
+	if !r.c.ck.graceEnd.Equal(graceEnd) || !r.c.ck.sweepAt.Equal(sweepAt) {
+		t.Errorf("the stale close moved the newer code's grace/sweep: %v/%v → %v/%v",
+			graceEnd, sweepAt, r.c.ck.graceEnd, r.c.ck.sweepAt)
+	}
+	r.c.ck.mu.Unlock()
 	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(b)) {
 		t.Errorf("waiting after the stale close: %v", ids)
 	}

@@ -654,6 +654,11 @@ func (c *Center) closeLink(ctx context.Context, s transport.Shares, reason Close
 		return nil
 	}
 	c.ck.mu.Lock()
+	if scope.staleLocked(c) {
+		// A newer code took the screen: its own close sets the grace and the sweep.
+		c.ck.mu.Unlock()
+		return nil
+	}
 	c.ck.graceEnd = c.now().Add(c.sweep.AnswerGrace)
 	c.ck.sweepAt, c.ck.sweepTries = c.ck.graceEnd, 0
 	c.ck.mu.Unlock()
