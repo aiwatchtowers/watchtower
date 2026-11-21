@@ -349,8 +349,8 @@ final class ConnectRunControllerTests: XCTestCase {
         _ = await held.value
         let before = company.dropped.count
         company.releaseSubmit()
-        await untilTurn { company.dropped.count > before }
-        XCTAssertEqual(company.dropped.last, "slack_config_token", "nobody can answer the card: the driver drops it")
+        await company.until { company.submitsReturned == 1 }
+        XCTAssertEqual(company.dropped.count, before + 1, "nobody can answer the card: the driver drops it")
         XCTAssertNil(controller.pendingCard)
     }
 

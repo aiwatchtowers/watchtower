@@ -239,8 +239,14 @@ final class FakeConfirmingCompanyDriver: FakeCompanyDriver, ConnectSecretConfirm
                 changed()
             }
         }
-        return await super.submitSecret(kind: kind, value: value)
+        let result = await super.submitSecret(kind: kind, value: value)
+        // Waiters resume after the caller's code that follows this return has run.
+        submitsReturned += 1
+        changed()
+        return result
     }
+
+    private(set) var submitsReturned = 0
 }
 
 /// A Slack driver that can run the Slack Live probe.

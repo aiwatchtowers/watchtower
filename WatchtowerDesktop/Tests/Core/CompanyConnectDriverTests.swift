@@ -252,15 +252,49 @@ final class CompanyConnectDriverTests: XCTestCase {
         XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).count, 1)
     }
 
+    /// A token card the customer never used goes (run end, timeout): what
+    /// the customer has on the page (their token, their diff) stays.
+    func testDroppedUnusedCardLeavesThePageAlone() async {
+        let cli = CompanyScriptedCLI()
+        let (driver, wizard) = make(cli)
+        _ = await driver.status()
+        wizard.toggle(.slack)
+        await wizard.next()
+        wizard.alreadyHaveOne()
+        wizard.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        await wizard.next()
+        wizard.slackToken = token
+        cli.on(["slack", "app", "adopt"], [confirmApp])
+        await wizard.next()
+        await untilObserved { wizard.slackDiff != nil }
+        driver.secretConfirmDropped(kind: "slack_config_token")
+        XCTAssertEqual(wizard.slackToken, token, "the customer's token stays")
+        XCTAssertNotNil(wizard.slackDiff, "the customer's diff stays")
+    }
+
+    func testUnreadableDraftIsNotAFreshOne() async {
+        let cli = CompanyScriptedCLI()
+        cli.on(["company", "draft", "show"], [#"{"state":"unreadable","draft":null,"bad_file":"draft.json.bad-x","checked_vendors":[]}"#])
+        let (driver, wizard) = make(cli)
+        let read = await driver.draftView()
+        XCTAssertEqual(wizard.load, .ready, "the page opens on its unreadable notice")
+        let expected = "\(CompanySetupWizardModel.draftUnreadableTitle). "
+            + CompanySetupWizardModel.draftUnreadableBody(file: "draft.json.bad-x")
+        XCTAssertEqual(Self.error(read), .failed(expected))
+    }
+
     func testLinkOfAnotherAppWhileOneIsReadyIsRefused() async {
         let cli = CompanyScriptedCLI()
         cli.setups = acmeSetup
         let (driver, wizard) = await resume(publishDraft, checked: ["atlassian"], cli: cli)
         XCTAssertTrue(wizard.slackAppReady)
-        let other = await driver.saveDraft(vendor: "slack", fields: ["settings_link": "https://api.slack.com/apps/A0OTHER"])
+        let other = await driver.saveDraft(vendor: "slack", fields: [
+            "settings_link": "https://api.slack.com/apps/A0OTHER", "company": "Other", "deny_hosts": "a.example.com"
+        ])
         XCTAssertEqual(Self.error(other), .failed(Driver.otherSlackApp("A0ACME")))
         XCTAssertEqual(wizard.draft.slack.appID, "A0ACME")
         XCTAssertEqual(wizard.current, .publish, "the page did not move")
+        XCTAssertEqual(wizard.publishName, "Acme", "nothing else in the refused save landed")
         let same = await driver.saveDraft(vendor: "slack", fields: ["settings_link": "https://api.slack.com/apps/A0ACME"])
         XCTAssertNil(Self.error(same))
     }

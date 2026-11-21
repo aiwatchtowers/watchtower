@@ -56,6 +56,8 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
     package func draftView() async -> Result<Data, ConnectDriverError> {
         // The stored draft first: an unread one would read as "nothing set up".
         guard await ensureOpen() else { return .failure(.failed(openFailed)) }
+        // Go set an unreadable draft aside: say so, never "nothing set up yet".
+        if let unreadable = wizard.draftUnreadable { return .failure(.failed("\(unreadable.title). \(unreadable.body)")) }
         let draft = wizard.draft
         var vendors: [String: ConnectCompanyDraft.Vendor] = [:]
         for v in wizard.ticked {
@@ -101,15 +103,17 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
         if let error = Self.refusal(v, fields) { return .failure(error) }
         guard await ensureOpen() else { return .failure(.failed(openFailed)) }
         if let error = stateRefusal(v, fields) { return .failure(error) }
+        // The vendor's values first: the Slack step's handoff is the only part
+        // that can still fail, and then nothing else has landed.
+        let own = fields.filter { Self.vendorKeys(v).contains($0.key) }
+        if !own.isEmpty {
+            if let error = await applyVendor(v, own) { return .failure(error) }
+            // Values for a service mean the company uses it.
+            if !wizard.ticked.contains(v) { wizard.toggle(v) }
+        }
         if let services = fields["services"] { applyServices(Self.list(services)) }
         if let name = fields["company"] { wizard.setCompanyName(name) }
         if let hosts = fields["deny_hosts"] { applyDenyHosts(Self.list(hosts).map { $0.lowercased() }) }
-        let own = fields.filter { Self.vendorKeys(v).contains($0.key) }
-        if !own.isEmpty {
-            // Values for a service mean the company uses it.
-            if !wizard.ticked.contains(v) { wizard.toggle(v) }
-            if let error = await applyVendor(v, own) { return .failure(error) }
-        }
         guard await wizard.saveNow() else { return .failure(.failed(wizard.storageProblem ?? openFailed)) }
         return .success(())
     }
@@ -151,6 +155,7 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             return .failed(Self.otherSlackApp(wizard.draft.slack.appID))
         }
         if fields["settings_link"] != nil, wizard.publishState == .running { return .failed(Self.publishRunning) }
+        if fields["settings_link"] != nil, wizard.discarding { return .failed(Self.discarding) }
         return nil
     }
 
@@ -301,7 +306,9 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
     }
 
     package func secretConfirmDropped(kind: String) {
-        guard kind == Self.slackToken else { return }
+        // Only this driver's own update waits on the card: a token or diff the
+        // customer has on the page is theirs, and stays.
+        guard kind == Self.slackToken, shownUpdate != nil else { return }
         dropUpdate()
     }
 
