@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/aiconsent"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
+	"watchtower/internal/connectplay"
 	"watchtower/internal/db"
 	"watchtower/internal/instructions"
 	"watchtower/internal/llmusage"
@@ -74,6 +75,10 @@ var (
 	aiFlagPersist bool
 	// aiQueryOwnerText is --prompt-stdin's owner_text (--persist only).
 	aiQueryOwnerText *string
+	// aiFlagConnectService and aiFlagConnectMode are --tools connect's
+	// service (a connectplay service id) and mode (browser|words).
+	aiFlagConnectService string
+	aiFlagConnectMode    string
 )
 
 // queryPurposes are the --purpose values ai query accepts: embedded chats
@@ -176,7 +181,10 @@ func init() {
 	aiQueryCmd.MarkFlagsMutuallyExclusive("prompt-stdin", "system-prompt")
 	aiQueryCmd.MarkFlagsMutuallyExclusive("prompt-stdin", "system-prompt-stdin")
 	aiQueryCmd.Flags().StringVar(&aiFlagDBPath, "db-path", "", "SQLite database path for MCP (overrides default)")
-	aiQueryCmd.Flags().StringVar(&aiFlagTools, "tools", "", "tool mode: chat = mount the assistant's write tools as proposals")
+	aiQueryCmd.Flags().StringVar(&aiFlagTools, "tools", "",
+		"tool mode: chat = mount the assistant's write tools as proposals; connect = the connect assistant's tools (--connect-service, --connect-mode)")
+	aiQueryCmd.Flags().StringVar(&aiFlagConnectService, "connect-service", "", "connect service for --tools connect (slack, google, company, …)")
+	aiQueryCmd.Flags().StringVar(&aiFlagConnectMode, "connect-mode", "", "connect mode for --tools connect: browser|words")
 	aiQueryCmd.Flags().StringVar(&aiFlagSurface, "surface", "main", "chat surface for --tools chat: main|target|automation_editor|tuning")
 	aiQueryCmd.Flags().Int64Var(&aiFlagConversation, "conversation", 0, "chat conversation id for --tools chat")
 	aiQueryCmd.Flags().StringVar(&aiFlagTurn, "turn", "", "turn id for --tools chat")
@@ -306,9 +314,15 @@ func runAIQuery(cmd *cobra.Command, args []string) error {
 		emitError(enc, fmt.Sprintf("--events must be v1 or v2, got %q", aiFlagEvents))
 		return nil
 	}
-	// Before any config or provider work: an unknown surface never starts a
-	// model call or an MCP child.
-	if !tools.KnownChatSurface(aiFlagSurface) {
+	// Before any config or provider work: a bad connect run or an unknown
+	// surface never starts a model call or an MCP child. A connect run has
+	// no chat surface.
+	connectPlaybooks, err := checkConnectQuery(cmd)
+	if err != nil {
+		emitError(enc, err.Error())
+		return nil
+	}
+	if aiFlagTools != toolsConnect && !tools.KnownChatSurface(aiFlagSurface) {
 		emitError(enc, fmt.Sprintf("unknown chat surface %q", aiFlagSurface))
 		return nil
 	}
@@ -344,6 +358,17 @@ func runAIQuery(cmd *cobra.Command, args []string) error {
 		emitError(enc, fmt.Sprintf("invalid config: %v", err))
 		return nil
 	}
+	var queryOpts transport.Options
+	if aiFlagTools == toolsConnect {
+		// Refused before any model call: a provider whose agent cannot
+		// guide a connection, or one the organization's policy blocks.
+		mode, err := connectRunMode(cfg.AI.Provider)
+		if err != nil {
+			return refuseQuery(enc, err)
+		}
+		systemPrompt = connectplay.SystemPrompt(connectPlaybooks, mode) + "\n\n" + systemPrompt
+		queryOpts.BrowserHosts = connectplay.Hosts(connectPlaybooks)
+	}
 
 	// Determine database path
 	dbPath := aiFlagDBPath
@@ -370,7 +395,8 @@ func runAIQuery(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	aiClient, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{ReadFolder: readFolder, ToolEvents: aiFlagEvents == "v2"})
+	queryOpts.ReadFolder, queryOpts.ToolEvents = readFolder, aiFlagEvents == "v2"
+	aiClient, cleanup, err := newQueryClient(cfg, dbPath, queryOpts)
 	if err != nil {
 		emitError(enc, fmt.Sprintf("preparing tools: %v", err))
 		return nil

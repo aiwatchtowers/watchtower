@@ -1,0 +1,23 @@
+-p
+--output-format
+stream-json
+--model
+sonnet
+--allowedTools
+mcp__watchtower,mcp__claude-in-chrome__*
+--tools
+
+--disallowedTools
+Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead,Bash,BashOutput,KillShell,WebFetch,Read,Grep,Glob,LS,ExitPlanMode,SlashCommand,Skill,CronCreate,CronDelete,CronList,RemoteTrigger,ScheduleWakeup,PushNotification,Workflow,Monitor,EnterWorktree,ExitWorktree,ListAgents,SendMessage,TaskCreate,TaskGet,TaskList,TaskStop,TaskUpdate,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool,Agent,AskUserQuestion,EnterPlanMode,PowerShell,SendUserMessage,SubagentHandback,StructuredOutput,Artifact,ArtifactCheck,ArtifactComments,ArtifactData,ConnectGitHub,DesignSync,ReportFindings,ShareOnboardingGuide,WaitForMcpServers,WebSearch,mcp__claude-in-chrome__browser_batch,mcp__claude-in-chrome__javascript_tool,mcp__claude-in-chrome__file_upload,mcp__claude-in-chrome__upload_image
+--setting-sources
+project,local
+--strict-mcp-config
+--chrome
+--settings
+{"hooks":{"PreToolUse":[{"hooks":[{"command":"'<watchtower>' ai connect-guard --host 'api.slack.com' --host 'app.slack.com'","type":"command"}],"matcher":"mcp__claude-in-chrome__navigate"}]}}
+--verbose
+--mcp-config
+/dev/fd/3
+--no-session-persistence
+--system-prompt-file
+/dev/fd/4

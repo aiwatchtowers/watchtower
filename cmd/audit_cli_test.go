@@ -153,6 +153,7 @@ var cliNoContentCommands = map[string]bool{
 	"ai background allow":             true, // Config and policy only.
 	"ai background pause":             true,
 	"ai background status":            true,
+	"ai connect-guard":                true, // A hook's allow/deny on one URL; reads only stdin.
 	"ai models":                       true,
 	"ai routing-status":               true, // Local provider health/revision metadata only.
 	"ai session":                      true,
