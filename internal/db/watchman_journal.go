@@ -17,6 +17,34 @@ const WatchmanWaitingClause = `state = 'done' AND owner_done_at IS NULL AND ((ou
 	` OR (kind = 'handover' AND outcome = 'answered' AND error != '' AND error NOT IN ('` +
 	WatchmanStartPending + `', '` + WatchmanStartClaimed + `')))`
 
+// WatchmanWaitingForLearning counts the queued items of workbenchID that
+// wait for its learning to end (spec 2026-11-21 §3, D5): every kind but
+// permission (parked to the owner at once) and stall, on a workbench
+// Watchman is on for and still learning (WatchmanLearningSQL), whose wait
+// point still waits — an ask-bound item's ask is open, or a handover's ask
+// the twin answered as a question (WatchmanAskAnsweredByTwin: the twin
+// still decides the handover) — and whose session
+// is still armed (the lease's rule, watchmanItemArmedSQL: a handover by its
+// arming row or a target). The twin leases none of them until then; the
+// journal's busy line shows the count.
+func (db *DB) WatchmanWaitingForLearning(workbenchID int64) (int, error) {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM watchman_items
+		JOIN watchman_workbenches w ON w.workbench_id = watchman_items.workbench_id
+		WHERE watchman_items.workbench_id = ? AND watchman_items.state = 'queued'
+		  AND watchman_items.kind NOT IN ('permission', 'stall')
+		  AND `+WatchmanLearningSQL("w")+`
+		  AND (watchman_items.ref_kind <> 'ask' OR EXISTS (SELECT 1 FROM owner_asks a
+		       WHERE a.id = watchman_items.ref_id AND (a.status = 'open'
+		         OR (watchman_items.kind = 'handover' AND a.status IN ('answered', 'delivered')
+		             AND EXISTS (SELECT 1 FROM watchman_items t WHERE t.ref_kind = 'ask' AND t.ref_id = a.id
+		                         AND t.kind != 'handover' AND t.state = 'done' AND t.outcome = 'answered')))))
+		  AND `+watchmanItemArmedSQL, workbenchID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting the watchman items waiting for learning on workbench %d: %w", workbenchID, err)
+	}
+	return n, nil
+}
+
 // WatchmanJournalSummary is what the Inbox's Watchman entry shows (the
 // morning journal, spec 2026-11-16 §10).
 type WatchmanJournalSummary struct {

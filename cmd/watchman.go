@@ -31,7 +31,7 @@ var (
 )
 
 // watchmanLearnBudget caps the first learning pass `watchman learn --start`
-// runs; the daemon's cycles continue from the cursors.
+// runs; the daemon's learner continues from the cursors to the end.
 const watchmanLearnBudget = 5 * time.Minute
 
 // Seams tests replace.
@@ -54,6 +54,15 @@ var (
 	watchmanFeedReader = func(ctx context.Context, d *db.DB) instructions.FeedReader {
 		return instructions.NewFeedReader(ctx, d, coachSessionDirs())
 	}
+	// watchmanLearnerWake wakes a running daemon's Watchman (its learner
+	// and twin) when learning starts — `learn --start` and the first
+	// hand-over — so the learner runs now, not at the next cycle. No
+	// daemon is fine; a failure is one stderr line. Tests count it.
+	watchmanLearnerWake = func(cmd *cobra.Command, cfg *config.Config) {
+		if err := wakeWatchman(cfg); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: the daemon was not woken to learn now (it does at its next cycle): %v\n", err)
+		}
+	}
 )
 
 func init() {
@@ -62,7 +71,7 @@ func init() {
 		Short: "Show how much Watchman would learn from a workbench; --start turns it on and learns",
 		Long: "Without --start it only prints the estimate: the decisions found, how many need an AI label and the tokens that costs (~). " +
 			"With --start it turns Watchman on for the workbench, turns Agent analytics on there (Watchman learns from your sessions), " +
-			"runs one learning pass of up to five minutes and leaves the rest to the daemon.",
+			"runs one learning pass of up to five minutes and wakes the daemon, which learns the rest in one go.",
 		Args: cobra.NoArgs,
 		RunE: runWatchmanLearn,
 	}
@@ -167,12 +176,34 @@ func watchmanStart(cmd *cobra.Command, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	// One learner per workbench: the daemon's learner holds the lock while
+	// it learns, and then this pass is skipped. Either way the daemon is
+	// woken after, so its learner goes on to the end at once.
+	defer watchmanLearnerWake(cmd, cfg)
+	unlock, ok, err := watchman.TryLearnLock(cfg.WorkspaceDir(), wb)
+	if err != nil {
+		if watchmanFlagJSON {
+			_ = writeJSON(cmd.OutOrStdout(), watchmanLearnFailureJSON{Workbench: wb, Error: err.Error(), WatchmanOn: true,
+				AnalyticsOn: true, AnalyticsTurnedOn: turnedOn})
+		}
+		return err
+	}
+	if !ok {
+		nudgeDaemon(cmd, cfg)
+		if watchmanFlagJSON {
+			return writeJSON(cmd.OutOrStdout(), watchmanLearnJSON{OK: true, Workbench: wb, BySource: map[string]int{},
+				Incomplete: true, AnalyticsTurnedOn: turnedOn})
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Watchman is on for workbench %d; the daemon is learning it.\n", wb)
+		return nil
+	}
 	sources := append(watchman.DBSources(), watchman.TurnSource(watchmanFeedReader(ctx, database)), watchman.GitSource(watchmanGit))
 	st, err := watchman.Learn(ctx, database, wb, watchman.LearnOptions{
 		Budget:  watchmanLearnBudget,
 		Sources: sources,
 		Labeler: watchman.NewLLMLabeler(watchmanGeneratorFactory(cfg), prompts.New(database, nil)),
 	})
+	unlock()
 	nudgeDaemon(cmd, cfg)
 	if err != nil {
 		// Watchman and analytics stay on: the owner learns that, and the
@@ -182,7 +213,7 @@ func watchmanStart(cmd *cobra.Command, cfg *config.Config) error {
 				AnalyticsOn: true, AnalyticsTurnedOn: turnedOn})
 		} else {
 			fmt.Fprintf(cmd.OutOrStdout(), "Watchman and Agent analytics are on for workbench %d; the first learning pass failed "+
-				"and the daemon continues it in its next cycles.\n", wb)
+				"and the daemon learns it in one go.\n", wb)
 		}
 		return err
 	}
@@ -196,7 +227,7 @@ func watchmanStart(cmd *cobra.Command, cfg *config.Config) error {
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), ".")
 	if st.Incomplete {
-		fmt.Fprintln(cmd.OutOrStdout(), "The daemon learns the rest in its next cycles.")
+		fmt.Fprintln(cmd.OutOrStdout(), "The daemon learns the rest now, in one go.")
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -520,32 +521,222 @@ func TestTwin_ChoiceParkedAfterModel(t *testing.T) {
 	e2.wantParked(askID, itemID, "the choice needs the owner")
 }
 
-func TestTwin_UnlearnedWorkbenchParks(t *testing.T) {
-	cases := []struct {
-		name  string
-		setup func(e *twinEnv)
-	}{
-		{"not learned", func(e *twinEnv) {
-			_, err := e.db.Exec(`UPDATE watchman_workbenches SET learned_through = NULL WHERE workbench_id = ?`, e.wb)
-			e.must(err)
-		}},
-		{"relabel pending", func(e *twinEnv) {
-			_, err := e.db.Exec(`INSERT INTO watchman_precedents (workbench_id, source, source_key, category, situation, decided_at)
-				VALUES (?, 'ask', '1', 'design', 'Which store?', '2026-11-01T00:00:00Z')`, e.wb)
-			e.must(err)
-		}},
+// unlearn puts the env's workbench back to learning: not learned, or
+// learned with a precedent the relabel pass has not tried.
+func (e *twinEnv) unlearn(relabelPending bool) {
+	e.t.Helper()
+	if relabelPending {
+		_, err := e.db.Exec(`INSERT INTO watchman_precedents (workbench_id, source, source_key, category, situation, decided_at)
+			VALUES (?, 'ask', '1', 'design', 'Which store?', '2026-11-01T00:00:00Z')`, e.wb)
+		e.must(err)
+		return
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			e := newTwinEnv(t)
-			askID, itemID := e.question("Which store?")
-			c.setup(e)
-			e.run()
-			e.wantParked(askID, itemID, LearningReason)
-			if e.decideCalls() != 0 {
-				t.Fatal("Decide ran while learning")
+	_, err := e.db.Exec(`UPDATE watchman_workbenches SET learned_through = NULL WHERE workbench_id = ?`, e.wb)
+	e.must(err)
+}
+
+// learned ends the learning the way the learner does: learned_through
+// set and every precedent flagged.
+func (e *twinEnv) learned() {
+	e.t.Helper()
+	_, err := e.db.Exec(`UPDATE watchman_precedents SET flags_at = '2026-11-21T00:00:00Z' WHERE workbench_id = ?`, e.wb)
+	e.must(err)
+	e.must(e.db.MarkWatchmanLearned(e.wb, time.Now()))
+}
+
+// wantItemUntouched checks an item still queued with no lease and no attempt.
+func (e *twinEnv) wantItemUntouched(itemID int64) {
+	e.t.Helper()
+	var state string
+	var attempts int
+	var lease sql.NullString
+	e.must(e.db.QueryRow(`SELECT state, attempts, lease_until FROM watchman_items WHERE id = ?`, itemID).Scan(&state, &attempts, &lease))
+	if state != "queued" || attempts != 0 || lease.Valid {
+		e.t.Fatalf("item = %s, %d attempts, lease %v; want queued, untouched", state, attempts, lease)
+	}
+}
+
+// wantUntouched checks an item still queued with no lease and no attempt,
+// its ask still open.
+func (e *twinEnv) wantUntouched(askID, itemID int64) {
+	e.t.Helper()
+	e.wantItemUntouched(itemID)
+	if status, _ := e.askAnswer(askID); status != "open" {
+		e.t.Fatalf("ask = %s, want open", status)
+	}
+}
+
+// While a workbench is learning (not learned, or its relabel pass pending)
+// the twin leases none of its questions, checks, handovers or document
+// reviews: they stay queued with no attempt and no model call (spec
+// 2026-11-21 D5).
+func TestTwin_DoesNotLeaseWhileLearning(t *testing.T) {
+	for _, relabel := range []bool{false, true} {
+		for _, kind := range []string{"ask", "check", "review_doc", "handover"} {
+			t.Run(fmt.Sprintf("%s relabel=%v", kind, relabel), func(t *testing.T) {
+				e := newTwinEnv(t)
+				askID, itemID := e.fileAsk(asks.KindQuestion, "Which store?", oneQuestion, kind)
+				e.unlearn(relabel)
+				if n := e.run(); n != 0 {
+					t.Fatalf("RunOnce = %d, want 0", n)
+				}
+				e.wantUntouched(askID, itemID)
+				if e.decideCalls() != 0 || len(e.labelled) != 0 {
+					t.Fatalf("model calls while learning: %d decide, %d label", e.decideCalls(), len(e.labelled))
+				}
+			})
+		}
+		// A diff review, with its review place wired (it would lease).
+		t.Run(fmt.Sprintf("review_code relabel=%v", relabel), func(t *testing.T) {
+			e := newReviewEnv(t)
+			itemID := e.queueReview()
+			e.unlearn(relabel)
+			if n := e.run(); n != 0 {
+				t.Fatalf("RunOnce = %d, want 0", n)
+			}
+			e.wantItemUntouched(itemID)
+			if e.decideCalls() != 0 || len(e.rounds()) != 0 {
+				t.Fatalf("acted while learning: %d decide, %d rounds", e.decideCalls(), len(e.rounds()))
 			}
 		})
+	}
+}
+
+// Handovers while learning: one whose ask the owner answered closes
+// owner_first, held or not, with no model call; one beside the twin's own
+// earlier answer would be decided, so it waits queued.
+func TestTwin_HandoverWhileLearning(t *testing.T) {
+	ownerAnswers := func(e *twinEnv, askID int64) {
+		_, err := e.db.Exec(`UPDATE owner_asks SET status = 'answered', answer = '{"answers":[{"id":"a","labels":["Files"],"other":""}]}',
+			answered_at = '2026-11-21T08:00:00Z' WHERE id = ?`, askID)
+		e.must(err)
+	}
+	handoverOf := func(e *twinEnv, askID int64) int64 {
+		h, err := e.db.WatchmanItemByRef("ask", askID, "handover")
+		e.must(err)
+		if h == nil {
+			e.t.Fatal("no handover row")
+		}
+		return h.ID
+	}
+	for _, held := range []bool{false, true} {
+		t.Run(fmt.Sprintf("owner answered held=%v", held), func(t *testing.T) {
+			e := newTwinEnv(t)
+			e.unlearn(false)
+			askID, _ := e.question("Left: the CSV import")
+			e.promoteHandover(askID, held)
+			h := handoverOf(e, askID)
+			e.run()
+			e.wantUntouched(askID, h)
+			ownerAnswers(e, askID)
+			e.run()
+			wantOutcome(t, e.item(h), OutcomeOwnerFirst)
+			if e.decideCalls() != 0 || len(e.labelled) != 0 || e.startCount() != 0 {
+				t.Fatalf("acted: %d decide, %d label, %d starts", e.decideCalls(), len(e.labelled), e.startCount())
+			}
+		})
+	}
+	t.Run("twin answered", func(t *testing.T) {
+		e := newTwinEnv(t)
+		askID, itemID := e.question("Left: the CSV import")
+		e.run()
+		wantOutcome(t, e.item(itemID), OutcomeAnswered)
+		e.unlearn(false)
+		e.decideFn = continueDecision
+		e.promoteHandover(askID, false)
+		h := handoverOf(e, askID)
+		if n := e.run(); n != 0 {
+			t.Fatalf("RunOnce = %d, want 0", n)
+		}
+		e.wantItemUntouched(h)
+		if e.decideCalls() != 1 || e.startCount() != 0 {
+			t.Fatalf("decided while learning: %d decide, %d starts", e.decideCalls(), e.startCount())
+		}
+	})
+}
+
+// A workbench whose learning state cannot be read leases nothing but
+// permission prompts.
+func TestTwin_LearningReadErrorLeavesQueued(t *testing.T) {
+	e := newTwinEnv(t)
+	askID, itemID := e.question("Which store?")
+	_, err := e.db.Exec(`DROP TABLE watchman_precedents`)
+	e.must(err)
+	if n := e.run(); n != 0 {
+		t.Fatalf("RunOnce = %d, want 0", n)
+	}
+	e.wantUntouched(askID, itemID)
+}
+
+// Once learned, the next pass leases the items that waited, oldest first.
+func TestTwin_LeasesHeldItemsAfterLearning(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newTwinEnv(t)
+		e.unlearn(false)
+		_, first := e.question("One?")
+		_, second := e.question("Two?")
+		_, oldest := e.question("Three?")
+		// The third was created first.
+		for id, at := range map[int64]string{oldest: "2026-11-20T00:00:00Z", first: "2026-11-20T01:00:00Z", second: "2026-11-20T02:00:00Z"} {
+			_, err := e.db.Exec(`UPDATE watchman_items SET created_at = ? WHERE id = ?`, at, id)
+			e.must(err)
+		}
+		release := make(chan struct{})
+		e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+			<-release
+			return decision("SQLite"), nil
+		}
+		ctx := context.Background()
+		if n := e.twin.RunOnce(ctx); n != 0 {
+			t.Fatalf("RunOnce while learning = %d, want 0", n)
+		}
+		e.learned()
+		if n := e.twin.RunOnce(ctx); n != MaxDeciding {
+			t.Fatalf("RunOnce after learning = %d, want %d", n, MaxDeciding)
+		}
+		synctest.Wait()
+		for id, want := range map[int64]string{oldest: "deciding", first: "deciding", second: "queued"} {
+			if it := e.item(id); it.State != want {
+				t.Fatalf("item %d %s, want %s (creation order)", id, it.State, want)
+			}
+		}
+		close(release)
+		e.twin.Wait()
+		e.run()
+		for _, id := range []int64{oldest, first, second} {
+			wantOutcome(t, e.item(id), OutcomeAnswered)
+		}
+	})
+}
+
+// The owner answers a question himself while it waits for the learning:
+// the next pass closes it owner_first with no model call, the learning
+// still running (WATCHMAN-02); a withdrawn one goes.
+func TestTwin_OwnerAnswersWhileLearning_OwnerFirst(t *testing.T) {
+	e := newTwinEnv(t)
+	e.unlearn(false)
+	askID, itemID := e.question("Which store?")
+	gone, goneItem := e.question("Which cache?")
+	e.run()
+	e.wantUntouched(askID, itemID)
+
+	owner := `{"answers":[{"id":"a","labels":["Files"],"other":""}],"checklist":[],"comments":[],"note":"","verdict":""}`
+	_, err := e.db.Exec(`UPDATE owner_asks SET status = 'answered', answer = ?, answered_at = '2026-11-21T08:00:00Z' WHERE id = ?`, owner, askID)
+	e.must(err)
+	_, err = e.db.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'superseded' WHERE id = ?`, gone)
+	e.must(err)
+	e.run()
+	wantOutcome(t, e.item(itemID), OutcomeOwnerFirst)
+	if _, ans := e.askAnswer(askID); ans.Answers[0].Labels[0] != "Files" {
+		t.Fatalf("the owner's answer was overwritten: %+v", ans)
+	}
+	var n int
+	e.must(e.db.QueryRow(`SELECT COUNT(*) FROM watchman_items WHERE id = ?`, goneItem).Scan(&n))
+	if n != 0 {
+		t.Fatal("a withdrawn ask's item stayed")
+	}
+	if e.decideCalls() != 0 || len(e.labelled) != 0 || e.port.delivered() != 0 {
+		t.Fatalf("model calls or deliveries: %d decide, %d label, %d delivered", e.decideCalls(), len(e.labelled), e.port.delivered())
 	}
 }
 

@@ -108,9 +108,11 @@ var twinKinds = map[string]string{"ask": "ask", "check": "ask", "handover": "ask
 // whose start is still owed (a crash between the answer and the start), then
 // leases items while fewer than MaxDeciding are deciding — only items of a
 // session that is armed now (Mode Sleep, D47; an arming read that fails
-// leases nothing, and the lease re-checks the arming, WATCHMAN-04) — and
-// decides each in its own goroutine. It returns how many it started; Wait
-// waits for them.
+// leases nothing, and the lease re-checks the arming, WATCHMAN-04) and, on a
+// workbench Watchman is still learning, only permission prompts and items
+// whose ask the owner closed himself (the rest wait queued, spec 2026-11-21
+// D5) — and decides each in its own goroutine. It returns how many it
+// started; Wait waits for them.
 func (t *Twin) RunOnce(ctx context.Context) int {
 	if ctx.Err() != nil {
 		return 0
@@ -125,6 +127,21 @@ func (t *Twin) RunOnce(ctx context.Context) int {
 	armed := make(map[int64]bool, len(sessions))
 	for _, s := range sessions {
 		armed[s.SessionID] = true
+	}
+	// Whether each workbench is still learning, read once per pass; a read
+	// that fails counts as learning (the item stays queued).
+	learningOf := map[int64]bool{}
+	learning := func(wb int64) bool {
+		l, ok := learningOf[wb]
+		if !ok {
+			var err error
+			if l, err = t.d.DB.WatchmanStillLearning(wb); err != nil {
+				log.Printf("watchman twin: %v", err)
+				l = true
+			}
+			learningOf[wb] = l
+		}
+		return l
 	}
 	eligible := func(it db.WatchmanItem) bool {
 		ref, ok := twinKinds[it.Kind]
@@ -148,8 +165,13 @@ func (t *Twin) RunOnce(ctx context.Context) int {
 				return false
 			}
 		}
-		mode, _ := watchman.Mode(now, watchman.ModeInputs{Armed: isArmed})
-		return mode == watchman.ModeSleep
+		if mode, _ := watchman.Mode(now, watchman.ModeInputs{Armed: isArmed}); mode != watchman.ModeSleep {
+			return false
+		}
+		// A permission prompt is leased while learning and parks (the agent
+		// blocks on it); every other kind waits queued for the learning to
+		// end (D5) unless the owner already closed its ask himself.
+		return it.Kind == "permission" || !learning(it.WorkbenchID) || t.ownerClosed(it)
 	}
 	started := 0
 	for {

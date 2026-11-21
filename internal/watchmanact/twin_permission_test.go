@@ -380,7 +380,7 @@ func TestTwin_PermissionExtraLimitsUnreadableParks(t *testing.T) {
 	}
 }
 
-func TestTwin_PermissionUnlearnedWorkbenchParks(t *testing.T) {
+func TestTwin_PermissionParksWhileLearning(t *testing.T) {
 	e := newTwinEnv(t)
 	_, err := e.db.Exec(`UPDATE watchman_workbenches SET learned_through = NULL WHERE workbench_id = ?`, e.wb)
 	e.must(err)

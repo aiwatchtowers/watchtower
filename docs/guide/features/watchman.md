@@ -36,7 +36,7 @@ The verdict is **go** when at least three categories are strong and one is permi
 ## Using it
 
 1. Open **Settings → Profile → Watchman** and find the workbench. Before you start, it shows an estimate, such as the number of decisions and the tokens labelling will cost.
-2. Press **Start Learning**. The first pass runs up to five minutes; the daemon continues in its next cycles and the line reads "Learning… N of M".
+2. Press **Start Learning**. The daemon learns the whole workbench in one go; the line reads "Learning… N of M".
 3. When learning is done, press **Run Backtest Now** (the daemon also reruns it weekly). The screen lists each category with its numbers, its base rate and its rating; the verdict and the cost are printed by `watchman backtest` in a terminal, which also saves a report of the grades and reasons in the workspace's `watchman` folder.
 4. A run that fails shows its error with **Retry**; the last finished result stays below.
 
@@ -70,7 +70,7 @@ since: 0.29.0
 
 **Take back** stops new decisions; one already under way still finishes. On a session also handed over through its target, Take back on the strip removes only the direct hand-over.
 
-The first time on a workbench a sheet shows what turns on: Agent analytics and learning, with its estimate; until learning finishes, Watchman parks everything for you. It warns when main is not protected on GitHub, the git guard cannot go into a repository, or a session's folder lacks Watchman's guard (Repair the workbench, restart the session). Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
+The first time on a workbench a sheet shows what turns on: Agent analytics and learning, with its estimate. Questions asked until it finishes wait for it, or you answer them; permission prompts come to you. It warns when main is not protected on GitHub, the git guard cannot go into a repository, or a session's folder lacks Watchman's guard (Repair the workbench, restart the session). Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
 
 ### Read the night's journal
 <!-- learn
