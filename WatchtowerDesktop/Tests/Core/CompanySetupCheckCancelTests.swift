@@ -46,7 +46,9 @@ final class CompanySetupCheckCancelTests: XCTestCase {
         model.cancelCheck(.atlassian)
         assertNotRun(model)
         await run.value
+        await model.rereadAfterCancel?.value
         assertNotRun(model)
+        XCTAssertEqual(cli.cancelled(check), 1, "the check's child is ended, not left to its timeout")
         cli.release(check, [atlassianOK])
     }
 
@@ -56,6 +58,7 @@ final class CompanySetupCheckCancelTests: XCTestCase {
         cli.release(check, [atlassianOK])
         model.cancelCheck(.atlassian)
         await run.value
+        await model.rereadAfterCancel?.value
         assertNotRun(model)
 
         // A check that already ended: Cancel changes nothing.
@@ -83,22 +86,51 @@ final class CompanySetupCheckCancelTests: XCTestCase {
         XCTAssertEqual(model.checks[.atlassian], .passed)
     }
 
-    /// A sign-in killed while Go saved: the company it stored keeps its
-    /// slug (one draft re-read), the step stays not-run, nothing is shown.
-    func testCancelRereadsTheDraftOnce() async {
-        let (model, cli, run) = await waiting()
+    private var storedShow: String {
         let stored = atlassianDraft.replacingOccurrences(of: #""company":"Acme","#, with: #""company":"Acme","slug":"acme","#)
-        cli.on(["company", "draft", "show"], [#"{"state":"ok","draft":"# + stored
-            + #","bad_file":"","checked_vendors":["atlassian"]}"#])
+        return #"{"state":"ok","draft":"# + stored + #","bad_file":"","checked_vendors":["atlassian"]}"#
+    }
+
+    /// A sign-in killed after Go stored and marked it: one draft re-read
+    /// keeps the slug and shows the step checked; nothing else is shown.
+    func testCancelAfterTheSignInLandedShowsItChecked() async {
+        let (model, cli, run) = await waiting()
+        cli.on(["company", "draft", "show"], [storedShow])
         model.cancelCheck(.atlassian)
+        XCTAssertNil(model.checks[.atlassian])
         await model.rereadAfterCancel?.value
         await run.value
         XCTAssertEqual(cli.calls(["company", "draft", "show"]).count, 2, "open, then the one re-read")
         XCTAssertEqual(model.draft.slug, "acme")
         XCTAssertEqual(model.draft.company, "Acme", "a stored company keeps its name")
-        assertNotRun(model)
+        XCTAssertTrue(model.isChecked(.atlassian))
+        XCTAssertNil(model.checkLine(.atlassian), "no failed line")
         XCTAssertNil(model.storageProblem)
         cli.release(check, [])
+    }
+
+    /// Check pressed again while the re-read after Cancel is still out: its
+    /// answer lands nowhere, so the running check keeps the company name.
+    func testRereadAnsweringAfterARetryChangesNothing() async {
+        let (model, cli, first) = await waiting()
+        cli.hold(["company", "draft", "show"])
+        model.cancelCheck(.atlassian)
+        await cli.waitFor(["company", "draft", "show"], count: 2)
+        await first.value
+        cli.release(check, []) // the cancelled child's held stream
+        cli.hold(check)
+        let second = Task { await model.check(.atlassian) }
+        await cli.waitFor(check, count: 2)
+        // Nothing stored yet: on its own, this answer would release the name.
+        cli.release(["company", "draft", "show"], [#"{"state":"none","draft":null,"bad_file":"","checked_vendors":[]}"#])
+        await model.rereadAfterCancel?.value
+        XCTAssertEqual(model.draft.company, "Acme")
+        XCTAssertEqual(model.checks[.atlassian], .running)
+
+        cli.release(check, [atlassianOK])
+        await second.value
+        XCTAssertEqual(model.checks[.atlassian], .passed)
+        XCTAssertEqual(cli.calls(["company", "draft", "show"]).count, 2)
     }
 
     func testDryChecksHaveNoWaitingLine() {

@@ -19,6 +19,7 @@ package final class CompanyScriptedCLI: CLILineStreaming, @unchecked Sendable {
     private var holds: [(prefix: [String], first: [String])] = []
     private var held: [(prefix: [String], sink: AsyncThrowingStream<String, Error>.Continuation)] = []
     private var recorded: [Call] = []
+    private var cancelledRuns: [[String]] = []
     package let signal = StateSignal()
     package var setups = #"{"setups":[]}"#
 
@@ -43,6 +44,12 @@ package final class CompanyScriptedCLI: CLILineStreaming, @unchecked Sendable {
 
     package var calls: [Call] { lock.withLock { recorded } }
 
+    /// The runs whose consumer went away before the child ended (the real
+    /// `CLILineStream` kills the process group then).
+    package func cancelled(_ prefix: [String]) -> Int {
+        lock.withLock { cancelledRuns.filter { Array($0.prefix(prefix.count)) == prefix }.count }
+    }
+
     package func calls(_ prefix: [String]) -> [Call] {
         calls.filter { Array($0.args.prefix(prefix.count)) == prefix }
     }
@@ -53,6 +60,11 @@ package final class CompanyScriptedCLI: CLILineStreaming, @unchecked Sendable {
 
     package func lines(args: [String], stdin: Data?) -> AsyncThrowingStream<String, Error> {
         let (stream, sink) = AsyncThrowingStream.makeStream(of: String.self)
+        sink.onTermination = { [weak self] termination in
+            guard case .cancelled = termination, let self else { return }
+            lock.withLock { self.cancelledRuns.append(args) }
+            signal.changed()
+        }
         let match = { (prefix: [String]) in Array(args.prefix(prefix.count)) == prefix }
         var first: [String] = []
         let action = lock.withLock { () -> (lines: [String], exit: Int32)? in

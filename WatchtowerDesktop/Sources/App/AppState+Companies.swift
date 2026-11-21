@@ -114,7 +114,8 @@ extension AppState {
             connectAll: { [weak self] slug in self?.runCompanyFlow { await $0.connectAll(slug: slug) } },
             connectRest: { [weak self] slug in self?.runCompanyFlow { await $0.connectRest(slug: slug) } },
             relogin: { [weak self] slug, vendors in self?.reloginCompany(slug: slug, vendors: vendors) },
-            stopChain: { [weak self] in self?.cancelCompanyCardSignIn() },
+            // The chain's own end re-reads the companies and the accounts (`onChainEnded`).
+            stopChain: { [weak self] in self?.companyConnect?.stop() },
             submitCode: { [weak self] in self?.submitCompanyCode() }
         )
     }

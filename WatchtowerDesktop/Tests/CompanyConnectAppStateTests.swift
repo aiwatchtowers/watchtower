@@ -102,8 +102,8 @@ final class CompanyConnectAppStateTests: XCTestCase {
     // MARK: - The card's waiting sign-in (#2132 C1)
 
     /// A chain left running behind a closed sheet: the card names the vendor
-    /// it waits on, and its Cancel is the chain's Stop plus one re-read of
-    /// the companies — the chain ends with no problem and the card's line goes.
+    /// it waits on, and its Cancel is the chain's Stop; the chain's end
+    /// re-reads the companies once — no problem shows and the card's line goes.
     func testCardCancelStopsTheHiddenChain() async throws {
         let (appState, host, fake) = wired()
         let zoneCLI = FakeCLILineStream(replies: Array(repeating: .init(lines: [], exitCode: 1), count: 4))
@@ -131,10 +131,10 @@ final class CompanyConnectAppStateTests: XCTestCase {
         let before = lists()
         appState.companiesZoneActions.stopChain()
         XCTAssertEqual(child.writtenLines.last, #"{"cmd":"company_stop","flow":"f1"}"#)
-        await zoneCLI.signal.until { lists() >= before + 1 }
-        XCTAssertEqual(lists(), before + 1, "Cancel re-reads the companies once")
         fake.enqueue(inspect)
         host.onCompanyEvent?(.companyDone(flow: "f1", states: [.slack: .skipped]))
+        await zoneCLI.signal.until { lists() >= before + 1 }
+        XCTAssertEqual(lists(), before + 1, "the chain's end re-reads the companies once")
         XCTAssertEqual(flow.phase, .done)
         XCTAssertFalse(flow.showsSheet, "a stop from the card brings no sheet back")
         XCTAssertNil(appState.companyConnecting)
