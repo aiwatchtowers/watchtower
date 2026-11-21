@@ -251,8 +251,9 @@ extension SlackAccountsViewModelTests {
         vm.connectFlow = flow
         let account = try await insertAccount(pool)
 
-        let route = await vm.relogin(account)
-        XCTAssertEqual(route, .flow(SlackConnectTarget(teamID: "T0ACME", clientID: "1111.2222", accountID: Int64(account.id))))
+        let outcome = await vm.relogin(account)
+        XCTAssertEqual(outcome, .handedOff(.flow(SlackConnectTarget(teamID: "T0ACME", clientID: "1111.2222",
+                                                                    accountID: Int64(account.id)))))
         XCTAssertNil(vm.error)
         XCTAssertEqual(child.writtenLines,
                        [#"{"account_id":\#(account.id),"client_id":"1111.2222","cmd":"start","team_id":"T0ACME"}"#])
@@ -268,8 +269,8 @@ extension SlackAccountsViewModelTests {
         vm.connectFlow = flow
         let account = try await insertAccount(pool)
 
-        let route = await vm.relogin(account)
-        XCTAssertEqual(route, .connectSection)
+        let outcome = await vm.relogin(account)
+        XCTAssertEqual(outcome, .handedOff(.connectSection))
         XCTAssertEqual(child.writtenLines, [])
         XCTAssertEqual(flow.connectSectionRequest, 1)
     }
@@ -280,8 +281,8 @@ extension SlackAccountsViewModelTests {
         vm.connectFlow = flow
         let account = try await insertAccount(pool)
 
-        let route = await vm.relogin(account)
-        XCTAssertNil(route)
+        let outcome = await vm.relogin(account)
+        XCTAssertEqual(outcome, .failed("Could not read the Slack accounts: exit 1"))
         XCTAssertEqual(vm.error, "Could not read the Slack accounts: exit 1")
         XCTAssertEqual(child.writtenLines, [])
         XCTAssertEqual(daemon.restartCount, 0)
@@ -306,8 +307,8 @@ extension SlackAccountsViewModelTests {
         XCTAssertTrue(flow.start(SlackConnectTarget(teamID: "T0OTHER", clientID: "1.2")))
         let account = try await insertAccount(pool)
 
-        let route = await vm.relogin(account)
-        XCTAssertNil(route)
+        let outcome = await vm.relogin(account)
+        XCTAssertEqual(outcome, .failed("Another connection is already in progress."))
         XCTAssertEqual(vm.error, "Another connection is already in progress.")
         XCTAssertEqual(child.writtenLines.count, 1, "only the running flow's start")
         XCTAssertEqual(daemon.restartCount, 0)
@@ -323,8 +324,8 @@ extension SlackAccountsViewModelTests {
         XCTAssertTrue(flow.start(SlackConnectTarget(teamID: "T0OTHER", clientID: "3.4")))
         let account = try await insertAccount(pool)
 
-        let route = await vm.relogin(account)
-        XCTAssertNil(route)
+        let outcome = await vm.relogin(account)
+        XCTAssertEqual(outcome, .failed("Another connection is already in progress."))
         XCTAssertEqual(vm.error, "Another connection is already in progress.")
         XCTAssertFalse(vm.isConnecting, "the route read ends its busy mark")
     }
@@ -338,8 +339,9 @@ extension SlackAccountsViewModelTests {
         vm.connectFlow = flow
         vm.error = "Re-login failed (exit 1)"
         let account = try await insertAccount(pool)
-        let route = await vm.relogin(account)
-        XCTAssertEqual(route, .flow(SlackConnectTarget(teamID: "T0ACME", clientID: "1.2", accountID: Int64(account.id))))
+        let outcome = await vm.relogin(account)
+        XCTAssertEqual(outcome, .handedOff(.flow(SlackConnectTarget(teamID: "T0ACME", clientID: "1.2",
+                                                                    accountID: Int64(account.id)))))
         XCTAssertNil(vm.error)
     }
 }

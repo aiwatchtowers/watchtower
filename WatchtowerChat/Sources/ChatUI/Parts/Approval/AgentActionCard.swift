@@ -111,13 +111,21 @@ public struct AgentActionCard: View {
     static let reconnectHandedOffNote = "Finish connecting in your browser or in Connections → Slack, "
         + "then press Retry."
 
-    /// The card's line after a Reconnect Slack.
-    static func reconnectNote(_ outcome: SlackReconnectOutcome) -> String {
+    /// The card's line after a Reconnect Slack; nil after a Cancel, which clears any earlier note: idle, no error.
+    static func reconnectNote(_ outcome: SlackReconnectOutcome) -> String? {
         switch outcome {
         case .signedIn: reconnectDoneNote
         case .handedOff: reconnectHandedOffNote
+        case .cancelled: nil
         case let .failed(reason): "Reconnect failed: \(reason)"
         }
+    }
+
+    /// The screen's waiting line while a card's Reconnect Slack sign-in for `accountID` runs — the screen's state, not
+    /// this card's, so a card drawn again mid-sign-in shows it; nil when none runs or the screen draws none (the
+    /// button, and its spinner while this card's own press runs, show then).
+    static func reconnectWaitLine(accountID: Int64, services: ChatApprovalServices) -> AnyView? {
+        services.reconnectSlackWaiting.flatMap { $0(accountID) }
     }
 
     /// The shared human name (`ActionToolCatalog`) — the same words the Inbox cheat sheet and Settings use.
@@ -255,7 +263,16 @@ public struct AgentActionCard: View {
         }
     }
 
+    @ViewBuilder
     private func reconnectRow(_ accountID: Int64, _ reconnect: @escaping (Int64) async -> SlackReconnectOutcome) -> some View {
+        if let waiting = Self.reconnectWaitLine(accountID: accountID, services: services) {
+            waiting
+        } else {
+            reconnectButton(accountID, reconnect)
+        }
+    }
+
+    private func reconnectButton(_ accountID: Int64, _ reconnect: @escaping (Int64) async -> SlackReconnectOutcome) -> some View {
         HStack(spacing: Spacing.regular) {
             Button("Reconnect Slack") {
                 Task {

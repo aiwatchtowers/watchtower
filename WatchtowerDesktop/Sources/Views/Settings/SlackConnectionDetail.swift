@@ -389,10 +389,16 @@ struct SlackConnectionDetail: View {
     /// the switch, Re-login (or the status's own action), Rename, Remove.
     private func workspaceRow(_ vm: SlackAccountsViewModel, account: SlackAccount, ref: AccountRef) -> some View {
         let status = appState.companyRowStatus(ref)
+        // This row's browser sign-in waits: Cancel in place of Re-login, the
+        // waiting line under the title.
+        let signInWait = vm.signInWait(forAccount: account.id)
         return HStack {
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 SlackAccountTitle(account: account, sharedAppAccountIDs: vm.sharedAppAccountIDs,
                                   lastSync: vm.lastSyncs[account.id])
+                if let signInWait {
+                    SignInWaitText(line: signInWait.line, hint: signInWait.hint)
+                }
                 if let status {
                     Text(status.text)
                         .font(.caption)
@@ -408,7 +414,8 @@ struct SlackConnectionDetail: View {
             }
             Spacer()
             Circle()
-                .fill(slackAccountStatusColor(account))
+                // Grey while its sign-in waits (the row-waiting mockup).
+                .fill(signInWait == nil ? slackAccountStatusColor(account) : Tone.status("gray"))
                 .frame(width: IconSize.stateDot, height: IconSize.stateDot)
                 .help(accountStatusHelp(account))
             Toggle("Enabled", isOn: Binding(
@@ -420,7 +427,9 @@ struct SlackConnectionDetail: View {
             .toggleStyle(.switch)
             .controlSize(.mini)
             .disabled(vm.isConnecting || account.isPurged)
-            if let action = status?.action {
+            if let signInWait {
+                SignInWaitCancel(cancelTitle: signInWait.cancelTitle) { vm.cancelConnect(accountID: account.id) }
+            } else if let action = status?.action {
                 // A company's account: Re-login runs through the company's app; a
                 // changed or unknown app asks for the company's code (A20: Slack's
                 // connect field takes it).
