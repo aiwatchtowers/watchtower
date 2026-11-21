@@ -63,7 +63,9 @@ package protocol ConnectCompanyDriving: ConnectServiceDriving {
 /// A driver that can check Slack Live (`slack live probe --provider <p> --json`).
 @MainActor
 package protocol ConnectLiveProbing: AnyObject {
-    /// `provider` is "claude" or "codex"; returns the probe's JSON row.
+    /// `provider` is the agent's non-empty value, passed as is: the probe
+    /// refuses a provider it does not know (`.badArgs`/`.failed`). Returns
+    /// the probe's JSON row.
     func liveProbe(provider: String) async -> Result<Data, ConnectDriverError>
 }
 

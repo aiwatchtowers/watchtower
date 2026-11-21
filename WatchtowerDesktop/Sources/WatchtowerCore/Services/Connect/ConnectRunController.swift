@@ -215,8 +215,10 @@ package final class ConnectRunController {
 
     private func liveProbe(_ args: [String: Any]) async -> Reply {
         guard let prober = driver as? any ConnectLiveProbing else { return unknownTool("slack_live_probe") }
-        guard let provider = args["provider"] as? String, ["claude", "codex"].contains(provider) else {
-            return .error(.badArgs, "provider must be claude or codex")
+        // Which providers exist is the probe's call (`slack live probe`
+        // refuses an unknown one), never a name list here (LLMTRANSPORT-01).
+        guard let provider = args["provider"] as? String, !provider.isEmpty else {
+            return .error(.badArgs, "slack_live_probe needs a provider")
         }
         return Self.reply(await prober.liveProbe(provider: provider))
     }

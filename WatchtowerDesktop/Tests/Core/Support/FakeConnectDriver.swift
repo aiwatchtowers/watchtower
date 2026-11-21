@@ -200,10 +200,11 @@ final class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
 @MainActor
 final class FakeProbingDriver: FakeConnectDriver, ConnectLiveProbing {
     private(set) var probes: [String] = []
+    var probeResult: Result<Data, ConnectDriverError> = .success(Data(#"{"status":"ok"}"#.utf8))
 
     func liveProbe(provider: String) async -> Result<Data, ConnectDriverError> {
         probes.append(provider)
-        return .success(Data(#"{"status":"ok"}"#.utf8))
+        return probeResult
     }
 }
 

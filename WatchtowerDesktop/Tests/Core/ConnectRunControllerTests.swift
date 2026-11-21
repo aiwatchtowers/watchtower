@@ -412,8 +412,14 @@ final class ConnectRunControllerTests: XCTestCase {
         let probed = await call(probeRun, "slack_live_probe", #"{"provider":"codex"}"#)
         XCTAssertEqual(probed, #"{"status":"ok"}"#)
         XCTAssertEqual(prober.probes, ["codex"])
-        let badProvider = await call(probeRun, "slack_live_probe", #"{"provider":"gemini"}"#)
-        XCTAssertEqual(badProvider, "error:bad_args")
+        for args in [#"{"provider":""}"#, "{}", #"{"provider":7}"#] {
+            let missing = await call(probeRun, "slack_live_probe", args)
+            XCTAssertEqual(missing, "error:bad_args", args)
+        }
+        XCTAssertEqual(prober.probes, ["codex"], "a missing provider never reaches the probe")
+        prober.probeResult = .failure(.badArgs("unknown provider"))  // the probe refuses what it does not know
+        let unknown = await call(probeRun, "slack_live_probe", #"{"provider":"other"}"#)
+        XCTAssertEqual(unknown, "error:bad_args")
 
         let plain = makeController(FakeConnectDriver())
         let refused = await call(plain, "slack_live_probe", #"{"provider":"claude"}"#)
