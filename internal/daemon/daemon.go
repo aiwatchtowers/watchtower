@@ -134,6 +134,8 @@ type Daemon struct {
 	watchmanWakeCh      chan struct{}    // the twin's wake, ticked by every AutomationWakeSignal (forwardWakes)
 	watchmanTwin        WatchmanTwin     // nil = the twin worker is not wired (SetWatchmanTwin)
 	watchmanTwinCycle   chan struct{}    // each cycle's nudge to the twin worker (nudgeWatchmanTwin)
+	watchmanLearnWake   chan struct{}    // the learner's wake, ticked with watchmanWakeCh (forwardWakes)
+	watchmanLearnCycle  chan struct{}    // each cycle's nudge to the learner (nudgeWatchmanLearner)
 	automationScheduler AutomationRunner // nil = automations not wired
 	automationExecutor  AutomationRunner
 	automationEvents    AutomationEvents // nil = no event automations
@@ -640,6 +642,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// items waited for) before the forwarder.
 	stopTwin := d.startWatchmanTwin(ctx)
 	defer stopTwin()
+	// The learner, woken with the twin: stopped (its pass ended) before the
+	// twin, which it nudges when a workbench is learned.
+	stopLearner := d.startWatchmanLearner(ctx)
+	defer stopLearner()
 	stopPlanUsage := d.startPlanUsage(ctx)
 	defer stopPlanUsage()
 	stopMessages := d.startSessionMessages(ctx)
@@ -698,9 +704,10 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Every cycle, before the fetches: the keep-awake hold while anything
 	// is handed to Watchman, the arm sidecar, the slept-through gaps.
 	d.phaseWatchmanUpkeep(ctx)
-	// The twin's pass (scan, then lease) runs on its own goroutine: the
-	// cycle only nudges it.
+	// The twin's pass (scan, then lease) and the learner's run on their own
+	// goroutines: the cycle only nudges them.
 	d.nudgeWatchmanTwin()
+	d.nudgeWatchmanLearner()
 	d.setSection(sectionSlackFetch)
 	d.markFetchProgress()
 	d.sampleLockStats(fetchCtx)

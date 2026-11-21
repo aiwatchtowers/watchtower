@@ -24,13 +24,23 @@ const (
 )
 
 // LearnOptions drives one learning pass over a workbench. Budget <= 0 means
-// no time limit; Now defaults to time.Now and BatchSize to defaultLearnBatch.
+// no time limit (the daemon's learner runs an unlearned workbench to the
+// end); Now defaults to time.Now and BatchSize to defaultLearnBatch.
+// Proceed, when set, is asked before each batch, as the budget is: false
+// stops the pass Incomplete (the learner's background-AI consent, BGAI-01).
 type LearnOptions struct {
 	Budget    time.Duration
 	Now       func() time.Time
 	Sources   []Source
 	Labeler   Labeler
 	BatchSize int
+	Proceed   func() bool
+}
+
+// stop reports whether the pass must end before its next batch: the budget
+// is spent or Proceed says no.
+func (o LearnOptions) stop(start time.Time) bool {
+	return (o.Budget > 0 && o.Now().Sub(start) >= o.Budget) || (o.Proceed != nil && !o.Proceed())
 }
 
 // LearnStats is what one pass did. Unlabelled counts the decisions a source
@@ -141,7 +151,7 @@ func learnSource(ctx context.Context, d *db.DB, workbenchID int64, src Source, o
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		if o.Budget > 0 && o.Now().Sub(start) >= o.Budget {
+		if o.stop(start) {
 			st.Incomplete = true
 			return false, nil
 		}
@@ -357,7 +367,7 @@ func relabel(ctx context.Context, d *db.DB, workbenchID int64, o LearnOptions, s
 		if err := ctx.Err(); err != nil {
 			return done, err
 		}
-		if o.Budget > 0 && o.Now().Sub(start) >= o.Budget {
+		if o.stop(start) {
 			return done, nil
 		}
 		rows, err := d.WatchmanUnflagged(workbenchID, sources, labelBatch)

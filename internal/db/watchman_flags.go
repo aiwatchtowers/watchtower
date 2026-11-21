@@ -86,6 +86,29 @@ func (db *DB) MarkWatchmanFlagsTried(tx *sql.Tx, workbenchID int64, source strin
 	return nil
 }
 
+// WatchmanLearningSQL is the one "still learning" rule as SQL on the
+// watchman_workbenches row aliased a: not learned yet, or precedents the
+// relabel pass has not tried (WatchmanFlagsPending > 0). The twin leases no
+// question of such a workbench, the daemon's learner learns it to the end
+// and the journal counts what waits for it (WatchmanWaitingForLearning; the
+// Desktop's query is the same rule, testdata/watchman_waiting_learning_cases.json).
+func WatchmanLearningSQL(a string) string {
+	return a + `.learned_through IS NULL OR EXISTS (SELECT 1 FROM watchman_precedents p WHERE p.workbench_id = ` + a +
+		`.workbench_id AND p.flags_at IS NULL AND p.source IN ('ask','turn','permission'))`
+}
+
+// WatchmanStillLearning reports whether Watchman is still learning the
+// workbench (WatchmanLearningSQL); a workbench Watchman is not on for counts
+// as still learning.
+func (db *DB) WatchmanStillLearning(workbenchID int64) (bool, error) {
+	var learning bool
+	if err := db.QueryRow(`SELECT NOT EXISTS (SELECT 1 FROM watchman_workbenches w
+		WHERE w.workbench_id = ? AND NOT (`+WatchmanLearningSQL("w")+`))`, workbenchID).Scan(&learning); err != nil {
+		return false, fmt.Errorf("reading whether watchman is learning workbench %d: %w", workbenchID, err)
+	}
+	return learning, nil
+}
+
 // WatchmanFlagsPending counts the workbench's ask/turn/permission precedents
 // the relabel pass has not tried yet.
 func (db *DB) WatchmanFlagsPending(workbenchID int64) (int, error) {

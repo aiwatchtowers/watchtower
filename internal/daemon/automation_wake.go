@@ -238,6 +238,9 @@ func (d *Daemon) startWakeForwarder(ctx context.Context) (stop func()) {
 	if d.watchmanWakeCh == nil {
 		d.watchmanWakeCh = make(chan struct{}, 1)
 	}
+	if d.watchmanLearnWake == nil {
+		d.watchmanLearnWake = make(chan struct{}, 1)
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -251,8 +254,8 @@ func (d *Daemon) startWakeForwarder(ctx context.Context) (stop func()) {
 }
 
 // forwardWakes hands every wake to both automations runners (when active)
-// and the agent message deliverer (when wired), and ticks the twin's
-// channel — non-blocking, so a burst collapses into the tick already queued —
+// and the agent message deliverer (when wired), and ticks the Watchman
+// twin's and learner's channels — non-blocking, so a burst collapses into the tick already queued —
 // until ctx is done or the wake channel closes.
 func (d *Daemon) forwardWakes(ctx context.Context) {
 	for {
@@ -268,9 +271,11 @@ func (d *Daemon) forwardWakes(ctx context.Context) {
 				d.automationExecutor.Wake()
 			}
 			d.wakeMessages()
-			select {
-			case d.watchmanWakeCh <- struct{}{}:
-			default:
+			for _, ch := range []chan struct{}{d.watchmanWakeCh, d.watchmanLearnWake} {
+				select {
+				case ch <- struct{}{}:
+				default:
+				}
 			}
 		}
 	}

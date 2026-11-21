@@ -759,3 +759,37 @@ func TestRelabel_DeletingSessionPermissionIsParked(t *testing.T) {
 	assert.Equal(t, wmBool(true), f.Decision)
 	assert.Equal(t, wmBool(true), f.Parked, "an unparked command, parked because its session is deleting")
 }
+
+// A zero budget is no time limit: a clock far past any budget still writes
+// every batch, and the workbench is learned.
+func TestLearnOptions_ZeroBudgetIsUnlimited(t *testing.T) {
+	d, wb := learnDB(t)
+	src := &listSource{name: SourceAsk, rows: listRows(wb, SourceAsk, 13, CategoryScope)}
+	st, err := Learn(context.Background(), d, wb, LearnOptions{Now: steppingNow(), Sources: []Source{src}, BatchSize: 2})
+	require.NoError(t, err)
+	assert.False(t, st.Incomplete)
+	assert.Equal(t, 13, st.Written)
+	at, _ := learnedThrough(t, d, wb)
+	assert.NotEmpty(t, at)
+}
+
+// Proceed is asked before each batch: false stops the pass Incomplete with
+// the batches before it written, and the next pass resumes.
+func TestLearnOptions_ProceedStopsBetweenBatches(t *testing.T) {
+	d, wb := learnDB(t)
+	src := &listSource{name: SourceAsk, rows: listRows(wb, SourceAsk, 5, CategoryScope)}
+	asked := 0
+	st, err := Learn(context.Background(), d, wb, LearnOptions{Now: fixedNow, Sources: []Source{src}, BatchSize: 2,
+		Proceed: func() bool { asked++; return asked <= 1 }})
+	require.NoError(t, err)
+	assert.True(t, st.Incomplete)
+	assert.Equal(t, 2, precedentCount(t, d, wb), "one batch, then the stop")
+	at, _ := learnedThrough(t, d, wb)
+	assert.Empty(t, at)
+
+	st, err = Learn(context.Background(), d, wb, LearnOptions{Now: fixedNow, Sources: []Source{src}, BatchSize: 2,
+		Proceed: func() bool { return true }})
+	require.NoError(t, err)
+	assert.False(t, st.Incomplete)
+	assert.Equal(t, 5, precedentCount(t, d, wb))
+}

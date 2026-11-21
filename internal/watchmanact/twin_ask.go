@@ -32,7 +32,8 @@ const (
 	HandedPrefix = db.WatchmanHandedPrefix
 	// CheckAnswerText answers a check the twin cannot run.
 	CheckAnswerText = "The owner is away — verify what you can yourself (tests, screenshots, make desktop-shots) and continue"
-	// LearningReason parks every item of a workbench Watchman is still learning.
+	// LearningReason parks a permission prompt of a workbench Watchman is
+	// still learning; its other items wait queued (RunOnce).
 	LearningReason = "Watchman is still learning this workbench"
 )
 
@@ -152,15 +153,6 @@ func (t *Twin) handle(ctx context.Context, it db.WatchmanItem) {
 		j.park(ctx, reasonUnreadableAsk)
 		return
 	}
-	learning, err := t.stillLearning(it.WorkbenchID)
-	if err != nil {
-		j.fail(ctx, err)
-		return
-	}
-	if learning {
-		j.park(ctx, LearningReason)
-		return
-	}
 	switch it.Kind {
 	case "check":
 		j.answerText(ctx, p, CheckAnswerText, j.outcome(OutcomeAnswered))
@@ -199,20 +191,30 @@ func (j *job) closeHeld(ctx context.Context, ask *db.OwnerAsk, err error) {
 }
 
 // stillLearning reports a workbench whose learning is not done: no
-// learned_through yet, or precedents the relabel pass has not tried.
+// learned_through yet, or precedents the relabel pass has not tried
+// (db.WatchmanLearningSQL).
 func (t *Twin) stillLearning(workbenchID int64) (bool, error) {
-	st, err := t.d.DB.WatchmanWorkbench(workbenchID)
-	if err != nil {
-		return false, err
+	return t.d.DB.WatchmanStillLearning(workbenchID)
+}
+
+// ownerClosed reports a question, check or document review whose ask is no
+// longer open (answered by the owner, withdrawn or gone): leased while its
+// workbench is still learning, it closes owner_first or goes with no model
+// call (handle). A handover is not: beside the twin's own earlier answer it
+// is still decided. A read error is not closed (the item stays queued).
+func (t *Twin) ownerClosed(it db.WatchmanItem) bool {
+	if it.RefKind != "ask" || it.Kind == "handover" {
+		return false
 	}
-	if st == nil || st.LearnedThrough == nil {
-		return true, nil
+	ask, err := t.d.DB.GetOwnerAskByID(it.RefID)
+	switch {
+	case errors.Is(err, db.ErrAskNotFound):
+		return true
+	case err != nil:
+		log.Printf("watchman twin: item %d: %v", it.ID, err)
+		return false
 	}
-	pending, err := t.d.DB.WatchmanFlagsPending(workbenchID)
-	if err != nil {
-		return false, err
-	}
-	return pending > 0, nil
+	return ask.Status != "open"
 }
 
 // situation is the redacted ask text the model decides on (title, summary,

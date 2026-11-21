@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -288,4 +289,87 @@ func TestStatus_TextShowsRelabelLeft(t *testing.T) {
 	out, err = runWatchman(t, "status", "--workbench", strconv.FormatInt(wb, 10))
 	require.NoError(t, err)
 	assert.Contains(t, out, "relabelling earlier decisions: 1 left")
+}
+
+// countLearnerWakes replaces the daemon's Watchman wake with a counter.
+func countLearnerWakes(t *testing.T) *int {
+	t.Helper()
+	n := 0
+	prev := watchmanLearnerWake
+	watchmanLearnerWake = func(*cobra.Command, *config.Config) { n++ }
+	t.Cleanup(func() { watchmanLearnerWake = prev })
+	return &n
+}
+
+// lockProbeGen records, on each label call, whether the workbench's learn
+// lock was held then.
+type lockProbeGen struct {
+	dir    string
+	wb     int64
+	calls  int
+	locked []bool
+}
+
+func (g *lockProbeGen) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	g.calls++
+	unlock, ok, err := watchman.TryLearnLock(g.dir, g.wb)
+	if err == nil && ok {
+		unlock()
+	}
+	g.locked = append(g.locked, err == nil && !ok)
+	return `[{"category": "scope", "decision": true, "parked": false}]`, &digest.Usage{}, "", nil
+}
+
+// `learn --start` learns under the workbench's learn lock and wakes the
+// daemon after; with the lock held (the daemon's learner at work) it runs
+// no pass and still wakes the daemon.
+func TestWatchmanLearnStart_WakesDaemonAndTakesLock(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	gen := &lockProbeGen{dir: cfg.WorkspaceDir(), wb: wb}
+	watchmanGeneratorFactory = func(*config.Config) digest.Generator { return gen } // restored by watchmanFixture
+	wakes := countLearnerWakes(t)
+
+	out, err := runWatchman(t, "learn", "--workbench", strconv.FormatInt(wb, 10), "--start", "--json")
+	require.NoError(t, err, out)
+	assert.Equal(t, []bool{true}, gen.locked, "the pass ran under the lock")
+	assert.Equal(t, 1, *wakes)
+	unlock, ok, err := watchman.TryLearnLock(cfg.WorkspaceDir(), wb)
+	require.NoError(t, err)
+	require.True(t, ok, "released after the pass")
+
+	// Held: no pass, a wake.
+	_, err = runWatchman(t, "learn", "--workbench", strconv.FormatInt(wb, 10), "--start")
+	unlock()
+	require.NoError(t, err)
+	assert.Equal(t, 1, gen.calls, "no learning pass while the lock is held")
+	assert.Equal(t, 2, *wakes)
+
+	out, err = runWatchman(t, "learn", "--workbench", strconv.FormatInt(wb, 10), "--start", "--json")
+	require.NoError(t, err, out)
+	assert.Equal(t, 3, *wakes)
+}
+
+// With the lock held the JSON keeps its pinned keys: nothing written, the
+// rest incomplete (the daemon's).
+func TestWatchmanLearnStart_LockHeldJSON(t *testing.T) {
+	wb, gen := watchmanFixture(t)
+	countLearnerWakes(t)
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	unlock, ok, err := watchman.TryLearnLock(cfg.WorkspaceDir(), wb)
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer unlock()
+	out, err := runWatchman(t, "learn", "--workbench", strconv.FormatInt(wb, 10), "--start", "--json")
+	require.NoError(t, err, out)
+	assert.Equal(t, []string{"analytics_turned_on", "by_source", "incomplete", "ok", "unlabelled", "workbench", "written"}, jsonKeys(t, out))
+	var r watchmanLearnJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &r))
+	assert.Equal(t, watchmanLearnJSON{OK: true, Workbench: wb, BySource: map[string]int{}, Incomplete: true, AnalyticsTurnedOn: true}, r)
+	assert.Zero(t, gen.calls)
+	enabled, _, analytics := watchmanState(t, wb)
+	assert.True(t, enabled)
+	assert.True(t, analytics)
 }

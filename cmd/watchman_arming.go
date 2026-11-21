@@ -365,7 +365,7 @@ func runWatchmanArm(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintf(w, "Handed to Watchman: %s.\n", armedText(out.Armed))
 	if out.LearningStarted {
-		fmt.Fprintln(w, "Watchman is learning this workbench; the daemon continues in its cycles.")
+		fmt.Fprintln(w, "Watchman is learning this workbench; the daemon learns it in one go.")
 	}
 	return nil
 }
@@ -495,6 +495,11 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 			return err
 		}
 		out.LearningStarted = len(notOn) > 0
+		if out.LearningStarted {
+			// Watchman is on now, whatever the arming below does: the
+			// daemon's learner starts at once.
+			defer watchmanLearnerWake(cmd, cfg)
+		}
 	}
 	// A row already there keeps its armed_at: re-arming does not move
 	// "Sleep since" (one INSERT … DO NOTHING, so no check-then-write race).
@@ -509,8 +514,8 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	if err != nil {
 		return err
 	}
-	// The daemon's upkeep takes the hold and its learning phase does the
-	// backfill; arm never runs either.
+	// The daemon's upkeep takes the hold and its learner does the backfill,
+	// woken now on the first hand-over; arm never runs either.
 	if changed || out.LearningStarted {
 		defer watchmanArmingNudge(cmd, cfg)
 	}
