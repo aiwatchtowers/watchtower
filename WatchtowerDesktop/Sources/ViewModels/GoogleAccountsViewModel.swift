@@ -302,8 +302,9 @@ final class GoogleAccountsViewModel {
     ) async {
         guard authProcess === process else {
             if result.exitCode == 0 {
-                // Quiet while a newer run is active: its result is never overwritten.
-                await refreshAsync(quiet: isConnecting)
+                // Always quiet: a newer attempt may start while it reads, and
+                // its state is never overwritten by this stale run's read.
+                await refreshAsync(quiet: true)
                 daemonRestartTask = daemonPolicy.apply(using: daemon)
             } else {
                 await refreshAsync(quiet: true)
