@@ -207,6 +207,21 @@ final class CompanySetupCheckCancelTests: XCTestCase {
         cli.release(check, [])
     }
 
+    /// A re-read that fails cannot tell whether Go stored the company: the
+    /// name stays, the step is not-run, and nothing is shown.
+    func testFailedRereadKeepsTheName() async {
+        let (model, cli, run) = await waiting()
+        cli.on(["company", "draft", "show"], [], exit: 1)
+        model.cancelCheck(.atlassian)
+        await model.rereadAfterCancel?.value
+        await run.value
+        XCTAssertEqual(cli.calls(["company", "draft", "show"]).count, 2)
+        XCTAssertEqual(model.draft.company, "Acme")
+        XCTAssertNil(model.checks[.atlassian])
+        XCTAssertNil(model.storageProblem)
+        cli.release(check, [])
+    }
+
     func testDryChecksHaveNoWaitingLine() {
         let model = Model(streamer: CompanyScriptedCLI(), slack: SlackAppSetupModel(streamer: nil, mode: .wizard))
         for vendor in CompanyVendor.allCases { XCTAssertNil(model.checkWait(vendor)) }
