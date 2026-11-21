@@ -24,7 +24,7 @@ action: nav:connections
 
 **You do the parts that are yours.** Passwords, two-step codes and the final **Allow** on a vendor's page are always your clicks. So is any click that shows a secret, such as Slack's **Generate Token** or Google's **Create** on a client form.
 
-**It never sees a secret.** When a step needs a token, password, API key or client secret, the panel shows a card. You paste the value there and press **Send**; it goes straight to Watchtower and the assistant only hears whether it worked. The card asks you to close the vendor's page or dialog first.
+**What you paste never reaches the assistant.** When a step needs a token, password, API key or client secret, the panel shows a card. You paste the value there and press **Send**; it goes straight to Watchtower and the assistant only hears whether it worked. In browser mode the assistant could read a vendor page that shows a secret while it is open, so close that page or dialog before you press **Send**; the card reminds you.
 
 **Some steps need your confirm.** Steps that can't be undone or that add trust show a card only you can press: turning on PKCE for a Slack app, updating your company's Slack app, using your own Google project, turning on a Quick Connection, publishing or replacing your company's setup. The card says "Only you can press this — Claude can't."
 
@@ -42,7 +42,7 @@ action: nav:connections
 4. Do what it asks: sign in, press **Allow**, paste a secret into the card and press **Send**, or press **Confirm** on a confirm card. You can type a question at any point.
 5. When it says the source is connected, close the panel. Pick boards, teams or spaces as usual if it hasn't already.
 
-**Set up by hand** opens today's screen for that connector at any point. Closing the panel stops the assistant but not a sign-in already running: finish it in the browser, and a Slack sign-in carries on under **Connections → Slack**. Open the panel again and the assistant picks up from what is already done.
+**Set up by hand** opens today's screen for that connector. It shows before you press **Start** and after a failure; while the assistant works, press **Cancel** first. Closing the panel stops the assistant but not a sign-in already running: finish it in the browser, and a Slack sign-in carries on under **Connections → Slack**. Open the panel again and the assistant picks up from what is already done.
 
 ## When it's empty or wrong
 
