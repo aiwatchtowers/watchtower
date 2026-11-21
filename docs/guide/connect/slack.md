@@ -56,6 +56,8 @@ The assistant's panel always offers **Set up by hand**, which opens **Connection
 - **"Your workspace does not let you create apps."** Ask a Slack admin to run the setup, or to allow app creation.
 - **"Your token cannot change this app."** One of the app's collaborators (its **Collaborators** page lists them) must run the update.
 - **Watchtower asks for the app's App ID.** Use **Set up by hand** and enter it from the app's **Basic Information** page.
+- **"Setup is not finished: Watchtower's app exists in …, but you have not connected yet."** The app is there; only your own sign-in is missing. Do not create the app again: use **Set up by hand** and press **Continue setup**.
+- **"Waiting for your admin's approval."** Slack sent an admin a request to install Watchtower. Once they approve, use **Set up by hand** and press **Check again**.
 - **"The app's About page has no connect link yet."** Your account is connected, but the token expired before the link was written. Use **Set up by hand**: press **Add the link to the app** and paste a fresh token.
 - **"Slack did not answer when Watchtower asked it to create the app."** Use **Set up by hand**: find Watchtower on api.slack.com/apps and enter its **App ID** and **Client ID**.
 - **The confirm card was declined.** Nothing changed. Start again when you are ready.
