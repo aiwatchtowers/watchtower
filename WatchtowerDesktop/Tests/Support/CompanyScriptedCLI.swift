@@ -103,9 +103,28 @@ package final class CompanyScriptedCLI: CLILineStreaming, @unchecked Sendable {
         }
     }
 
+    /// The scripted `lines` run as a session that has already ended.
+    package func oneShot(args: [String], stdin: Data?) -> any CLILineSession {
+        EndedLinesSession(lines: lines(args: args, stdin: stdin))
+    }
+
     /// The wizard runs no long-lived child; a stray one is recorded and never answers.
     package func session(args: [String]) -> any CLILineSession {
         lock.withLock { recorded.append(Call(args: args, stdin: nil)) }
         return FakeCLILineStream().session(args: args)
     }
+}
+
+/// A scripted run seen as a session: its lines, no child to kill or wait for.
+private final class EndedLinesSession: CLILineSession, @unchecked Sendable {
+    let lines: AsyncThrowingStream<String, Error>
+
+    init(lines: AsyncThrowingStream<String, Error>) {
+        self.lines = lines
+    }
+
+    func write(_ data: Data) {}
+    func closeInput() {}
+    func terminate() {}
+    func waitForExit() async {}
 }
