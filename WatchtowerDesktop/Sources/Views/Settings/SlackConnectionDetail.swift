@@ -352,6 +352,7 @@ struct SlackConnectionDetail: View {
                 }
             }
         }
+        .opensAddSheet(.slack) { showAddSlackAccountSheet = true }
         .sheet(isPresented: $showAddSlackAccountSheet) {
             // Settings opened during onboarding: its finish starts the
             // daemon, not this sheet.

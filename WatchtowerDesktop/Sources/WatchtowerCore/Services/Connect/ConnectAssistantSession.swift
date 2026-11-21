@@ -91,8 +91,10 @@ package final class ConnectAssistantSession {
     }
 
     package var presentation: ConnectAssistantPresentation {
-        ConnectAssistantPresentation(service: displayName, harness: harness, mode: mode,
-                                     browserAvailable: browserAvailable, state: state)
+        var secretKind: String?
+        if case let .secret(kind, _) = controller?.pendingCard { secretKind = kind }
+        return ConnectAssistantPresentation(service: displayName, harness: harness, mode: mode,
+                                            browserAvailable: browserAvailable, state: state, secretKind: secretKind)
     }
 
     // MARK: - Panel actions
@@ -339,6 +341,15 @@ package final class ConnectAssistantCenter {
         let session = makeSession(service)
         sessions[service] = session
         return session
+    }
+
+    /// The service's session if one was made; never makes one.
+    package func loaded(_ service: String) -> ConnectAssistantSession? { sessions[service] }
+
+    /// Forgets the service's session after closing it, so the next
+    /// `session(for:)` makes a fresh one (its harness list read again).
+    package func drop(_ service: String) {
+        sessions.removeValue(forKey: service)?.close()
     }
 
     /// App quit: every run ends (its held calls answer `closed`, the sockets

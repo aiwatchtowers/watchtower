@@ -73,6 +73,10 @@ final class JiraConnectDriver: ConnectServiceDriving {
     /// finishes later restarts at once, as nothing would release it.
     private var runOver = false
     private let daemon: any DaemonRestarting
+    /// `AppState.accountDaemonPolicy`, read when a restart is released:
+    /// during onboarding a connect leaves the daemon to onboarding's finish,
+    /// as the sheet does.
+    private let daemonPolicy: @MainActor () -> DaemonRestartPolicy
     /// The last restart this driver kicked off (tests await it).
     private(set) var restartTask: Task<Void, Never>?
     /// The site ids before this driver's last connect: boards and spaces
@@ -86,13 +90,15 @@ final class JiraConnectDriver: ConnectServiceDriving {
         steps: any JiraConnectSteps,
         policy: @escaping @MainActor () -> ManagedPolicy,
         companySlug: @escaping @MainActor () -> String?,
-        daemon: any DaemonRestarting = LiveDaemonRestarter()
+        daemon: any DaemonRestarting = LiveDaemonRestarter(),
+        daemonPolicy: @escaping @MainActor () -> DaemonRestartPolicy = { .restart }
     ) {
         self.model = model
         self.steps = steps
         self.policy = policy
         self.companySlug = companySlug
         self.daemon = daemon
+        self.daemonPolicy = daemonPolicy
     }
 
     /// The stored company whose Atlassian app personal sign-ins use: the
@@ -173,7 +179,7 @@ final class JiraConnectDriver: ConnectServiceDriving {
     private func releaseRestart() {
         guard restartPending else { return }
         restartPending = false
-        restartTask = DaemonRestartPolicy.restart.apply(using: daemon)
+        restartTask = daemonPolicy().apply(using: daemon)
     }
 
     /// The run is over: a pending restart runs now, and a connect that

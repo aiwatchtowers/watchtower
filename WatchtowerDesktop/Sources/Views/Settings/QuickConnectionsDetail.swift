@@ -110,6 +110,7 @@ struct QuickConnectionsDetail: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .opensAddSheet(.quickConnections) { showAddConnectionSheet = true }
         .sheet(isPresented: $showAddConnectionSheet) {
             AddExternalConnectionView()
                 .environment(appState)

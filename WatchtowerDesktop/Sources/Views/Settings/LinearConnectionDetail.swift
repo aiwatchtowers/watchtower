@@ -41,6 +41,7 @@ struct LinearConnectionDetail: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .detailBackground()
+        .opensAddSheet(.linear) { showAddSheet = true }
         .sheet(isPresented: $showAddSheet) {
             AddLinearAccountView(daemonPolicy: appState.accountDaemonPolicy)
                 .environment(appState)

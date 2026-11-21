@@ -95,8 +95,8 @@ final class AppState {
     var settingsTab: SettingsTab = .general
     /// A section the tab scrolls to once it shows (the tab clears it).
     var settingsAnchor: SettingsAnchor?
-    /// The Connections tab's open service (nil: the overview), so a link opens a service.
-    var selectedConnection: ConnectionService?
+    var selectedConnection: ConnectionService? // the Connections tab's open service (nil: the overview)
+    @ObservationIgnored lazy var connectAssistant = ConnectAssistantWiring(app: self) // #2133: the panel, sessions, drivers
     @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState() // a connect survives leaving the tab
     @ObservationIgnored private(set) lazy var slackAppSetup = SlackAppSetupModel { Self.slackLineStream() } // #1709 S3; no process under XCTest
     /// The company setup wizard (#1887 C1): here, so a check or a Slack run outlives the page; its own wizard-mode Slack engine. Settable for tests.
@@ -784,8 +784,8 @@ final class AppState {
                     // Edits in the code viewer not yet on disk are written now.
                     self?.workbenchesViewModel?.codeFiles.flushAll()
                     self?.stopCodeNavigationChildren()
-                    // Onboarding's people load: its child gets SIGTERM.
-                    self?.peopleRoster.stop()
+                    // Onboarding's people load: its child gets SIGTERM; every connect assistant run ends (#2133).
+                    self?.peopleRoster.stop(); self?.connectAssistant.closeAll()
                     // Best-effort: the removal may not finish before exit;
                     // the next launch removes what is left.
                     self?.sessionAgentStateCenter?.withdrawAllNotices()

@@ -86,6 +86,7 @@ struct CalendarConnectionDetail: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .opensAddSheet(.calendar) { showAddCalendarAccountSheet = true }
         .sheet(isPresented: $showAddCalendarAccountSheet) {
             AddCalendarAccountView()
                 .environment(appState)

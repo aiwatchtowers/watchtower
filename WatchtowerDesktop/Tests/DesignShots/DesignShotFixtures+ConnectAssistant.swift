@@ -5,13 +5,13 @@ import WatchtowerCore
 import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
-/// The connect assistant spec's mockups (#2133,
+/// The connect assistant spec's shots (#2133,
 /// `docs/superpowers/specs/2026-11-21-agent-connect-design.md` §7): the
 /// panel in each state (`connect-assistant-<state>`) and the Connections
 /// overview with **Connect with Claude** first (`connect-overview-agent`).
-/// The panel is the real `ConnectAssistantPanel` over fixture chat lines;
-/// the overview's agent buttons are a design-only variant of the cards and
-/// the Companies zone. Sample data only (`acme`, `example.com`).
+/// The built views: the panel over fixture chat lines (a live run hosts the
+/// embedded chat in their place), and the overview, Companies zone and
+/// banner with their agent buttons. Sample data only (`acme`, `example.com`).
 @MainActor
 enum ConnectAssistantShotFixtures {
     private typealias Pres = ConnectAssistantPresentation
@@ -23,6 +23,14 @@ enum ConnectAssistantShotFixtures {
                 AnyView(overview())
             }
         ] + ConnectAssistantScreenFixtures.shots
+    }
+
+    /// The picker's harnesses as the fixture catalog offers them, every
+    /// provider ready and allowed.
+    static var harnesses: [ConnectHarness] {
+        let providers = ProviderCatalogFixture.providers()
+        return ConnectHarnessCatalog.offered(providers: providers, allowed: nil, ready: Set(providers.map(\.id)),
+                                             base: "claude").harnesses
     }
 
     private static let created = Line(.assistant, "I opened api.slack.com and created the app from Watchtower's manifest.")
@@ -40,7 +48,7 @@ enum ConnectAssistantShotFixtures {
         ("busy", slack(.busy), []),
         ("narrow", Pres(service: "Slack", harness: .fixture("codex"), mode: .browser, browserAvailable: false,
                         state: .empty), []),
-        ("secret", slack(.secret(label: "Slack configuration token")), [
+        ("secret", slackSecret, [
             created,
             Line(.assistant, "Copy the configuration token shown on the page into the field below. "
                 + "It goes to Watchtower, not to me.")
@@ -57,6 +65,10 @@ enum ConnectAssistantShotFixtures {
         ])
     ]
 
+    private static let slackSecret = Pres(service: "Slack", harness: .fixture("claude"), mode: .browser,
+                                          state: .secret(label: "Slack configuration token"),
+                                          secretKind: "slack_config_token")
+
     private static func slack(_ state: ConnectAssistantState) -> Pres {
         Pres(service: "Slack", harness: .fixture("claude"), mode: .browser, state: state)
     }
@@ -65,7 +77,7 @@ enum ConnectAssistantShotFixtures {
         scenes.map { name, presentation, lines in
             DesignShot(name: "connect-assistant-\(name)",
                        size: NSSize(width: ConnectAssistantPanel.width, height: 560)) {
-                AnyView(ConnectAssistantPanel(presentation: presentation, lines: lines))
+                AnyView(ConnectAssistantPanel(presentation: presentation, harnesses: harnesses, lines: lines))
             }
         }
     }
@@ -90,116 +102,22 @@ enum ConnectAssistantShotFixtures {
 
     /// The overview with the assistant open on Google, in the panel slot on the right.
     private static func overview() -> some View {
-        HStack(spacing: 0) {
-            ConnectOverviewAgentMock(summaries: summaries, harness: .fixture("claude"))
-                .detailBackground()
-            Rectangle().fill(.separator).frame(width: Stroke.hairline)
+        let claude = ConnectHarness.fixture("claude")
+        let agent = ConnectAgentEntry(harness: { _ in claude }, open: { _ in })
+        let zone = CompanyConnectionsPresentation.zone(
+            companies: [], errors: [], draft: nil, accounts: [], portBusy: false, loading: false)
+        let companies = CompaniesZone(state: zone, model: CompaniesZoneModel { nil }, actions: CompaniesZoneActions(),
+                                      agent: (claude, {}))
+        let ignore: (ConnectionService) -> Void = { _ in }
+        return HStack(spacing: 0) {
+            ConnectionsOverviewContent(summaries: summaries, companies: companies, onCompanyAction: { _ in },
+                                       agent: agent, onOpen: ignore)
+            .detailBackground()
+            Rectangle().fill(Stroke.hairlineColor).frame(width: Stroke.hairline)
             ConnectAssistantPanel(
-                presentation: Pres(service: "Google", harness: .fixture("claude"), mode: .browser, state: .empty), lines: [])
+                presentation: Pres(service: "Google", harness: claude, mode: .browser, state: .empty),
+                harnesses: harnesses)
         }
         .controlSize(.small)
-    }
-}
-
-/// Design only (spec §7): the Connections overview with **Connect with
-/// <harness>** first on every unconnected source card, the attention
-/// banner and the Companies zone, today's **Connect** beside it.
-private struct ConnectOverviewAgentMock: View {
-    let summaries: [ConnectionSummary]
-    let harness: ConnectHarness
-
-    private typealias Company = CompanyConnectionsPresentation
-
-    private var withHarness: String { "Connect with \(harness.name)" }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Spacing.large) {
-                HStack {
-                    Text("Connections").font(.title2.weight(.bold))
-                    Spacer()
-                    Label("Connect…", systemImage: "plus")
-                        .padding(.horizontal, Spacing.regular)
-                        .padding(.vertical, Spacing.small)
-                        .card()
-                }
-                ForEach(summaries.filter(\.needsAttention)) { summary in banner(summary) }
-                companies
-                group("Sources", ConnectionService.sources)
-                group("Tools for AI", ConnectionService.aiTools)
-            }
-            .padding(Spacing.page)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func banner(_ summary: ConnectionSummary) -> some View {
-        HStack(spacing: Spacing.regular) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.warning)
-            Text("\(summary.service.label) · \(summary.problemLine ?? "needs attention")").font(.callout)
-            Spacer()
-            agentButton("Reconnect with \(harness.name)")
-            Button("Reconnect") {}.buttonStyle(.kitQuiet)
-        }
-        .padding(Spacing.medium)
-        .card()
-    }
-
-    private var companies: some View {
-        let zone = Company.zone(companies: [], errors: [], draft: nil, accounts: [], portBusy: false, loading: false)
-        return VStack(alignment: .leading, spacing: Spacing.regular) {
-            HomeZoneTitle(title: Company.companiesTitle)
-            if case .empty(let text) = zone.body {
-                Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            HStack(spacing: Spacing.regular) {
-                agentButton(withHarness)
-                ForEach(Array(zone.actions.enumerated()), id: \.offset) { _, action in
-                    Button(action.title) {}.buttonStyle(.kitQuiet)
-                }
-            }
-        }
-    }
-
-    private func group(_ title: String, _ services: [ConnectionService]) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            HomeZoneTitle(title: title)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: PaneWidth.gridCardMin), spacing: Spacing.medium,
-                                         alignment: .top)],
-                      alignment: .leading, spacing: Spacing.medium) {
-                ForEach(summaries.filter { services.contains($0.service) }) { card($0) }
-            }
-        }
-    }
-
-    private func card(_ summary: ConnectionSummary) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: summary.service.icon).foregroundStyle(.secondary)
-                Text(summary.service.label).font(.headline)
-                Spacer()
-                ConnectionStatusMark(summary: summary)
-            }
-            Text(summary.countLine).font(.caption).foregroundStyle(.secondary)
-            Text(summary.statusLine)
-                .font(.caption)
-                .foregroundStyle(summary.needsAttention ? AnyShapeStyle(Tone.error) : AnyShapeStyle(.secondary))
-                .lineLimit(2)
-            if summary.accountCount == 0 && !summary.blocked {
-                HStack(spacing: Spacing.regular) {
-                    agentButton(withHarness)
-                    Button("Connect") {}.buttonStyle(.kitQuiet)
-                }
-                .padding(.top, Spacing.small)
-            }
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
-
-    private func agentButton(_ title: String) -> some View {
-        Button {} label: { Label(title, systemImage: "sparkles") }
-            .buttonStyle(.kitSecondary)
     }
 }
