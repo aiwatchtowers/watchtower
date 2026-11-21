@@ -1,8 +1,11 @@
 import Foundation
 @testable import WatchtowerCore
 
-/// A connect driver that records every call. `wait` holds until the test
-/// ends it (`endWait`), or answers a queued outcome at once.
+/// A connect driver that records every call. Its status follows the flows
+/// it starts. `wait` answers a queued outcome (`waitAnswers`) at once, else
+/// holds until the test ends it (`endWait`); with `holdStatus` set,
+/// `status()` holds until `releaseStatus()`. `until(_:)` waits, without
+/// real time, for a condition on the fake.
 @MainActor
 class FakeConnectDriver: ConnectServiceDriving {
     let service: String
@@ -12,14 +15,18 @@ class FakeConnectDriver: ConnectServiceDriving {
     var confirms: [String: ConnectAssistantConfirm] = [:]
     var startResults: [Result<String, ConnectDriverError>] = []
     var secretResult: Result<Data, ConnectDriverError> = .success(Data(#"{"stage":"install"}"#.utf8))
+    var waitAnswers: [ConnectWaitOutcome] = []
+    var holdStatus = false
 
     private(set) var starts: [[String: String]] = []
     private(set) var waits: [String] = []
     private(set) var cancels: [String] = []
     private(set) var secrets: [(kind: String, value: String)] = []
     private(set) var fields: [[String: String]] = []
-    private var heldWait: CheckedContinuation<ConnectWaitOutcome, Never>?
+    private(set) var heldWait: CheckedContinuation<ConnectWaitOutcome, Never>?
+    private(set) var heldStatus: [CheckedContinuation<Void, Never>] = []
     private var flowCount = 0
+    private var watchers: [(condition: () -> Bool, continuation: CheckedContinuation<Void, Never>)] = []
 
     init(service: String = "slack", secretKinds: Set<String> = ["slack_config_token"]) {
         self.service = service
@@ -27,33 +34,71 @@ class FakeConnectDriver: ConnectServiceDriving {
         currentStatus = ConnectStatus(service: service)
     }
 
-    func status() async -> ConnectStatus { currentStatus }
+    /// Returns once `condition` holds.
+    func until(_ condition: @escaping () -> Bool) async {
+        if condition() { return }
+        await withCheckedContinuation { watchers.append((condition, $0)) }
+    }
+
+    func changed() {
+        let ready = watchers.filter { $0.condition() }
+        watchers.removeAll { $0.condition() }
+        ready.forEach { $0.continuation.resume() }
+    }
+
+    func setFlow(_ flowID: String?) {
+        let s = currentStatus
+        currentStatus = ConnectStatus(service: s.service, accounts: s.accounts, policyLocked: s.policyLocked,
+                                      flow: flowID.map { .init(id: $0, state: "waiting_callback") }, setup: s.setup)
+    }
+
+    func status() async -> ConnectStatus {
+        if holdStatus {
+            await withCheckedContinuation { heldStatus.append($0); changed() }
+        }
+        return currentStatus
+    }
+
+    func releaseStatus() {
+        holdStatus = false
+        heldStatus.forEach { $0.resume() }
+        heldStatus = []
+    }
 
     func start(options: [String: String]) async -> Result<String, ConnectDriverError> {
         starts.append(options)
         if !startResults.isEmpty { return startResults.removeFirst() }
         flowCount += 1
+        setFlow("flow-\(flowCount)")
         return .success("flow-\(flowCount)")
     }
 
-    var isWaiting: Bool { heldWait != nil }
-
     func wait(flowID: String) async -> ConnectWaitOutcome {
         waits.append(flowID)
+        defer { changed() }
+        if !waitAnswers.isEmpty { return waitAnswers.removeFirst() }
         return await withTaskCancellationHandler {
-            await withCheckedContinuation { heldWait = $0 }
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { return continuation.resume(returning: .waiting) }
+                heldWait = continuation
+                changed()
+            }
         } onCancel: {
             Task { @MainActor in self.endWait(.waiting) }
         }
     }
 
-    /// Ends the held `wait` with `outcome`.
+    /// Ends the held `wait` with `outcome`; a finished flow leaves the status.
     func endWait(_ outcome: ConnectWaitOutcome) {
+        if outcome != .waiting { setFlow(nil) }
         heldWait?.resume(returning: outcome)
         heldWait = nil
     }
 
-    func cancel(flowID: String) async { cancels.append(flowID) }
+    func cancel(flowID: String) async {
+        cancels.append(flowID)
+        setFlow(nil)
+    }
 
     func submitSecret(kind: String, value: String) async -> Result<Data, ConnectDriverError> {
         secrets.append((kind, value))
@@ -73,7 +118,7 @@ class FakeConnectDriver: ConnectServiceDriving {
         if tool == "connect_start" {
             return options.keys.sorted().lazy.compactMap { self.confirms[$0] }.first
         }
-        return confirms[tool]
+        return options["vendor"].flatMap { confirms["\(tool):\($0)"] } ?? confirms[tool]
     }
 
     func policyAllows() -> Bool { allowed }
@@ -101,7 +146,10 @@ final class FakeCompanyDriver: FakeConnectDriver, ConnectCompanyDriving {
 
     func check(vendor: String) async -> Result<Data, ConnectDriverError> {
         checks.append(vendor)
-        return await withCheckedContinuation { heldCheck = $0 }
+        return await withCheckedContinuation {
+            heldCheck = $0
+            changed()
+        }
     }
 
     func endCheck(_ result: Result<Data, ConnectDriverError>) {
@@ -159,6 +207,12 @@ final class ConnectTestClock: Clock, @unchecked Sendable {
                 let ready = takeWatchers()
                 lock.unlock()
                 ready.forEach { $0.resume() }
+                // A cancel that landed before the sleep was registered found
+                // nothing to remove: end the sleep here instead.
+                if Task.isCancelled {
+                    let entry = lock.withLock { sleeping.removeValue(forKey: id) }
+                    entry?.continuation.resume(throwing: CancellationError())
+                }
             }
         } onCancel: {
             let entry = lock.withLock { sleeping.removeValue(forKey: id) }

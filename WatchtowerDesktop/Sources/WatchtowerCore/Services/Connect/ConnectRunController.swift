@@ -40,6 +40,9 @@ package final class ConnectRunController {
     /// What the customer is waiting on, after "Waiting for you to ".
     package static let flowWaitStep = "finish signing in in your browser"
     package static let checkWaitStep = "approve the sign-in in your browser"
+    /// How long a held `connect_wait` pauses before asking the driver again
+    /// after the driver answered `.waiting` early.
+    package static let repollPause: Duration = .seconds(1)
 
     package private(set) var pendingCard: ConnectPendingCard?
     package private(set) var startsUsed = 0
@@ -103,6 +106,11 @@ package final class ConnectRunController {
         guard yes else { return finish(step, .result(Self.json(ConnectPending(state: "declined")))) }
         switch step.purpose {
         case let .start(options):
+            // A flow may have appeared while the card was open (adopted by
+            // connect_wait): no second flow, no counted start.
+            guard activeFlow == nil, !flowStarting, startsUsed < Self.maxStarts else {
+                return finish(step, .error(.busy, "a \(driver.service) sign-in is already running"))
+            }
             startsUsed += 1
             flowStarting = true
             step.work = Task { [weak self, driver] in
@@ -112,6 +120,11 @@ package final class ConnectRunController {
         case .publish:
             step.resetBudget()
             pendingCard = .secret(kind: Self.publishTokenKind, label: Self.publishTokenLabel)
+        case .replaceCheck:
+            guard let company = driver as? any ConnectCompanyDriving, let vendor = step.vendor else { return }
+            cardStep = nil
+            step.resetBudget()
+            runCheck(step, vendor: vendor, company: company)
         case .secret, .flow, .check:
             break
         }
@@ -167,11 +180,14 @@ package final class ConnectRunController {
 
     private func reply(to req: ConnectWireRequest) async -> Reply {
         guard !ended else { return Self.closed }
+        // After a timeout the panel shows the error with Retry (a fresh
+        // run); no call may open a new card or wait behind it.
+        guard failure == nil || !Self.stepTools.contains(req.tool) else { return Self.stopped }
         guard let args = (try? JSONSerialization.jsonObject(with: req.args)) as? [String: Any] else {
             return .error(.badArgs, "the arguments are not a JSON object")
         }
         switch req.tool {
-        case "connect_status": return Self.result(await driver.status())
+        case "connect_status": return await status()
         case "connect_start": return await start(args)
         case "connect_wait": return await waitOnFlow()
         case "connect_cancel": return await cancelFlow()
@@ -181,18 +197,34 @@ package final class ConnectRunController {
         case "company_draft", "company_check", "company_publish":
             guard let company = driver as? any ConnectCompanyDriving else { return unknownTool(req.tool) }
             return await companyCall(req.tool, args, company)
-        case "slack_live_probe":
-            guard let prober = driver as? any ConnectLiveProbing else { return unknownTool(req.tool) }
-            guard let provider = args["provider"] as? String, ["claude", "codex"].contains(provider) else {
-                return .error(.badArgs, "provider must be claude or codex")
-            }
-            return Self.reply(await prober.liveProbe(provider: provider))
-        default:
-            return unknownTool(req.tool)
+        case "slack_live_probe": return await liveProbe(args)
+        default: return unknownTool(req.tool)
         }
     }
 
+    private func status() async -> Reply {
+        let status = await driver.status()
+        // A flow the status no longer shows has ended outside this run.
+        if activeFlow != nil, status.flow?.id != activeFlow, !ended { activeFlow = nil }
+        return Self.result(status)
+    }
+
+    private func liveProbe(_ args: [String: Any]) async -> Reply {
+        guard let prober = driver as? any ConnectLiveProbing else { return unknownTool("slack_live_probe") }
+        guard let provider = args["provider"] as? String, ["claude", "codex"].contains(provider) else {
+            return .error(.badArgs, "provider must be claude or codex")
+        }
+        return Self.reply(await prober.liveProbe(provider: provider))
+    }
+
     private func start(_ args: [String: Any]) async -> Reply {
+        if let flowID = activeFlow, cardStep == nil, !flowStarting {
+            // The flow may have ended outside this run's wait (cancelled in
+            // another window): then it no longer makes this start busy.
+            let current = await driver.status().flow?.id
+            if let refusal = stoppedSince() { return refusal }
+            if activeFlow == flowID, current != flowID { activeFlow = nil }
+        }
         if let step = cardStep {
             guard case .start = step.purpose else { return Self.cardOpen }
             return await attach(step)  // a re-call: never an answer to the card
@@ -228,8 +260,13 @@ package final class ConnectRunController {
     }
 
     private func waitOnFlow() async -> Reply {
+        // A flow that ended between two calls: its answer waits here.
+        if let step = flowStep, step.outcome != nil { return await attach(step) }
         if activeFlow == nil {
-            activeFlow = await driver.status().flow?.id  // a reopened run resumes the flow it left
+            let adopted = await driver.status().flow?.id  // a reopened run resumes the flow it left
+            if let refusal = stoppedSince() { return refusal }
+            if let step = flowStep, step.outcome != nil { return await attach(step) }
+            if activeFlow == nil { activeFlow = adopted }
         }
         guard let flowID = activeFlow else { return .error(.failed, "no sign-in is running; call connect_start first") }
         let step: Step
@@ -239,28 +276,39 @@ package final class ConnectRunController {
             step = Step(purpose: .flow, flowID: flowID)
             flowStep = step
         }
-        waitingStep = Self.flowWaitStep
+        if step.outcome == nil { waitingStep = Self.flowWaitStep }
         if step.work == nil, step.outcome == nil {
-            step.work = Task { [weak self, driver] in
-                let outcome = await driver.wait(flowID: flowID)
+            step.work = Task { [weak self, driver, sleep] in
+                // The driver may answer `.waiting` early: while a call is
+                // held on the step, ask it again after a short pause, so the
+                // agent's re-calls (and the step's budget) stay 45 s apart.
+                var outcome = await driver.wait(flowID: flowID)
+                while outcome == .waiting, step.isHeld, !Task.isCancelled {
+                    do { try await sleep(Self.repollPause) } catch { return }
+                    outcome = await driver.wait(flowID: flowID)
+                }
                 await self?.flowWaited(outcome, step: step)
             }
         }
         return await attach(step)
     }
 
+    /// The refusal for a call whose run ended or timed out while it awaited the driver.
+    private func stoppedSince() -> Reply? {
+        if ended { return Self.closed }
+        return failure == nil ? nil : Self.stopped
+    }
+
     private func flowWaited(_ outcome: ConnectWaitOutcome, step: Step) async {
         guard !Task.isCancelled, flowStep === step else { return }
         switch outcome {
         case .waiting:
-            step.work = nil  // the next call asks the driver again
-            step.wakeAll(.elapsed)
+            step.work = nil  // nobody is held: the next call asks the driver again
         case let .connected(account):
-            let accounts = await driver.status().accounts.count
-            guard flowStep === step else { return }
             activeFlow = nil
-            connectedAccounts = accounts
             finish(step, Self.result(ConnectWaited(state: "connected", account: account)))
+            let accounts = await driver.status().accounts.count
+            if !ended { connectedAccounts = accounts }
         case let .failed(reason):
             activeFlow = nil
             finish(step, Self.result(ConnectWaited(state: "failed", reason: reason)))
@@ -297,6 +345,11 @@ package final class ConnectRunController {
 
     private func setFields(_ args: [String: Any]) async -> Reply {
         guard let fields = args as? [String: String] else { return .error(.badArgs, "set_fields values must be strings") }
+        // A Quick Connection's `enable` is a connect_start option behind the
+        // customer's confirm card, never a field (preflight F4).
+        guard !fields.keys.contains(where: { $0.lowercased() == "enable" }) else {
+            return .error(.badArgs, "enable is a connect_start option: the customer confirms it in the panel")
+        }
         switch await driver.setFields(fields) {
         case .success: return Self.result(ConnectDone())
         case let .failure(error): return Self.reply(error)
@@ -354,28 +407,42 @@ package final class ConnectRunController {
     }
 
     private func check(_ vendor: String, _ company: any ConnectCompanyDriving) async -> Reply {
-        let step: Step
-        if let current = checkStep {
-            guard current.vendor == vendor else { return .error(.busy, "a \(current.vendor ?? "") check is still running") }
-            step = current
-        } else {
-            step = Step(purpose: .check, vendor: vendor)
-            checkStep = step
-            waitingStep = Self.checkWaitStep
-            step.work = Task { [weak self] in
-                let reply = Self.reply(await company.check(vendor: vendor))
-                guard let self, self.checkStep === step else { return }
-                self.waitingStep = nil
-                self.finish(step, reply)
-            }
+        if let step = cardStep {
+            guard case .replaceCheck = step.purpose, step.vendor == vendor else { return Self.cardOpen }
+            return await attach(step)
         }
+        if let current = checkStep {
+            if current.vendor == vendor { return await attach(current) }
+            // A finished check of another vendor, collected or not, does not block this one.
+            guard current.outcome != nil else {
+                return .error(.busy, "a \(current.vendor ?? "") check is still running")
+            }
+            checkStep = nil
+        }
+        // A check that would replace a stored company asks the customer first (spec §5.4).
+        if let confirm = company.confirmNeeded(tool: "company_check", options: ["vendor": vendor]) {
+            return await attach(showCard(.confirm(confirm), purpose: .replaceCheck, vendor: vendor))
+        }
+        let step = Step(purpose: .check, vendor: vendor)
+        runCheck(step, vendor: vendor, company: company)
         return await attach(step)
+    }
+
+    private func runCheck(_ step: Step, vendor: String, company: any ConnectCompanyDriving) {
+        checkStep = step
+        waitingStep = Self.checkWaitStep
+        step.work = Task { [weak self] in
+            let reply = Self.reply(await company.check(vendor: vendor))
+            guard let self, self.checkStep === step else { return }
+            self.waitingStep = nil
+            self.finish(step, reply)
+        }
     }
 
     // MARK: - Steps
 
-    private func showCard(_ card: ConnectPendingCard, purpose: Step.Purpose) -> Step {
-        let step = Step(purpose: purpose)
+    private func showCard(_ card: ConnectPendingCard, purpose: Step.Purpose, vendor: String? = nil) -> Step {
+        let step = Step(purpose: purpose, vendor: vendor)
         cardStep = step
         pendingCard = card
         return step
@@ -444,6 +511,11 @@ package final class ConnectRunController {
 
     private static let closed = Reply.error(.closed, "the connect run has ended")
     private static let cardOpen = Reply.error(.busy, "the customer has a card open in the panel")
+    private static let stopped = Reply.error(.closed, "this run stopped waiting; the customer can press Retry")
+    /// The calls that open a card or wait on a step.
+    private static let stepTools: Set<String> = [
+        "connect_start", "connect_wait", "request_secret", "company_check", "company_publish"
+    ]
 
     private static func json(_ value: some Encodable) -> Data {
         (try? JSONEncoder().encode(value)) ?? Data("null".utf8)
@@ -522,6 +594,8 @@ private final class Step {
         case publish
         case flow
         case check
+        /// A company check behind the Replace confirm card.
+        case replaceCheck
     }
 
     enum Wake { case resolved, elapsed, closed, cancelled }
@@ -541,6 +615,9 @@ private final class Step {
         self.flowID = flowID
         self.vendor = vendor
     }
+
+    /// A call is held on the step right now.
+    var isHeld: Bool { !held.isEmpty }
 
     func addSpent(_ duration: Duration) { spent += duration }
 

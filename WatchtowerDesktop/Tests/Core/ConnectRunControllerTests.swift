@@ -440,6 +440,182 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(chosen, #"{"items":[{"id":"10","name":"Acme board","selected":true}]}"#)
     }
 
+    // MARK: - Review fixes
+
+    private let connected = #"{"account":"acme","state":"connected"}"#
+
+    /// A driver whose `wait` answers `.waiting` early is asked again while
+    /// the call is held; the call is not woken, so re-calls stay 45 s apart.
+    func testDriverEarlyWaitingKeepsCallHeld() async {
+        let driver = FakeConnectDriver()
+        driver.waitAnswers = [.waiting, .waiting, .waiting]
+        let controller = makeController(driver)
+        _ = await call(controller, "connect_start")
+        let held = hold(controller, "connect_wait")
+        for _ in 1...3 {
+            await clock.sleepers(2)  // the call's 45-s timer and the re-poll pause
+            clock.advance(by: ConnectRunController.repollPause)
+        }
+        await driver.until { driver.heldWait != nil }
+        driver.endWait(.connected(account: "acme"))
+        let answer = await held.value
+        XCTAssertEqual(answer, connected)
+        XCTAssertEqual(driver.waits, ["flow-1", "flow-1", "flow-1", "flow-1"])
+    }
+
+    func testSetFieldsRefusesEnable() async {
+        let driver = FakeConnectDriver(service: "quickConnections", secretKinds: [])
+        let controller = makeController(driver)
+        for args in [#"{"enable":"true"}"#, #"{"command":"acme-mcp","Enable":"yes"}"#] {
+            let answer = await call(controller, "set_fields", args)
+            XCTAssertEqual(answer, "error:bad_args", args)
+        }
+        XCTAssertTrue(driver.fields.isEmpty)
+        XCTAssertNil(controller.pendingCard)
+    }
+
+    func testCompanyCheckThatReplacesNeedsConfirm() async {
+        let company = FakeCompanyDriver()
+        company.confirms["company_check:slack"] = .companyReplace(company: "Acme")
+        let controller = makeController(company)
+        let held = hold(controller, "company_check", #"{"vendor":"slack"}"#)
+        await clock.sleepers(1)
+        XCTAssertEqual(controller.pendingCard, .confirm(.companyReplace(company: "Acme")))
+        XCTAssertTrue(company.checks.isEmpty)
+        let other = await call(controller, "company_publish")
+        XCTAssertEqual(other, "error:busy", "a card is open")
+
+        controller.answerConfirm(true)
+        XCTAssertNil(controller.pendingCard)
+        await company.until { company.isChecking }
+        XCTAssertEqual(company.checks, ["slack"])
+        company.endCheck(.success(Data(#"{"ok":true}"#.utf8)))
+        let answer = await held.value
+        XCTAssertEqual(answer, #"{"ok":true}"#)
+
+        let declined = hold(controller, "company_check", #"{"vendor":"slack"}"#)
+        await clock.sleepers(1)
+        controller.answerConfirm(false)
+        let declinedAnswer = await declined.value
+        XCTAssertEqual(declinedAnswer, #"{"state":"declined"}"#)
+        XCTAssertEqual(company.checks, ["slack"])
+    }
+
+    /// A flow that ends while no call is held keeps its answer for the next
+    /// `connect_wait`, even though the status no longer shows the flow.
+    func testFlowEndedBetweenCallsIsKept() async {
+        let driver = FakeConnectDriver()
+        let controller = makeController(driver)
+        _ = await call(controller, "connect_start")
+        let first = hold(controller, "connect_wait")
+        await clock.sleepers(1)
+        clock.advance(by: ConnectWire.waitBudget)
+        let firstAnswer = await first.value
+        XCTAssertEqual(firstAnswer, waiting)
+
+        driver.endWait(.connected(account: "acme"))
+        while controller.activeFlow != nil { await Task.yield() }
+        XCTAssertNil(driver.currentStatus.flow)
+        let second = await call(controller, "connect_wait")
+        XCTAssertEqual(second, connected)
+    }
+
+    /// The flow connects while the account count is still being read: the
+    /// call gets `connected` at once.
+    func testConnectedAnswerDoesNotWaitOnStatus() async {
+        let driver = FakeConnectDriver()
+        let controller = makeController(driver)
+        _ = await call(controller, "connect_start")
+        let held = hold(controller, "connect_wait")
+        await clock.sleepers(1)
+        driver.holdStatus = true
+        driver.endWait(.connected(account: "acme"))
+        await driver.until { !driver.heldStatus.isEmpty }
+        clock.advance(by: ConnectWire.waitBudget)
+        let answer = await held.value
+        XCTAssertEqual(answer, connected)
+        driver.releaseStatus()
+    }
+
+    func testNoNewCardAfterTimeout() async {
+        let driver = FakeConnectDriver()
+        let controller = makeController(driver)
+        await exhaust(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
+        for tool in ["request_secret", "connect_start", "connect_wait"] {
+            let answer = await call(controller, tool, tool == "request_secret" ? #"{"kind":"slack_config_token","label":"Again"}"# : "{}")
+            XCTAssertEqual(answer, "error:closed", tool)
+        }
+        XCTAssertNil(controller.pendingCard)
+        XCTAssertEqual(controller.state, .failed(.timedOut))
+        XCTAssertTrue(driver.starts.isEmpty)
+        let status = await call(controller, "connect_status")
+        XCTAssertTrue(status.hasPrefix("{"), "a read still answers")
+    }
+
+    func testEndWhileStatusPendingCreatesNoWait() async {
+        let driver = FakeConnectDriver()
+        driver.setFlow("flow-9")
+        driver.holdStatus = true
+        let controller = makeController(driver)
+        let held = hold(controller, "connect_wait")
+        await driver.until { !driver.heldStatus.isEmpty }
+        controller.end()
+        driver.releaseStatus()
+        let answer = await held.value
+        XCTAssertEqual(answer, "error:closed")
+        XCTAssertTrue(driver.waits.isEmpty)
+        XCTAssertNil(controller.activeFlow)
+    }
+
+    /// A flow adopted while the PKCE card was open: confirming starts no
+    /// second flow and costs no start.
+    func testConfirmedStartRechecksFlow() async {
+        let driver = pkceDriver()
+        let controller = makeController(driver)
+        let start = hold(controller, "connect_start", #"{"pkce":true}"#)
+        await clock.sleepers(1)
+        driver.setFlow("flow-9")
+        let flowWait = hold(controller, "connect_wait")
+        await clock.sleepers(2)
+        controller.answerConfirm(true)
+        let startAnswer = await start.value
+        XCTAssertEqual(startAnswer, "error:busy")
+        XCTAssertTrue(driver.starts.isEmpty)
+        XCTAssertEqual(controller.startsUsed, 0)
+        controller.end()
+        _ = await flowWait.value
+    }
+
+    func testStartNotBusyAfterFlowEndedElsewhere() async {
+        let driver = FakeConnectDriver()
+        let controller = makeController(driver)
+        let first = await call(controller, "connect_start")
+        XCTAssertEqual(first, #"{"flow_id":"flow-1"}"#)
+        driver.setFlow(nil)  // cancelled in another window
+        let second = await call(controller, "connect_start")
+        XCTAssertEqual(second, #"{"flow_id":"flow-2"}"#)
+        XCTAssertEqual(driver.starts.count, 2)
+    }
+
+    func testFinishedCheckDoesNotBlockOtherVendor() async {
+        let company = FakeCompanyDriver()
+        let controller = makeController(company)
+        let first = hold(controller, "company_check", #"{"vendor":"google"}"#)
+        await clock.sleepers(1)
+        clock.advance(by: ConnectWire.waitBudget)
+        let firstAnswer = await first.value
+        XCTAssertEqual(firstAnswer, waiting)
+        company.endCheck(.success(Data(#"{"ok":true}"#.utf8)))  // never collected
+        while controller.state != .thinking { await Task.yield() }
+
+        let second = hold(controller, "company_check", #"{"vendor":"atlassian"}"#)
+        await company.until { company.isChecking }
+        XCTAssertEqual(company.checks, ["google", "atlassian"])
+        company.endCheck(.success(Data(#"{"ok":"atlassian"}"#.utf8)))
+        let secondAnswer = await second.value
+        XCTAssertEqual(secondAnswer, #"{"ok":"atlassian"}"#)
+    }
+
     // MARK: - State
 
     func testStateMapping() async {
@@ -472,13 +648,16 @@ final class ConnectRunControllerTests: XCTestCase {
         _ = await connected.value
         XCTAssertEqual(controller.state, .done(accounts: 2, noun: .workspace))
 
-        // The driver's own `waiting` answers at once.
+        // The driver's own early `waiting` keeps the call held until its 45 s.
         _ = await call(controller, "connect_start")
         let quick = hold(controller, "connect_wait")
         await clock.sleepers(1)
         driver.endWait(.waiting)
+        await clock.sleepers(2)
+        clock.advance(by: ConnectWire.waitBudget)
         let quickAnswer = await quick.value
         XCTAssertEqual(quickAnswer, waiting)
+        controller.end()
 
         XCTAssertEqual(ConnectRunController.noun("jira"), .site)
         XCTAssertEqual(ConnectRunController.noun("google"), .account)
