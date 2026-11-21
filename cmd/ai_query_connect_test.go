@@ -50,6 +50,7 @@ func connectClaudeStub(t *testing.T, out string) string {
 out='%s'
 cat > /dev/null
 printf '%%s\n' "$@" > "$out/argv"
+env > "$out/env"
 while [ $# -gt 0 ]; do
   case "$1" in
     --mcp-config) cat "$2" > "$out/mcp" ;;
@@ -130,6 +131,9 @@ func TestAIQueryConnect_ClaudeBrowserRun(t *testing.T) {
 	assert.Contains(t, args, "--chrome")
 	assert.NotContains(t, string(argv), "tok-sample", "the token never rides argv")
 	assert.Contains(t, string(argv), "ai connect-guard --host 'api.slack.com' --host 'app.slack.com'")
+	env, err := os.ReadFile(filepath.Join(out, "env"))
+	require.NoError(t, err)
+	assert.Contains(t, string(env), connectwire.SocketEnv, "a run's child inherits them (the probe's does not)")
 
 	mcp, err := os.ReadFile(filepath.Join(out, "mcp"))
 	require.NoError(t, err)
@@ -178,6 +182,13 @@ func TestAIQueryConnect_ProbeRun(t *testing.T) {
 	assert.NotContains(t, string(argv), "connect-guard")
 	_, err = os.Stat(filepath.Join(out, "mcp"))
 	assert.True(t, os.IsNotExist(err), "no MCP config reached the child")
+	assert.Contains(t, strings.Split(args[slices.Index(args, "--disallowedTools")+1], ","), ai.BrowserNavigateTool)
+
+	env, err := os.ReadFile(filepath.Join(out, "env"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(env), connectwire.SocketEnv, "set in the parent, dropped for the probe child")
+	assert.NotContains(t, string(env), connectwire.TokenEnv)
+	assert.NotContains(t, string(env), "tok-sample")
 
 	system, err := os.ReadFile(filepath.Join(out, "system"))
 	require.NoError(t, err)

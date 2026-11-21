@@ -122,9 +122,12 @@ func TestClaudeArgs_BrowserProbe(t *testing.T) {
 	assert.Zero(t, count(args, "--mcp-config"), "no MCP server of ours")
 	assert.Zero(t, count(args, "--settings"), "no navigate allowed, so no host guard")
 	disallowed := strings.Split(flagValue(t, args, "--disallowedTools"), ",")
-	for _, tool := range strings.Split(BrowserDeniedTools, ",") {
-		assert.Contains(t, disallowed, tool)
+	require.Len(t, browserToolNames, 20, "the S1/S3 init listed 20 Claude in Chrome tools")
+	for _, name := range browserToolNames {
+		tool := "mcp__claude-in-chrome__" + name
+		assert.Equal(t, tool != BrowserProbeTool, slices.Contains(disallowed, tool), tool)
 	}
+	assert.Contains(t, disallowed, BrowserNavigateTool, "navigate has no host guard here: hidden")
 	joined := strings.Join(append(slices.Clone(args), payloads...), "\n")
 	for _, s := range []string{"tok-sample", "/tmp/connect.sock", "mcp__watchtower", "--connect"} {
 		assert.NotContains(t, joined, s)

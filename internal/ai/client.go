@@ -437,7 +437,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 		// The deny list is defence in depth behind --tools: it keeps every
 		// known built-in hidden even if a CLI release stopped honouring the
 		// allowlist. A read-folder run unhides only the file reads.
-		"--disallowedTools", c.withStreamTools(c.withBrowserTools(WithExternalDisallowed(c.disallowedTools(), c.externalServers), BrowserDeniedTools), c.streamHooks.ExtraDisallowed),
+		"--disallowedTools", c.withStreamTools(c.withBrowserTools(WithExternalDisallowed(c.disallowedTools(), c.externalServers), c.browserDeniedTools()), c.streamHooks.ExtraDisallowed),
 		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
 		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
 		// those probes trigger macOS TCC prompts attributed to Watchtower.app.

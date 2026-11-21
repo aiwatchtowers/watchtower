@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/connectplay"
+	"watchtower/internal/connectwire"
 	"watchtower/internal/providers"
 	"watchtower/internal/providers/caps"
 )
@@ -71,6 +73,20 @@ func connectProbeCheck(provider string) error {
 			fmt.Errorf("the %s provider has no browser to probe", providers.ByID(provider).ID))
 	}
 	return nil
+}
+
+// connectProbeEnv is the probe child's environment: this process's,
+// without the connect run's socket and token (the Desktop does not send
+// them to a probe; a parent that has them keeps them to itself).
+func connectProbeEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if name != connectwire.SocketEnv && name != connectwire.TokenEnv {
+			env = append(env, kv)
+		}
+	}
+	return env
 }
 
 // connectGuides reports whether a provider's agent can guide a connection.

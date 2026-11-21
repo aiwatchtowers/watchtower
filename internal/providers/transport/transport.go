@@ -50,6 +50,10 @@ type Options struct {
 	// with its list_connected_browsers tool only and no MCP server of ours.
 	// Set only for a provider whose Caps.Connect is browser.
 	BrowserProbe bool
+	// ChildEnv replaces the environment the provider child inherits (nil =
+	// this process's): the probe's child goes without the connect socket
+	// and token. A transport that cannot set it ignores it.
+	ChildEnv []string
 	// ExternalMCP are the owner's Quick Connections mounted beside the
 	// watchtower server; nil = none.
 	ExternalMCP []ai.ExternalMCPServer
@@ -151,6 +155,9 @@ func newClaudeQuerier(o Options) ai.Provider {
 	c.SetBrowser(o.Browser)
 	c.SetBrowserHosts(o.BrowserHosts)
 	c.SetBrowserProbe(o.BrowserProbe)
+	if o.ChildEnv != nil {
+		c.SetChildEnv(o.ChildEnv)
+	}
 	if o.ExternalMCP != nil {
 		c.SetExternalMCPServers(o.ExternalMCP)
 	}
