@@ -37,11 +37,24 @@ class FakeConnectDriver: ConnectServiceDriving {
         currentStatus = ConnectStatus(service: service)
     }
 
-    /// Returns once `condition` holds.
+    /// Returns once `condition` holds, or the test gave the run up (`abandon`).
     func until(_ condition: @escaping () -> Bool) async {
-        if condition() { return }
+        if abandoned || condition() { return }
         await withCheckedContinuation { watchers.append((condition, $0)) }
     }
+
+    /// The test already failed: every `until` returns from now on and the
+    /// held start and status go on, so the test ends instead of waiting for ever.
+    func abandon() {
+        abandoned = true
+        let waiting = watchers
+        watchers = []
+        waiting.forEach { $0.continuation.resume() }
+        releaseStart()
+        releaseStatus()
+    }
+
+    private var abandoned = false
 
     func changed() {
         let ready = watchers.filter { $0.condition() }
@@ -264,8 +277,8 @@ final class FakeProbingDriver: FakeConnectDriver, ConnectLiveProbing {
     }
 }
 
-/// A clock that moves only when the test advances it. `sleepers(_:)` waits,
-/// without real time, until that many sleeps are registered.
+/// A clock that moves only when the test advances it. `sleepers(_:orAnswer:)`
+/// waits, without real time, until that many sleeps are registered.
 final class ConnectTestClock: Clock, @unchecked Sendable {
     struct Instant: InstantProtocol {
         var offset: Duration
@@ -278,7 +291,7 @@ final class ConnectTestClock: Clock, @unchecked Sendable {
     private let lock = NSLock()
     private var current = Instant(offset: .zero)
     private var sleeping: [UUID: (deadline: Instant, continuation: CheckedContinuation<Void, Error>)] = [:]
-    private var watchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var watchers: [(id: UUID, count: Int, fire: @Sendable () -> Void)] = []
 
     var now: Instant { lock.withLock { current } }
     var minimumResolution: Duration { .zero }
@@ -296,7 +309,7 @@ final class ConnectTestClock: Clock, @unchecked Sendable {
                 sleeping[id] = (deadline, continuation)
                 let ready = takeWatchers()
                 lock.unlock()
-                ready.forEach { $0.resume() }
+                ready.forEach { $0() }
                 // A cancel that landed before the sleep was registered found
                 // nothing to remove: end the sleep here instead.
                 if Task.isCancelled {
@@ -320,20 +333,35 @@ final class ConnectTestClock: Clock, @unchecked Sendable {
         due.values.forEach { $0.continuation.resume() }
     }
 
-    /// Returns once at least `count` sleeps are registered.
-    func sleepers(_ count: Int) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+    /// Returns nil once at least `count` sleeps are registered, or the answer
+    /// of the first of `calls` that ends before then. A call the test holds
+    /// registers its timer only while it is held: one the controller answered
+    /// at once registers none, and a bare wait for its timer would never end.
+    func sleepers<Answer: Sendable>(_ count: Int, orAnswer calls: [Task<Answer, Never>]) async -> Answer? {
+        let id = UUID()
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Answer?, Never>) in
             lock.lock()
-            watchers.append((count, continuation))
+            watchers.append((id, count, { continuation.resume(returning: nil) }))
             let ready = takeWatchers()
             lock.unlock()
-            ready.forEach { $0.resume() }
+            ready.forEach { $0() }
+            for call in calls {
+                Task {
+                    let answer = await call.value
+                    let pending = lock.withLock {
+                        guard let index = watchers.firstIndex(where: { $0.id == id }) else { return false }
+                        watchers.remove(at: index)
+                        return true
+                    }
+                    if pending { continuation.resume(returning: answer) }
+                }
+            }
         }
     }
 
     /// Called under the lock.
-    private func takeWatchers() -> [CheckedContinuation<Void, Never>] {
-        let ready = watchers.filter { $0.count <= sleeping.count }.map(\.continuation)
+    private func takeWatchers() -> [@Sendable () -> Void] {
+        let ready = watchers.filter { $0.count <= sleeping.count }.map(\.fire)
         watchers.removeAll { $0.count <= sleeping.count }
         return ready
     }

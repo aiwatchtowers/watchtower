@@ -9,17 +9,40 @@ import XCTest
 @MainActor
 final class ConnectRunControllerTests: XCTestCase {
     private var clock = ConnectTestClock()
+    private var runs: [(controller: ConnectRunController, driver: FakeConnectDriver)] = []
 
     override func setUp() async throws {
         try await super.setUp()
         clock = ConnectTestClock()
+        runs = []
     }
 
     // MARK: - Fixtures
 
     private func makeController(_ driver: FakeConnectDriver) -> ConnectRunController {
-        ConnectRunController(driver: driver, clock: clock)
+        let controller = ConnectRunController(driver: driver, clock: clock)
+        runs.append((controller, driver))
+        return controller
     }
+
+    /// Returns once the clock has `count` sleeps registered (the timers of
+    /// the calls the test holds). A call of `calls` answered first was never
+    /// held: the test fails then and gives up its runs, so every call still
+    /// held answers `closed`, and throws, so the test stops at this point
+    /// instead of reaching a later wait that a closed run never satisfies.
+    private func whenHeld<Answer: Sendable>(
+        _ calls: Task<Answer, Never>..., sleepers count: Int = 1, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        guard let answer = await clock.sleepers(count, orAnswer: calls) else { return }
+        XCTFail("a call the test holds was answered at once: \(answer)", file: file, line: line)
+        for run in runs {
+            run.controller.end()
+            run.driver.abandon()
+        }
+        throw NotHeld()
+    }
+
+    private struct NotHeld: Error {}
 
     private func request(_ tool: String, _ args: String = "{}") -> ConnectWireRequest {
         ConnectWireRequest(id: 7, tool: tool, args: Data(args.utf8))
@@ -99,11 +122,11 @@ final class ConnectRunControllerTests: XCTestCase {
 
     // MARK: - Confirm cards
 
-    func testNoToolResolvesConfirm() async {
+    func testNoToolResolvesConfirm() async throws {
         let driver = pkceDriver()
         let controller = makeController(driver)
         let first = hold(controller, "connect_start", #"{"pkce":true}"#)
-        await clock.sleepers(1)
+        try await whenHeld(first)
         XCTAssertEqual(controller.pendingCard, .confirm(.slackPKCE))
         XCTAssertEqual(controller.state, .confirm(.slackPKCE))
 
@@ -116,7 +139,7 @@ final class ConnectRunControllerTests: XCTestCase {
         }
         // A second connect_start re-attaches to the same card.
         let second = hold(controller, "connect_start", #"{"confirm":true}"#)
-        await clock.sleepers(2)
+        try await whenHeld(second, sleepers: 2)
         XCTAssertEqual(controller.pendingCard, .confirm(.slackPKCE))
         XCTAssertTrue(driver.starts.isEmpty)
         XCTAssertEqual(controller.startsUsed, 0)
@@ -131,11 +154,11 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(controller.startsUsed, 1)
     }
 
-    func testDeclinedConfirmStartsNothing() async {
+    func testDeclinedConfirmStartsNothing() async throws {
         let driver = pkceDriver()
         let controller = makeController(driver)
         let held = hold(controller, "connect_start", #"{"pkce":true}"#)
-        await clock.sleepers(1)
+        try await whenHeld(held)
         controller.answerConfirm(false)
         let answer = await held.value
         XCTAssertEqual(answer, #"{"state":"declined"}"#)
@@ -144,11 +167,11 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertNil(controller.pendingCard)
     }
 
-    func testConfirmWaitReturnsWaitingAfterBudget() async {
+    func testConfirmWaitReturnsWaitingAfterBudget() async throws {
         let driver = pkceDriver()
         let controller = makeController(driver)
         let first = hold(controller, "connect_start", #"{"pkce":true}"#)
-        await clock.sleepers(1)
+        try await whenHeld(first)
         clock.advance(by: ConnectWire.waitBudget)
         let firstAnswer = await first.value
         XCTAssertEqual(firstAnswer, waiting)
@@ -156,7 +179,7 @@ final class ConnectRunControllerTests: XCTestCase {
 
         // The re-call holds on the same card; at 44 s it is still held.
         let second = hold(controller, "connect_start", #"{"pkce":true}"#)
-        await clock.sleepers(1)
+        try await whenHeld(second)
         clock.advance(by: .seconds(44))
         controller.answerConfirm(true)
         let secondAnswer = await second.value
@@ -166,10 +189,10 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// Re-calls `tool` until the step's budget is spent: 19 `waiting`
     /// answers, then `timeout` on the 20th (15 minutes of 45-s calls).
-    private func exhaust(_ controller: ConnectRunController, _ tool: String, _ args: String) async {
+    private func exhaust(_ controller: ConnectRunController, _ tool: String, _ args: String) async throws {
         for n in 1...ConnectRunController.maxCallsPerStep {
             let held = hold(controller, tool, args)
-            await clock.sleepers(1)
+            try await whenHeld(held)
             clock.advance(by: ConnectWire.waitBudget)
             let answer = await held.value
             XCTAssertEqual(answer, n < ConnectRunController.maxCallsPerStep ? waiting : timeout, "\(tool) call \(n)")
@@ -178,18 +201,18 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertNil(controller.pendingCard)
     }
 
-    func testWaitBudgetExhaustedEndsWithTimeout() async {
+    func testWaitBudgetExhaustedEndsWithTimeout() async throws {
         // A confirm-gated call.
         let confirmDriver = pkceDriver()
         let confirmRun = makeController(confirmDriver)
-        await exhaust(confirmRun, "connect_start", #"{"pkce":true}"#)
+        try await exhaust(confirmRun, "connect_start", #"{"pkce":true}"#)
         confirmRun.answerConfirm(true)  // the card is gone: nothing starts
         XCTAssertTrue(confirmDriver.starts.isEmpty)
 
         // request_secret.
         let secretDriver = FakeConnectDriver()
         let secretRun = makeController(secretDriver)
-        await exhaust(secretRun, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
+        try await exhaust(secretRun, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
         secretRun.sendSecret("late")
         XCTAssertTrue(secretDriver.secrets.isEmpty)
 
@@ -197,7 +220,7 @@ final class ConnectRunControllerTests: XCTestCase {
         let flowDriver = FakeConnectDriver()
         let flowRun = makeController(flowDriver)
         _ = await call(flowRun, "connect_start")
-        await exhaust(flowRun, "connect_wait", "{}")
+        try await exhaust(flowRun, "connect_wait", "{}")
         XCTAssertEqual(flowDriver.waits, ["flow-1"])
         XCTAssertEqual(flowDriver.cancels, ["flow-1"])
         XCTAssertNil(flowRun.activeFlow)
@@ -206,11 +229,11 @@ final class ConnectRunControllerTests: XCTestCase {
 
     // MARK: - Secrets
 
-    func testRequestSecretReturnsOnlyAfterSend() async {
+    func testRequestSecretReturnsOnlyAfterSend() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         let held = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Configuration access token"}"#)
-        await clock.sleepers(1)
+        try await whenHeld(held)
         XCTAssertEqual(controller.pendingCard, .secret(kind: "slack_config_token", label: "Configuration access token"))
         XCTAssertEqual(controller.state, .secret(label: "Configuration access token"))
         clock.advance(by: .seconds(44))
@@ -223,11 +246,11 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertNil(controller.pendingCard)
     }
 
-    func testCancelledSecretCard() async {
+    func testCancelledSecretCard() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         let held = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
-        await clock.sleepers(1)
+        try await whenHeld(held)
         controller.cancelSecret()
         let answer = await held.value
         XCTAssertEqual(answer, #"{"state":"cancelled"}"#)
@@ -256,11 +279,11 @@ final class ConnectRunControllerTests: XCTestCase {
     /// F3 relaxed: the company's Slack step takes the configuration token
     /// through request_secret; an existing app's update waits on the
     /// customer's confirm card on the same step.
-    func testCompanySlackTokenThenUpdateConfirm() async {
+    func testCompanySlackTokenThenUpdateConfirm() async throws {
         let company = FakeConfirmingCompanyDriver()
         let controller = makeController(company)
         let held = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
-        await clock.sleepers(1)
+        try await whenHeld(held)
         XCTAssertEqual(controller.pendingCard, .secret(kind: "slack_config_token", label: "Token"))
         let update = ConnectAssistantConfirm.slackUpdate(changes: ["Turn on PKCE sign-in"], pkce: true)
         company.secretConfirms["slack_config_token"] = update
@@ -274,7 +297,7 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(company.confirmAnswers, [true])
 
         let declined = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
-        await clock.sleepers(1)
+        try await whenHeld(declined)
         company.secretConfirms["slack_config_token"] = update
         controller.sendSecret("xoxe-sample")
         await untilObserved { controller.pendingCard == .confirm(update) }
@@ -285,20 +308,20 @@ final class ConnectRunControllerTests: XCTestCase {
     }
 
     /// The update card up: a held `request_secret` and the card, after the token went in.
-    private func updateCardUp(_ company: FakeConfirmingCompanyDriver, _ controller: ConnectRunController) async
+    private func updateCardUp(_ company: FakeConfirmingCompanyDriver, _ controller: ConnectRunController) async throws
         -> Task<String, Never> {
         let held = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
-        await clock.sleepers(1)
+        try await whenHeld(held)
         company.secretConfirms["slack_config_token"] = .slackUpdate(changes: [], pkce: false)
         controller.sendSecret("xoxe-sample")
         await untilObserved { controller.pendingCard == .confirm(.slackUpdate(changes: [], pkce: false)) }
         return held
     }
 
-    func testUpdateCardBlocksOtherCards() async {
+    func testUpdateCardBlocksOtherCards() async throws {
         let company = FakeConfirmingCompanyDriver()
         let controller = makeController(company)
-        let held = await updateCardUp(company, controller)
+        let held = try await updateCardUp(company, controller)
         let publish = await call(controller, "company_publish")
         XCTAssertEqual(publish, "error:busy", "the customer has a card open")
         let other = await call(controller, "request_secret", #"{"kind":"google_client_secret","label":"Secret"}"#)
@@ -307,10 +330,10 @@ final class ConnectRunControllerTests: XCTestCase {
         _ = await held.value
     }
 
-    func testRunEndDropsTheUpdateCard() async {
+    func testRunEndDropsTheUpdateCard() async throws {
         let company = FakeConfirmingCompanyDriver()
         let controller = makeController(company)
-        let held = await updateCardUp(company, controller)
+        let held = try await updateCardUp(company, controller)
         controller.end()
         let answer = await held.value
         XCTAssertEqual(answer, "error:closed")
@@ -318,16 +341,16 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertTrue(company.confirmAnswers.isEmpty)
     }
 
-    func testTimeoutDropsTheUpdateCard() async {
+    func testTimeoutDropsTheUpdateCard() async throws {
         let company = FakeConfirmingCompanyDriver()
         let controller = makeController(company)
-        let held = await updateCardUp(company, controller)
+        let held = try await updateCardUp(company, controller)
         clock.advance(by: ConnectWire.waitBudget)
         var answer = await held.value
         // Re-calls spend the card's own budget until it times out.
         for _ in 0...ConnectRunController.maxCallsPerStep where answer == waiting {
             let next = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
-            await clock.sleepers(1)
+            try await whenHeld(next)
             clock.advance(by: ConnectWire.waitBudget)
             answer = await next.value
         }
@@ -336,11 +359,11 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(company.dropped, ["slack_config_token"])
     }
 
-    func testReadFinishedAfterEndIsDropped() async {
+    func testReadFinishedAfterEndIsDropped() async throws {
         let company = FakeConfirmingCompanyDriver()
         let controller = makeController(company)
         let held = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
-        await clock.sleepers(1)
+        try await whenHeld(held)
         company.holdSubmit = true
         company.secretConfirms["slack_config_token"] = .slackUpdate(changes: [], pkce: false)
         controller.sendSecret("xoxe-sample")
@@ -354,12 +377,12 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertNil(controller.pendingCard)
     }
 
-    func testCompanyPublishWithoutSlackNeedsNoToken() async {
+    func testCompanyPublishWithoutSlackNeedsNoToken() async throws {
         let company = FakeCompanyDriver()
         company.publishNeedsToken = false
         let controller = makeController(company)
         let held = hold(controller, "company_publish")
-        await clock.sleepers(1)
+        try await whenHeld(held)
         controller.answerConfirm(true)
         let answer = await held.value
         XCTAssertEqual(answer, #"{"published":true}"#)
@@ -378,7 +401,7 @@ final class ConnectRunControllerTests: XCTestCase {
         var lines: [Data] = []
         let req = request("request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
         let held = Task { await controller.handle(req) }
-        await clock.sleepers(1)
+        try await whenHeld(held)
         controller.sendSecret(secret)
         lines.append(try ConnectWire.line(await held.value))
         for tool in ["connect_status", "connect_start"] {
@@ -397,13 +420,13 @@ final class ConnectRunControllerTests: XCTestCase {
 
     // MARK: - Run end, panel close, reopen
 
-    func testRunEndDropsCardsAndClosesWaits() async {
+    func testRunEndDropsCardsAndClosesWaits() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let flowWait = hold(controller, "connect_wait")
         let secret = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
-        await clock.sleepers(2)
+        try await whenHeld(flowWait, secret, sleepers: 2)
         XCTAssertNotNil(controller.pendingCard)
 
         controller.end()
@@ -424,18 +447,18 @@ final class ConnectRunControllerTests: XCTestCase {
     /// The server cancels a call whose peer hung up (the panel closed mid
     /// turn): the call ends at once, the step stays, and the next turn's
     /// call re-attaches to the same driver wait.
-    func testCancelledCallLeavesStepForNextTurn() async {
+    func testCancelledCallLeavesStepForNextTurn() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let first = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(first)
         first.cancel()
         let firstAnswer = await first.value
         XCTAssertEqual(firstAnswer, "error:closed")
 
         let second = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(second)
         await driver.until { driver.isWaiting }
         driver.endWait(.connected(account: "acme"))
         let secondAnswer = await second.value
@@ -445,7 +468,7 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// Reopening the panel builds a new run; `connect_status` shows the flow
     /// the last one left, and `connect_wait` resumes it.
-    func testReopenResumesFromStatus() async {
+    func testReopenResumesFromStatus() async throws {
         let driver = FakeConnectDriver()
         driver.currentStatus = ConnectStatus(
             service: "slack", flow: .init(id: "flow-9", state: "waiting_callback"), setup: .init(stage: "pending_create"))
@@ -454,7 +477,7 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(status, #"{"accounts":[],"flow":{"id":"flow-9","state":"waiting_callback"},"policy_locked":false,"#
             + #""service":"slack","setup":{"stage":"pending_create"}}"#)
         let held = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(held)
         await driver.until { driver.isWaiting }
         XCTAssertEqual(driver.waits, ["flow-9"])
         driver.currentStatus = ConnectStatus(service: "slack", accounts: [.init(name: "acme", status: "connected")])
@@ -482,11 +505,11 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertFalse(read.contains(#""client_secret":"#))
     }
 
-    func testCompanyPublishConfirmThenTokenCard() async {
+    func testCompanyPublishConfirmThenTokenCard() async throws {
         let company = FakeCompanyDriver()
         let controller = makeController(company)
         let held = hold(controller, "company_publish")
-        await clock.sleepers(1)
+        try await whenHeld(held)
         XCTAssertEqual(controller.pendingCard, .confirm(.companyPublish(company: "Acme")))
         controller.answerConfirm(true)
         XCTAssertEqual(controller.pendingCard, .secret(kind: "slack_config_token", label: ConnectRunController.publishTokenLabel))
@@ -498,18 +521,18 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertTrue(company.secrets.isEmpty, "the token goes to publish, not submitSecret")
 
         let declined = hold(controller, "company_publish")
-        await clock.sleepers(1)
+        try await whenHeld(declined)
         controller.answerConfirm(false)
         let declinedAnswer = await declined.value
         XCTAssertEqual(declinedAnswer, #"{"state":"declined"}"#)
         XCTAssertEqual(company.published.count, 1)
     }
 
-    func testCompanyCheckWaitsAndReattaches() async {
+    func testCompanyCheckWaitsAndReattaches() async throws {
         let company = FakeCompanyDriver()
         let controller = makeController(company)
         let first = hold(controller, "company_check", #"{"vendor":"google"}"#)
-        await clock.sleepers(1)
+        try await whenHeld(first)
         XCTAssertEqual(controller.state, .waiting(step: ConnectRunController.checkWaitStep))
         clock.advance(by: ConnectWire.waitBudget)
         let firstAnswer = await first.value
@@ -518,7 +541,7 @@ final class ConnectRunControllerTests: XCTestCase {
         let other = await call(controller, "company_check", #"{"vendor":"atlassian"}"#)
         XCTAssertEqual(other, "error:busy")
         let second = hold(controller, "company_check", #"{"vendor":"google"}"#)
-        await clock.sleepers(1)
+        try await whenHeld(second)
         company.endCheck(.success(Data(#"{"ok":true}"#.utf8)))
         let secondAnswer = await second.value
         XCTAssertEqual(secondAnswer, #"{"ok":true}"#)
@@ -576,14 +599,14 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// A driver whose `wait` answers `.waiting` early is asked again while
     /// the call is held; the call is not woken, so re-calls stay 45 s apart.
-    func testDriverEarlyWaitingKeepsCallHeld() async {
+    func testDriverEarlyWaitingKeepsCallHeld() async throws {
         let driver = FakeConnectDriver()
         driver.waitAnswers = [.waiting, .waiting, .waiting]
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let held = hold(controller, "connect_wait")
         for _ in 1...3 {
-            await clock.sleepers(2)  // the call's 45-s timer and the re-poll pause
+            try await whenHeld(held, sleepers: 2)  // the call's 45-s timer and the re-poll pause
             clock.advance(by: ConnectRunController.repollPause)
         }
         await driver.until { driver.isWaiting }
@@ -604,12 +627,12 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertNil(controller.pendingCard)
     }
 
-    func testCompanyCheckThatReplacesNeedsConfirm() async {
+    func testCompanyCheckThatReplacesNeedsConfirm() async throws {
         let company = FakeCompanyDriver()
         company.confirms["company_check:slack"] = .companyReplace(company: "Acme")
         let controller = makeController(company)
         let held = hold(controller, "company_check", #"{"vendor":"slack"}"#)
-        await clock.sleepers(1)
+        try await whenHeld(held)
         XCTAssertEqual(controller.pendingCard, .confirm(.companyReplace(company: "Acme")))
         XCTAssertTrue(company.checks.isEmpty)
         let other = await call(controller, "company_publish")
@@ -624,7 +647,7 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(answer, #"{"ok":true}"#)
 
         let declined = hold(controller, "company_check", #"{"vendor":"slack"}"#)
-        await clock.sleepers(1)
+        try await whenHeld(declined)
         controller.answerConfirm(false)
         let declinedAnswer = await declined.value
         XCTAssertEqual(declinedAnswer, #"{"state":"declined"}"#)
@@ -633,12 +656,12 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// A flow that ends while no call is held keeps its answer for the next
     /// `connect_wait`, even though the status no longer shows the flow.
-    func testFlowEndedBetweenCallsIsKept() async {
+    func testFlowEndedBetweenCallsIsKept() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let first = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(first)
         clock.advance(by: ConnectWire.waitBudget)
         let firstAnswer = await first.value
         XCTAssertEqual(firstAnswer, waiting)
@@ -653,12 +676,12 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// The flow connects while the account count is still being read: the
     /// call gets `connected` at once.
-    func testConnectedAnswerDoesNotWaitOnStatus() async {
+    func testConnectedAnswerDoesNotWaitOnStatus() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let held = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(held)
         await driver.until { driver.isWaiting }
         driver.holdStatus = true
         driver.endWait(.connected(account: "acme"))
@@ -669,10 +692,10 @@ final class ConnectRunControllerTests: XCTestCase {
         driver.releaseStatus()
     }
 
-    func testNoNewCardAfterTimeout() async {
+    func testNoNewCardAfterTimeout() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
-        await exhaust(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
+        try await exhaust(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
         for tool in ["request_secret", "connect_start", "connect_wait"] {
             let answer = await call(controller, tool, tool == "request_secret" ? #"{"kind":"slack_config_token","label":"Again"}"# : "{}")
             XCTAssertEqual(answer, "error:closed", tool)
@@ -701,14 +724,14 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// A flow adopted while the PKCE card was open: confirming starts no
     /// second flow and costs no start.
-    func testConfirmedStartRechecksFlow() async {
+    func testConfirmedStartRechecksFlow() async throws {
         let driver = pkceDriver()
         let controller = makeController(driver)
         let start = hold(controller, "connect_start", #"{"pkce":true}"#)
-        await clock.sleepers(1)
+        try await whenHeld(start)
         driver.setFlow("flow-9")
         let flowWait = hold(controller, "connect_wait")
-        await clock.sleepers(2)
+        try await whenHeld(flowWait, sleepers: 2)
         controller.answerConfirm(true)
         let startAnswer = await start.value
         XCTAssertEqual(startAnswer, "error:busy")
@@ -729,11 +752,11 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(driver.starts.count, 2)
     }
 
-    func testFinishedCheckDoesNotBlockOtherVendor() async {
+    func testFinishedCheckDoesNotBlockOtherVendor() async throws {
         let company = FakeCompanyDriver()
         let controller = makeController(company)
         let first = hold(controller, "company_check", #"{"vendor":"google"}"#)
-        await clock.sleepers(1)
+        try await whenHeld(first)
         clock.advance(by: ConnectWire.waitBudget)
         let firstAnswer = await first.value
         XCTAssertEqual(firstAnswer, waiting)
@@ -774,12 +797,12 @@ final class ConnectRunControllerTests: XCTestCase {
     /// The flow ended elsewhere while a connect_wait was held on it: a newer
     /// start that succeeds answers that call `failed` and retires its wait,
     /// so it cannot time the run out; the new flow gets a wait of its own.
-    func testReconciledFlowAnswersHeldWait() async {
+    func testReconciledFlowAnswersHeldWait() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let old = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(old)
         await driver.until { driver.isWaiting }
         driver.setFlow(nil)  // cancelled in another window; the driver's wait has not noticed
         let started = await call(controller, "connect_start")
@@ -788,7 +811,7 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(oldAnswer, #"{"reason":"a newer sign-in replaced this one","state":"failed"}"#)
 
         let new = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(new)
         await driver.until { driver.isWaiting(on: "flow-2") }
         driver.endWait(.connected(account: "acme"))
         let newAnswer = await new.value
@@ -799,12 +822,12 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// A status without the flow, read while its wait runs, is no failure:
     /// the wait's own `connected` answers the held call.
-    func testFlowLeavingStatusKeepsItsWait() async {
+    func testFlowLeavingStatusKeepsItsWait() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let held = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(held)
         await driver.until { driver.isWaiting }
         driver.setFlow(nil)  // the sign-in finished and left the status first
         driver.currentStatus = ConnectStatus(service: "slack", accounts: [.init(name: "acme", status: "connected")])
@@ -822,12 +845,12 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// A newer flow that starts and is cancelled before any wait does not
     /// bring back the older flow's uncollected answer.
-    func testOldAnswerGoneAfterNewerStartCancelled() async {
+    func testOldAnswerGoneAfterNewerStartCancelled() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let first = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(first)
         clock.advance(by: ConnectWire.waitBudget)
         _ = await first.value
         await driver.until { driver.isWaiting }
@@ -843,12 +866,12 @@ final class ConnectRunControllerTests: XCTestCase {
     }
 
     /// An older flow's uncollected answer is never replayed for a newer flow.
-    func testOldFlowAnswerNotReplayedForNewFlow() async {
+    func testOldFlowAnswerNotReplayedForNewFlow() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let first = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(first)
         clock.advance(by: ConnectWire.waitBudget)
         _ = await first.value
         await driver.until { driver.isWaiting }
@@ -858,7 +881,7 @@ final class ConnectRunControllerTests: XCTestCase {
         let started = await call(controller, "connect_start")
         XCTAssertEqual(started, #"{"flow_id":"flow-2"}"#)
         let held = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(held)
         await driver.until { driver.isWaiting(on: "flow-2") }
         driver.endWait(.connected(account: "acme"))
         let answer = await held.value
@@ -867,11 +890,11 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// Starts flow-1, spends all but the last call of its wait's budget,
     /// then lets the status drop the flow (`connect_status` forgets it).
-    private func flowLeftStatusWithOneCallLeft(_ controller: ConnectRunController, _ driver: FakeConnectDriver) async {
+    private func flowLeftStatusWithOneCallLeft(_ controller: ConnectRunController, _ driver: FakeConnectDriver) async throws {
         _ = await call(controller, "connect_start")
         for _ in 1..<ConnectRunController.maxCallsPerStep {
             let held = hold(controller, "connect_wait")
-            await clock.sleepers(1)
+            try await whenHeld(held)
             clock.advance(by: ConnectWire.waitBudget)
             let answer = await held.value
             XCTAssertEqual(answer, waiting)
@@ -884,14 +907,14 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// The old flow's wait runs out while the replacement's confirm card is
     /// open: only the old wait ends; the card and the run stay.
-    func testOldWaitTimeoutLeavesReplacementConfirm() async {
+    func testOldWaitTimeoutLeavesReplacementConfirm() async throws {
         let driver = pkceDriver()
         let controller = makeController(driver)
-        await flowLeftStatusWithOneCallLeft(controller, driver)
+        try await flowLeftStatusWithOneCallLeft(controller, driver)
         let start = hold(controller, "connect_start", #"{"pkce":true}"#)
-        await clock.sleepers(1)
+        try await whenHeld(start)
         let old = hold(controller, "connect_wait")
-        await clock.sleepers(2)
+        try await whenHeld(old, sleepers: 2)
         clock.advance(by: ConnectWire.waitBudget)
         let oldAnswer = await old.value
         XCTAssertEqual(oldAnswer, timeout)
@@ -902,7 +925,7 @@ final class ConnectRunControllerTests: XCTestCase {
         guard controller.failure == nil else { return }  // no card left to re-attach to
 
         let again = hold(controller, "connect_start", #"{"pkce":true}"#)  // re-attaches to the card
-        await clock.sleepers(1)
+        try await whenHeld(again)
         controller.answerConfirm(true)
         let started = await again.value
         XCTAssertEqual(started, #"{"flow_id":"flow-2"}"#)
@@ -912,15 +935,15 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// The old flow's wait runs out while the replacement start is on the
     /// driver: the start lands in a live run.
-    func testOldWaitTimeoutLeavesReplacementStartInFlight() async {
+    func testOldWaitTimeoutLeavesReplacementStartInFlight() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
-        await flowLeftStatusWithOneCallLeft(controller, driver)
+        try await flowLeftStatusWithOneCallLeft(controller, driver)
         driver.holdStart = true
         let start = hold(controller, "connect_start")
         await driver.until { driver.isStarting }
         let old = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(old)
         clock.advance(by: ConnectWire.waitBudget)
         let oldAnswer = await old.value
         XCTAssertEqual(oldAnswer, timeout)
@@ -939,19 +962,19 @@ final class ConnectRunControllerTests: XCTestCase {
     /// The customer declined the replacement's card, but the agent has not
     /// collected that answer: no replacement will start, so the old wait's
     /// timeout fails the run and cancels the old flow.
-    func testOldWaitTimeoutAfterDeclinedReplacementFailsRun() async {
+    func testOldWaitTimeoutAfterDeclinedReplacementFailsRun() async throws {
         let driver = pkceDriver()
         let controller = makeController(driver)
-        await flowLeftStatusWithOneCallLeft(controller, driver)
+        try await flowLeftStatusWithOneCallLeft(controller, driver)
         let start = hold(controller, "connect_start", #"{"pkce":true}"#)
-        await clock.sleepers(1)
+        try await whenHeld(start)
         clock.advance(by: ConnectWire.waitBudget)
         let startAnswer = await start.value
         XCTAssertEqual(startAnswer, waiting)
         controller.answerConfirm(false)  // nobody holds the start: the answer waits
 
         let old = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(old)
         clock.advance(by: ConnectWire.waitBudget)
         let oldAnswer = await old.value
         XCTAssertEqual(oldAnswer, timeout)
@@ -962,12 +985,12 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// A connect_cancel whose status read began before a newer start and
     /// wait leaves the newer wait alone.
-    func testCancelDuringStatusLeavesNewerWait() async {
+    func testCancelDuringStatusLeavesNewerWait() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let old = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(old)
         await driver.until { driver.isWaiting(on: "flow-1") }
         driver.setFlow(nil)
         _ = await call(controller, "connect_status")
@@ -981,7 +1004,7 @@ final class ConnectRunControllerTests: XCTestCase {
         let oldAnswer = await old.value
         XCTAssertEqual(oldAnswer, #"{"reason":"a newer sign-in replaced this one","state":"failed"}"#)
         let new = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(new)
         await driver.until { driver.isWaiting(on: "flow-2") }
 
         driver.releaseStatus()
@@ -993,12 +1016,12 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(newAnswer, connected)
     }
 
-    func testCancelRetiresWaitOnFlowThatLeftStatus() async {
+    func testCancelRetiresWaitOnFlowThatLeftStatus() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let held = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(held)
         await driver.until { driver.isWaiting }
         driver.setFlow(nil)
         _ = await call(controller, "connect_status")
@@ -1013,28 +1036,28 @@ final class ConnectRunControllerTests: XCTestCase {
         XCTAssertEqual(driver.waits, ["flow-1"])
     }
 
-    func testTimeoutClearsEveryOpenCard() async {
+    func testTimeoutClearsEveryOpenCard() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let secret = hold(controller, "request_secret", #"{"kind":"slack_config_token","label":"Token"}"#)
-        await clock.sleepers(1)
+        try await whenHeld(secret)
         clock.advance(by: ConnectWire.waitBudget)
         let secretAnswer = await secret.value
         XCTAssertEqual(secretAnswer, waiting)
         XCTAssertNotNil(controller.pendingCard)
 
-        await exhaust(controller, "connect_wait", "{}")  // the flow step times out
+        try await exhaust(controller, "connect_wait", "{}")  // the flow step times out
         XCTAssertNil(controller.pendingCard)
         controller.sendSecret("late")
         XCTAssertTrue(driver.secrets.isEmpty)
     }
 
-    func testLateStartAfterEndLeavesStateAlone() async {
+    func testLateStartAfterEndLeavesStateAlone() async throws {
         let driver = pkceDriver()
         let controller = makeController(driver)
         let held = hold(controller, "connect_start", #"{"pkce":true}"#)
-        await clock.sleepers(1)
+        try await whenHeld(held)
         controller.answerConfirm(true)  // the start runs in a task of its own
         controller.end()
         let answer = await held.value
@@ -1046,12 +1069,12 @@ final class ConnectRunControllerTests: XCTestCase {
 
     /// The account count read after `connected` lands after a newer start:
     /// it does not put the panel back to done.
-    func testLateAccountCountAfterNewerStart() async {
+    func testLateAccountCountAfterNewerStart() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         _ = await call(controller, "connect_start")
         let held = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(held)
         await driver.until { driver.isWaiting }
         driver.holdStatus = true
         driver.endWait(.connected(account: "acme"))
@@ -1071,7 +1094,7 @@ final class ConnectRunControllerTests: XCTestCase {
 
     // MARK: - State
 
-    func testStateMapping() async {
+    func testStateMapping() async throws {
         let driver = FakeConnectDriver()
         let controller = makeController(driver)
         XCTAssertEqual(controller.state, .thinking)
@@ -1084,7 +1107,7 @@ final class ConnectRunControllerTests: XCTestCase {
         _ = await call(controller, "connect_start")
         XCTAssertEqual(controller.state, .thinking)
         let held = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(held)
         XCTAssertEqual(controller.state, .waiting(step: ConnectRunController.flowWaitStep))
         await driver.until { driver.isWaiting }
         driver.endWait(.failed(reason: "Slack denied the sign-in"))
@@ -1097,7 +1120,7 @@ final class ConnectRunControllerTests: XCTestCase {
             .init(name: "acme", status: "connected"), .init(name: "acme-two", status: "connected")
         ])
         let connected = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(connected)
         await driver.until { driver.isWaiting }
         driver.endWait(.connected(account: "acme-two"))
         _ = await connected.value
@@ -1106,10 +1129,10 @@ final class ConnectRunControllerTests: XCTestCase {
         // The driver's own early `waiting` keeps the call held until its 45 s.
         _ = await call(controller, "connect_start")
         let quick = hold(controller, "connect_wait")
-        await clock.sleepers(1)
+        try await whenHeld(quick)
         await driver.until { driver.isWaiting }
         driver.endWait(.waiting)
-        await clock.sleepers(2)
+        try await whenHeld(quick, sleepers: 2)
         clock.advance(by: ConnectWire.waitBudget)
         let quickAnswer = await quick.value
         XCTAssertEqual(quickAnswer, waiting)
