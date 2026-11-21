@@ -25,6 +25,9 @@ enum SignInWaitBuiltShots {
         case companyCard = "company-card"
         case chatCard = "chat-card"
         case wizardCheck = "wizard-check"
+        case googleRow = "row-google"
+        case connectCalendar = "section-connect-calendar"
+        case calendarTop = "calendar-top"
 
         /// A zero height means "as tall as the content". The Jira pane scrolls, so its shot keeps the top: the
         /// sites and Add an account (the sections below read the live CLI, which a test process has none of).
@@ -32,6 +35,7 @@ enum SignInWaitBuiltShots {
             switch self {
             case .narrow: NSSize(width: 420, height: 0)
             case .jiraRow: NSSize(width: 680, height: 300)
+            case .calendarTop: NSSize(width: 680, height: 560)
             default: NSSize(width: 680, height: 0)
             }
         }
@@ -62,11 +66,14 @@ enum SignInWaitBuiltShots {
     /// The held sign-ins of the rendered shots: each Cancel, then the stubs.
     private static var cancels: [@MainActor () -> Void] = []
     private static var stubs: [GatedLoginStub] = []
+    private static var gates: [AsyncGate] = []
     private static var paths: [String] = []
 
     static func cleanUp() {
         cancels.forEach { $0() }
         stubs.forEach { $0.reap() }
+        gates.forEach { $0.release() }
+        gates = []
         paths.forEach(TestDatabase.cleanup(path:))
         cancels = []
         stubs = []
@@ -85,7 +92,7 @@ enum SignInWaitBuiltShots {
         case .companyCard: { companyCard }
         case .chatCard: { ApprovalCardShotFixtures.slackReconnectWaiting() }
         case .wizardCheck: { wizardCheck }
-        case .slackRow, .narrow, .jiraRow, .quickRow, .confluence: nil
+        case .slackRow, .narrow, .jiraRow, .quickRow, .confluence, .googleRow, .connectCalendar, .calendarTop: nil
         }
     }
 
@@ -95,6 +102,9 @@ enum SignInWaitBuiltShots {
         case .jiraRow: try await jiraPane()
         case .quickRow: try await quickRows()
         case .confluence: try await confluenceSection()
+        case .googleRow: try await googlePane(.relogin)
+        case .connectCalendar: try await googlePane(.connectCalendar)
+        case .calendarTop: try await calendarTop()
         case .ownGoogle, .companyCard, .chatCard, .wizardCheck: AnyView(EmptyView()) // built at once
         }
     }
@@ -126,6 +136,60 @@ enum SignInWaitBuiltShots {
         cancels.append { vm.cancelConnect() }
         return AnyView(SlackConnectionDetail(config: appState.sharedConfig, flow: appState.slackAuthFlow)
             .environment(appState))
+    }
+
+    // MARK: - Google (G1–G4)
+
+    /// Which Google sign-in the shot holds.
+    private enum GoogleStart { case relogin, connectCalendar }
+
+    /// A Google model over two accounts (the second's Calendar broken), its
+    /// sign-in held before the CLI launches (the login environment waits on a
+    /// gate `cleanUp` opens), so no process runs.
+    private static func googleModel() async throws -> (GoogleAccountsViewModel, DatabaseManager, GoogleAccount) {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        paths.append(path)
+        try await manager.dbPool.write { db in
+            _ = try TestDatabase.insertGoogleAccount(db, email: "owner@example.com", calendarEnabled: true, gmailEnabled: true)
+            _ = try TestDatabase.insertGoogleAccount(db, email: "team@acme.example", calendarEnabled: true,
+                                                     status: "error", error: "token expired or revoked")
+        }
+        let vm = GoogleAccountsViewModel(dbPool: manager.dbPool, daemon: FakeDaemonRestarter()) { "/usr/bin/false" }
+        let gate = AsyncGate()
+        gates.append(gate)
+        vm.loginEnvironment = { await gate.wait(); return [:] }
+        await vm.refreshAsync()
+        guard let broken = vm.accounts.first(where: { $0.status == "error" }) else {
+            throw Unbuilt(what: "the Google account")
+        }
+        cancels.append { vm.cancelConnect() }
+        return (vm, manager, broken)
+    }
+
+    /// G1 and G2: Connections → Google with a row's Re-login, or Connect
+    /// Google Calendar, waiting.
+    private static func googlePane(_ start: GoogleStart) async throws -> AnyView {
+        let (vm, _, broken) = try await googleModel()
+        let (appState, _) = LinearConnectionDetailTests.wired()
+        appState.googleAccountsViewModel = vm
+        switch start {
+        case .relogin: vm.relogin(broken)
+        case .connectCalendar: vm.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: "")
+        }
+        return AnyView(GoogleConnectionDetail(config: appState.sharedConfig).environment(appState))
+    }
+
+    /// G4: Calendar with the revoked-calendar alert's legacy sign-in waiting
+    /// at its top. (G3's banner needs Calendar's connected state and sync
+    /// health, which the view reads from the live Google auth service and
+    /// daemon into private state: no shot reaches it.)
+    private static func calendarTop() async throws -> AnyView {
+        let (vm, manager, _) = try await googleModel()
+        let appState = AppState.isolated()
+        appState.databaseManager = manager
+        appState.googleAccountsViewModel = vm
+        appState.reconnectGoogleCalendar(accountID: nil)
+        return AnyView(CalendarEventsView().environment(appState))
     }
 
     /// A1: Connections → Jira with the second site's Re-login waiting on a
