@@ -125,6 +125,10 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Menu bar and updates](features/menu-bar-and-updates.md) — what the menu shows, what closing and quitting do, and how updates arrive
 - [Claude Code integration](features/claude-code-integration.md) — let your coding agent query Watchtower through a read-only MCP server and three skills
 
+## Connect with an agent
+
+- [Connect Slack with the assistant](connect/slack.md) — the assistant connects your workspace in Full, creates or updates its Watchtower app, and checks Live
+
 ## Reference
 
 - [Settings](reference/settings.md) — what each Settings tab does that the screen doesn't say

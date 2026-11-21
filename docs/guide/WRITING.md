@@ -47,6 +47,45 @@ The title is the symptom ("Briefings tab is empty"). Then:
 4. How to check it worked.
 5. If it didn't, what to try next.
 
+## Connect playbooks
+
+A page under `connect/` is a connector's playbook: the connect assistant's script, a guide page and what the help chat answers from. It replaces the feature page template with this one, stays under 8 KB (`TestFeaturePagesUnder8KB`), and `internal/connectplay` parses it (`go test ./internal/connectplay`).
+
+````
+# Connect <service> with the assistant
+<lede: what the assistant connects, and that Agent / You / You only say who acts>
+
+## What you get
+## Before you start          (accounts, admin rights, policy; "The assistant works only on <hosts>. It leaves any other page and stops.")
+## Steps                     (one numbered list, numbered 1..n without gaps)
+## If something goes wrong   (per failure: what you see, what to do; Set up by hand is always there)
+
+```connect
+service: slack
+domains: api.slack.com, app.slack.com
+tools: connect_status, connect_start, connect_wait, connect_cancel, request_secret
+secrets: slack_config_token
+options: pkce
+```
+````
+
+The four sections come in this order; other `##` sections (Slack's `## Slack Live`) may sit between them. The page has exactly one `connect` block, one `key: a, b` per line:
+
+- `service`: `slack`, `google`, `email`, `calendar`, `jira`, `linear`, `quickConnections`, `company` (the setup wizard) or `google_own_project`. `vendor` (`slack`, `google`, `atlassian`, `linear`, `microsoft`) is required for `company` and only there.
+- `domains`: bare lowercase hosts the agent may work on: no scheme, path, port or wildcard.
+- `tools`: connect tools from `connectplay.KnownTools`. `slack_live_probe` is allowed only in `slack.md`.
+- `secrets`: `request_secret` kinds from `connectplay.KnownSecrets`. A page lists `secrets` exactly when its `tools` hold `request_secret`.
+- `options`: the `connect_start` options the steps use.
+
+Every item of a list with step tags starts with one tag, which says who acts:
+
+- `1. **Agent:** …` the assistant: tool calls, and browser steps on the page's hosts. Written as an instruction to it.
+- `2. **You:** …` the customer: sign-ins, 2FA, the final **Allow**, a confirm card.
+- `3. **You only:** …` a click that shows a secret: Google's **Create** on the OAuth client form, Atlassian's app **Settings**, Slack's **Generate Token**. The agent step before it calls `request_secret`; the customer clicks, copies the secret into the card, leaves the page or closes the dialog, then presses **Send**. The parser fails a page whose other steps name such a page or button (`internal/connectplay/reveal.go`).
+- `4. **Check:** …` how the assistant checks a step worked (`connect_wait`, `connect_status`).
+
+**Public safety.** A playbook is public and goes into the model's prompt: no real workspace, site or company names, no ids, no addresses outside `example.com`, no local paths (`TestPlaybooks_PublicSafe`). A secret never appears on the page, not even as a sample.
+
 ## Learn cards
 
 Home's **Learn Watchtower** zone shows cards written in these pages. A card is an HTML comment right under the `##`/`###` heading it teaches; GitHub, the in-app guide, search and the 8 KB page limit never see it. A new user-facing capability brings its card in the same PR.

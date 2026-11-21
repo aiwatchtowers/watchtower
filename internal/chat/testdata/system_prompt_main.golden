@@ -283,6 +283,9 @@ Apps & integration
 - Menu bar and updates (features/menu-bar-and-updates.md)
 - Claude Code integration (features/claude-code-integration.md)
 
+Connect with an agent
+- Connect Slack with the assistant (connect/slack.md)
+
 Reference
 - Settings (reference/settings.md)
 - Keyboard shortcuts (reference/keyboard-shortcuts.md)
