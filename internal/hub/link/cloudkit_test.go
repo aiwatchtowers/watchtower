@@ -1749,7 +1749,7 @@ func TestARefusedCloudKitCodeKeepsTheLastClose(t *testing.T) {
 func TestAStaleCodeCloseLeavesANewerCloudKitCode(t *testing.T) {
 	r := newCKRig(t)
 	old := r.issueCK()
-	closed, gen, ok := r.c.takeCode(old.Nonce)
+	closed, scope, ok := r.c.takeCode(old.Nonce)
 	if !ok {
 		t.Fatal("the old code is not on screen")
 	}
@@ -1758,7 +1758,7 @@ func TestAStaleCodeCloseLeavesANewerCloudKitCode(t *testing.T) {
 	if got, err := r.ckHello(b, newer.Nonce); err != nil || got.Code == "" {
 		t.Fatalf("hello under the newer code: %+v, %v", got, err)
 	}
-	if err := r.c.closeLink(r.ctx, r.s, CloseSheetClosed, closed, gen); err != nil {
+	if err := r.c.closeLink(r.ctx, r.s, CloseSheetClosed, closed, scope); err != nil {
 		t.Fatal(err)
 	}
 	if !r.s.isOpen() {
