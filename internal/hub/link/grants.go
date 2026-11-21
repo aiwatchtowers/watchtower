@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
 	"strings"
 	"time"
 
+	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/wire"
 )
@@ -157,7 +159,25 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 		}
 	}
 	room := max(0, MaxGrantRecords-len(linked)-len(replaced))
-	return append(append(linked, replaced...), rest[:min(room, len(rest))]...), nil
+	out := append(append(linked, replaced...), rest[:min(room, len(rest))]...)
+	// The recipients are read now, under the lock a hello takes too, so
+	// each keybox is sealed to the key of the row it shows.
+	for i := range out {
+		id, err := secure.ParseID(out[i].Grant.DeviceID)
+		if err != nil {
+			continue // not a UUID: sealing refuses it anyway
+		}
+		recipient := c.keys.KeyboxRecipient
+		if i < len(linked) {
+			recipient = c.keys.LinkedKeyboxRecipient
+		}
+		to, err := recipient(id)
+		if err != nil && !errors.Is(err, identity.ErrNoKeyboxRecipient) {
+			return nil, fmt.Errorf("link: keybox recipient: %w", err)
+		}
+		out[i].To = to
+	}
+	return out, nil
 }
 
 // newGrant is the grant every row starts from; ok is false for a phone

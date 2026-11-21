@@ -465,12 +465,20 @@ func (s *Sealer) ToPhone(zone string, device ID, wireName, kind, id string, payl
 // Keybox seals device's device_grant-<id> record as keybox-<id> (HPKE to
 // KeyboxRecipient(device), KeyboxInfo, signed by hub_sig).
 func (s *Sealer) Keybox(zone string, device ID, payload []byte) (Record, error) {
+	return s.KeyboxTo(zone, device, payload, nil)
+}
+
+// KeyboxTo is Keybox sealed to to, the recipient read with the keybox
+// (wire.Keybox.To); nil looks it up now (KeyboxRecipient).
+func (s *Sealer) KeyboxTo(zone string, device ID, payload []byte, to *ecdh.PublicKey) (Record, error) {
 	if zone == "" {
 		return Record{}, errors.New("secure: record without a zone")
 	}
-	to, err := s.k.KeyboxRecipient(device)
-	if err != nil {
-		return Record{}, fmt.Errorf("secure: keybox recipient: %w", err)
+	if to == nil {
+		var err error
+		if to, err = s.k.KeyboxRecipient(device); err != nil {
+			return Record{}, fmt.Errorf("secure: keybox recipient: %w", err)
+		}
 	}
 	if to == nil {
 		return Record{}, errors.New("secure: no keybox recipient")

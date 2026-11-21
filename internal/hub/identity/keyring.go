@@ -956,6 +956,28 @@ func (k *Keyring) KeyboxRecipient(device secure.ID) (*ecdh.PublicKey, error) {
 	return pub, nil
 }
 
+// LinkedKeyboxRecipient is the key a linked phone's own keybox (linked, with
+// its keys) is sealed to: its relay key offer, else its link's agreement key
+// — never a re-link's (KeyboxRecipient). ErrNoKeyboxRecipient as there.
+func (k *Keyring) LinkedKeyboxRecipient(device secure.ID) (*ecdh.PublicKey, error) {
+	if pub, ok, err := k.relayKeyOffer(device); err != nil || ok {
+		return pub, err
+	}
+	raw, err := k.st.KeyboxRecipientKey(device.String())
+	if err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, ErrNoKeyboxRecipient
+	}
+	pub, err := ecdh.X25519().NewPublicKey(raw)
+	if err != nil {
+		log.Printf("hub: stored agreement key of device %s does not parse", device)
+		return nil, ErrNoKeyboxRecipient
+	}
+	return pub, nil
+}
+
 // relayKeyOffer is a linked phone's relay key offer (relay client Phase 5);
 // ok is false when it holds none that parses.
 func (k *Keyring) relayKeyOffer(device secure.ID) (*ecdh.PublicKey, bool, error) {

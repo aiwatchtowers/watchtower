@@ -1432,3 +1432,45 @@ func TestSecondPhoneIndependentOffers(t *testing.T) {
 		t.Fatalf("b out of the zone still has keys: %+v", got.Keys)
 	}
 }
+
+// #1127 review: a linked keybox (with the epoch keys) read before a re-link's
+// hello lands is sealed, after it, to the key it was read with — the link's —
+// never to the hello's unconfirmed key.
+func TestALinkedKeyboxReadBeforeARelinkIsSealedToTheLink(t *testing.T) {
+	r := newRig(t)
+	a := newPhone(t)
+	r.confirmLinked(a)
+	boxes, err := r.c.Keyboxes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kb := r.keyboxIn(boxes, a)
+	if !kb.Grant.Linked || kb.Keys == nil || kb.To == nil {
+		t.Fatalf("captured %+v (keys %v, to %v)", kb.Grant, kb.Keys != nil, kb.To != nil)
+	}
+	again := phoneWith(t, a.sig)
+	code := r.issue()
+	if got := r.handle(again, code.Nonce); got.Code == "" { // lands between the read and the seal
+		t.Fatalf("re-link not waiting: %+v", got)
+	}
+	payload, err := wire.Marshal(kb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := secure.NewSealer(r.kr).KeyboxTo("data", a.id, payload, kb.To)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := r.kr.HubID()
+	open := func(p phone) error {
+		_, _, err := secure.OpenHPKE(rec.Envelope(), secure.ClassKeybox, p.kx, secure.KeyboxInfo(hub, p.id),
+			secure.Context{Zone: secure.ZoneData, WireName: rec.WireName()}, r.kr.Signer().Public().(ed25519.PublicKey))
+		return err
+	}
+	if err := open(again); err == nil {
+		t.Fatal("the hello's unconfirmed key opens a keybox with the epoch keys")
+	}
+	if err := open(a); err != nil {
+		t.Fatalf("the link's key cannot open it: %v", err)
+	}
+}

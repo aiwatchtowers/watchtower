@@ -231,7 +231,7 @@ func (c *Center) writePairKeyboxes(ctx context.Context, t transport.Transport, z
 		if err != nil {
 			return fmt.Errorf("link: encoding a keybox: %w", err)
 		}
-		rec, err := c.sealer.Keybox(zone, id, payload)
+		rec, err := c.sealer.KeyboxTo(zone, id, payload, kb.To)
 		clear(payload)
 		if err != nil {
 			return fmt.Errorf("link: sealing a keybox: %w", err)

@@ -1,6 +1,9 @@
 package wire
 
-import "encoding/json"
+import (
+	"crypto/ecdh"
+	"encoding/json"
+)
 
 // Action echo statuses (RC §5): final ones end an action, non-final ones are
 // progress.
@@ -303,4 +306,9 @@ type KeyboxRelayKX struct {
 type Keybox struct {
 	Grant DeviceGrant `json:"grant"`
 	Keys  *KeyboxKeys `json:"keys,omitempty"`
+	// To is the key the keybox is sealed to, read with it (never encoded):
+	// a re-link landing between the read and the seal never moves a linked
+	// keybox, keys and all, to the hello's unconfirmed key. nil: looked up
+	// at seal time.
+	To *ecdh.PublicKey `json:"-"`
 }
