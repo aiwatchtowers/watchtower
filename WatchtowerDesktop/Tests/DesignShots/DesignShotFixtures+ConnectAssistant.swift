@@ -21,7 +21,7 @@ enum ConnectAssistantShotFixtures {
             DesignShot(name: "connect-overview-agent", size: NSSize(width: 1120, height: 720)) {
                 AnyView(overview())
             }
-        ]
+        ] + ConnectAssistantScreenFixtures.shots
     }
 
     private static let created = Line(.assistant, "I opened api.slack.com and created the app from Watchtower's manifest.")
