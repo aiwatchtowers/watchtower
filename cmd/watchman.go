@@ -182,6 +182,10 @@ func watchmanStart(cmd *cobra.Command, cfg *config.Config) error {
 	defer watchmanLearnerWake(cmd, cfg)
 	unlock, ok, err := watchman.TryLearnLock(cfg.WorkspaceDir(), wb)
 	if err != nil {
+		if watchmanFlagJSON {
+			_ = writeJSON(cmd.OutOrStdout(), watchmanLearnFailureJSON{Workbench: wb, Error: err.Error(), WatchmanOn: true,
+				AnalyticsOn: true, AnalyticsTurnedOn: turnedOn})
+		}
 		return err
 	}
 	if !ok {

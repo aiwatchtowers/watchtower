@@ -544,9 +544,8 @@ func (e *twinEnv) learned() {
 	e.must(e.db.MarkWatchmanLearned(e.wb, time.Now()))
 }
 
-// wantUntouched checks an item still queued with no lease and no attempt,
-// its ask still open.
-func (e *twinEnv) wantUntouched(askID, itemID int64) {
+// wantItemUntouched checks an item still queued with no lease and no attempt.
+func (e *twinEnv) wantItemUntouched(itemID int64) {
 	e.t.Helper()
 	var state string
 	var attempts int
@@ -555,6 +554,13 @@ func (e *twinEnv) wantUntouched(askID, itemID int64) {
 	if state != "queued" || attempts != 0 || lease.Valid {
 		e.t.Fatalf("item = %s, %d attempts, lease %v; want queued, untouched", state, attempts, lease)
 	}
+}
+
+// wantUntouched checks an item still queued with no lease and no attempt,
+// its ask still open.
+func (e *twinEnv) wantUntouched(askID, itemID int64) {
+	e.t.Helper()
+	e.wantItemUntouched(itemID)
 	if status, _ := e.askAnswer(askID); status != "open" {
 		e.t.Fatalf("ask = %s, want open", status)
 	}
@@ -580,7 +586,73 @@ func TestTwin_DoesNotLeaseWhileLearning(t *testing.T) {
 				}
 			})
 		}
+		// A diff review, with its review place wired (it would lease).
+		t.Run(fmt.Sprintf("review_code relabel=%v", relabel), func(t *testing.T) {
+			e := newReviewEnv(t)
+			itemID := e.queueReview()
+			e.unlearn(relabel)
+			if n := e.run(); n != 0 {
+				t.Fatalf("RunOnce = %d, want 0", n)
+			}
+			e.wantItemUntouched(itemID)
+			if e.decideCalls() != 0 || len(e.rounds()) != 0 {
+				t.Fatalf("acted while learning: %d decide, %d rounds", e.decideCalls(), len(e.rounds()))
+			}
+		})
 	}
+}
+
+// Handovers while learning: one whose ask the owner answered closes
+// owner_first, held or not, with no model call; one beside the twin's own
+// earlier answer would be decided, so it waits queued.
+func TestTwin_HandoverWhileLearning(t *testing.T) {
+	ownerAnswers := func(e *twinEnv, askID int64) {
+		_, err := e.db.Exec(`UPDATE owner_asks SET status = 'answered', answer = '{"answers":[{"id":"a","labels":["Files"],"other":""}]}',
+			answered_at = '2026-11-21T08:00:00Z' WHERE id = ?`, askID)
+		e.must(err)
+	}
+	handoverOf := func(e *twinEnv, askID int64) int64 {
+		h, err := e.db.WatchmanItemByRef("ask", askID, "handover")
+		e.must(err)
+		if h == nil {
+			e.t.Fatal("no handover row")
+		}
+		return h.ID
+	}
+	for _, held := range []bool{false, true} {
+		t.Run(fmt.Sprintf("owner answered held=%v", held), func(t *testing.T) {
+			e := newTwinEnv(t)
+			e.unlearn(false)
+			askID, _ := e.question("Left: the CSV import")
+			e.promoteHandover(askID, held)
+			h := handoverOf(e, askID)
+			e.run()
+			e.wantUntouched(askID, h)
+			ownerAnswers(e, askID)
+			e.run()
+			wantOutcome(t, e.item(h), OutcomeOwnerFirst)
+			if e.decideCalls() != 0 || len(e.labelled) != 0 || e.startCount() != 0 {
+				t.Fatalf("acted: %d decide, %d label, %d starts", e.decideCalls(), len(e.labelled), e.startCount())
+			}
+		})
+	}
+	t.Run("twin answered", func(t *testing.T) {
+		e := newTwinEnv(t)
+		askID, itemID := e.question("Left: the CSV import")
+		e.run()
+		wantOutcome(t, e.item(itemID), OutcomeAnswered)
+		e.unlearn(false)
+		e.decideFn = continueDecision
+		e.promoteHandover(askID, false)
+		h := handoverOf(e, askID)
+		if n := e.run(); n != 0 {
+			t.Fatalf("RunOnce = %d, want 0", n)
+		}
+		e.wantItemUntouched(h)
+		if e.decideCalls() != 1 || e.startCount() != 0 {
+			t.Fatalf("decided while learning: %d decide, %d starts", e.decideCalls(), e.startCount())
+		}
+	})
 }
 
 // A workbench whose learning state cannot be read leases nothing but

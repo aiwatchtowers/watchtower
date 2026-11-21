@@ -269,7 +269,7 @@ func TestWatchmanLearner_RunCountsRelabelled(t *testing.T) {
 	require.NoError(t, database.EnableWatchmanWorkbench(wb, time.Now(), 0))
 	seedDesignPrecedents(t, database, wb) // five unflagged asks
 
-	d.runWatchmanLearner(context.Background())
+	d.runWatchmanLearner(context.Background(), true)
 	var items int
 	require.NoError(t, database.QueryRow(`SELECT items_found FROM pipeline_runs WHERE pipeline = 'watchman-learn'`).Scan(&items))
 	assert.Equal(t, 5, items)

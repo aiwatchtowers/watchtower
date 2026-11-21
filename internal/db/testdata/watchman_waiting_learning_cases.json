@@ -3,14 +3,22 @@
     "name": "not learned: queued questions wait, a permission, a decided and a deciding item do not",
     "workbench_id": 1,
     "projects": [{"id": 1, "name": "acme", "folder_path": "/tmp/acme"}],
+    "terminal_sessions": [{"id": 10, "project_id": 1, "kind": "claude", "claude_session_id": "uuid", "title": "New session", "folder_path": "/tmp/acme"}],
+    "owner_asks": [
+      {"id": 1, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which store?", "status": "open"},
+      {"id": 2, "project_id": 1, "session_id": 10, "kind": "check", "title": "Check the export", "status": "open"},
+      {"id": 4, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which cache?", "status": "open"},
+      {"id": 5, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which queue?", "status": "open"}
+    ],
+    "watchman_arming": [{"scope": "session", "ref_id": 10, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"}],
     "watchman_workbenches": [{"workbench_id": 1, "enabled_at": "2026-11-20T08:00:00Z", "learned_through": null}],
     "watchman_precedents": [],
     "watchman_items": [
-      {"id": 1, "workbench_id": 1, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"},
-      {"id": 2, "workbench_id": 1, "kind": "check", "ref_kind": "ask", "ref_id": 2, "state": "queued", "created_at": "2026-11-20T09:01:00Z"},
-      {"id": 3, "workbench_id": 1, "kind": "permission", "ref_kind": "permission", "ref_id": 3, "state": "queued", "created_at": "2026-11-20T09:02:00Z"},
-      {"id": 4, "workbench_id": 1, "kind": "ask", "ref_kind": "ask", "ref_id": 4, "state": "done", "outcome": "parked", "created_at": "2026-11-20T09:03:00Z"},
-      {"id": 5, "workbench_id": 1, "kind": "ask", "ref_kind": "ask", "ref_id": 5, "state": "deciding", "lease_until": "2026-11-20T09:20:00Z", "created_at": "2026-11-20T09:04:00Z"}
+      {"id": 1, "workbench_id": 1, "session_id": 10, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"},
+      {"id": 2, "workbench_id": 1, "session_id": 10, "kind": "check", "ref_kind": "ask", "ref_id": 2, "state": "queued", "created_at": "2026-11-20T09:01:00Z"},
+      {"id": 3, "workbench_id": 1, "session_id": 10, "kind": "permission", "ref_kind": "permission", "ref_id": 3, "state": "queued", "created_at": "2026-11-20T09:02:00Z"},
+      {"id": 4, "workbench_id": 1, "session_id": 10, "kind": "ask", "ref_kind": "ask", "ref_id": 4, "state": "done", "outcome": "parked", "created_at": "2026-11-20T09:03:00Z"},
+      {"id": 5, "workbench_id": 1, "session_id": 10, "kind": "ask", "ref_kind": "ask", "ref_id": 5, "state": "deciding", "lease_until": "2026-11-20T09:20:00Z", "created_at": "2026-11-20T09:04:00Z"}
     ],
     "want": 2
   },
@@ -18,12 +26,18 @@
     "name": "every waiting kind counts: handover, review_doc, review_code",
     "workbench_id": 1,
     "projects": [{"id": 1, "name": "acme", "folder_path": "/tmp/acme"}],
+    "terminal_sessions": [{"id": 10, "project_id": 1, "kind": "claude", "claude_session_id": "uuid", "title": "New session", "folder_path": "/tmp/acme"}],
+    "owner_asks": [
+      {"id": 1, "project_id": 1, "session_id": 10, "kind": "question", "title": "Left: the CSV import", "status": "open"},
+      {"id": 2, "project_id": 1, "session_id": 10, "kind": "review", "title": "Review the spec", "doc_path": "docs/spec.md", "status": "open"}
+    ],
+    "watchman_arming": [{"scope": "session", "ref_id": 10, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"}],
     "watchman_workbenches": [{"workbench_id": 1, "enabled_at": "2026-11-20T08:00:00Z", "learned_through": null}],
     "watchman_precedents": [],
     "watchman_items": [
-      {"id": 1, "workbench_id": 1, "kind": "handover", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"},
-      {"id": 2, "workbench_id": 1, "kind": "review_doc", "ref_kind": "ask", "ref_id": 2, "state": "queued", "created_at": "2026-11-20T09:01:00Z"},
-      {"id": 3, "workbench_id": 1, "kind": "review_code", "ref_kind": "session", "ref_id": 3, "state": "queued", "created_at": "2026-11-20T09:02:00Z"}
+      {"id": 1, "workbench_id": 1, "session_id": 10, "kind": "handover", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"},
+      {"id": 2, "workbench_id": 1, "session_id": 10, "kind": "review_doc", "ref_kind": "ask", "ref_id": 2, "state": "queued", "created_at": "2026-11-20T09:01:00Z"},
+      {"id": 3, "workbench_id": 1, "session_id": 10, "kind": "review_code", "ref_kind": "session", "ref_id": 10, "state": "queued", "created_at": "2026-11-20T09:02:00Z"}
     ],
     "want": 3
   },
@@ -31,13 +45,16 @@
     "name": "learned, relabel pending: still counted",
     "workbench_id": 1,
     "projects": [{"id": 1, "name": "acme", "folder_path": "/tmp/acme"}],
+    "terminal_sessions": [{"id": 10, "project_id": 1, "kind": "claude", "claude_session_id": "uuid", "title": "New session", "folder_path": "/tmp/acme"}],
+    "owner_asks": [{"id": 1, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which store?", "status": "open"}],
+    "watchman_arming": [{"scope": "session", "ref_id": 10, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"}],
     "watchman_workbenches": [{"workbench_id": 1, "enabled_at": "2026-11-20T08:00:00Z", "learned_through": "2026-11-20T08:30:00Z"}],
     "watchman_precedents": [
       {"id": 1, "workbench_id": 1, "source": "ask", "source_key": "a", "category": "design", "decided_at": "2026-11-01T00:00:00Z", "flags_at": "2026-11-20T08:30:00Z"},
       {"id": 2, "workbench_id": 1, "source": "turn", "source_key": "b", "category": "scope", "decided_at": "2026-11-01T00:00:00Z", "flags_at": null}
     ],
     "watchman_items": [
-      {"id": 1, "workbench_id": 1, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"}
+      {"id": 1, "workbench_id": 1, "session_id": 10, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"}
     ],
     "want": 1
   },
@@ -45,13 +62,16 @@
     "name": "learned, all flagged: 0",
     "workbench_id": 1,
     "projects": [{"id": 1, "name": "acme", "folder_path": "/tmp/acme"}],
+    "terminal_sessions": [{"id": 10, "project_id": 1, "kind": "claude", "claude_session_id": "uuid", "title": "New session", "folder_path": "/tmp/acme"}],
+    "owner_asks": [{"id": 1, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which store?", "status": "open"}],
+    "watchman_arming": [{"scope": "session", "ref_id": 10, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"}],
     "watchman_workbenches": [{"workbench_id": 1, "enabled_at": "2026-11-20T08:00:00Z", "learned_through": "2026-11-20T08:30:00Z"}],
     "watchman_precedents": [
       {"id": 1, "workbench_id": 1, "source": "ask", "source_key": "a", "category": "design", "decided_at": "2026-11-01T00:00:00Z", "flags_at": "2026-11-20T08:30:00Z"},
       {"id": 2, "workbench_id": 1, "source": "permission", "source_key": "7", "category": "permission", "decided_at": "2026-11-01T00:00:00Z", "flags_at": "2026-11-20T08:30:00Z"}
     ],
     "watchman_items": [
-      {"id": 1, "workbench_id": 1, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"}
+      {"id": 1, "workbench_id": 1, "session_id": 10, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"}
     ],
     "want": 0
   },
@@ -59,13 +79,16 @@
     "name": "learned, unflagged rows only in sources the relabel pass never reads: 0",
     "workbench_id": 1,
     "projects": [{"id": 1, "name": "acme", "folder_path": "/tmp/acme"}],
+    "terminal_sessions": [{"id": 10, "project_id": 1, "kind": "claude", "claude_session_id": "uuid", "title": "New session", "folder_path": "/tmp/acme"}],
+    "owner_asks": [{"id": 1, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which store?", "status": "open"}],
+    "watchman_arming": [{"scope": "session", "ref_id": 10, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"}],
     "watchman_workbenches": [{"workbench_id": 1, "enabled_at": "2026-11-20T08:00:00Z", "learned_through": "2026-11-20T08:30:00Z"}],
     "watchman_precedents": [
       {"id": 1, "workbench_id": 1, "source": "review", "source_key": "a", "category": "review_code", "decided_at": "2026-11-01T00:00:00Z", "flags_at": null},
       {"id": 2, "workbench_id": 1, "source": "git", "source_key": "b", "category": "finish", "decided_at": "2026-11-01T00:00:00Z", "flags_at": null}
     ],
     "watchman_items": [
-      {"id": 1, "workbench_id": 1, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"}
+      {"id": 1, "workbench_id": 1, "session_id": 10, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"}
     ],
     "want": 0
   },
@@ -73,10 +96,13 @@
     "name": "Watchman off for the workbench: 0",
     "workbench_id": 1,
     "projects": [{"id": 1, "name": "acme", "folder_path": "/tmp/acme"}],
+    "terminal_sessions": [{"id": 10, "project_id": 1, "kind": "claude", "claude_session_id": "uuid", "title": "New session", "folder_path": "/tmp/acme"}],
+    "owner_asks": [{"id": 1, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which store?", "status": "open"}],
+    "watchman_arming": [{"scope": "session", "ref_id": 10, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"}],
     "watchman_workbenches": [],
     "watchman_precedents": [],
     "watchman_items": [
-      {"id": 1, "workbench_id": 1, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"}
+      {"id": 1, "workbench_id": 1, "session_id": 10, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"}
     ],
     "want": 0
   },
@@ -87,6 +113,18 @@
       {"id": 1, "name": "acme", "folder_path": "/tmp/acme"},
       {"id": 2, "name": "acme-two", "folder_path": "/tmp/acme-two"}
     ],
+    "terminal_sessions": [
+      {"id": 10, "project_id": 1, "kind": "claude", "claude_session_id": "uuid", "title": "New session", "folder_path": "/tmp/acme"},
+      {"id": 20, "project_id": 2, "kind": "claude", "claude_session_id": "uuid", "title": "New session", "folder_path": "/tmp/acme-two"}
+    ],
+    "owner_asks": [
+      {"id": 1, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which store?", "status": "open"},
+      {"id": 2, "project_id": 2, "session_id": 20, "kind": "question", "title": "Which cache?", "status": "open"}
+    ],
+    "watchman_arming": [
+      {"scope": "session", "ref_id": 10, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"},
+      {"scope": "session", "ref_id": 20, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"}
+    ],
     "watchman_workbenches": [
       {"workbench_id": 1, "enabled_at": "2026-11-20T08:00:00Z", "learned_through": "2026-11-20T08:30:00Z"},
       {"workbench_id": 2, "enabled_at": "2026-11-20T08:00:00Z", "learned_through": null}
@@ -95,9 +133,71 @@
       {"id": 1, "workbench_id": 2, "source": "ask", "source_key": "a", "category": "design", "decided_at": "2026-11-01T00:00:00Z", "flags_at": null}
     ],
     "watchman_items": [
-      {"id": 1, "workbench_id": 1, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"},
-      {"id": 2, "workbench_id": 2, "kind": "ask", "ref_kind": "ask", "ref_id": 2, "state": "queued", "created_at": "2026-11-20T09:01:00Z"}
+      {"id": 1, "workbench_id": 1, "session_id": 10, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"},
+      {"id": 2, "workbench_id": 2, "session_id": 20, "kind": "ask", "ref_kind": "ask", "ref_id": 2, "state": "queued", "created_at": "2026-11-20T09:01:00Z"}
     ],
     "want": 0
+  },
+  {
+    "name": "an ask the owner answered or withdrew no longer waits",
+    "workbench_id": 1,
+    "projects": [{"id": 1, "name": "acme", "folder_path": "/tmp/acme"}],
+    "terminal_sessions": [{"id": 10, "project_id": 1, "kind": "claude", "claude_session_id": "uuid", "title": "New session", "folder_path": "/tmp/acme"}],
+    "owner_asks": [
+      {"id": 1, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which store?", "status": "open"},
+      {"id": 2, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which cache?", "status": "answered", "answer": "{\"answers\":[]}"},
+      {"id": 3, "project_id": 1, "session_id": 10, "kind": "check", "title": "Check the export", "status": "withdrawn"}
+    ],
+    "watchman_arming": [{"scope": "session", "ref_id": 10, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"}],
+    "watchman_workbenches": [{"workbench_id": 1, "enabled_at": "2026-11-20T08:00:00Z", "learned_through": null}],
+    "watchman_precedents": [],
+    "watchman_items": [
+      {"id": 1, "workbench_id": 1, "session_id": 10, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"},
+      {"id": 2, "workbench_id": 1, "session_id": 10, "kind": "ask", "ref_kind": "ask", "ref_id": 2, "state": "queued", "created_at": "2026-11-20T09:01:00Z"},
+      {"id": 3, "workbench_id": 1, "session_id": 10, "kind": "check", "ref_kind": "ask", "ref_id": 3, "state": "queued", "created_at": "2026-11-20T09:02:00Z"}
+    ],
+    "want": 1
+  },
+  {
+    "name": "a taken-back session's items no longer wait",
+    "workbench_id": 1,
+    "projects": [{"id": 1, "name": "acme", "folder_path": "/tmp/acme"}],
+    "terminal_sessions": [{"id": 10, "project_id": 1, "kind": "claude", "claude_session_id": "uuid", "title": "New session", "folder_path": "/tmp/acme"}],
+    "owner_asks": [{"id": 1, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which store?", "status": "open"}],
+    "watchman_arming": [],
+    "watchman_workbenches": [{"workbench_id": 1, "enabled_at": "2026-11-20T08:00:00Z", "learned_through": null}],
+    "watchman_precedents": [],
+    "watchman_items": [
+      {"id": 1, "workbench_id": 1, "session_id": 10, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"},
+      {"id": 2, "workbench_id": 1, "session_id": 10, "kind": "review_code", "ref_kind": "session", "ref_id": 10, "state": "queued", "created_at": "2026-11-20T09:01:00Z"}
+    ],
+    "want": 0
+  },
+  {
+    "name": "armed through its target; a finished session's handover by its arming row, its question not",
+    "workbench_id": 1,
+    "projects": [{"id": 1, "name": "acme", "folder_path": "/tmp/acme"}],
+    "targets": [{"id": 5, "project_id": 1, "text": "Ship the export", "level": "custom", "custom_label": "project", "period_start": "2026-11-20", "period_end": "2026-11-20", "source_type": "chat"}],
+    "terminal_sessions": [
+      {"id": 10, "project_id": 1, "kind": "claude", "claude_session_id": "uuid", "title": "New session", "folder_path": "/tmp/acme", "target_id": 5},
+      {"id": 11, "project_id": 1, "kind": "claude", "claude_session_id": "uuid", "title": "Old session", "folder_path": "/tmp/acme", "finished_at": "2026-11-20T08:50:00Z"}
+    ],
+    "owner_asks": [
+      {"id": 1, "project_id": 1, "session_id": 10, "kind": "question", "title": "Which store?", "status": "open"},
+      {"id": 2, "project_id": 1, "session_id": 11, "kind": "question", "title": "Left: the CSV import", "status": "open"},
+      {"id": 3, "project_id": 1, "session_id": 11, "kind": "question", "title": "Which cache?", "status": "open"}
+    ],
+    "watchman_arming": [
+      {"scope": "target", "ref_id": 5, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"},
+      {"scope": "session", "ref_id": 11, "armed_at": "2026-11-20T08:00:00Z", "armed_by": "cli"}
+    ],
+    "watchman_workbenches": [{"workbench_id": 1, "enabled_at": "2026-11-20T08:00:00Z", "learned_through": null}],
+    "watchman_precedents": [],
+    "watchman_items": [
+      {"id": 1, "workbench_id": 1, "session_id": 10, "target_id": 5, "kind": "ask", "ref_kind": "ask", "ref_id": 1, "state": "queued", "created_at": "2026-11-20T09:00:00Z"},
+      {"id": 2, "workbench_id": 1, "session_id": 11, "kind": "handover", "ref_kind": "ask", "ref_id": 2, "state": "queued", "created_at": "2026-11-20T09:01:00Z"},
+      {"id": 3, "workbench_id": 1, "session_id": 11, "kind": "ask", "ref_kind": "ask", "ref_id": 3, "state": "queued", "created_at": "2026-11-20T09:02:00Z"}
+    ],
+    "want": 2
   }
 ]

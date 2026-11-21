@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -372,4 +374,25 @@ func TestWatchmanLearnStart_LockHeldJSON(t *testing.T) {
 	enabled, _, analytics := watchmanState(t, wb)
 	assert.True(t, enabled)
 	assert.True(t, analytics)
+}
+
+// A learn lock that cannot be taken under --json gives the pinned failure
+// JSON: Watchman and analytics are on, the daemon is still woken.
+func TestWatchmanLearnStart_LockErrorJSON(t *testing.T) {
+	wb, gen := watchmanFixture(t)
+	wakes := countLearnerWakes(t)
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	// A file where the lock's folder goes.
+	require.NoError(t, os.WriteFile(filepath.Join(cfg.WorkspaceDir(), "watchman"), nil, 0o600))
+	out, err := runWatchman(t, "learn", "--workbench", strconv.FormatInt(wb, 10), "--start", "--json")
+	require.Error(t, err)
+	assert.Equal(t, []string{"analytics_on", "analytics_turned_on", "error", "ok", "watchman_on", "workbench"}, jsonKeys(t, out))
+	var r watchmanLearnFailureJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &r))
+	assert.False(t, r.OK)
+	assert.True(t, r.WatchmanOn)
+	assert.NotEmpty(t, r.Error)
+	assert.Zero(t, gen.calls)
+	assert.Equal(t, 1, *wakes)
 }

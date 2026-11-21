@@ -93,8 +93,8 @@ func (db *DB) MarkWatchmanFlagsTried(tx *sql.Tx, workbenchID int64, source strin
 // and the journal counts what waits for it (WatchmanWaitingForLearning; the
 // Desktop's query is the same rule, testdata/watchman_waiting_learning_cases.json).
 func WatchmanLearningSQL(a string) string {
-	return a + `.learned_through IS NULL OR EXISTS (SELECT 1 FROM watchman_precedents p WHERE p.workbench_id = ` + a +
-		`.workbench_id AND p.flags_at IS NULL AND p.source IN ('ask','turn','permission'))`
+	return `(` + a + `.learned_through IS NULL OR EXISTS (SELECT 1 FROM watchman_precedents p WHERE p.workbench_id = ` + a +
+		`.workbench_id AND p.flags_at IS NULL AND p.source IN ('ask','turn','permission')))`
 }
 
 // WatchmanStillLearning reports whether Watchman is still learning the
@@ -103,7 +103,7 @@ func WatchmanLearningSQL(a string) string {
 func (db *DB) WatchmanStillLearning(workbenchID int64) (bool, error) {
 	var learning bool
 	if err := db.QueryRow(`SELECT NOT EXISTS (SELECT 1 FROM watchman_workbenches w
-		WHERE w.workbench_id = ? AND NOT (`+WatchmanLearningSQL("w")+`))`, workbenchID).Scan(&learning); err != nil {
+		WHERE w.workbench_id = ? AND NOT `+WatchmanLearningSQL("w")+`)`, workbenchID).Scan(&learning); err != nil {
 		return false, fmt.Errorf("reading whether watchman is learning workbench %d: %w", workbenchID, err)
 	}
 	return learning, nil

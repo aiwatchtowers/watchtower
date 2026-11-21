@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -20,7 +21,8 @@ import (
 // (1-based) is returned. Its cursor is the next row's index.
 type batchSource struct {
 	total int
-	stuck bool // offers nothing and never finishes
+	stuck bool  // offers nothing and never finishes
+	err   error // every Next fails with it
 	calls atomic.Int32
 	after func(batch int)
 }
@@ -36,6 +38,9 @@ func (s *batchSource) Next(_ context.Context, _ *db.DB, wb int64, cursor string,
 		}
 	}
 	s.calls.Add(1)
+	if s.err != nil {
+		return nil, "", false, s.err
+	}
 	if s.stuck {
 		return nil, cursor, false, nil // no progress: the pass ends, the workbench still learning
 	}
@@ -84,7 +89,7 @@ func stillLearning(t *testing.T, database *db.DB, wb int64) bool {
 func TestLearner_RunsToEndWithoutBudget(t *testing.T) {
 	d, database, wb, src, _ := learnerEnv(t, 7)
 	d.watchmanTwinCycle = make(chan struct{}, 1)
-	d.runWatchmanLearner(context.Background())
+	d.runWatchmanLearner(context.Background(), true)
 	assert.Equal(t, int32(7), src.calls.Load())
 	assert.Equal(t, 7, precedentsOf(t, database, wb))
 	assert.False(t, stillLearning(t, database, wb), "learned_through set")
@@ -92,7 +97,7 @@ func TestLearner_RunsToEndWithoutBudget(t *testing.T) {
 	assert.Equal(t, []string{"watchman-learn"}, pipelineRunNames(t, database))
 
 	// Learned: the next pass leaves it to the cycle phase.
-	d.runWatchmanLearner(context.Background())
+	d.runWatchmanLearner(context.Background(), true)
 	assert.Equal(t, int32(7), src.calls.Load())
 }
 
@@ -106,12 +111,12 @@ func TestLearner_StopsOnShutdownAndResumes(t *testing.T) {
 			cancel()
 		}
 	}
-	d.runWatchmanLearner(ctx)
+	d.runWatchmanLearner(ctx, true)
 	assert.Equal(t, 3, precedentsOf(t, database, wb))
 	assert.True(t, stillLearning(t, database, wb))
 
 	src.after = nil
-	d.runWatchmanLearner(context.Background())
+	d.runWatchmanLearner(context.Background(), true)
 	assert.Equal(t, 7, precedentsOf(t, database, wb), "every row once")
 	assert.False(t, stillLearning(t, database, wb))
 }
@@ -121,7 +126,7 @@ func TestLearner_StopsOnShutdownAndResumes(t *testing.T) {
 func TestLearner_PausedByConsent(t *testing.T) {
 	d, database, wb, src, fc := learnerEnv(t, 5)
 	fc.set(consentPausedByOwner)
-	d.runWatchmanLearner(context.Background())
+	d.runWatchmanLearner(context.Background(), true)
 	assert.Zero(t, src.calls.Load(), "nothing read while paused")
 	assert.Empty(t, pipelineRunNames(t, database))
 
@@ -131,13 +136,13 @@ func TestLearner_PausedByConsent(t *testing.T) {
 			fc.set(consentPausedByOwner)
 		}
 	}
-	d.runWatchmanLearner(context.Background())
+	d.runWatchmanLearner(context.Background(), true)
 	assert.Equal(t, 2, precedentsOf(t, database, wb), "stopped between batches")
 	assert.True(t, stillLearning(t, database, wb))
 
 	src.after = nil
 	fc.set(consentAllowed)
-	d.runWatchmanLearner(context.Background())
+	d.runWatchmanLearner(context.Background(), true)
 	assert.Equal(t, 5, precedentsOf(t, database, wb))
 	assert.False(t, stillLearning(t, database, wb))
 }
@@ -149,12 +154,12 @@ func TestLearner_LockSkipsSecond(t *testing.T) {
 	unlock, ok, err := watchman.TryLearnLock(d.config.WorkspaceDir(), wb)
 	require.NoError(t, err)
 	require.True(t, ok)
-	d.runWatchmanLearner(context.Background())
+	d.runWatchmanLearner(context.Background(), true)
 	assert.Zero(t, src.calls.Load())
 	assert.Empty(t, pipelineRunNames(t, database))
 
 	unlock()
-	d.runWatchmanLearner(context.Background())
+	d.runWatchmanLearner(context.Background(), true)
 	assert.False(t, stillLearning(t, database, wb))
 }
 
@@ -206,4 +211,20 @@ func TestWatchmanLearner_WakeAndCycleRunPasses(t *testing.T) {
 		stop()
 		stopWakes()
 	})
+}
+
+// A workbench whose pass failed is retried on the next cycle, not on a
+// Watchman wake.
+func TestLearner_FailedRetriedOnNextCycleOnly(t *testing.T) {
+	d, database, wb, src, _ := learnerEnv(t, 2)
+	src.err = errors.New("source down")
+	d.runWatchmanLearner(context.Background(), true)
+	require.Equal(t, int32(1), src.calls.Load())
+
+	d.runWatchmanLearner(context.Background(), false) // a wake
+	assert.Equal(t, int32(1), src.calls.Load(), "a wake skips the failed workbench")
+
+	src.err = nil
+	d.runWatchmanLearner(context.Background(), true) // the next cycle
+	assert.False(t, stillLearning(t, database, wb), "retried on the cycle")
 }

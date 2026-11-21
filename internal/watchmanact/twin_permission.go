@@ -67,7 +67,7 @@ func (j *job) permission(ctx context.Context) {
 		j.park(ctx, failedReason(j.it.Error))
 		return
 	}
-	learning, err := j.t.stillLearning(j.it.WorkbenchID)
+	learning, err := j.t.d.DB.WatchmanStillLearning(j.it.WorkbenchID)
 	if err != nil {
 		j.fail(ctx, err)
 		return

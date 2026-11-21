@@ -16,16 +16,22 @@ import (
 //
 //	"name":          string, the case's title
 //	"workbench_id":  number, the workbench the count is read for
-//	"projects", "watchman_workbenches", "watchman_precedents", "watchman_items":
+//	"projects", "targets", "terminal_sessions", "owner_asks",
+//	"watchman_arming", "watchman_workbenches", "watchman_precedents",
+//	"watchman_items":
 //	               arrays of rows, each row an object whose keys are the
 //	               table's column names and whose values are strings, numbers
-//	               or null (inserted as-is, tables in that order; omitted
-//	               columns take their defaults)
+//	               or null (inserted as-is, tables in that order; a missing
+//	               array is empty; omitted columns take their defaults)
 //	"want":          number, the expected WatchmanWaitingForLearning count
 type watchmanLearningCase struct {
 	Name                string           `json:"name"`
 	WorkbenchID         int64            `json:"workbench_id"`
 	Projects            []map[string]any `json:"projects"`
+	Targets             []map[string]any `json:"targets"`
+	TerminalSessions    []map[string]any `json:"terminal_sessions"`
+	OwnerAsks           []map[string]any `json:"owner_asks"`
+	WatchmanArming      []map[string]any `json:"watchman_arming"`
 	WatchmanWorkbenches []map[string]any `json:"watchman_workbenches"`
 	WatchmanPrecedents  []map[string]any `json:"watchman_precedents"`
 	WatchmanItems       []map[string]any `json:"watchman_items"`
@@ -48,7 +54,8 @@ func (c watchmanLearningCase) seed(t *testing.T, d *DB) {
 	for _, tbl := range []struct {
 		name string
 		rows []map[string]any
-	}{{"projects", c.Projects}, {"watchman_workbenches", c.WatchmanWorkbenches},
+	}{{"projects", c.Projects}, {"targets", c.Targets}, {"terminal_sessions", c.TerminalSessions},
+		{"owner_asks", c.OwnerAsks}, {"watchman_arming", c.WatchmanArming}, {"watchman_workbenches", c.WatchmanWorkbenches},
 		{"watchman_precedents", c.WatchmanPrecedents}, {"watchman_items", c.WatchmanItems}} {
 		for _, row := range tbl.rows {
 			cols := make([]string, 0, len(row))

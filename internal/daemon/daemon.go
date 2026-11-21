@@ -136,6 +136,7 @@ type Daemon struct {
 	watchmanTwinCycle   chan struct{}    // each cycle's nudge to the twin worker (nudgeWatchmanTwin)
 	watchmanLearnWake   chan struct{}    // the learner's wake, ticked with watchmanWakeCh (forwardWakes)
 	watchmanLearnCycle  chan struct{}    // each cycle's nudge to the learner (nudgeWatchmanLearner)
+	watchmanLearnFailed map[int64]bool   // workbenches whose learner pass failed, retried next cycle (learner goroutine only)
 	automationScheduler AutomationRunner // nil = automations not wired
 	automationExecutor  AutomationRunner
 	automationEvents    AutomationEvents // nil = no event automations

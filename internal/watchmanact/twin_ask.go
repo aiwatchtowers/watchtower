@@ -190,20 +190,14 @@ func (j *job) closeHeld(ctx context.Context, ask *db.OwnerAsk, err error) {
 	}
 }
 
-// stillLearning reports a workbench whose learning is not done: no
-// learned_through yet, or precedents the relabel pass has not tried
-// (db.WatchmanLearningSQL).
-func (t *Twin) stillLearning(workbenchID int64) (bool, error) {
-	return t.d.DB.WatchmanStillLearning(workbenchID)
-}
-
-// ownerClosed reports a question, check or document review whose ask is no
-// longer open (answered by the owner, withdrawn or gone): leased while its
-// workbench is still learning, it closes owner_first or goes with no model
-// call (handle). A handover is not: beside the twin's own earlier answer it
-// is still decided. A read error is not closed (the item stays queued).
+// ownerClosed reports an ask-bound item whose ask the owner closed himself
+// (answered, withdrawn or gone): leased while its workbench is still
+// learning, it closes owner_first, superseded or goes with no model call
+// (handle, closeHeld for a held handover). A handover beside the twin's own
+// earlier answer is not: it would be decided, so it waits for the learning.
+// A read error is not closed (the item stays queued).
 func (t *Twin) ownerClosed(it db.WatchmanItem) bool {
-	if it.RefKind != "ask" || it.Kind == "handover" {
+	if it.RefKind != "ask" {
 		return false
 	}
 	ask, err := t.d.DB.GetOwnerAskByID(it.RefID)
@@ -213,8 +207,17 @@ func (t *Twin) ownerClosed(it db.WatchmanItem) bool {
 	case err != nil:
 		log.Printf("watchman twin: item %d: %v", it.ID, err)
 		return false
+	case ask.Status == "open":
+		return false
+	case it.Kind != "handover" || ask.Status == "withdrawn":
+		return true
 	}
-	return ask.Status != "open"
+	ours, err := t.d.DB.WatchmanAskAnsweredByTwin(ask.ID)
+	if err != nil {
+		log.Printf("watchman twin: item %d: %v", it.ID, err)
+		return false
+	}
+	return !ours
 }
 
 // situation is the redacted ask text the model decides on (title, summary,
