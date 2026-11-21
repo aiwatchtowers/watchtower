@@ -18,21 +18,23 @@ Press **Connect with Claude** (or Codex) in **Connections → Slack** and the as
 
 ## Steps
 
-Pick one path after step 1: connect through an existing app (steps 2–5), create the app (steps 6–8) or update an existing app (steps 9–13).
+Pick one path after step 1: connect through an existing app (steps 2–5), create the app (steps 6–9) or update an existing app (steps 10–15).
 
 1. **Agent:** Call `connect_status`. If Slack is blocked by the organization, say so and stop. If a flow is running, wait for it with `connect_wait` or ask the customer whether to `connect_cancel` it. Ask the customer whether the workspace already has a Watchtower app, unless the status shows one.
 2. **Agent:** On app.slack.com, open the workspace, open the Watchtower app and its **About** tab, and read the connect link or the connect code under it. If you cannot reach the page, ask the customer to copy the link or code into the chat.
 3. **Agent:** Call `connect_start` with `code` set to that link or code. Watchtower opens Slack's sign-in page in the default browser.
 4. **You:** Sign in to Slack if it asks, stay on the workspace the link names, and press **Allow**.
-5. **Check:** Call `connect_wait` until it returns `connected`; while it says `waiting`, call it again. Tell the customer the first sync has started.
+5. **Check:** Call `connect_wait`; while it says `waiting`, call it again. On `connected`, go on; on `failed` or `timeout`, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong). Tell the customer the first sync has started.
 6. **Agent:** Open api.slack.com/apps, scroll to **Your App Configuration Tokens** and stop there. Call `request_secret` with kind `slack_config_token`. The card asks the customer to leave the page before sending.
 7. **You only:** Press **Generate Token** for your workspace, copy the access token into the assistant's card, leave Slack's page, then press **Send**.
-8. **Check:** `request_secret` returns the setup's result: Watchtower checked the token, created the app, wrote the connect link to its **About** page and connected your own account. Call `connect_status` to confirm the account, then tell the customer to share the app's **About** page with colleagues.
-9. **Agent:** Call `connect_start` with `pkce`. The assistant's panel shows a confirm card: the update turns on Slack's PKCE sign-in for the app, which cannot be undone, and colleagues may need to allow Watchtower again.
-10. **You:** Read the card and press its confirm button, or decline. A decline ends this path; nothing changed.
-11. **Agent:** After the confirm, open api.slack.com/apps, scroll to **Your App Configuration Tokens** and stop there. Call `request_secret` with kind `slack_config_token`.
-12. **You only:** Press **Generate Token** for your workspace, copy the access token into the card, leave Slack's page, then press **Send**.
-13. **Check:** Call `connect_wait` until it returns `connected`, then `connect_status` to confirm the account.
+8. **You:** When Slack's page opens in your browser to connect your own account, sign in if it asks and press **Allow**.
+9. **Check:** Call `connect_wait`; while it says `waiting`, call it again. On `connected`, go on; on `failed` or `timeout`, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong). Then call `connect_status` to confirm the account and tell the customer to share the app's **About** page with colleagues.
+10. **Agent:** Call `connect_start` with `pkce`. The assistant's panel shows a confirm card: the update turns on Slack's PKCE sign-in for the app, which cannot be undone, and colleagues may need to allow Watchtower again.
+11. **You:** Read the card and press its confirm button, or decline. A decline ends this path; nothing changed.
+12. **Agent:** After the confirm, open api.slack.com/apps, scroll to **Your App Configuration Tokens** and stop there. Call `request_secret` with kind `slack_config_token`.
+13. **You only:** Press **Generate Token** for your workspace, copy the access token into the card, leave Slack's page, then press **Send**.
+14. **You:** When Slack's page opens in your browser, sign in if it asks and press **Allow**.
+15. **Check:** Call `connect_wait`; while it says `waiting`, call it again. On `connected`, go on; on `failed` or `timeout`, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong). Then call `connect_status` to confirm the account.
 
 ## Slack Live
 

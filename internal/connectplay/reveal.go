@@ -1,20 +1,29 @@
 package connectplay
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // revealPages names, per vendor, the pages and buttons that put a secret on
 // the screen (spec §10, "Pages that show a secret"), as case-insensitive
-// regular expressions over a step's text. A step that names one must be the
-// customer's alone ("**You only:**"): the agent fills the form up to that
-// button, calls request_secret and leaves the click to the customer.
+// regular expressions over a step's text with its Markdown formatting removed
+// (bold, code, italics), so "**Create**", "`Create`" and "Create" all match.
+// A step that names one must be the customer's alone ("**You only:**"): the
+// agent fills the form up to that button, calls request_secret and leaves the
+// click to the customer. The patterns err on the safe side: a false positive
+// costs a rewording, a miss lets the agent reveal a secret.
 var revealPages = map[string][]string{
 	// Create on the OAuth client form opens a dialog showing the client secret.
-	"google": {`(press|click|tap|hit)\w*\s+\*\*Create\*\*`, `\bdialog\b`},
+	"google": {`\b(press|click|tap|hit|select|choose)\w*\s+(on\s+)?(the\s+)?Create\b`, `\bdialog\b`},
 	// The app's Settings page shows its client secret.
-	"atlassian": {`\*\*Settings\*\*`},
+	"atlassian": {`\bSettings\b`},
 	// Generate Token shows the app configuration token.
-	"slack": {`Generate Token`},
+	"slack": {`\bGenerate\s+Token\b`},
 }
+
+// markup is the inline Markdown formatting stripped before matching.
+var markup = strings.NewReplacer("*", "", "`", "", "_", " ")
 
 var revealRes = func() map[string][]*regexp.Regexp {
 	out := map[string][]*regexp.Regexp{}
@@ -43,6 +52,7 @@ func revealVendor(p Playbook) string {
 }
 
 func matchesAny(res []*regexp.Regexp, s string) bool {
+	s = markup.Replace(s)
 	for _, re := range res {
 		if re.MatchString(s) {
 			return true

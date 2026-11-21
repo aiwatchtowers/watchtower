@@ -164,14 +164,40 @@ func TestPlaybooks_RevealStepsAreCustomerOnly(t *testing.T) {
 	if err == nil || err.Error() != `slack: step 3 reveals a secret but is not "You only"` {
 		t.Fatalf("err = %v", err)
 	}
-	for vendor, phrase := range map[string]string{
-		"google":    "press **Create** on the OAuth client form",
-		"atlassian": "open the app's **Settings**",
+	companyBlock := func(vendor string) string {
+		return "service: company\nvendor: " + vendor + "\ndomains: example.com\ntools: connect_status, company_draft"
+	}
+	for _, c := range []struct{ vendor, phrase string }{
+		{"google", "press **Create** on the OAuth client form"},
+		{"google", "Click Create on the OAuth client form"},
+		{"google", "click `Create`"},
+		{"google", "press the Create button"},
+		{"google", "copy the secret from the dialog"},
+		{"atlassian", "open the app's **Settings**"},
+		{"atlassian", "Open the app's Settings page"},
+		{"atlassian", "open `Settings`"},
+		{"slack", "press Generate Token"},
+		{"slack", "press `Generate Token`"},
+		{"slack", "press *Generate  Token*"},
 	} {
-		block := "service: company\nvendor: " + vendor + "\ndomains: example.com\ntools: connect_status, company_draft"
-		steps := "1. **Agent:** " + phrase + "."
-		if _, err := parse("company-"+vendor, "connect/company-"+vendor+".md", page(block, steps)); err == nil {
-			t.Errorf("%s: an agent step %q parsed", vendor, phrase)
+		for _, actor := range []string{"Agent", "You", "Check"} {
+			steps := "1. **" + actor + ":** " + c.phrase + "."
+			if _, err := parse("company-"+c.vendor, "connect/x.md", page(companyBlock(c.vendor), steps)); err == nil {
+				t.Errorf("%s: a %s step %q parsed", c.vendor, actor, c.phrase)
+			}
+		}
+		if _, err := parse("company-"+c.vendor, "connect/x.md", page(companyBlock(c.vendor), "1. **You only:** "+c.phrase+".")); err != nil {
+			t.Errorf("%s: a You only step %q failed: %v", c.vendor, c.phrase, err)
+		}
+	}
+	// Up to the button is the agent's: naming the form or the token section
+	// without pressing the button is allowed.
+	for _, c := range []struct{ vendor, phrase string }{
+		{"google", "fill the OAuth client form up to **Create** and call `request_secret`"},
+		{"slack", "scroll to **Your App Configuration Tokens** and call `request_secret`"},
+	} {
+		if _, err := parse("company-"+c.vendor, "connect/x.md", page(companyBlock(c.vendor), "1. **Agent:** "+c.phrase+".")); err != nil {
+			t.Errorf("%s: agent step %q refused: %v", c.vendor, c.phrase, err)
 		}
 	}
 	for _, vendor := range []string{"google", "atlassian", "slack"} {
