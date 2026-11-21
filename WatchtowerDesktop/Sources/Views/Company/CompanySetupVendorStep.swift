@@ -1,3 +1,4 @@
+import DesignKit
 import SwiftUI
 import WatchtowerCore
 
@@ -184,7 +185,13 @@ struct CompanySetupVendorStep: View {
     private var checkContent: some View {
         switch model.checks[vendor] {
         case .running?:
-            WizardBusy(text: Model.checkingLine(vendor))
+            if let wait = model.checkWait(vendor) {
+                SignInWaitLine(line: wait.line, hint: wait.hint, cancelTitle: wait.cancelTitle) {
+                    model.cancelCheck(vendor)
+                }
+            } else {
+                WizardBusy(text: Model.checkingLine(vendor))
+            }
         case let .adminConsent(url)?:
             WizardNotice(icon: "hourglass", tone: Tone.warning, title: Model.consentTitle, text: Model.consentBody)
             WizardValueRow(label: Model.consentLinkLabel, value: url, button: Model.copyTitle) { WizardPasteboard.copy(url) }

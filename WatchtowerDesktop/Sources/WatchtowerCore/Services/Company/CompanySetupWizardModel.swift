@@ -198,6 +198,13 @@ package final class CompanySetupWizardModel {
     private var touched = false
     /// Bumped by Discard: a check of the discarded setup lands nowhere.
     @ObservationIgnored private var generation = 0
+    /// Each running check's run: Cancel ends its stream, and a run that is
+    /// no longer its vendor's (cancelled, or a new check started) writes nothing.
+    @ObservationIgnored private var checkRuns: [CompanyVendor: CheckRun] = [:]
+
+    private final class CheckRun {
+        var task: Task<String?, Never>?
+    }
 
     package convenience init(streamer: (any CLILineStreaming)?, slack: SlackAppSetupModel, now: @escaping () -> Date = Date.init) {
         self.init(makeStreamer: { streamer }, slack: slack, now: now)
@@ -843,15 +850,20 @@ package final class CompanySetupWizardModel {
             return
         }
         checks[v] = .running
+        let run = CheckRun()
+        checkRuns[v] = run
+        defer { if checkRuns[v] === run { checkRuns[v] = nil } }
         let started = generation
-        guard await saveDraft(), generation == started else {
-            if generation == started { checks[v] = .failed(Self.draftSaveFailed) }
+        guard await saveDraft(), generation == started, checkRuns[v] === run else {
+            if generation == started, checkRuns[v] === run { checks[v] = .failed(Self.draftSaveFailed) }
             return
         }
-        let line = await lastJSONLine(args, stdin: stdin)
-        // Discarded meanwhile: Go kept what the sign-in stored (the bundle,
-        // the account); this setup's state is gone, so nothing lands here.
-        guard generation == started else { return }
+        let task = Task { [args, stdin] in await lastJSONLine(args, stdin: stdin) }
+        run.task = task
+        let line = await task.value
+        // Discarded or cancelled meanwhile: Go kept what the sign-in stored
+        // (the bundle, the account); this run's state is gone, so nothing lands here.
+        guard generation == started, checkRuns[v] === run else { return }
         guard let line, let result = try? JSONDecoder().decode(CompanyCheckResult.self, from: Data(line.utf8)) else {
             checks[v] = .failed(Self.checkStopped)
             releaseUnstoredName()
@@ -859,6 +871,24 @@ package final class CompanySetupWizardModel {
         }
         await finishCheck(v, result, values: values)
         if checks[v] != .passed { releaseUnstoredName() }
+    }
+
+    /// **Cancel** on a sign-in check's waiting line (#2132 C2): ends the run
+    /// (its stream's task is cancelled, and `CLILineStream` kills the process
+    /// group) and puts the step back to not-run, with no failed line. What a
+    /// sign-in already stored stays Go's; the step is left to a new check.
+    package func cancelCheck(_ v: CompanyVendor) {
+        guard checks[v] == .running, let run = checkRuns.removeValue(forKey: v) else { return }
+        run.task?.cancel()
+        checks[v] = nil
+        releaseUnstoredName()
+    }
+
+    /// The waiting line of a running check that signs in through the
+    /// browser (Google, Atlassian); nil for the dry checks and when idle.
+    package func checkWait(_ v: CompanyVendor) -> SignInWaitCopy? {
+        guard checks[v] == .running, v == .google || v == .atlassian else { return nil }
+        return SignInWaitCopy(vendor: v)
     }
 
     /// The name a check stores the company under: the draft's (a check ran

@@ -174,8 +174,12 @@ final class CompaniesZoneModelTests: XCTestCase {
         XCTAssertFalse(called)
     }
 
-    func testCardProgressAndSlackCopy() {
-        XCTAssertEqual(Pres.connecting(.google), "Connecting… Google")
+    func testCardWaitLineAndSlackCopy() {
+        // The card's waiting line names the vendor the chain signs in to (C1).
+        XCTAssertEqual(SignInWaitCopy(vendor: .google).line, "Waiting for the Google sign-in in your browser…")
+        XCTAssertEqual(SignInWaitCopy(vendor: .microsoft), .microsoft)
+        XCTAssertEqual(CompanyVendor.allCases.map { SignInWaitCopy(vendor: $0).service },
+                       CompanyVendor.allCases.map { $0 == .microsoft ? "Microsoft" : Pres.vendorName($0) })
         XCTAssertEqual(Pres.slackAppDetail(appID: "A0ACME"), "Watchtower (A0ACME)")
     }
 }
