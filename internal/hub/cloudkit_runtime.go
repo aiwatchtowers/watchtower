@@ -99,19 +99,38 @@ func (h *hubRuntime) cloudKitCodes() (s transport.Shares, cloudKit, ok bool) {
 // no_icloud, icloud_unreachable, icloud_changed, else failed); a hub stopping
 // meanwhile answers hub_off. Called off hubMu with the hub held by its wait
 // group.
-func (h *hubRuntime) pairCloudKit(s transport.Shares) ControlAnswer {
+func (h *hubRuntime) pairCloudKit(s transport.Shares) (ControlAnswer, string) {
 	ctx, cancel := context.WithTimeout(h.ctx, opTimeout)
 	defer cancel()
-	if _, _, err := h.center.IssueCloudKit(ctx, s); err != nil {
+	p, _, err := h.center.IssueCloudKit(ctx, s)
+	if err != nil {
 		class := LinkErrClass(err)
 		if h.ctx.Err() != nil {
 			class = ErrClassHubOff
 		}
 		log.Printf("hub: CloudKit code not issued (%s, %s)", class, errClass(err))
-		return ControlAnswer{Error: class}
+		return ControlAnswer{Error: class}, ""
 	}
 	h.kick(h.passKick)
-	return ControlAnswer{OK: true}
+	return ControlAnswer{OK: true}, p.Nonce
+}
+
+// abandonCode closes, in the background, the link of the CloudKit code
+// nonce a pairing stream issued, once that stream ended (the sheet closed,
+// the CLI stopped) — only while that code is still the one on screen
+// (link.Center.CloseCode): waiting phones read not_confirmed and the
+// shares' public URLs close now, not at the code's expiry. Called with the
+// supervisor's hubMu read-held.
+func (h *hubRuntime) abandonCode(nonce string) {
+	s, ok := h.shares()
+	if !ok {
+		return
+	}
+	h.inBackground(func(ctx context.Context) {
+		if err := h.center.CloseCode(ctx, s, nonce, link.CloseSheetClosed); err != nil {
+			log.Printf("hub: closing an abandoned code's link failed (%s): retried", errClass(err))
+		}
+	})
 }
 
 // passTickEvery is the worker's pass ticker: Options.passEvery on the hosted

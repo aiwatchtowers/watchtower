@@ -294,10 +294,14 @@ func listenControl(path string) (net.Listener, error) {
 // of events (written by its own goroutine, so a stalled client never holds
 // up the other streams) and the code each phone was shown on it.
 type pairListener struct {
-	w     *answerWriter
-	queue chan ControlAnswer // guarded by supervisor.pairMu for sends and close
-	mu    sync.Mutex
-	codes map[string]string
+	// ckNonce is the CloudKit code this stream issued last ("" none): its
+	// link closes when the stream ends (hubRuntime.abandonCode). Written
+	// and read on the connection's goroutine only.
+	ckNonce string
+	w       *answerWriter
+	queue   chan ControlAnswer // guarded by supervisor.pairMu for sends and close
+	mu      sync.Mutex
+	codes   map[string]string
 }
 
 func (p *pairListener) code(device string) (string, bool) {
@@ -416,6 +420,10 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 		return p
 	}
 	defer func() {
+		if pl != nil && pl.ckNonce != "" {
+			nonce := pl.ckNonce
+			s.withHub(func(h *hubRuntime) ControlAnswer { h.abandonCode(nonce); return ControlAnswer{} })
+		}
 		s.pairMu.Lock()
 		if pl != nil {
 			delete(s.pairs, pl)
@@ -766,7 +774,11 @@ func (s *supervisor) pair(r ControlRequest, pl *pairListener) ControlAnswer {
 		return a
 	}
 	defer h.wg.Done()
-	return h.pairCloudKit(shares)
+	a, nonce := h.pairCloudKit(shares)
+	if nonce != "" && pl != nil {
+		pl.ckNonce = nonce // the connection's own goroutine: no lock
+	}
+	return a
 }
 
 // handle runs a request that needs the running hub.
@@ -815,6 +827,11 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 			return ControlAnswer{Error: LinkErrClass(err)}
 		}
 		h.afterConfirm(r.Device)
+		if r.Confirm {
+			// The code is used (afterConfirm closes it CloseUsed) or was
+			// expired or used meanwhile: the stream's end closes nothing.
+			pl.ckNonce = ""
+		}
 		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device)}
 	}
 	return ControlAnswer{Error: ErrClassBadRequest}

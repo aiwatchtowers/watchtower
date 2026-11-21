@@ -488,7 +488,7 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   `icloud_unreachable` (the account or the Mac's iCloud user could not be read just now: the bridge failed or timed
   out, iCloud temporarily unavailable; try again), `icloud_changed` (the account changed while the code was made),
   `hub_off` (the hub stopped meanwhile) or `failed` (the code could not be stored), worded by the CLI
-  (`hubAnswerError`), whose last stderr line Settings → Mobile shows; nothing is issued. A hub stopped with such a code on screen (Mobile off, the daemon stopping) closes its public link first, while the bridge still runs (`link.Center.CloseOnStop`, bounded 10 s, best effort); the participants' sweep is the next start's close.
+  (`hubAnswerError`), whose last stderr line Settings → Mobile shows; nothing is issued. A hub stopped with such a code on screen (Mobile off, the daemon stopping) closes its public link first, while the bridge still runs (`link.Center.CloseOnStop`, bounded 10 s, best effort); the participants' sweep is the next start's close. A pairing stream that ends with its code still on screen (the sheet closed, `hub pair` stopped) closes that code's link in the background (`link.Center.CloseCode`, `CloseSheetClosed`: waiting phones read `not_confirmed`); a newer stream's code stays open, and a stream that confirmed leaves the close to `CloseUsed`.
 - **A phone's relay id from its `device` record** (relay client Phase 3b Task 23, R22). An iCloud-linked phone that
   upgrades names its `relay_device_id` in its own `device` record with the `relay_auth` key's proof; the hub stores it
   only when the proof holds, moves the id off any other row that holds it (ask #1005), then counts the phone as paying

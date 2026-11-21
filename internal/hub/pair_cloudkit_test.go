@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
@@ -246,6 +248,36 @@ func TestStoppingTheHubClosesAnOpenCloudKitLink(t *testing.T) {
 		})
 		if h.sweepMark() != "1" {
 			t.Fatalf("sweep mark %q: the participants' sweep is the next start's", h.sweepMark())
+		}
+	})
+}
+
+// #1127 review: a pairing stream abandoned with its CloudKit code still on
+// screen (the sheet closed, the CLI stopped) closes that code's link
+// (CloseSheetClosed); an older stream going away never closes a newer
+// stream's code.
+func TestAnAbandonedPairStreamClosesItsCloudKitCode(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		h := startCloudKitHub(t, nil, nil)
+		older, newer := h.rig.dial(), h.rig.dial()
+		pairCode(t, older)
+		pairCode(t, newer) // the newer code retires the older one
+		closes := h.ck.count("set_public_link:close")
+		if err := older.Close(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if n := h.ck.count("set_public_link:close"); n != closes {
+			t.Fatalf("the older stream's end closed the newer code's link (%d closes)", n-closes)
+		}
+		if err := newer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Second) // far within the code's 600 s: no expiry close
+		synctest.Wait()
+		if n := h.ck.count("set_public_link:close"); n <= closes {
+			t.Fatal("the abandoned stream's code kept its link open")
 		}
 	})
 }

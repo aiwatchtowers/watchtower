@@ -591,6 +591,20 @@ func (c *Center) CloseOnStop(ctx context.Context, s transport.Shares) error {
 	return c.CloseLink(ctx, s, CloseSheetClosed)
 }
 
+// CloseCode closes the link of the code nonce (CloseLink with reason) only
+// while it is still the code on screen: a newer code's link stays open.
+func (c *Center) CloseCode(ctx context.Context, s transport.Shares, nonce string, reason CloseReason) error {
+	c.ck.mu.Lock()
+	closed := c.ck.open
+	if closed == nil || closed.nonce != nonce {
+		c.ck.mu.Unlock()
+		return nil
+	}
+	c.ck.open = nil
+	c.ck.mu.Unlock()
+	return c.closeLink(ctx, s, reason, closed)
+}
+
 // closeLink is CloseLink once the open code (closed, or nil) was taken.
 func (c *Center) closeLink(ctx context.Context, s transport.Shares, reason CloseReason, closed *openCode) error {
 	if err := c.refuseWaiting(reason); err != nil {
