@@ -33,7 +33,7 @@ func (d *Daemon) SetWatchmanTwin(a *askanswer.Answerer, start func(ctx context.C
 		Answerer: a,
 		Decide: func(ctx context.Context, it watchman.Item) (watchman.Decision, error) {
 			gen, store := d.watchmanTwinGenerator(ctx), prompts.New(d.db, nil)
-			return watchmanact.LiveDecide(ctx, d.db, gen, store, watchman.NewLLMLabeler(gen, store), it)
+			return watchmanact.LiveDecide(ctx, d.db, gen, store, watchman.NewLLMLabeler(gen, store), d.logger.Printf, it)
 		},
 		Parked: func(ctx context.Context, text string) (bool, string, error) {
 			labeler := watchman.NewLLMLabeler(d.watchmanTwinGenerator(ctx), prompts.New(d.db, nil))

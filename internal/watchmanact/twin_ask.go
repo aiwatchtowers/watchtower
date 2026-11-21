@@ -294,6 +294,7 @@ func (j *job) decide(ctx context.Context, p asks.Payload, it watchman.Item) bool
 		return false
 	}
 	it.WorkbenchID, it.Situation, it.DecidedBefore = j.it.WorkbenchID, situation, j.now()
+	it.ItemID, it.SessionID = j.it.ID, j.it.SessionID
 	dec, err := j.t.d.Decide(ctx, it)
 	if err != nil {
 		j.decideFailed(ctx, err)

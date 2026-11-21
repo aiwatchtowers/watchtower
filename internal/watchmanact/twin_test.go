@@ -797,7 +797,7 @@ func TestLiveDecide_CategorisesAQuestionFirst(t *testing.T) {
 	}
 	l := &fakeLabeler{labels: []watchman.Label{{Category: "design"}}}
 	gen := &replyGenerator{reply: `{"choice":"SQLite","rationale":"r","precedent_ids":[],"confidence":"low","category":"design","importance":"low","handoff":"none"}`}
-	dec, err := LiveDecide(context.Background(), d, gen, nil, l, watchman.Item{WorkbenchID: wb, Situation: "Which store?", Options: []string{"SQLite", "Files"}, DecidedBefore: time.Now()})
+	dec, err := LiveDecide(context.Background(), d, gen, nil, l, nil, watchman.Item{WorkbenchID: wb, Situation: "Which store?", Options: []string{"SQLite", "Files"}, DecidedBefore: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -805,7 +805,7 @@ func TestLiveDecide_CategorisesAQuestionFirst(t *testing.T) {
 		t.Fatalf("dec = %+v, label items %+v, users %q", dec, l.items, gen.users)
 	}
 	l.labels = []watchman.Label{{Category: "nonsense"}}
-	if _, err := LiveDecide(context.Background(), d, gen, nil, l, watchman.Item{WorkbenchID: wb, Situation: "Which store?"}); err == nil {
+	if _, err := LiveDecide(context.Background(), d, gen, nil, l, nil, watchman.Item{WorkbenchID: wb, Situation: "Which store?"}); err == nil {
 		t.Fatal("an item with no usable category was decided")
 	}
 }

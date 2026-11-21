@@ -420,8 +420,12 @@ func failedReason(lastErr string) string {
 // LiveDecide is the twin's Decide for a live item: an item with no category
 // (a question ask) is categorised first by the light-tier label call, then
 // the category's profile and the owner's instructions are read
-// (watchman.LiveContext) and the strong tier decides.
-func LiveDecide(ctx context.Context, d *db.DB, gen digest.Generator, store *prompts.Store, labeler watchman.Labeler, it watchman.Item) (watchman.Decision, error) {
+// (watchman.LiveContext), with the session's own instruction
+// (SessionInstructions), and the strong tier decides. An instruction that
+// cannot be read is logged by item id (logf; nil = not logged) and the item
+// is decided without it: the hard limits do not depend on it.
+func LiveDecide(ctx context.Context, d *db.DB, gen digest.Generator, store *prompts.Store, labeler watchman.Labeler,
+	logf func(format string, args ...any), it watchman.Item) (watchman.Decision, error) {
 	if it.Category == "" {
 		labels, err := labeler.Label(ctx, []watchman.LabelItem{{Situation: it.Situation, NeedCategory: true}})
 		if err != nil {
@@ -437,7 +441,30 @@ func LiveDecide(ctx context.Context, d *db.DB, gen digest.Generator, store *prom
 		return watchman.Decision{}, err
 	}
 	it.Profile, it.Instructions = profile, instr
+	if it.SessionID != 0 {
+		target, session, err := d.WatchmanSessionInstructions(it.SessionID)
+		if err != nil {
+			if logf != nil {
+				logf("watchman twin: item %d decided without its session instruction: %v", it.ItemID, err)
+			}
+		} else {
+			it.SessionInstructions = sessionInstructions(target, session)
+		}
+	}
 	return watchman.Decide(ctx, d, gen, store, it)
+}
+
+// sessionInstructions labels the covering target's text and the session's
+// own, in that order; empty parts are left out.
+func sessionInstructions(target, session string) string {
+	var parts []string
+	if target != "" {
+		parts = append(parts, "Target: "+target)
+	}
+	if session != "" {
+		parts = append(parts, "Session: "+session)
+	}
+	return strings.Join(parts, "\n")
 }
 
 // labelParkReason is the park reason when the label call finds a hard limit.

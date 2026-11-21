@@ -4145,3 +4145,13 @@ CREATE TABLE IF NOT EXISTS watchman_extra_limits (
     created_at TEXT NOT NULL,
     UNIQUE (kind, pattern)
 );
+
+-- The owner's instruction for a handed session or target (00211): apart from
+-- watchman_arming, so Take back keeps it. The twin reads it only for an armed scope.
+CREATE TABLE IF NOT EXISTS watchman_instructions (
+    scope      TEXT NOT NULL CHECK (scope IN ('session','target')),
+    ref_id     INTEGER NOT NULL,          -- session or target id
+    text       TEXT NOT NULL,             -- trimmed, at most 2000 runes
+    updated_at TEXT NOT NULL,             -- RFC 3339 UTC
+    PRIMARY KEY (scope, ref_id)
+);

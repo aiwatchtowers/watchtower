@@ -109,7 +109,7 @@ func (t *Twin) decidePermission(ctx context.Context, it db.WatchmanItem, req *db
 		return park(reasonClipped, nil), nil
 	}
 	dec, err := t.d.Decide(ctx, watchman.Item{
-		WorkbenchID: it.WorkbenchID, Category: watchman.CategoryPermission, Options: permissionOptions,
+		WorkbenchID: it.WorkbenchID, ItemID: it.ID, SessionID: it.SessionID, Category: watchman.CategoryPermission, Options: permissionOptions,
 		Situation:     watchman.Clip(watchman.Redact("Tool: "+req.ToolName+"\n"+strings.TrimSpace(req.Summary)), watchman.SituationLimit),
 		DecidedBefore: now,
 	})

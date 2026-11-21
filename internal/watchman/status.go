@@ -53,6 +53,9 @@ type ArmedSession struct {
 	ID      int64  `json:"id"`
 	Target  int64  `json:"target"`
 	ArmedAt string `json:"armed_at"` // RFC 3339 UTC
+	// Instructions is the session row's own instruction ("" = none); the
+	// sheet pre-fills it (a target's text is read on the target panel).
+	Instructions string `json:"instructions"`
 }
 
 // ArmedEntries converts arming rows, never nil.
@@ -75,6 +78,10 @@ func armedSessions(d *db.DB, arming []db.WatchmanArming) ([]ArmedSession, error)
 	if err != nil {
 		return nil, err
 	}
+	texts, err := d.WatchmanSessionInstructionTexts()
+	if err != nil {
+		return nil, err
+	}
 	at := map[string]time.Time{}
 	for _, a := range arming {
 		at[fmt.Sprintf("%s/%d", a.Scope, a.RefID)] = a.ArmedAt
@@ -89,6 +96,7 @@ func armedSessions(d *db.DB, arming []db.WatchmanArming) ([]ArmedSession, error)
 		if t, ok := at[key]; ok {
 			e.ArmedAt = t.UTC().Format(time.RFC3339)
 		}
+		e.Instructions = texts[s.SessionID]
 		out = append(out, e)
 	}
 	return out, nil
