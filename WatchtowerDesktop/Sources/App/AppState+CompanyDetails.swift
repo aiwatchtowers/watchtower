@@ -51,7 +51,7 @@ extension AppState {
 
     /// The own Google project page's model (#1887 C4): waits for the other
     /// Google sign-ins, and a connect re-reads the accounts and re-wires the
-    /// daemon.
+    /// daemon; a Cancel only re-reads them.
     func makeOwnGoogleProject(
         makeStreamer: @escaping @MainActor () -> (any CLILineStreaming)?
     ) -> OwnGoogleProjectModel {
@@ -64,6 +64,13 @@ extension AppState {
             guard let self else { return }
             googleAccountsViewModel?.accountAddedElsewhere(daemonPolicy: accountDaemonPolicy)
             reloadCompanies() // the personal bundle Go stored names the group
+        }
+        model.onCancelled = { [weak self] in
+            // A sign-in killed while Go saved leaves what it saved: show it,
+            // refresh only (spec "Cancel lands while the CLI is saving").
+            guard let self else { return }
+            googleAccountsViewModel?.refresh()
+            reloadCompanies()
         }
         return model
     }
