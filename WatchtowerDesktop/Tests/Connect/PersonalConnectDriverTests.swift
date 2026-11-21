@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// The personal connect drivers (agent connect, Task 11) on fake view
 /// models: no CLI runs, no wall-clock waits. A fake flow ends only when its
@@ -486,16 +487,21 @@ final class PersonalConnectDriverTests: XCTestCase {
     func testJiraRestartWaitsForTheBoardPick() async throws {
         let model = FakeJiraModel()
         let steps = FakeJiraSteps()
-        let driver = JiraConnectDriver(model: model, steps: steps, policy: Self.open, companySlug: Self.noCompany)
+        let daemon = FakeDaemonRestarter()
+        let driver = JiraConnectDriver(
+            model: model, steps: steps, policy: Self.open, companySlug: Self.noCompany, daemon: daemon)
         let flowID = try await driver.start(options: [:]).get()
         model.gate.open()
         await driver.flows.finished(flowID)
-        XCTAssertEqual(model.restarts, 0, "held while the boards are not picked")
+        XCTAssertNil(driver.restartTask, "held while the boards are not picked")
+        XCTAssertEqual(model.policies, [.deferred], "the view model restarts nothing for the driver")
         steps.boards = [Self.board(1, 10, selected: false)]
         _ = try await driver.choose(kind: "jira_boards", select: ["1:10"]).get()
-        XCTAssertEqual(model.restarts, 1)
+        await driver.restartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
         driver.runEnded()
-        XCTAssertEqual(model.restarts, 1, "released once")
+        await driver.restartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1, "released once")
 
         // No pick: the run's end releases it.
         model.gate = Gate()
@@ -503,15 +509,79 @@ final class PersonalConnectDriverTests: XCTestCase {
         model.gate.open()
         await driver.flows.finished(again)
         driver.runEnded()
-        XCTAssertEqual(model.restarts, 2)
+        await driver.restartTask?.value
+        XCTAssertEqual(daemon.restartCount, 2)
 
-        // A connect the customer cancelled holds nothing.
+        // A connect the customer cancelled restarts nothing.
         model.gate = Gate()
         let cancelled = try await driver.start(options: [:]).get()
         await driver.cancel(flowID: cancelled)
         await driver.flows.finished(cancelled)
         driver.runEnded()
-        XCTAssertEqual(model.restarts, 2)
+        await driver.restartTask?.value
+        XCTAssertEqual(daemon.restartCount, 2)
+    }
+
+    /// The run ends while the sign-in still runs: when it succeeds later,
+    /// nothing would release a held restart, so it restarts at once.
+    func testJiraRunEndedDuringSignInRestartsOnSuccess() async throws {
+        let model = FakeJiraModel()
+        let daemon = FakeDaemonRestarter()
+        let driver = JiraConnectDriver(
+            model: model, steps: FakeJiraSteps(), policy: Self.open, companySlug: Self.noCompany, daemon: daemon)
+        let flowID = try await driver.start(options: [:]).get()
+        await model.until { model.isConnecting }
+        driver.runEnded()
+        XCTAssertNil(driver.restartTask)
+        model.gate.open()
+        await driver.flows.finished(flowID)
+        await driver.restartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
+    }
+
+    /// The add sheet holds its own restart for site B while the driver's
+    /// site A waits: the driver's release is its own daemon restart and
+    /// leaves the sheet's hold alone (#572).
+    func testJiraDriverReleaseLeavesTheSheetsHeldRestart() async throws {
+        let model = FakeJiraModel()
+        let steps = FakeJiraSteps()
+        let daemon = FakeDaemonRestarter()
+        let driver = JiraConnectDriver(
+            model: model, steps: steps, policy: Self.open, companySlug: Self.noCompany, daemon: daemon)
+        let flowID = try await driver.start(options: [:]).get()
+        model.gate.open()
+        await driver.flows.finished(flowID)
+        model.sheetHeldRestart = true  // the sheet adds site B and holds its restart
+        steps.boards = [Self.board(1, 10, selected: false)]
+        _ = try await driver.choose(kind: "jira_boards", select: ["1:10"]).get()
+        await driver.restartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
+        XCTAssertTrue(model.sheetHeldRestart, "B's held restart is intact")
+    }
+
+    func testQuickConnectionCancelDuringAddOpensNoSignIn() async throws {
+        let model = FakeQuickModel()
+        let driver = QuickConnectionConnectDriver(model: model, policy: Self.open)
+        _ = try await driver.setFields(["name": "docs", "kind": "http", "url": "https://mcp.example.com", "oauth": "true"]).get()
+        let flowID = try await driver.start(options: [:]).get()
+        model.onAdd = { await driver.cancel(flowID: flowID) }
+        await driver.flows.finished(flowID)
+        XCTAssertTrue(model.signIns.isEmpty, "no sign-in opens after a Cancel")
+        XCTAssertEqual(model.signInCancelCalls, 0, "the add's busy flag is left alone")
+        let outcome = await driver.wait(flowID: flowID)
+        XCTAssertEqual(outcome, .failed(reason: "the sign-in was cancelled before it opened: docs is added but not signed in"))
+    }
+
+    func testQuickConnectionCancelAfterSignInFinishedKeepsTheRealOutcome() async throws {
+        let model = FakeQuickModel()
+        let driver = QuickConnectionConnectDriver(model: model, policy: Self.open)
+        _ = try await driver.setFields(["name": "docs", "kind": "http", "url": "https://mcp.example.com", "oauth": "true"]).get()
+        let flowID = try await driver.start(options: [:]).get()
+        model.onSignInDone = { await driver.cancel(flowID: flowID) }  // the sign-in exited 0 first
+        await driver.flows.finished(flowID)
+        XCTAssertEqual(model.signIns, ["docs"])
+        let outcome = await driver.wait(flowID: flowID)
+        XCTAssertEqual(outcome, .connected(account: "docs"))
     }
 
     // MARK: - Fixtures
@@ -679,22 +749,21 @@ private final class FakeJiraModel: JiraConnectModel {
     var gate = Gate()
 
     var connects = true
-    var restarts = 0
+    var policies: [DaemonRestartPolicy] = []
+    /// The add sheet's held restart for its own site (not the driver's to touch).
+    var sheetHeldRestart = false
 
-    func addAccountHoldingRestart(
+    func addAccount(
         withConfluence: Bool, company: String?, site: String?, daemonPolicy: DaemonRestartPolicy
-    ) async -> (connected: Bool, accountIDsBefore: Set<Int>?, cancelled: Bool, timedOut: Bool) {
+    ) async -> JiraAccountsViewModel.AuthFlowEnd {
         added = (withConfluence, company, site)
+        policies.append(daemonPolicy)
         isConnecting = true
         await gate.wait()
         isConnecting = false
-        guard connects else { return (false, nil, true, false) }
+        guard connects else { return .cancelled }
         accounts.append(JiraAccount(row: ["id": accounts.count + 1, "site_name": "acme", "enabled": true]))
-        return (true, nil, false, false)
-    }
-
-    func finishBoardStep() {
-        restarts += 1
+        return .finished
     }
 
     func chooseSite(_ site: JiraSiteChoice) {
@@ -799,6 +868,10 @@ private final class FakeQuickModel: QuickConnectionConnectModel {
     var enabled: [String] = []
     var lastSignInCancelled = false
     var signInCancels = false
+    var signIns: [String] = []
+    var signInCancelCalls = 0
+    var onAdd: (() async -> Void)?
+    var onSignInDone: (() async -> Void)?
 
     func addConnection(
         name: String, kind: String, command: String, args: [String], url: String, secretJSON: String?, useOAuth: Bool
@@ -806,8 +879,15 @@ private final class FakeQuickModel: QuickConnectionConnectModel {
         calls.append("add")
         self.secretJSON = secretJSON
         added = (name, args, secretJSON)
-        if useOAuth { lastSignInCancelled = signInCancels }
+        XCTAssertFalse(useOAuth, "the driver runs the sign-in itself")
         connections.append(PersonalConnectDriverTests.connection(connections.count + 1, name, url: url))
+        await onAdd?()
+    }
+
+    func signIn(_ connection: ExternalConnection) async {
+        signIns.append(connection.name)
+        lastSignInCancelled = signInCancels
+        await onSignInDone?()
     }
 
     func setEnabled(_ connection: ExternalConnection, enabled: Bool) async {
@@ -822,7 +902,9 @@ private final class FakeQuickModel: QuickConnectionConnectModel {
                     .init(name: "c", allowed: false, readOnly: false, write: true)])
     }
 
-    func cancelSignIn() {}
+    func cancelSignIn() {
+        signInCancelCalls += 1
+    }
 
     func refreshAsync() async {}
 }

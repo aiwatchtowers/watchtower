@@ -15,6 +15,8 @@ protocol QuickConnectionConnectModel: AnyObject {
     ) async
     func setEnabled(_ connection: ExternalConnection, enabled: Bool) async
     func loadTools(_ connection: ExternalConnection) async
+    /// The sheet's sign-in of an added connection (`connections oauth`).
+    func signIn(_ connection: ExternalConnection) async
     func cancelSignIn()
     func refreshAsync() async
     /// The last sign-in ended in a Cancel: the connection holds no grant.
@@ -39,6 +41,8 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
     private let model: any QuickConnectionConnectModel
     private let policy: @MainActor () -> ManagedPolicy
     private var fields: [String: String] = [:]
+    /// The flow whose sign-in runs now: only then does a Cancel reach the model.
+    private var signingIn: String?
     /// The connection the last confirm card showed, as it was then: only a
     /// start for that same row and server enables, so a row removed and
     /// added again under the name while the card was open needs a new card.
@@ -108,19 +112,30 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
         case let .failure(error): return .failure(error)
         }
         let before = Set(rows.map(\.id))
-        return .success(flows.begin { [model, flows] id in
+        return .success(flows.begin { [model, flows, weak self] id in
+            // The add, then the sign-in, as `addConnection(useOAuth:)` runs
+            // them, so a Cancel during the add stops the sign-in from opening.
             await model.addConnection(name: server.name, kind: server.kind, command: server.command, args: server.args,
-                                      url: server.url, secretJSON: nil, useOAuth: server.oauth)
+                                      url: server.url, secretJSON: nil, useOAuth: false)
             await model.refreshAsync()
-            let cancelled = server.oauth && (flows.wasCancelled(id) || model.lastSignInCancelled)
-            if model.error == nil, cancelled, model.connections.contains(where: { $0.name == server.name }) {
-                return .failed(reason: "the sign-in was cancelled: \(server.name) is added but not signed in")
+            if let error = model.error { return .failed(reason: error) }
+            guard let row = model.connections.first(where: { $0.name == server.name }) else {
+                return ConnectOutcome.of(error: nil, before: before, after: [], cancelled: false, noun: "connection")
             }
-            if model.error == nil, let row = model.connections.first(where: { $0.name == server.name }) {
-                return .connected(account: row.name)
+            guard server.oauth else { return .connected(account: row.name) }
+            if flows.wasCancelled(id) {
+                return .failed(reason: "the sign-in was cancelled before it opened: \(row.name) is added but not signed in")
             }
-            return ConnectOutcome.of(error: model.error, before: before, after: [],
-                                     cancelled: cancelled, noun: "connection")
+            self?.signingIn = id
+            await model.signIn(row)
+            self?.signingIn = nil
+            if let error = model.error { return .failed(reason: error) }
+            // Only the model's word that the sign-in was interrupted counts:
+            // a Cancel that came after it finished changed nothing.
+            if model.lastSignInCancelled {
+                return .failed(reason: "the sign-in was cancelled: \(row.name) is added but not signed in")
+            }
+            return .connected(account: row.name)
         })
     }
 
@@ -128,8 +143,12 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
         flows.outcome(of: flowID)
     }
 
+    /// A Cancel reaches the model only while the flow's sign-in runs; during
+    /// the add or an enable it is recorded, and the flow does not go on to a
+    /// sign-in.
     func cancel(flowID: String) async {
-        if flows.cancel(flowID) { model.cancelSignIn() }
+        guard flows.cancel(flowID), signingIn == flowID else { return }
+        model.cancelSignIn()
     }
 
     // MARK: - Fields and the key

@@ -12,11 +12,12 @@ protocol JiraConnectModel: AnyObject {
     var accounts: [JiraAccount] { get }
     /// The running flow's site question, while it waits for an answer.
     var siteChoices: [JiraSiteChoice]? { get }
-    /// The sheet's connect: the daemon restart is held until `finishBoardStep`.
-    func addAccountHoldingRestart(
+    /// The driver passes `.deferred` and restarts the daemon itself: the
+    /// sheet's held restart (`addAccountHoldingRestart`/`finishBoardStep`)
+    /// stays the sheet's alone.
+    func addAccount(
         withConfluence: Bool, company: String?, site: String?, daemonPolicy: DaemonRestartPolicy
-    ) async -> (connected: Bool, accountIDsBefore: Set<Int>?, cancelled: Bool, timedOut: Bool)
-    func finishBoardStep()
+    ) async -> JiraAccountsViewModel.AuthFlowEnd
     func chooseSite(_ site: JiraSiteChoice)
     func cancelConnect()
     func refreshAsync() async
@@ -60,9 +61,17 @@ final class JiraConnectDriver: ConnectServiceDriving {
     /// The site `set_fields` named before the site question showed: for the
     /// next start (`flow` nil) or for that flow's question only.
     private var pendingSite: (flow: String?, site: String)?
-    /// A connect this driver made holds the daemon restart until the boards
-    /// are picked, the run ends, or the next start (the sheet's board step).
-    private var holdsRestart = false
+    /// A site this driver added waits for the daemon restart until the
+    /// boards are picked, the run ends, or the next start (the sheet's board
+    /// step, #572). The driver's own state: the sheet's held restart in
+    /// `JiraAccountsViewModel` is never read or released here.
+    private var restartPending = false
+    /// The run ended (`runEnded`) since the last start: a connect that
+    /// finishes later restarts at once, as nothing would release it.
+    private var runOver = false
+    private let daemon: any DaemonRestarting
+    /// The last restart this driver kicked off (tests await it).
+    private(set) var restartTask: Task<Void, Never>?
     /// The site ids before this driver's last connect: boards and spaces
     /// list the sites it added (`JiraBoardPicker.sites`).
     private var idsBefore: Set<Int>?
@@ -73,12 +82,14 @@ final class JiraConnectDriver: ConnectServiceDriving {
         model: any JiraConnectModel,
         steps: any JiraConnectSteps,
         policy: @escaping @MainActor () -> ManagedPolicy,
-        companySlug: @escaping @MainActor () -> String?
+        companySlug: @escaping @MainActor () -> String?,
+        daemon: any DaemonRestarting = LiveDaemonRestarter()
     ) {
         self.model = model
         self.steps = steps
         self.policy = policy
         self.companySlug = companySlug
+        self.daemon = daemon
     }
 
     /// The stored company whose Atlassian app personal sign-ins use: the
@@ -111,7 +122,8 @@ final class JiraConnectDriver: ConnectServiceDriving {
         let allowed: Set<String> = ["site", "with_confluence"]
         if let refusal = ConnectOptions.unknown(options, allowed: allowed, service: service) { return .failure(refusal) }
         guard !model.isConnecting, flows.current == nil else { return .failure(.busy) }
-        releaseRestart()  // a held restart from the last connect is not lost to this one
+        releaseRestart()  // a pending restart from the last connect is not lost to this one
+        runOver = false
         let withConfluence = options["with_confluence"] == "true"
         let named = options["site"].flatMap { $0.isEmpty ? nil : $0 }
         let site = named ?? (pendingSite?.flow == nil ? pendingSite?.site : nil)
@@ -121,31 +133,42 @@ final class JiraConnectDriver: ConnectServiceDriving {
         listedBoards = []
         let company = companySlug()
         return .success(flows.begin { [model, steps, flows, weak self] id in
-            let result = await model.addAccountHoldingRestart(
-                withConfluence: withConfluence, company: company, site: site, daemonPolicy: .restart)
+            let end = await model.addAccount(
+                withConfluence: withConfluence, company: company, site: site, daemonPolicy: .deferred)
             self?.dropPendingSite(of: id)
-            // Connected: the view model holds the restart for the board pick.
-            // A Cancel that came too late added the site and restarted already.
-            if result.connected { self?.holdsRestart = true }
             await model.refreshAsync()
+            if end == .cancelled { return .failed(reason: ConnectFlowBook.cancelled) }
             let outcome = ConnectOutcome.of(
-                error: result.connected ? nil : model.error, before: Set(before.map(String.init)),
+                error: model.error, before: Set(before.map(String.init)),
                 after: model.accounts.map { ConnectAccountRow(id: $0.id, ConnectionAccountState($0)) },
-                cancelled: result.cancelled || flows.wasCancelled(id), noun: "site")
+                cancelled: flows.wasCancelled(id), noun: "site")
+            // A site was added: its restart waits for the board pick, unless
+            // a Cancel came too late (no board step follows) or the run is over.
+            if case .connected = outcome { self?.siteAdded(boardStepFollows: end == .finished) }
             guard withConfluence, case let .connected(name) = outcome else { return outcome }
             let line = await steps.confluenceLine(accountIDsBefore: before)
             return .connected(account: line.isEmpty ? name : "\(name). \(line)")
         })
     }
 
-    /// The held daemon restart runs now (`finishBoardStep`).
-    private func releaseRestart() {
-        guard holdsRestart else { return }
-        holdsRestart = false
-        model.finishBoardStep()
+    private func siteAdded(boardStepFollows: Bool) {
+        restartPending = true
+        if !boardStepFollows || runOver { releaseRestart() }
     }
 
+    /// The pending daemon restart runs now, on the driver's own path.
+    private func releaseRestart() {
+        guard restartPending else { return }
+        restartPending = false
+        restartTask = DaemonRestartPolicy.restart.apply(using: daemon)
+    }
+
+    /// The run is over: a pending restart runs now, and a connect that
+    /// finishes later runs its own at once. At app quit the restart is a
+    /// queued daemon restart that may not finish; the next launch starts
+    /// the daemon with the new site anyway.
     func runEnded() {
+        runOver = true
         releaseRestart()
     }
 
