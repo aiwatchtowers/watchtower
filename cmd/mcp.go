@@ -11,11 +11,15 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/automations"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
+	"watchtower/internal/connectmcp"
+	"watchtower/internal/connectplay"
+	"watchtower/internal/connectwire"
 	"watchtower/internal/db"
 	internalmcp "watchtower/internal/mcp"
 	"watchtower/internal/skills"
@@ -39,7 +43,11 @@ With --workbench N the server is bound to one Watchtower workbench: its
 workbench tools (board, documents, comments) apply directly to that workbench
 only, and nothing else becomes writable. 'watchtower integrate claude-code
 --workbench N' registers this mode in the workbench folder; never register it
-by hand for an unrelated client.`,
+by hand for an unrelated client.
+
+--connect <service> is the Watchtower app's connect assistant: it mounts only
+that service's connect tools and works only inside a connect run the app
+started.`,
 	PersistentPreRunE: mcpPreRun,
 	RunE:              runMCP,
 }
@@ -55,7 +63,50 @@ func mcpPreRun(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("project") {
 		return errors.New(preRenameSetupLine(preRenameWorkbenchID([]string{"--project", mcpFlagPreRename})))
 	}
+	if cmd.Flags().Changed("connect") {
+		// The connect mode opens no database and reads no config: no
+		// schema hook either.
+		return checkMCPConnectFlags(cmd)
+	}
 	return ensureSchemaFormat(cmd, args)
+}
+
+// checkMCPConnectFlags refuses every mcp flag next to --connect but
+// --db-path, which both mount paths (ai.ChatMCPConfig,
+// codex.WatchtowerServerTOML) append and the connect mode ignores.
+func checkMCPConnectFlags(cmd *cobra.Command) error {
+	var others []string
+	cmd.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) {
+		if f.Changed && f.Name != "connect" && f.Name != "db-path" {
+			others = append(others, "--"+f.Name)
+		}
+	})
+	if len(others) > 0 {
+		return fmt.Errorf("--connect runs alone: drop %s", strings.Join(others, ", "))
+	}
+	return nil
+}
+
+// runMCPConnect is `watchtower mcp --connect <service>` (agent connect spec
+// §5.3): the connect tools of the service's playbooks, each call forwarded
+// to the Desktop's run socket. The socket and the run token come from the
+// environment (connectwire.SocketEnv, TokenEnv), never argv. No database is
+// opened.
+func runMCPConnect(ctx context.Context, service string, getenv func(string) string) error {
+	pbs, err := connectplay.ForService(service, "")
+	if err != nil {
+		return fmt.Errorf("--connect: %w", err)
+	}
+	socket, token := getenv(connectwire.SocketEnv), getenv(connectwire.TokenEnv)
+	if socket == "" || token == "" {
+		return fmt.Errorf("--connect runs only inside a Watchtower connect run (%s and %s must be set)", connectwire.SocketEnv, connectwire.TokenEnv)
+	}
+	client, err := connectwire.Dial(ctx, socket, token, service)
+	if err != nil {
+		return fmt.Errorf("--connect %s: %w", service, err)
+	}
+	defer func() { _ = client.Close() }()
+	return connectmcp.NewServer(client, pbs).ServeStdio(ctx)
 }
 
 var (
@@ -78,6 +129,9 @@ var (
 	// mcpFlagAutomationReadyFile is touched once the automation server
 	// accepted its binding and serves (the agent() runner's startup record).
 	mcpFlagAutomationReadyFile string
+	// mcpFlagConnect is `--connect <service>`: the connect assistant's
+	// tools only (runMCPConnect).
+	mcpFlagConnect string
 )
 
 func init() {
@@ -95,6 +149,7 @@ func init() {
 	mcpCmd.Flags().StringVar(&mcpFlagAutomationReadyFile, "automation-ready-file", "", "--surface automation: a file created once the server accepted the run's binding and serves")
 	mcpCmd.Flags().StringSliceVar(&mcpFlagAutomationTools, "automation-tools", nil, "--surface automation: the tools the agent() call asked for (comma-separated)")
 	mcpCmd.Flags().StringVar(&mcpFlagAgent, "agent", "", "workbench mode: the coding agent of the session ("+agentkind.Choices("|")+"); labels its comments when no terminal session names it")
+	mcpCmd.Flags().StringVar(&mcpFlagConnect, "connect", "", "connect assistant mode: only the connect tools of this service's playbooks, forwarded to the Watchtower app's connect run (never for external clients)")
 	mcpCmd.Flags().Int64Var(&mcpFlagWorkbench, workbenchFlag, 0, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
 }
 
@@ -350,6 +405,9 @@ func mcpAgent(raw string) (agentkind.Kind, error) {
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {
+	if mcpFlagConnect != "" {
+		return runMCPConnect(cmd.Context(), mcpFlagConnect, os.Getenv)
+	}
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
