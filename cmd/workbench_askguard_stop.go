@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -22,6 +23,7 @@ import (
 	"watchtower/internal/devpack"
 	"watchtower/internal/digest"
 	"watchtower/internal/sessionagent"
+	"watchtower/internal/watchmanact"
 	"watchtower/internal/workbenchmethod"
 )
 
@@ -789,7 +791,42 @@ func (g *askGuardSession) resolve(now time.Time) (askGuardResolution, error) {
 	if err != nil {
 		return askGuardResolution{Matched: true}, err
 	}
+	if present && hooks {
+		// A session handed to Watchman reads the owner as away whatever the
+		// presence says (PROJ-13); an unreadable arming keeps the presence.
+		if armed, ok := askGuardSessionArmed(g.database, g.rowID, askGuardSidecarPath()); ok && armed {
+			present = false
+		}
+	}
 	return askGuardResolution{Matched: true, Recordable: hooks, Present: present}, nil
+}
+
+// askGuardSidecarPath is the Watchman arm sidecar's path, "" when the
+// workspace cannot be resolved. A var for tests.
+var askGuardSidecarPath = func() string {
+	cfg, err := loadWorkbenchCLIConfig()
+	if err != nil {
+		return ""
+	}
+	return watchmanact.SidecarPath(cfg.WorkspaceDir())
+}
+
+// askGuardSessionArmed reports whether session rowID is handed to Watchman,
+// directly or through a target: the sidecar's `session <id>` line first (no
+// database read), then the database (WatchmanItemArmed with no target walks
+// the session's own ticket up). ok is false when neither could be read, and
+// the caller keeps today's presence.
+func askGuardSessionArmed(database *db.DB, rowID int64, sidecar string) (armed, ok bool) {
+	if sidecar != "" {
+		if sc, err := watchmanact.ReadSidecar(sidecar); err == nil && slices.Contains(sc.Sessions, rowID) {
+			return true, true
+		}
+	}
+	armed, err := database.WatchmanItemArmed(rowID, 0)
+	if err != nil {
+		return false, false
+	}
+	return armed, true
 }
 
 // hasStateHooks reports whether the session's folder has the core state

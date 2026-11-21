@@ -26,6 +26,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/digest"
+	"watchtower/internal/watchmanact"
 )
 
 // askToolDenialJSON is the spec's §6.3 output with the away reason
@@ -870,6 +871,16 @@ func TestProj13_ChatPassesOnlyWhenPresentAndRecorded(t *testing.T) {
 			setOwnerPresence(t, database, row, time.Now())
 			return guardPayload(e1Message, false)
 		}, true},
+		{"R-away armed session, owner present", func(t *testing.T, database *db.DB, _, row int64) string {
+			setOwnerPresence(t, database, row, time.Now())
+			armSessionForGuard(t, database, row)
+			return guardPayload(e1Message, false)
+		}, false},
+		{"R-away armed through a target, owner present", func(t *testing.T, database *db.DB, pid, row int64) string {
+			setOwnerPresence(t, database, row, time.Now())
+			armTargetOverSession(t, database, pid, row)
+			return guardPayload(e1Message, false)
+		}, false},
 		{"E2 no presence row", func(*testing.T, *db.DB, int64, int64) string { return guardPayload(e1Message, false) }, false},
 		{"in no session", func(t *testing.T, database *db.DB, _, _ int64) string {
 			setOwnerPresence(t, database, nil, time.Now())
@@ -1603,4 +1614,80 @@ func TestStopGuardRecordsTheQuestionsContext(t *testing.T) {
 	assert.Equal(t, db.ChatQuestion{Question: "Merge the PR now?",
 		Context: "CI is green; merging now unblocks the release. I recommend yes.",
 		Options: []db.ChatQuestionOption{{Label: "Yes", Recommended: true}, {Label: "No"}}}, *q)
+}
+
+// armSessionForGuard hands session row to Watchman directly.
+func armSessionForGuard(t *testing.T, database *db.DB, row int64) {
+	t.Helper()
+	require.NoError(t, database.UpsertWatchmanArming(db.WatchmanArming{Scope: "session", RefID: row, ArmedAt: time.Now(), ArmedBy: "cli"}))
+}
+
+// armTargetOverSession arms a target and puts session row under it.
+func armTargetOverSession(t *testing.T, database *db.DB, pid, row int64) {
+	t.Helper()
+	res, err := database.Exec(`INSERT INTO targets (text, period_start, period_end, project_id) VALUES ('acme', '2026-11-01', '2026-11-30', ?)`, pid)
+	require.NoError(t, err)
+	target, err := res.LastInsertId()
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE terminal_sessions SET target_id = ? WHERE id = ?`, target, row)
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertWatchmanArming(db.WatchmanArming{Scope: "target", RefID: target, ArmedAt: time.Now(), ArmedBy: "cli"}))
+}
+
+// A target row that covers the session reads the owner as away.
+func TestAskGuard_ArmedViaTarget(t *testing.T) {
+	database, pid, row := stopGuardFixture(t)
+	armed, ok := askGuardSessionArmed(database, row, "")
+	assert.False(t, armed)
+	assert.True(t, ok)
+	armTargetOverSession(t, database, pid, row)
+	armed, ok = askGuardSessionArmed(database, row, "")
+	assert.True(t, armed)
+	assert.True(t, ok)
+	setOwnerPresence(t, database, row, time.Now())
+	useAskGuardGen(t, &stubAskGuardGen{reply: e1Verdict})
+
+	out, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(e1Message, false)))
+
+	require.NoError(t, err)
+	assert.Equal(t, guardBlock(t, askGuardReasonAway), out)
+}
+
+// The sidecar's session line decides first, with no database read.
+func TestAskGuard_SidecarSessionLineIsArmed(t *testing.T) {
+	database, _, row := stopGuardFixture(t)
+	path := filepath.Join(t.TempDir(), "watchman.armed")
+	require.NoError(t, watchmanact.WriteSidecar(path, []db.ArmedSession{{SessionID: row}}, false))
+	armed, ok := askGuardSessionArmed(database, row, path)
+	assert.True(t, armed)
+	assert.True(t, ok)
+}
+
+// When neither the sidecar nor the database can be read the arming is
+// unknown and the owner's presence stands.
+func TestAskGuard_ArmingUnreadableKeepsPresence(t *testing.T) {
+	database, pid, row := stopGuardFixture(t)
+	setOwnerPresence(t, database, row, time.Now())
+	armSessionForGuard(t, database, row)
+	for _, q := range []string{
+		`DROP TABLE watchman_arming`,
+		`CREATE TABLE arming_src (id INTEGER)`,
+		`CREATE VIEW watchman_arming AS SELECT id FROM arming_src`,
+		`DROP TABLE arming_src`,
+	} {
+		_, err := database.Exec(q)
+		require.NoError(t, err, q)
+	}
+	bad := filepath.Join(t.TempDir(), "sidecar")
+	require.NoError(t, os.Mkdir(bad, 0o700)) // a directory: unreadable as a file
+	armed, ok := askGuardSessionArmed(database, row, bad)
+	assert.False(t, armed)
+	assert.False(t, ok)
+	useAskGuardGen(t, &stubAskGuardGen{reply: e1Verdict})
+
+	out, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(e1Message, false)))
+
+	require.NoError(t, err)
+	assert.Empty(t, out, "the question still passes")
+	require.NotNil(t, storedChatQuestion(t, database, row))
 }
