@@ -94,7 +94,7 @@ The place ids (G1…C3, O1) are the spec's "Where it goes" table.
 - O1: `EmailAccountsViewModel.connectOutlook`'s completion checks `authProcess === process`.
 - Tests: the cancel trio on `ExternalConnectionsViewModel.signIn` (Q1) and on `connectOutlook` (O1); the row shows the line.
 
-## Task 7: Company — chain card, wizard check, wizard Slack step (C1–C3)
+## Task 7: Company — chain card, wizard check (C1, C2)
 **Depends on:** none
 - C1: in `CompaniesZone`, a company card whose chain runs with the sheet closed shows `SignInWaitLine` (service = the running vendor's name). Its Cancel calls `CompanyConnectFlowModel.stop()`.
 - C2: `CompanySetupWizardModel`:
@@ -102,8 +102,8 @@ The place ids (G1…C3, O1) are the spec's "Where it goes" table.
   - `cancelCheck(v)` cancels it (the `CLILineStream` group kill) and puts the check back to not-run, with no failed line.
 
   `CompanySetupVendorStep` shows `SignInWaitLine` on the running check.
-- C3: the wizard's Slack step shows `SignInWaitLine` while its `SlackAppSetupModel` connects, and Cancel calls `cancelConnect`.
-- Tests: `stop` from the card (the chain ends, no error); the cancel trio on `cancelCheck` (→ not-run, no failed line) and on the wizard's `SlackAppSetupModel.cancelConnect` (C3); the check's and the Slack step's lines.
+- C3 dropped: the wizard's Slack step never waits on a browser (see the spec).
+- Tests: `stop` from the card (the chain ends, no error); the cancel trio on `cancelCheck` (→ not-run, no failed line); the check's and the Slack step's lines.
 
 ## Task 8: Built views vs mockups, docs
 **Depends on:** Tasks 2–7
