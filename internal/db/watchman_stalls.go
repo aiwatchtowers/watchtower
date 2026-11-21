@@ -149,9 +149,10 @@ func (db *DB) WatchmanStallItemDone(sessionID int64) (bool, error) {
 // InsertWatchmanStallItem journals a stalled session for the owner: kind
 // 'stall', ref ('session', sessionID), finished parked with reason (created_at
 // = decided_at = at, unsure 1), so it waits under Waiting for you until Mark
-// done. One open stall item per session: while one waits nothing is added;
-// one the owner marked done (shown nowhere since) gives way to the new one
-// in the same transaction (the item is UNIQUE by ref and kind).
+// done. One open stall item per session: while one waits it keeps its id and
+// created_at and takes the new reason (a re-park says why this time); one
+// the owner marked done (shown nowhere since) gives way to the new one in the
+// same transaction (the item is UNIQUE by ref and kind).
 func (db *DB) InsertWatchmanStallItem(sessionID, targetID, workbenchID int64, reason string, at time.Time) error {
 	if err := db.WithTx(func(tx *sql.Tx) error {
 		return insertWatchmanStallItem(tx, sessionID, targetID, workbenchID, reason, at)
@@ -169,7 +170,7 @@ func insertWatchmanStallItem(tx *sql.Tx, sessionID, targetID, workbenchID int64,
 	_, err := tx.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, state, outcome,
 			unsure, park_reason, created_at, decided_at)
 		VALUES (?, ?, ?, 'stall', 'session', ?, 'done', 'parked', 1, ?, ?, ?)
-		ON CONFLICT(ref_kind, ref_id, kind) DO NOTHING`,
+		ON CONFLICT(ref_kind, ref_id, kind) DO UPDATE SET park_reason = excluded.park_reason`,
 		workbenchID, sessionID, wmNullID(targetID), sessionID, reason, wmTime(at), wmTime(at))
 	return err //nolint:wrapcheck // the callers name the session
 }

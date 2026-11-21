@@ -18,15 +18,15 @@ import (
 // stopped StallAfter, at most StallMaxPings times without progress (a new
 // ask, a finish, the worktree's HEAD moved); then a 'stall' item waits for
 // the owner with StallReason, and no ping goes until progress or his Mark
-// done. A session no ping gets through to for StallStuckAfter (a ping left
-// typed in the prompt, offers held behind it) is parked with
-// StallStuckReason.
+// done. A session whose last counted ping was left typed in the prompt
+// (never submitted) and that no later ping gets through to for
+// StallStuckAfter is parked with StallStuckReason.
 const (
 	StallAfter    = 3 * time.Minute
 	StallMaxPings = 3
-	// StallStuckAfter is how long a stopped session may go with no ping
-	// getting through, while its last counted ping was not submitted, before
-	// it is parked anyway.
+	// StallStuckAfter is how long a stopped session whose last counted ping
+	// was typed, not submitted, may go with no ping getting through before it
+	// is parked anyway (no counted ping at all: offers just retry).
 	StallStuckAfter  = 3 * StallAfter
 	StallPing        = "Watchman: your turn ended with no ask_owner and no finish_session. Need the owner → file ask_owner and keep working. Done → finish_session. Waiting on a background job → start it in the background so the session shows it, then end the turn. Otherwise go on with the next step."
 	StallReason      = "The agent stopped and did not go on after 3 pings"
@@ -136,9 +136,10 @@ func (t *Twin) liveChildren(ctx context.Context, id int64) (int, error) {
 //  3. the decision: a parked row waits; after a stop later than the last
 //     ping, StallMaxPings counted → park with StallReason, else offer the
 //     ping through SubmitLineNow (never queued; the arming read again
-//     right before, WATCHMAN-04) — submitted or typed counts; and a session
-//     no ping got through to for StallStuckAfter while its last counted ping
-//     was not submitted parks with StallStuckReason.
+//     right before, WATCHMAN-04) — submitted or typed counts; and when no
+//     ping got through this tick and the last counted one was typed, a
+//     session stuck StallStuckAfter past that ping and the current stop
+//     parks with StallStuckReason.
 //
 // Every park re-checks the arming in its own transaction.
 func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
@@ -235,31 +236,33 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 			t.parkStall(s, st, StallReason, now)
 			return
 		}
+		if head == "" { // not read this tick (a parked row just reset)
+			head = t.readHead(ctx, s)
+		}
 		if t.offerPing(ctx, s, st, head, asks, now) {
 			return
 		}
 	}
-	// No ping got through this tick (none due, or the offer was not taken).
-	if st.LastDelivery != askanswer.DeliverySubmitted && now.Sub(stuckSince(st)) >= StallStuckAfter {
-		t.parkStall(s, st, StallStuckReason, now)
-	}
-}
-
-// stuckSince is the stuck clock's start: the latest of the last counted
-// ping, the current stop and the last reset.
-func stuckSince(st *db.WatchmanStallRow) time.Time {
-	at := st.StoppedAt
-	for _, t := range []*time.Time{st.LastPingAt, st.ResetAt} {
-		if t != nil && t.After(at) {
-			at = *t
+	// No ping got through this tick (none due, or the offer was not taken):
+	// stuck only behind a typed ping, counted from it or the current stop,
+	// whichever is later (a reset clears the last ping, so it never counts
+	// from before one).
+	if st.LastDelivery == askanswer.DeliveryTyped && st.LastPingAt != nil {
+		since := st.StoppedAt
+		if st.LastPingAt.After(since) {
+			since = *st.LastPingAt
+		}
+		if now.Sub(since) >= StallStuckAfter {
+			t.parkStall(s, st, StallStuckReason, now)
 		}
 	}
-	return at
 }
 
 // offerPing offers the ping, the arming read again right before; true when
 // it reached the session (submitted or typed — never submitted or cleared
-// here, the prompt may hold the owner's text) and was counted.
+// here, the prompt may hold the owner's text) and was counted; a row write
+// that fails leaves st as it was and counts nothing (tried again next tick).
+// A HEAD that could not be read keeps the stored one.
 func (t *Twin) offerPing(ctx context.Context, s db.ArmedSession, st *db.WatchmanStallRow, head string, asks int, now time.Time) bool {
 	id := s.SessionID
 	if armed, err := t.d.DB.WatchmanSessionArmed(id); err != nil || !armed {
@@ -273,11 +276,17 @@ func (t *Twin) offerPing(ctx context.Context, s db.ArmedSession, st *db.Watchman
 		log.Printf("watchman stall: session %d: ping not sent (%s)", id, delivery)
 		return false
 	}
-	st.Pings++
-	st.LastPingAt, st.LastDelivery, st.Head, st.AsksSeen = &now, delivery, head, asks
-	if err := t.d.DB.UpsertWatchmanStall(*st); err != nil {
-		log.Printf("watchman stall: %v", err)
+	next := *st
+	next.Pings++
+	next.LastPingAt, next.LastDelivery, next.AsksSeen = &now, delivery, asks
+	if head != "" {
+		next.Head = head
 	}
+	if err := t.d.DB.UpsertWatchmanStall(next); err != nil {
+		log.Printf("watchman stall: session %d: ping not counted: %v", id, err)
+		return false
+	}
+	*st = next
 	log.Printf("watchman stall: session %d pinged (%d of %d, %s)", id, st.Pings, StallMaxPings, delivery)
 	return true
 }
@@ -293,7 +302,7 @@ func (t *Twin) parkStall(s db.ArmedSession, st *db.WatchmanStallRow, reason stri
 	}
 	if ok {
 		st.ParkedAt = &now
-		log.Printf("watchman stall: session %d parked for the owner after %d pings", s.SessionID, st.Pings)
+		log.Printf("watchman stall: session %d parked for the owner: %s", s.SessionID, reason)
 	}
 }
 

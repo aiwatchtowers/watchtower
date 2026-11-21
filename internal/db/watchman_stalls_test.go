@@ -124,8 +124,16 @@ func TestInsertWatchmanStallItem_OnePerOpenStall(t *testing.T) {
 	const reason = "The agent stopped and did not go on after 3 pings"
 
 	require.NoError(t, d.InsertWatchmanStallItem(s, target, wb, reason, at))
-	require.NoError(t, d.InsertWatchmanStallItem(s, target, wb, reason, at.Add(time.Hour)), "an open one: nothing added")
+	first := stallItems(t, d, s)
+	require.Len(t, first, 1)
+	const stuck = "The agent stopped and Watchman could not get a ping through for 9 minutes"
+	require.NoError(t, d.InsertWatchmanStallItem(s, target, wb, stuck, at.Add(time.Hour)), "an open one: no second item")
 	items := stallItems(t, d, s)
+	require.Len(t, items, 1)
+	assert.Equal(t, first[0].ID, items[0].ID, "the open item keeps its id")
+	assert.Equal(t, stuck, items[0].ParkReason, "a re-park updates the reason")
+	require.NoError(t, d.InsertWatchmanStallItem(s, target, wb, reason, at.Add(time.Hour)))
+	items = stallItems(t, d, s)
 	require.Len(t, items, 1)
 	it := items[0]
 	assert.Equal(t, "session", it.RefKind)

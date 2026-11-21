@@ -829,3 +829,104 @@ func TestGitHead_ReadsThroughRun(t *testing.T) {
 		t.Fatal("a failed read returned no error")
 	}
 }
+
+// Handed over long stopped, the first offers held (an owner draft): with no
+// counted ping there is no stuck park, however long — offers just retry. A
+// typed ping then starts the stuck clock: parked StallStuckAfter after it.
+func TestStall_NoStuckParkWithoutTypedPing(t *testing.T) {
+	e := newStallEnv(t)
+	e.stop(stallT0)
+	e.port.set(askanswer.DeliverHeld, nil)
+	armedAt := stallT0.Add(20 * time.Minute)
+	for m := 0; m <= 15; m++ {
+		e.check(armedAt.Add(time.Duration(m) * time.Minute))
+	}
+	if st := e.row(); st != nil {
+		t.Fatalf("row = %+v after held offers only", st)
+	}
+	if n := len(e.stallItems()); n != 0 {
+		t.Fatalf("stall items = %d with no ping ever counted", n)
+	}
+	e.port.set(askanswer.DeliverTyped, nil)
+	typed := armedAt.Add(16 * time.Minute)
+	e.check(typed)
+	if st := e.row(); st == nil || st.Pings != 1 || st.LastDelivery != askanswer.DeliveryTyped {
+		t.Fatalf("row = %+v, want the typed ping counted", st)
+	}
+	e.port.set(askanswer.DeliverHeld, nil)
+	e.check(typed.Add(StallStuckAfter - time.Minute))
+	if st := e.row(); st.ParkedAt != nil {
+		t.Fatal("parked before 9 minutes past the typed ping")
+	}
+	e.check(typed.Add(StallStuckAfter))
+	if st := e.row(); st.ParkedAt == nil {
+		t.Fatal("not parked 9 minutes past the typed ping")
+	}
+	if items := e.stallItems(); len(items) != 1 || items[0].ParkReason != StallStuckReason {
+		t.Fatalf("stall items = %+v", items)
+	}
+}
+
+// Mark done, then a ping on the same tick (HEAD not read in step 1 while
+// parked): the stored HEAD is kept, so the next commit is progress.
+func TestStall_PingAfterResetKeepsHead(t *testing.T) {
+	e := newStallEnv(t)
+	at := e.parkAfterThreePings(stallT0)
+	_, err := e.db.Exec(`UPDATE watchman_items SET owner_done_at = ? WHERE kind = 'stall'`, at.Format(time.RFC3339))
+	e.must(err)
+	e.check(at.Add(time.Minute))
+	if st := e.row(); st.Pings != 1 || st.Head != "c0ffee" {
+		t.Fatalf("row = %+v, want pinged with HEAD kept", st)
+	}
+	e.setHead("beef00")
+	moved := at.Add(2 * time.Minute)
+	e.check(moved)
+	if st := e.row(); st.ResetAt == nil || !st.ResetAt.Equal(moved) || st.Head != "beef00" {
+		t.Fatalf("row = %+v, want the commit seen as progress", st)
+	}
+}
+
+// A 3-ping park reset by progress (no Mark done), then a typed ping left
+// stuck: the open item stays one and takes the stuck reason.
+func TestStall_ReparkUpdatesReason(t *testing.T) {
+	e := newStallEnv(t)
+	at := e.parkAfterThreePings(stallT0)
+	e.setHead("beef00")
+	e.port.set(askanswer.DeliverTyped, nil)
+	typed := at.Add(StallAfter)
+	e.check(typed)
+	if st := e.row(); st.ParkedAt != nil || st.Pings != 1 || st.LastDelivery != askanswer.DeliveryTyped {
+		t.Fatalf("row = %+v, want reset and a typed ping", st)
+	}
+	e.port.set(askanswer.DeliverHeld, nil)
+	e.check(typed.Add(StallStuckAfter))
+	if st := e.row(); st.ParkedAt == nil {
+		t.Fatalf("row = %+v, want parked as stuck", st)
+	}
+	if items := e.stallItems(); len(items) != 1 || items[0].ParkReason != StallStuckReason {
+		t.Fatalf("stall items = %+v, want one with the stuck reason", items)
+	}
+}
+
+// A ping whose count cannot be written is not counted: the next tick offers
+// it again and counts it then.
+func TestStall_RowWriteFailedNotCounted(t *testing.T) {
+	e := newStallEnv(t)
+	_, err := e.db.Exec(`CREATE TRIGGER stall_write_fails BEFORE INSERT ON watchman_stalls BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
+	e.must(err)
+	e.stop(stallT0)
+	if n := e.check(stallT0.Add(StallAfter)); n != 1 {
+		t.Fatalf("offers = %d, want 1", n)
+	}
+	if st := e.row(); st != nil {
+		t.Fatalf("row = %+v after a failed write", st)
+	}
+	_, err = e.db.Exec(`DROP TRIGGER stall_write_fails`)
+	e.must(err)
+	if n := e.check(stallT0.Add(StallAfter + time.Minute)); n != 2 {
+		t.Fatalf("offers = %d, want a retry", n)
+	}
+	if st := e.row(); st == nil || st.Pings != 1 {
+		t.Fatalf("row = %+v, want 1 ping", st)
+	}
+}
