@@ -141,13 +141,15 @@ func TestWatchmanUpkeep_PrunesInstructions(t *testing.T) {
 	require.Equal(t, []string{"session/10", "session/11", "target/1"}, left)
 }
 
-func TestArmWatchmanInstructed_OneTransaction(t *testing.T) {
+func TestArmWatchmanSet_OneTransaction(t *testing.T) {
 	d := openTestDB(t)
 	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
-	inserted, err := d.ArmWatchmanInstructed(WatchmanArming{Scope: "session", RefID: 7, ArmedAt: t0, ArmedBy: "cli"}, "first")
+	first := "first"
+	inserted, err := d.ArmWatchmanSet([]WatchmanArming{{Scope: "session", RefID: 7, ArmedAt: t0, ArmedBy: "cli"}}, &first)
 	require.NoError(t, err)
 	require.True(t, inserted)
-	inserted, err = d.ArmWatchmanInstructed(WatchmanArming{Scope: "session", RefID: 7, ArmedAt: t0.Add(time.Hour), ArmedBy: "cli"}, "second")
+	second := "second"
+	inserted, err = d.ArmWatchmanSet([]WatchmanArming{{Scope: "session", RefID: 7, ArmedAt: t0.Add(time.Hour), ArmedBy: "cli"}}, &second)
 	require.NoError(t, err)
 	require.False(t, inserted, "a re-arm keeps the row")
 	got, err := d.WatchmanInstruction("session", 7)
@@ -158,10 +160,23 @@ func TestArmWatchmanInstructed_OneTransaction(t *testing.T) {
 	require.Len(t, arming, 1)
 	require.True(t, arming[0].ArmedAt.Equal(t0))
 
-	// A bad scope fails, and leaves no row of either kind.
-	_, err = d.ArmWatchmanInstructed(WatchmanArming{Scope: "bogus", RefID: 8, ArmedAt: t0, ArmedBy: "cli"}, "x")
+	// nil text keeps the stored one.
+	_, err = d.ArmWatchmanSet([]WatchmanArming{{Scope: "session", RefID: 7, ArmedAt: t0, ArmedBy: "cli"}}, nil)
+	require.NoError(t, err)
+	got, err = d.WatchmanInstruction("session", 7)
+	require.NoError(t, err)
+	require.Equal(t, "second", got)
+
+	// A bad second row fails the whole set: the first is neither armed nor given text.
+	x := "x"
+	_, err = d.ArmWatchmanSet([]WatchmanArming{
+		{Scope: "session", RefID: 8, ArmedAt: t0, ArmedBy: "cli"},
+		{Scope: "bogus", RefID: 9, ArmedAt: t0, ArmedBy: "cli"},
+	}, &x)
 	require.Error(t, err)
 	var n int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_instructions WHERE ref_id = 8`).Scan(&n))
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_instructions WHERE ref_id IN (8, 9)`).Scan(&n))
+	require.Zero(t, n)
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_arming WHERE ref_id IN (8, 9)`).Scan(&n))
 	require.Zero(t, n)
 }

@@ -498,22 +498,16 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	}
 	// A row already there keeps its armed_at: re-arming does not move
 	// "Sleep since" (one INSERT … DO NOTHING, so no check-then-write race).
-	// With --instructions-file each row's instruction is set with it, in one
-	// transaction; without, the stored instruction is kept.
+	// The whole set and, with --instructions-file, each row's instruction go
+	// in one transaction: a failure arms nothing and changes no text.
+	// Without the flag the stored instructions are kept.
 	now := time.Now()
-	changed := false
-	for _, r := range rows {
-		r.ArmedAt, r.ArmedBy = now, "cli"
-		var inserted bool
-		if instruction != nil {
-			inserted, err = database.ArmWatchmanInstructed(r, *instruction)
-		} else {
-			inserted, err = database.ArmWatchman(r)
-		}
-		if err != nil {
-			return err
-		}
-		changed = changed || inserted
+	for i := range rows {
+		rows[i].ArmedAt, rows[i].ArmedBy = now, "cli"
+	}
+	changed, err := database.ArmWatchmanSet(rows, instruction)
+	if err != nil {
+		return err
 	}
 	// The daemon's upkeep takes the hold and its learning phase does the
 	// backfill; arm never runs either.

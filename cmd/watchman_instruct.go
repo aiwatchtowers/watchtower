@@ -53,8 +53,9 @@ type watchmanInstructJSON struct {
 	Error        string `json:"error"`
 }
 
-// watchmanInstructionMaxBytes bounds what is read from an instruction file;
-// the stored text is clipped to db.WatchmanInstructionMaxRunes anyway.
+// watchmanInstructionMaxBytes bounds an instruction file: a bigger one is
+// refused with nothing written; within it the stored text is clipped to
+// db.WatchmanInstructionMaxRunes.
 const watchmanInstructionMaxBytes = 64 << 10
 
 // readWatchmanInstruction reads an instruction file (`-` = stdin), trimmed
@@ -71,9 +72,13 @@ func readWatchmanInstruction(cmd *cobra.Command, path string) (string, error) {
 		defer f.Close()
 		r = f
 	}
-	b, err := io.ReadAll(io.LimitReader(r, watchmanInstructionMaxBytes))
+	b, err := io.ReadAll(io.LimitReader(r, watchmanInstructionMaxBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("reading the instruction: %w", err)
+	}
+	// Refused, not cut: a cut could leave only blanks, which would clear.
+	if len(b) > watchmanInstructionMaxBytes {
+		return "", fmt.Errorf("the instruction is over %d KiB; Watchman keeps at most %d characters", watchmanInstructionMaxBytes>>10, db.WatchmanInstructionMaxRunes)
 	}
 	return db.ClipWatchmanInstruction(string(b)), nil
 }

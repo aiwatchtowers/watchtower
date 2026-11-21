@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -181,4 +182,57 @@ func TestWatchmanInstruct_JSONKeysPinned(t *testing.T) {
 	_, out, err = instructCLI(t, "--session", "999", "--text-file", instructionFile(t, "x"), "--json")
 	require.Error(t, err)
 	assert.Equal(t, []string{"error", "instructions", "ok", "ref_id", "scope"}, jsonKeys(t, out))
+}
+
+// The tray's hand-over with a typed text: a failure on the second session
+// arms none of them and changes no text.
+func TestWatchmanArmAllRunning_InstructionsAllOrNothing(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	s2, _ := armSession(t, wb, "claude", nil, false)
+	for id, text := range map[int64]string{s1: "first text", s2: "second text"} {
+		_, out, err := instructCLI(t, "--session", strconv.FormatInt(id, 10), "--text-file", instructionFile(t, text))
+		require.NoError(t, err, out)
+	}
+	var path string
+	d := openAgentsTestMain(t, &path)
+	_, err := d.Exec(fmt.Sprintf(`CREATE TRIGGER fail_second BEFORE INSERT ON watchman_arming
+		WHEN NEW.scope = 'session' AND NEW.ref_id = %d BEGIN SELECT RAISE(ABORT, 'acme: injected failure'); END`, s2))
+	require.NoError(t, err)
+
+	r, out, err := armCLI(t, "arm", "--all-running", "--json", "--instructions-file", instructionFile(t, "night shift"))
+	require.Error(t, err)
+	assert.False(t, r.OK)
+	assert.Contains(t, r.Error, "injected failure", out)
+	assert.Empty(t, armingRows(t), "no session armed")
+	assert.Equal(t, "first text", storedInstruction(t, "session", s1))
+	assert.Equal(t, "second text", storedInstruction(t, "session", s2))
+}
+
+// An instruction file past the read cap is refused, nothing written —
+// through `instruct` and through `arm --instructions-file`; blanks first do
+// not turn it into a clear.
+func TestWatchmanInstruct_OversizedInputRefused(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	id := strconv.FormatInt(s1, 10)
+	_, out, err := instructCLI(t, "--session", id, "--text-file", instructionFile(t, "keep me"))
+	require.NoError(t, err, out)
+	big := instructionFile(t, strings.Repeat(" ", watchmanInstructionMaxBytes)+"tail")
+
+	r, out, err := instructCLI(t, "--session", id, "--text-file", big, "--json")
+	require.Error(t, err)
+	assert.False(t, r.OK)
+	assert.Contains(t, r.Error, "KiB", out)
+	assert.Equal(t, "keep me", storedInstruction(t, "session", s1))
+
+	_, _, err = armCLI(t, "arm", "--session", id, "--instructions-file", big)
+	require.Error(t, err)
+	assert.Empty(t, armingRows(t))
+	assert.Equal(t, "keep me", storedInstruction(t, "session", s1))
+
+	// Exactly at the cap is read.
+	_, out, err = instructCLI(t, "--session", id, "--text-file", instructionFile(t, strings.Repeat(" ", watchmanInstructionMaxBytes-1)+"x"))
+	require.NoError(t, err, out)
+	assert.Equal(t, "x", storedInstruction(t, "session", s1))
 }

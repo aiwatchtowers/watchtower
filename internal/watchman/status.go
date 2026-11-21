@@ -78,6 +78,10 @@ func armedSessions(d *db.DB, arming []db.WatchmanArming) ([]ArmedSession, error)
 	if err != nil {
 		return nil, err
 	}
+	texts, err := d.WatchmanSessionInstructionTexts()
+	if err != nil {
+		return nil, err
+	}
 	at := map[string]time.Time{}
 	for _, a := range arming {
 		at[fmt.Sprintf("%s/%d", a.Scope, a.RefID)] = a.ArmedAt
@@ -92,9 +96,7 @@ func armedSessions(d *db.DB, arming []db.WatchmanArming) ([]ArmedSession, error)
 		if t, ok := at[key]; ok {
 			e.ArmedAt = t.UTC().Format(time.RFC3339)
 		}
-		if e.Instructions, err = d.WatchmanInstruction("session", s.SessionID); err != nil {
-			return nil, err
-		}
+		e.Instructions = texts[s.SessionID]
 		out = append(out, e)
 	}
 	return out, nil

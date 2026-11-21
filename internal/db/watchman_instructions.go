@@ -72,6 +72,26 @@ func (db *DB) WatchmanInstruction(scope string, refID int64) (string, error) {
 	return text, nil
 }
 
+// WatchmanSessionInstructionTexts maps every session with a stored
+// instruction to its text, in one read (`watchman status`).
+func (db *DB) WatchmanSessionInstructionTexts() (map[int64]string, error) {
+	rows, err := db.Query(`SELECT ref_id, text FROM watchman_instructions WHERE scope = 'session'`)
+	if err != nil {
+		return nil, fmt.Errorf("listing watchman session instructions: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var text string
+		if err := rows.Scan(&id, &text); err != nil {
+			return nil, fmt.Errorf("scanning watchman session instruction: %w", err)
+		}
+		out[id] = text
+	}
+	return out, rows.Err()
+}
+
 // WatchmanSessionInstructions is the text of the armed target covering
 // sessionID (the oldest-armed one whose subtree holds the session's ticket,
 // as WatchmanSessionsUnderArmedTargets picks; "" when none covers it or it
@@ -114,22 +134,29 @@ func (db *DB) PruneWatchmanInstructions() (n int64, err error) {
 	return res.RowsAffected()
 }
 
-// ArmWatchmanInstructed is ArmWatchman and SetWatchmanInstruction on the
-// same (scope, ref_id) in one transaction, so an arm never lands without
-// the text the owner gave with it, nor the text without the arm.
-func (db *DB) ArmWatchmanInstructed(a WatchmanArming, text string) (inserted bool, err error) {
+// ArmWatchmanSet arms every row (ArmWatchman each: a row already there keeps
+// its armed_at) and, when text is not nil, sets each row's instruction to
+// it — all in one transaction, so a failure on any row arms nothing and
+// changes no text. A nil text keeps the stored instructions. inserted
+// reports whether any row was new.
+func (db *DB) ArmWatchmanSet(rows []WatchmanArming, text *string) (inserted bool, err error) {
 	err = db.WithTx(func(tx *sql.Tx) error {
-		res, err := tx.Exec(`INSERT INTO watchman_arming (scope, ref_id, armed_at, armed_by) VALUES (?, ?, ?, ?)
-			ON CONFLICT(scope, ref_id) DO NOTHING`, a.Scope, a.RefID, wmArmTime(a.ArmedAt), a.ArmedBy)
-		if err != nil {
-			return fmt.Errorf("arming watchman %s %d: %w", a.Scope, a.RefID, err)
+		for _, a := range rows {
+			ins, err := armWatchman(tx, a)
+			if err != nil {
+				return err
+			}
+			inserted = inserted || ins
+			if text != nil {
+				if err := SetWatchmanInstructionTx(tx, a.Scope, a.RefID, *text); err != nil {
+					return err
+				}
+			}
 		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		inserted = n > 0
-		return SetWatchmanInstructionTx(tx, a.Scope, a.RefID, text)
+		return nil
 	})
-	return inserted, err
+	if err != nil {
+		return false, err
+	}
+	return inserted, nil
 }
