@@ -305,6 +305,36 @@ final class SlackConnectDriverTests: XCTestCase {
         XCTAssertEqual(rig.flow.step, .idle)
     }
 
+    /// Closed from the overview (no Slack sheet mounted there): the handed-back
+    /// sign-in opens Connections → Slack, whose sheet shows it and its Cancel.
+    /// During onboarding the Connect step mounts the sheet itself: no route.
+    func testPanelClosedOnTheOverviewOpensTheSlackSheet() async {
+        let rig = await makeRig()
+        _ = await rig.driver.start(options: ["code": code])
+        rig.emit(.browser(flow: "f1"))
+        await untilObserved { if case .browser = rig.flow.step { true } else { false } }
+
+        let onboarding = AppState.isolated()
+        onboarding.slackConnectFlow = rig.flow
+        onboarding.needsOnboarding = true
+        onboarding.connectAssistantService = "slack"
+
+        let state = AppState.isolated()
+        state.slackConnectFlow = rig.flow
+        state.selectedDestination = .connections
+        XCTAssertNil(state.selectedConnection, "the overview")
+        state.connectAssistantService = "slack"
+        rig.driver.runEnded()  // what the run controller's end does on Close
+        state.closeConnectAssistant()
+        XCTAssertNil(state.connectAssistantService)
+        XCTAssertEqual(state.selectedConnection, .slack)
+        XCTAssertTrue(SlackConnectionDetail.showsConnectSheet(flow: rig.flow, setupPresented: false))
+
+        onboarding.closeConnectAssistant()
+        XCTAssertNil(onboarding.selectedConnection, "onboarding's step shows the sheet itself")
+        rig.flow.cancel()
+    }
+
     func testCancelEndsOnlyTheNamedFlow() async {
         let rig = await makeRig()
         _ = await rig.driver.start(options: ["code": code])

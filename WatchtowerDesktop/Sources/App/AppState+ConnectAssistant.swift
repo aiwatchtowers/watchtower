@@ -181,6 +181,13 @@ extension AppState {
         guard let service = connectAssistantService else { return }
         connectAssistants.loaded(service)?.close()
         connectAssistantService = nil
+        // A Slack sign-in the run started goes on as today's and is handed to
+        // its sheet (`SlackConnectDriver.runEnded`); only the Slack detail and
+        // onboarding's Connect step mount that sheet, so its Cancel is shown
+        // there. App quit closes runs through `closeAll`, never here.
+        if service == ConnectionService.slack.rawValue, slackConnectFlow?.showsSheet == true, !needsOnboarding {
+            openConnections(.slack)
+        }
     }
 
     /// **Set up by hand**: the panel closes and today's screen opens — the
