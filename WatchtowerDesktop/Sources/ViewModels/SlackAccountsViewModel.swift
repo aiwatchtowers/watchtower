@@ -458,14 +458,23 @@ final class SlackAccountsViewModel {
     }
 
     /// The attempt an agent card began for each account (`relogin(_:forCard:)`),
-    /// while it runs.
-    @ObservationIgnored private var cardAttempts: [Int: Int] = [:]
+    /// while it runs. Observed: a card drawn (or drawn again) while it runs
+    /// shows the waiting line from here, not from its own view state.
+    private var cardAttempts: [Int: Int] = [:]
 
-    /// An agent card's Cancel: ends the attempt that card began for
-    /// `accountID`, once — never a Re-login started elsewhere, even of the
-    /// same account after the card's own was cancelled.
-    func cancelCardSignIn(accountID: Int) {
-        guard let mine = cardAttempts.removeValue(forKey: accountID), isCurrent(mine) else { return }
+    /// The running attempt an agent card began for `accountID`; nil when
+    /// none runs (never begun, ended, or cancelled).
+    func cardAttempt(forAccount accountID: Int) -> Int? {
+        guard isConnecting, let mine = cardAttempts[accountID], isCurrent(mine) else { return nil }
+        return mine
+    }
+
+    /// An agent card's Cancel: ends attempt `id`, the one that card began,
+    /// if it still runs — never another attempt, even a newer card's for the
+    /// same account.
+    func cancelCardSignIn(attempt id: Int) {
+        guard isCurrent(id) else { return }
+        cardAttempts = cardAttempts.filter { $0.value != id }
         cancelConnect()
     }
 

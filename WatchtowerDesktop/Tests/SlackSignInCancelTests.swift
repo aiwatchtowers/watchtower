@@ -214,33 +214,43 @@ final class SlackSignInCancelTests: XCTestCase {
         XCTAssertNotNil(vm.readError, "the failed re-read is still recorded")
     }
 
-    /// The card's Cancel ends the attempt the card began, once: a Re-login of
-    /// the same account started from Connections meanwhile keeps running.
+    /// A card's Cancel ends the attempt that card began, once: neither a
+    /// Re-login of the same account from Connections nor a newer card's
+    /// attempt, started while the first card still shows its line.
     func testCardCancelEndsOnlyTheCardsOwnAttempt() async throws {
         let rig = try makeRig()
         let vm = rig.vm
         rig.stub.ignoreSIGTERM(run: 1)
-        let card = Task { await vm.relogin(rig.account, forCard: true) }
-        let cardLive = try await rig.stub.started(1, unlessEnded: card)
-        vm.cancelCardSignIn(accountID: rig.account.id)
+        let cardA = Task { await vm.relogin(rig.account, forCard: true) }
+        let liveA = try await rig.stub.started(1, unlessEnded: cardA)
+        let attemptA = try XCTUnwrap(vm.cardAttempt(forAccount: rig.account.id))
+        vm.cancelCardSignIn(attempt: attemptA)
         XCTAssertFalse(vm.isConnecting)
+        XCTAssertNil(vm.cardAttempt(forAccount: rig.account.id), "card A's line goes")
 
-        // The card still waits on its run (its child outlived the SIGTERM),
-        // so its Cancel is still on screen when Connections starts another.
+        // Card A still waits on its run (its child outlived the SIGTERM).
         let row = Task { await vm.relogin(rig.account) }
         let rowLive = try await rig.stub.started(2, unlessEnded: row)
-        vm.cancelCardSignIn(accountID: rig.account.id)
-        XCTAssertTrue(vm.isConnecting, "the card's Cancel never ends a sign-in it did not begin")
-        XCTAssertEqual(vm.signInAccountID, rig.account.id)
+        XCTAssertNil(vm.cardAttempt(forAccount: rig.account.id), "a Connections Re-login is no card's")
+        vm.cancelCardSignIn(attempt: attemptA)
+        XCTAssertTrue(vm.isConnecting, "card A's Cancel never ends a sign-in it did not begin")
+        vm.cancelConnect(accountID: rig.account.id)
+
+        let cardB = Task { await vm.relogin(rig.account, forCard: true) }
+        let liveB = try await rig.stub.started(3, unlessEnded: cardB)
+        let attemptB = try XCTUnwrap(vm.cardAttempt(forAccount: rig.account.id))
+        XCTAssertNotEqual(attemptA, attemptB)
+        vm.cancelCardSignIn(attempt: attemptA)
+        XCTAssertTrue(vm.isConnecting, "a stale card's Cancel leaves a newer card's attempt running")
+        vm.cancelCardSignIn(attempt: attemptB)
+        XCTAssertFalse(vm.isConnecting)
 
         rig.stub.release(1, exitCode: 1)
-        await cardLive.exited()
-        let cardOutcome = await card.value
-        XCTAssertEqual(cardOutcome, .cancelled)
-        rig.stub.release(2, exitCode: 0)
+        await liveA.exited()
         await rowLive.exited()
-        let rowOutcome = await row.value
-        XCTAssertEqual(rowOutcome, .signedIn)
+        await liveB.exited()
+        let outcomes = [await cardA.value, await row.value, await cardB.value]
+        XCTAssertEqual(outcomes, [.cancelled, .cancelled, .cancelled])
     }
 
     /// With nothing of its own running, Cancel leaves the busy state alone.
@@ -293,9 +303,10 @@ final class SlackSignInCancelTests: XCTestCase {
 
     // MARK: - The card (S2)
 
-    /// End to end: the card's Reconnect Slack, cancelled through
-    /// `AppState.cancelCardSlackSignIn` while it reads the route.
-    func testCardReconnectCancelledIsCancelledOutcome() async throws {
+    /// End to end: the card's Reconnect Slack runs; a card drawn afresh
+    /// meanwhile (the thread left and opened again) shows the waiting line
+    /// from the view model, and its Cancel ends that attempt.
+    func testRedrawnCardShowsTheLineAndCancelsTheRunningAttempt() async throws {
         let rig = try makeRig()
         let appState = AppState.isolated()
         appState.initSlackAccounts(dbPool: rig.pool)
@@ -305,46 +316,43 @@ final class SlackSignInCancelTests: XCTestCase {
         let held = AsyncGate()
         try await holdRouteRead(vm, account: rig.account, entered: entered, held: held)
         let accountID = Int64(rig.account.id)
+        let action = try agentAction()
+        func drawCard() -> MacAgentActionCard {
+            MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                               reconnectSlackWait: { appState.cardSlackSignInWait(accountID: $0) })
+        }
+        XCTAssertNil(drawCard().services.reconnectSlackWaiting.flatMap { $0(accountID) }, "idle: Reconnect Slack")
 
         let run = Task { await appState.reconnectSlack(accountID: accountID) }
         await entered.wait()
-        appState.cancelCardSlackSignIn(accountID: accountID)
+        let wait = try XCTUnwrap(appState.cardSlackSignInWait(accountID: accountID))
+        XCTAssertEqual(wait.copy, .slack)
+        let redrawn = try XCTUnwrap(drawCard().services.reconnectSlackWaiting.flatMap { $0(accountID) }).inspect()
+        _ = try redrawn.find(text: SignInWaitCopy.slack.line)
+        _ = try redrawn.find(text: SignInWaitCopy.slack.hint)
+        try redrawn.find(button: SignInWaitCopy.slack.cancelTitle).tap()
+        XCTAssertFalse(vm.isConnecting, "the redrawn card's Cancel ended the running attempt")
+        XCTAssertNil(appState.cardSlackSignInWait(accountID: accountID), "the line goes with it")
         held.release()
         let outcome = await run.value
         XCTAssertEqual(outcome, .cancelled)
-        XCTAssertFalse(vm.isConnecting)
-    }
-
-    func testCardWaitingLineIsSlacksAndCancelsTheCardsAccount() throws {
-        let action = try agentAction()
-        var cancelled: [Int64] = []
-        let card = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                      onCancelReconnectSlack: { cancelled.append($0) })
-        let wait = try XCTUnwrap(card.cardSignInWait?(7))
-        XCTAssertEqual(wait.copy, .slack)
-        let view = try wait.view.inspect()
-        _ = try view.find(text: SignInWaitCopy.slack.line)
-        _ = try view.find(text: SignInWaitCopy.slack.hint)
-        try view.find(button: SignInWaitCopy.slack.cancelTitle).tap()
-        XCTAssertEqual(cancelled, [7], "Cancel ends the card's own account's sign-in")
-
-        let plain = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
-        XCTAssertNil(plain.cardSignInWait, "no Cancel to offer: no waiting line")
     }
 
     /// The chat's cards (`ChatApprovalServices.mac`) draw the same line.
-    func testChatCardWaitingLineCancelsTheCardsAccount() throws {
+    func testChatCardsTakeTheScreensWaitingLine() throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        var cancelled: [Int64] = []
+        var cancelled = 0
+        let wait = MacAgentActionCard.SlackSignInWait(copy: .slack) { cancelled += 1 }
         let services = ChatApprovalServices.mac(
             feed: AgentActionFeed(dbPool: pool, cliRunner: FakeCLIRunner()), reconnectSlack: { _ in .signedIn },
-            cancelReconnectSlack: { cancelled.append($0) }, sessionHolds: { _ in false }
+            reconnectSlackWait: { $0 == 9 ? wait : nil }, sessionHolds: { _ in false }
         )
-        let line = try XCTUnwrap(services.reconnectSlackWaiting?(9)).inspect()
+        XCTAssertNil(services.reconnectSlackWaiting.flatMap { $0(8) })
+        let line = try XCTUnwrap(services.reconnectSlackWaiting.flatMap { $0(9) }).inspect()
         _ = try line.find(text: SignInWaitCopy.slack.line)
         try line.find(button: SignInWaitCopy.slack.cancelTitle).tap()
-        XCTAssertEqual(cancelled, [9])
+        XCTAssertEqual(cancelled, 1)
     }
 
     private func agentAction() throws -> AgentAction {
@@ -437,14 +445,13 @@ final class SlackLoginStub: @unchecked Sendable {
         }
     }
 
-    /// Kills every run that started (a shell with no children) and removes
-    /// the stub's directory.
+    /// Kills the runs still going (their command line names this stub's
+    /// directory) and removes the directory.
     func reap() {
-        for n in Self.runs {
-            guard let text = try? String(contentsOfFile: file("pid\(n)"), encoding: .utf8),
-                  let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) else { continue }
-            kill(pid, SIGKILL)
-        }
+        let pkill = Process()
+        pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        pkill.arguments = ["-KILL", "-f", dir.path + "/"]
+        if (try? pkill.run()) != nil { pkill.waitUntilExit() }
         try? FileManager.default.removeItem(at: dir)
     }
 

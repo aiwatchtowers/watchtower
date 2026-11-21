@@ -224,14 +224,13 @@ final class AgentActionCardModelTests: XCTestCase {
         var withoutLine = ChatApprovalServices()
         withoutLine.reconnectSlack = { _ in .cancelled }
         var withLine = withoutLine
-        var asked: [Int64] = []
-        withLine.reconnectSlackWaiting = { id in
-            asked.append(id)
-            return AnyView(Text("waiting"))
-        }
-        XCTAssertNotNil(AgentActionCard.reconnectWaitLine(reconnecting: true, accountID: 7, services: withLine))
-        XCTAssertEqual(asked, [7], "the line is the card's own account's")
-        XCTAssertNil(AgentActionCard.reconnectWaitLine(reconnecting: false, accountID: 7, services: withLine))
-        XCTAssertNil(AgentActionCard.reconnectWaitLine(reconnecting: true, accountID: 7, services: withoutLine))
+        var running: Set<Int64> = [7]
+        withLine.reconnectSlackWaiting = { id in running.contains(id) ? AnyView(Text("waiting")) : nil }
+        XCTAssertNotNil(AgentActionCard.reconnectWaitLine(accountID: 7, services: withLine),
+                        "the screen's sign-in for the card's account runs: the line, whatever the card's own state")
+        XCTAssertNil(AgentActionCard.reconnectWaitLine(accountID: 8, services: withLine))
+        running = []
+        XCTAssertNil(AgentActionCard.reconnectWaitLine(accountID: 7, services: withLine), "ended: the button again")
+        XCTAssertNil(AgentActionCard.reconnectWaitLine(accountID: 7, services: withoutLine))
     }
 }

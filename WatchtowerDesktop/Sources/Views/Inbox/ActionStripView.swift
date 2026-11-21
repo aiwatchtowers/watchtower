@@ -48,7 +48,7 @@ struct ActionStripView: View {
                         }
                     },
                     onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
-                    onCancelReconnectSlack: { appState.cancelCardSlackSignIn(accountID: $0) },
+                    reconnectSlackWait: { appState.cardSlackSignInWait(accountID: $0) },
                     sessionHoldsCall: { appState.chatHoldsSessionCall($0) },
                     emptyState: appState.emptyStateContext,
                     onOpenConnections: { appState.openConnections() },
@@ -207,8 +207,8 @@ struct ActionStripActionsView: View {
     var onRetryBuiltin: ((String) -> Void)?
     /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
     var onReconnectSlack: ((Int64) async -> SlackReconnectOutcome)?
-    /// Cancel on its waiting line (`AppState.cancelCardSlackSignIn`).
-    var onCancelReconnectSlack: ((Int64) -> Void)?
+    /// Its waiting line while a card's sign-in runs (`AppState.cardSlackSignInWait`).
+    var reconnectSlackWait: ((Int64) -> MacAgentActionCard.SlackSignInWait?)?
     /// `MacAgentActionCard.sessionHoldsCall` for a row (a connector call).
     var sessionHoldsCall: ((AgentAction) -> Bool)?
     /// The empty list's readiness and actions (`AppState.emptyStateContext`).
@@ -830,7 +830,7 @@ struct ActionStripActionsView: View {
             onOpen: onOpen,
             onApproveEdited: { patch in Task { await vm.approve(action.id, shownArgs: action.argsJSON, patch: patch) } },
             onReconnectSlack: onReconnectSlack,
-            onCancelReconnectSlack: onCancelReconnectSlack,
+            reconnectSlackWait: reconnectSlackWait,
             contextLabel: vm.actionLabels[action.id],
             onOpenContext: openContext(action),
             onDismiss: { Task { await vm.dismiss(action.id) } },

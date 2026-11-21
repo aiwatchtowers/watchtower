@@ -27,9 +27,10 @@ struct MacAgentActionCard: View {
     /// Re-consents a Slack account whose token lacks the send grant and returns why it failed, nil on success. Nil
     /// hides the button.
     var onReconnectSlack: ((Int64) async -> SlackReconnectOutcome)?
-    /// Cancel on Reconnect Slack's waiting line, given the card's account (`AppState.cancelCardSlackSignIn`). Nil
-    /// draws no line: the button keeps its spinner.
-    var onCancelReconnectSlack: ((Int64) -> Void)?
+    /// Reconnect Slack's waiting line for an account while a card's sign-in for it runs, read from the accounts view
+    /// model (`AppState.cardSlackSignInWait`), so a card drawn again mid-sign-in still shows it; nil when none runs.
+    /// Nil draws no line: the button keeps its spinner.
+    var reconnectSlackWait: ((Int64) -> SlackSignInWait?)?
     /// Where the proposal came from, above the card — "⚙ <automation> · run #<n>". Nil shows nothing.
     var contextLabel: String?
     /// Opens what `contextLabel` names (the automation's card, run open). Nil renders the label as plain text.
@@ -58,7 +59,7 @@ struct MacAgentActionCard: View {
             .environment(\.chatHostText, .mac)
     }
 
-    private var services: ChatApprovalServices {
+    var services: ChatApprovalServices {
         let save = Self.saveModel(action)
         let approve = onApprove
         let approveEdited = onApproveEdited
@@ -82,7 +83,7 @@ struct MacAgentActionCard: View {
             retry: { _ in retry() },
             dismiss: dismiss.map { dismiss in { _ in dismiss() } },
             reconnectSlack: onReconnectSlack,
-            reconnectSlackWaiting: cardSignInWait.map { wait in { wait($0).view } },
+            reconnectSlackWaiting: reconnectSlackWait.map { wait in { wait($0)?.view } },
             openDestination: onOpen,
             sessionHoldsCall: { _ in holds },
             title: { _ in save?.title },
@@ -103,16 +104,6 @@ struct MacAgentActionCard: View {
         var view: AnyView {
             AnyView(SignInWaitLine(line: copy.line, hint: copy.hint, cancelTitle: copy.cancelTitle, onCancel: cancel))
         }
-    }
-
-    /// The waiting line of the card for account `accountID`: Cancel ends that account's sign-in only.
-    static func slackSignInWait(accountID: Int64, cancel: @escaping (Int64) -> Void) -> SlackSignInWait {
-        SlackSignInWait(copy: .slack) { cancel(accountID) }
-    }
-
-    /// This card's waiting line per account; nil without a Cancel to offer.
-    var cardSignInWait: ((Int64) -> SlackSignInWait)? {
-        onCancelReconnectSlack.map { cancel in { Self.slackSignInWait(accountID: $0, cancel: cancel) } }
     }
 
     /// The row's decision state as the shared card reads it: the CLI call in flight and why the last one failed.
@@ -253,7 +244,7 @@ extension ChatApprovalServices {
         feed: AgentActionFeed,
         highlighted: ((AgentAction) -> Bool)? = nil,
         reconnectSlack: @escaping (Int64) async -> SlackReconnectOutcome,
-        cancelReconnectSlack: @escaping (Int64) -> Void,
+        reconnectSlackWait: @escaping (Int64) -> MacAgentActionCard.SlackSignInWait?,
         sessionHolds: @escaping (AgentAction) -> Bool
     ) -> ChatApprovalServices {
         ChatApprovalServices(
@@ -277,7 +268,7 @@ extension ChatApprovalServices {
             dismiss: { action in Task { await feed.dismiss(action.id) } },
             approveAll: { turn in Task { await feed.approveAllPending(forTurn: turn) } },
             reconnectSlack: reconnectSlack,
-            reconnectSlackWaiting: { MacAgentActionCard.slackSignInWait(accountID: $0, cancel: cancelReconnectSlack).view },
+            reconnectSlackWaiting: { reconnectSlackWait($0)?.view },
             sessionHoldsCall: sessionHolds,
             title: { MacAgentActionCard.saveModel($0)?.title },
             details: { action in

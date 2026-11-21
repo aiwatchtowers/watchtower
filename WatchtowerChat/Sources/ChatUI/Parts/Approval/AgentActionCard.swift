@@ -121,10 +121,11 @@ public struct AgentActionCard: View {
         }
     }
 
-    /// The screen's waiting line while Reconnect Slack's sign-in runs; nil when it is not running or the screen draws
-    /// none (the button and a spinner show then).
-    static func reconnectWaitLine(reconnecting: Bool, accountID: Int64, services: ChatApprovalServices) -> AnyView? {
-        reconnecting ? services.reconnectSlackWaiting?(accountID) : nil
+    /// The screen's waiting line while a card's Reconnect Slack sign-in for `accountID` runs — the screen's state, not
+    /// this card's, so a card drawn again mid-sign-in shows it; nil when none runs or the screen draws none (the
+    /// button, and its spinner while this card's own press runs, show then).
+    static func reconnectWaitLine(accountID: Int64, services: ChatApprovalServices) -> AnyView? {
+        services.reconnectSlackWaiting.flatMap { $0(accountID) }
     }
 
     /// The shared human name (`ActionToolCatalog`) — the same words the Inbox cheat sheet and Settings use.
@@ -264,7 +265,7 @@ public struct AgentActionCard: View {
 
     @ViewBuilder
     private func reconnectRow(_ accountID: Int64, _ reconnect: @escaping (Int64) async -> SlackReconnectOutcome) -> some View {
-        if let waiting = Self.reconnectWaitLine(reconnecting: reconnecting, accountID: accountID, services: services) {
+        if let waiting = Self.reconnectWaitLine(accountID: accountID, services: services) {
             waiting
         } else {
             reconnectButton(accountID, reconnect)
