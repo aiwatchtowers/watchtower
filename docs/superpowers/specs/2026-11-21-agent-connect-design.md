@@ -76,7 +76,7 @@ A small MCP server `watchtower connect mcp --service <svc>` (stdio, spawned by t
 | `set_fields` | non-secret form values (IMAP host/port, CalDAV URL, Quick Connection command/URL, Jira site) for the next `connect_start`/`request_secret` | — |
 | `choose` | Jira boards, Linear teams, Confluence spaces: list or select | JSON |
 
-The agent never sees a secret: when a vendor page shows one (Slack's configuration token), the playbook has the agent point at it and call `request_secret`; the customer copies it into the card.
+The agent never sees a secret: the agent brings the customer up to the button that reveals one (Slack's **Generate Token**), stops, and calls `request_secret`; the customer presses that button, copies the secret into the card, closes the page or dialog and presses **Send** (§10, "Pages that show a secret").
 
 ### 5.4 Company setup — the biggest win
 
@@ -85,7 +85,7 @@ The company setup wizard ([company-setup.md](../../features/company-setup.md), #
 - **Connect with <harness>** sits beside **Set up for my company** (Connections → Companies zone, the **Connect…** menu, Jira's empty state) and beside **Use my own Google project**. It opens the panel on the `company` playbook set: the agent runs one vendor playbook after another, in the wizard's order.
 - It drives the same `CompanySetupWizardModel` and its draft (`company draft save`), so the wizard sheet and the panel show one state. A customer can leave the panel and finish in the wizard, or the other way round.
 - Extra tools for these playbooks: `company_draft` (read; save the non-secret fields and the client ids). Its read never returns a secret: the client secrets (and anything else `request_secret` stored) come back as `{"client_secret_set": true|false}`; test `company_draft` read on a draft holding both secrets, `company_check` (`company check <vendor>`; a Google or Atlassian check opens a sign-in the customer approves), `company_publish` (the Slack configuration token comes through `request_secret`).
-- **Secrets here** (decision P2, ask #1716): the agent never reads a secret. When the console shows a Google or Atlassian client secret, or Slack's configuration token, the agent points at it and calls `request_secret` (kinds `google_client_secret`, `atlassian_client_secret`, `slack_config_token`); the customer copies it into the card and the Desktop saves it to the draft or passes it on stdin. Client ids are not secrets; the agent saves them with `company_draft`.
+- **Secrets here** (decision P2, ask #1716): the agent never reads a secret. The agent stops before the click that reveals a Google or Atlassian client secret or Slack's configuration token and calls `request_secret`; the customer makes that click, copies the secret and closes the dialog or page (§10, "Pages that show a secret") (kinds `google_client_secret`, `atlassian_client_secret`, `slack_config_token`); the Desktop saves it to the draft or passes it on stdin. Client ids are not secrets; the agent saves them with `company_draft`.
 - Confirm cards (§5.3) also cover **Publish** (it writes the Slack app's About text to the whole company) and a **Replace** of a stored company.
 
 ### 5.5 Who clicks what in the browser
