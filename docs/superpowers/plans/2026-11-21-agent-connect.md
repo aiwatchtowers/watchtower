@@ -21,7 +21,12 @@
 7. **Names in the code differ from the spec.** The spec's `mail` is `ConnectionService.email`. Confluence isn't a service: its playbook drives Jira's `addAccount(withConfluence: true)` and `ConfluenceConnectSelection`. Company checks exist for `google|atlassian|linear|microsoft` only (`cmd/company_check.go`); the Slack company step ends in `company publish`. Microsoft and Linear company apps have no client secret (`companybundle.Microsoft`/`Linear`), so only `google_client_secret` and `atlassian_client_secret` go to the draft.
 8. **8 KB cap.** `TestFeaturePagesUnder8KB` checks only `features/`. Task 1 extends it to `connect/`.
 
-## Open questions for the owner (do not block Tasks 0–9)
+## Owner answers (ask #1721, 2026-11-21)
+
+- Q1: **yes** — the panel's **Start** is the owner's press for Slack's `connect_start`; Task 10 builds that branch and Task 16 adds the assistant to SLACKFULL-01's list of presses.
+- Q2: **yes** — Task 16 adds the `mcp --connect` note under AGENT-01 and DEV-01 (rules unchanged).
+
+## Questions as asked (kept for the record)
 
 - **Q1, SLACKFULL-01.** Its list of presses that skip "Connect a Slack workspace?" doesn't include the assistant. The plan treats the panel's **Start** as the owner's press for `connect_start` (spec A2), which amends SLACKFULL-01's list. Task 10 needs the owner's OK (an ask quoting SLACKFULL-01) before it merges. Fallback if the owner refuses: Slack's `connect_start` shows a panel confirm card ("Connect a Slack workspace?").
 - **Q2, AGENT-01 and DEV-01.** `mcp --connect` isn't the chat-mode server, and its calls are the panel's buttons, not `agent_actions` rows. The plan adds a note under AGENT-01 and DEV-01 ("the connect mode is neither; it forwards to the Desktop's flows under the panel's Start and confirm cards"). That is an inventory change, so it needs the owner's approval (asked in Task 5, applied in Task 16).
