@@ -57,13 +57,15 @@ From a terminal, `watchtower watchman learn --workbench N` prints the estimate (
 
 ### Hand a session to Watchman
 <!-- learn
-id: watchman-hand-over
-title: Hand a session to Watchman
-text: Press **Hand to Watchman** on a session's strip and Watchman answers its asks for you until you press **Take back**.
+id: watchman-hand-over-instruction
+title: Hand a session over with an instruction
+text: Press **Hand to Watchman** on a session's strip, say what it should prefer, and it answers until **Take back**.
 area: development
 level: power
 kind: feature
-since: 0.29.0
+since: next
+replaces: [watchman-hand-over]
+changed: Each hand-over takes an instruction, learning runs first, and a stopped agent is nudged.
 -->
 
 **Hand to Watchman** on a session's strip hands that session over; on a target's panel, every session under the target, also later ones; **Hand all running sessions to Watchman** in the menu bar, every running agent session. Until you press **Take back**, Watchman answers their asks and spec reviews (and permission prompts in Claude Code sessions) and reviews a session's changes before it may finish, at the Mac or away. The strip reads "Watchman · since 01:40" ("learning 42%" at first).
