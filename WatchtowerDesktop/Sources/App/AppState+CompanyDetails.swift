@@ -42,7 +42,10 @@ extension AppState {
     /// start at once.
     func companyDetailBusy(_ vendor: CompanyVendor) -> Bool {
         let own = switch vendor {
-        case .google: (googleAccountsViewModel?.isConnecting ?? true) || ownGoogleProject.isRunning
+        case .google:
+            (googleAccountsViewModel?.isConnecting ?? true) || ownGoogleProject.isRunning
+                // Calendar's empty-state connect (#2132): one Google sign-in at a time.
+                || GoogleConnectFlow.shared.isRunning
         case .atlassian: jiraAccountsViewModel?.isConnecting ?? true
         case .slack, .linear, .microsoft: false
         }

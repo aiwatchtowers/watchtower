@@ -874,7 +874,7 @@ package final class CompanySetupWizardModel {
             if generation == started, checkRuns[v] === run { checks[v] = .failed(Self.draftSaveFailed) }
             return
         }
-        let task = Task { [args, stdin] in await lastJSONLine(args, stdin: stdin) }
+        let task = Task { [args, stdin] in await checkAnswer(args, stdin: stdin) }
         run.task = task
         let line = await task.value
         // Discarded or cancelled meanwhile: Go kept what the sign-in stored
@@ -906,10 +906,16 @@ package final class CompanySetupWizardModel {
         let epoch = checkEpoch
         let started = generation
         rereadAfterCancel = Task { [self] in
+            // Only once the killed child has exited: Go may still be writing the draft.
+            _ = await run.task?.value
+            guard generation == started, checkEpoch == epoch else { return }
             let line = await lastJSONLine(["company", "draft", "show", "--json"], stdin: nil)
             guard generation == started, checkEpoch == epoch else { return }
-            if let line, let show = try? JSONDecoder().decode(CompanyDraftShow.self, from: Data(line.utf8)),
-               show.state == "ok", let read = show.draft {
+            // An unanswered or unreadable re-read leaves open whether Go stored
+            // the company: the name stays (released only on a read that says).
+            guard let line, let show = try? JSONDecoder().decode(CompanyDraftShow.self, from: Data(line.utf8)),
+                  show.state == "ok" || show.state == "none" else { return }
+            if let read = show.draft {
                 landed(v, read: read, checked: show.checkedVendors.contains(v.rawValue), values: run.values)
             }
             // Another vendor's check may still sign in under the name.
@@ -1521,6 +1527,24 @@ package final class CompanySetupWizardModel {
         _ = await stream(args, stdin: stdin) { line in
             if line.hasPrefix("{") { last = line }
         }
+        return last
+    }
+
+    /// A check's last JSON line (`lastJSONLine`), as a run that ends only
+    /// when its child has exited — also when Cancel ended its stream early.
+    private func checkAnswer(_ args: [String], stdin: Data?) async -> String? {
+        guard let streamer else { return nil }
+        let session = streamer.oneShot(args: args, stdin: stdin)
+        var last: String?
+        do {
+            for try await line in session.lines {
+                let text = line.trimmingCharacters(in: .whitespaces)
+                if text.hasPrefix("{") { last = text }
+            }
+        } catch {
+            // A failed run is "no answer", as in `lastJSONLine`.
+        }
+        await session.waitForExit()
         return last
     }
 

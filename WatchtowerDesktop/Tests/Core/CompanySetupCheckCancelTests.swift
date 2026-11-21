@@ -17,13 +17,14 @@ final class CompanySetupCheckCancelTests: XCTestCase {
         + #""client_secret":"sample-secret","site":"https://acme.atlassian.net","confluence":true}}"#
 
     /// A model on the Atlassian step whose check is held in the browser.
-    private func waiting() async -> (Model, CompanyScriptedCLI, Task<Void, Never>) {
+    private func waiting(holdExit: Bool = false) async -> (Model, CompanyScriptedCLI, Task<Void, Never>) {
         let cli = CompanyScriptedCLI()
         cli.on(["company", "draft", "show"], [#"{"state":"ok","draft":"# + atlassianDraft
             + #","bad_file":"","checked_vendors":[]}"#])
         let model = Model(streamer: cli, slack: SlackAppSetupModel(streamer: cli, mode: .wizard))
         await model.open()
         cli.hold(check)
+        if holdExit { cli.holdExit(check) }
         let run = Task { await model.check(.atlassian) }
         await cli.waitFor(check)
         return (model, cli, run)
@@ -186,6 +187,38 @@ final class CompanySetupCheckCancelTests: XCTestCase {
 
         cli.release(google, [])
         await googleRun.value
+        cli.release(check, [])
+    }
+
+    /// The re-read waits for the killed child's exit: Go may still be
+    /// writing the draft until then.
+    func testRereadWaitsForTheCancelledChildToExit() async {
+        let (model, cli, run) = await waiting(holdExit: true)
+        model.cancelCheck(.atlassian)
+        XCTAssertNil(model.checks[.atlassian], "Cancel is immediate")
+        // The cancelled run now waits for its child's exit; the re-read waits for that run.
+        await cli.exitAwaited(check)
+        XCTAssertEqual(cli.calls(["company", "draft", "show"]).count, 1, "no re-read before the child exited")
+
+        cli.releaseExit(check)
+        await model.rereadAfterCancel?.value
+        await run.value
+        XCTAssertEqual(cli.calls(["company", "draft", "show"]).count, 2, "the one re-read, after the exit")
+        cli.release(check, [])
+    }
+
+    /// A re-read that fails cannot tell whether Go stored the company: the
+    /// name stays, the step is not-run, and nothing is shown.
+    func testFailedRereadKeepsTheName() async {
+        let (model, cli, run) = await waiting()
+        cli.on(["company", "draft", "show"], [], exit: 1)
+        model.cancelCheck(.atlassian)
+        await model.rereadAfterCancel?.value
+        await run.value
+        XCTAssertEqual(cli.calls(["company", "draft", "show"]).count, 2)
+        XCTAssertEqual(model.draft.company, "Acme")
+        XCTAssertNil(model.checks[.atlassian])
+        XCTAssertNil(model.storageProblem)
         cli.release(check, [])
     }
 
