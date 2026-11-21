@@ -103,17 +103,20 @@ The company setup wizard ([company-setup.md](../../features/company-setup.md), #
 
 ## 7. Screens
 
-- **Connections overview**: cards unchanged. Each source card and the **Connect…** menu gain **Connect with <harness>** (the base harness's name), first in order; today's **Connect** stays beside it and works as now. An attention banner's **Reconnect** offers both. The assistant panel opens on the right of the Connections tab (the `SetupAssistantPanel` slot, 380 pt).
+- **Connections overview**: a source card with no account gains **Connect with <harness>** (secondary button, sparkles icon) and today's **Connect** (quiet link) beside it; a connected card is unchanged and adds accounts through its detail's **Add account**. The Companies zone gets **Connect with <harness>** before **Set up for my company**; an attention banner offers **Reconnect with <harness>** beside **Reconnect**. One prominent button per screen: the agent buttons are secondary. The assistant panel opens on the right of the Connections tab (the `SetupAssistantPanel` slot, 380 pt). Shot `connect-overview-agent`.
 - **Service detail panes**: unchanged (ask #1702); **Add account** gains the same **Connect with <harness>** item. Today's sheets and copy stay as the manual path, and the panel's **Set up by hand** opens them.
 - **Onboarding** Connect step: each source offers **Connect with <harness>** first and today's flow second.
 - **Assistant panel** states, each a `DesignShotCatalog` shot before review, all strings in the model (`ConnectAssistantPresentation`) with a test:
-  - empty (just opened: one line "I'll connect Slack with you. Start?" + **Start**, mode line "Using Claude in Chrome" / "I'll tell you each step"),
+  - empty (just opened: "I'll connect Slack with you. Start?" + **Start**, **Guide me in words** (browser mode only), **Set up by hand**; mode line "Using Claude in Chrome" / "I'll tell you each step"),
   - loading (agent thinking / waiting for the customer in the browser: "Waiting for you to press Allow in Slack"),
-  - error with **Retry** (agent failed, provider quota, extension disconnected),
+  - error with **Retry** and **Set up by hand** (agent failed, provider quota, harness missing; a lost extension is not an error: the agent continues in words, §8),
   - busy (another connect running: "Slack is already connecting in another window" + **Open it**),
-  - narrow scope (policy-blocked provider or source; only words mode available),
+  - narrow scope (no browser for this harness: words mode only, e.g. Codex until S3 passes; a policy-blocked source or provider never opens the panel, §6),
   - secret card (field, **Send**, "goes straight to Watchtower, Claude doesn't see it"),
   - done ("Slack is connected — 2 workspaces").
+  - the confirm card carries "Only you can press this — <harness> can't."; the loading state has **Cancel**.
+
+Shots (`make desktop-shots`, `DesignShotCatalog`): `connect-assistant-{empty,loading,error,busy,narrow,secret,confirm,done}`, `connect-overview-agent`; strings in `ConnectAssistantPresentation` with `ConnectAssistantPresentationTests`.
 
 ```
 ┌ Connect Slack ─────────────── Claude ▾ ┐
