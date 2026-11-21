@@ -365,12 +365,30 @@ final class SlackAccountsViewModel {
         authProcess = nil
         isConnecting = false
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
-        endSignIn(serial, Self.authEnd(exitCode: result.exitCode, error: error, accountID: accountID))
+        let account = accountID ?? Self.printedAccountID(result.stdout)
+        endSignIn(serial, Self.authEnd(exitCode: result.exitCode, error: error, accountID: account))
     }
 
     private func endSignIn(_ serial: Int, _ end: SlackAuthRunEnd) {
-        lastAuthRun = SlackAuthRun(serial: serial, end: end)
+        lastAuthRun = Self.recorded(lastAuthRun, SlackAuthRun(serial: serial, end: end))
         if serial == authRunSerial { isSigningIn = false }
+    }
+
+    /// The run `lastAuthRun` keeps: an older run that ends after a newer one
+    /// (a cancelled attempt whose child exits late) never replaces it.
+    static func recorded(_ current: SlackAuthRun?, _ ended: SlackAuthRun) -> SlackAuthRun {
+        guard let current, current.serial > ended.serial else { return ended }
+        return current
+    }
+
+    /// The account `slack add`/`slack login` wrote, from its "Account id: N"
+    /// line (`printSlackConnectionResult`); nil when it printed none.
+    static func printedAccountID(_ stdout: String) -> Int? {
+        let prefix = "Account id: "
+        for line in stdout.split(whereSeparator: \.isNewline) where line.hasPrefix(prefix) {
+            return Int(line.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces))
+        }
+        return nil
     }
 
     /// How a sign-in child ended: 0 succeeded, SIGTERM/SIGKILL cancelled

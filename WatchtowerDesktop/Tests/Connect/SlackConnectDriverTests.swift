@@ -39,13 +39,17 @@ private final class FakeSlackAccounts: SlackAccountsConnecting {
         authRunSerial += 1
     }
 
-    /// The run ended as `end`; `rows` is what the database holds now.
-    func finishSignIn(_ end: SlackAuthRunEnd, rows: [SlackAccount]? = nil) {
+    /// Run `serial` (default: the newest) ended as `end`; `rows` is what the
+    /// database holds now. Recorded as the real VM does (`recorded`).
+    func finishSignIn(_ end: SlackAuthRunEnd, rows: [SlackAccount]? = nil, serial: Int? = nil) {
+        let serial = serial ?? authRunSerial
         if let rows { stored = rows }
         if case let .failed(message) = end { error = message } else { error = nil }
-        isConnecting = false
-        isSigningIn = false
-        lastAuthRun = SlackAuthRun(serial: authRunSerial, end: end)
+        if serial == authRunSerial {
+            isConnecting = false
+            isSigningIn = false
+        }
+        lastAuthRun = SlackAccountsViewModel.recorded(lastAuthRun, SlackAuthRun(serial: serial, end: end))
         addWaiter?.resume()
         addWaiter = nil
     }
@@ -55,7 +59,23 @@ private final class FakeSlackAccounts: SlackAccountsConnecting {
         finishSignIn(.cancelled)
     }
 
+    /// While set, `refreshAsync` waits until `releaseRefresh`.
+    @ObservationIgnored var holdRefresh = false
+    @ObservationIgnored private var refreshWaiter: CheckedContinuation<Void, Never>?
+    private(set) var refreshHeld = false
+
+    func releaseRefresh() {
+        holdRefresh = false
+        refreshWaiter?.resume()
+        refreshWaiter = nil
+    }
+
     func refreshAsync() async {
+        if holdRefresh {
+            refreshHeld = true
+            await withCheckedContinuation { refreshWaiter = $0 }
+            refreshHeld = false
+        }
         if let stored { accounts = stored }
     }
 }
@@ -345,6 +365,80 @@ final class SlackConnectDriverTests: XCTestCase {
         XCTAssertNil(status.flow)
         let start = await rig.driver.start(options: [:])
         XCTAssertEqual(start, .failure(.busy))
+    }
+
+    func testAddCancelNeverReachesANewerSignIn() async {
+        let rig = await makeRig()
+        _ = await rig.driver.start(options: [:])
+        await untilObserved { rig.accounts.isSigningIn }
+        rig.accounts.holdRefresh = true
+        rig.accounts.finishSignIn(.succeeded(accountID: nil))
+        await untilObserved { rig.accounts.refreshHeld }  // the driver is reading the outcome
+        rig.accounts.beginForeignSignIn()  // the sheet starts another sign-in meanwhile
+        await rig.driver.cancel(flowID: "flow-1")
+        XCTAssertEqual(rig.accounts.cancelCalls, 0, "the newer sign-in is not ours to cancel")
+        rig.accounts.releaseRefresh()
+        let outcome = await rig.driver.wait(flowID: "flow-1")
+        XCTAssertEqual(outcome, .failed(reason: SlackConnectDriver.signInEnded))
+    }
+
+    func testOlderRunEndingLateKeepsTheNewerEnd() async {
+        let rig = await makeRig()
+        rig.accounts.beginForeignSignIn()
+        rig.setupCLI.enqueue(noSetups)
+        _ = await rig.driver.status()  // flow-1: run 1
+        rig.accounts.beginForeignSignIn()
+        rig.setupCLI.enqueue(noSetups)
+        _ = await rig.driver.status()  // flow-2: run 2
+        rig.accounts.finishSignIn(.succeeded(accountID: nil), rows: [account(id: 4, team: "T0ACME", name: "Acme")])
+        rig.accounts.finishSignIn(.cancelled, serial: 1)  // run 1's child exits late
+        XCTAssertEqual(rig.accounts.lastAuthRun?.serial, 2)
+        let newer = await rig.driver.wait(flowID: "flow-2")
+        XCTAssertEqual(newer, .connected(account: "Acme"))
+        let older = await rig.driver.wait(flowID: "flow-1")
+        XCTAssertEqual(older, .failed(reason: SlackConnectDriver.signInEnded), "its own end is lost, never another run's")
+    }
+
+    func testAddNamesThePrintedAccountOverASeededLegacyRow() async {
+        let rig = await makeRig()
+        _ = await rig.driver.start(options: [:])
+        await untilObserved { rig.accounts.isSigningIn }
+        // `slack add` seeded legacy account #1, then wrote #2 and printed it.
+        let rows = [account(id: 1, team: "T0OLD", name: "Legacy"), account(id: 2, team: "T0ACME", name: "Acme")]
+        rig.accounts.finishSignIn(.succeeded(accountID: 2), rows: rows)
+        let printed = await rig.driver.wait(flowID: "flow-1")
+        XCTAssertEqual(printed, .connected(account: "Acme"))
+
+        _ = await rig.driver.start(options: [:])
+        await untilObserved { rig.accounts.isSigningIn }
+        rig.accounts.finishSignIn(.succeeded(accountID: nil), rows: rows + [
+            account(id: 3, team: "T0OLDER", name: "Seeded"), account(id: 7, team: "T0NEW", name: "Newest")
+        ])
+        let unprinted = await rig.driver.wait(flowID: "flow-2")
+        XCTAssertEqual(unprinted, .connected(account: "Newest"), "no id printed: the highest new id")
+    }
+
+    func testReloginNamesItsAccountOverAConcurrentNewRow() async {
+        let rig = await makeRig()
+        let acme = account(id: 1, team: "T0ACME", name: "Acme")
+        rig.accounts.accounts = [acme]
+        rig.accounts.beginForeignSignIn()
+        rig.setupCLI.enqueue(noSetups)
+        _ = await rig.driver.status()
+        rig.accounts.finishSignIn(.succeeded(accountID: 1), rows: [acme, account(id: 3, team: "T0NEW", name: "New")])
+        let outcome = await rig.driver.wait(flowID: "flow-1")
+        XCTAssertEqual(outcome, .connected(account: "Acme"))
+    }
+
+    func testAuthRunRecordingAndPrintedAccount() {
+        let newer = SlackAuthRun(serial: 2, end: .succeeded(accountID: nil))
+        let older = SlackAuthRun(serial: 1, end: .cancelled)
+        XCTAssertEqual(SlackAccountsViewModel.recorded(newer, older), newer)
+        XCTAssertEqual(SlackAccountsViewModel.recorded(older, newer), newer)
+        XCTAssertEqual(SlackAccountsViewModel.recorded(nil, older), older)
+        let out = "\nConnected Slack workspace \"Acme\" (team: T0ACME, user: acme-user)\nAccount id: 12\nRun 'watchtower sync'\n"
+        XCTAssertEqual(SlackAccountsViewModel.printedAccountID(out), 12)
+        XCTAssertNil(SlackAccountsViewModel.printedAccountID("Connected"))
     }
 
     func testAuthRunEndFromTheExitStatus() {

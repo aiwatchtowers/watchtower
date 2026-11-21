@@ -60,8 +60,9 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
     private enum Kind {
         /// Our start on the connect flow model, for this workspace app.
         case connect(SlackConnectTarget)
-        /// Our `slack add` (the build's own app).
-        case add
+        /// Our `slack add` (the build's own app); its run is the one after
+        /// `serialBefore`.
+        case add(serialBefore: Int)
         /// A confirmed PKCE update: waits for the token, then the adopt runs.
         case update(running: Bool)
         /// A sign-in someone else started: on the connect flow, or a
@@ -297,15 +298,15 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
     }
 
     private func startAdd() -> String {
-        let id = begin(.add)
-        let before = Set(accounts.accounts.map(\.id))
         let serialBefore = accounts.authRunSerial
+        let id = begin(.add(serialBefore: serialBefore))
+        let before = Set(accounts.accounts.map(\.id))
         Task { [weak self, accounts, daemonPolicy] in
             await accounts.addAccount(daemonPolicy: daemonPolicy())
             // One sign-in at a time (`busy`): a run that ended since is this
             // one; none (the CLI missing) leaves `error`.
             guard let self, let flow = flows[id], flow.outcome == nil else { return }
-            let run = accounts.lastAuthRun.flatMap { $0.serial > serialBefore ? $0 : nil }
+            let run = accounts.lastAuthRun.flatMap { $0.serial == serialBefore + 1 ? $0 : nil }
             let outcome = await authOutcome(run?.end, before: before, cancelled: flow.cancelled)
             guard flows[id]?.outcome == nil else { return }
             flows[id]?.outcome = outcome
@@ -321,13 +322,14 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
         case let .succeeded(accountID):
             await accounts.refreshAsync()  // the VM's own reload is fire-and-forget
             let rows = accounts.accounts
-            if let added = rows.first(where: { !before.contains($0.id) && !$0.isGone }) {
-                return .connected(account: added.displayName)
+            // The account the run names (Re-login's, or the one `slack add` printed) wins.
+            if let accountID {
+                return rows.first { $0.id == accountID }.map { .connected(account: $0.displayName) }
+                    ?? .failed(reason: Self.signInEnded)
             }
-            if let accountID, let rebound = rows.first(where: { $0.id == accountID }) {
-                return .connected(account: rebound.displayName)
-            }
-            return .failed(reason: Self.signInEnded)
+            // Else the newest row not there before (`slack add` may seed the legacy account #1 first).
+            let added = rows.filter { !before.contains($0.id) && !$0.isGone }.max { $0.id < $1.id }
+            return added.map { .connected(account: $0.displayName) } ?? .failed(reason: Self.signInEnded)
         case .cancelled:
             return .failed(reason: Self.cancelled)
         case let .failed(message):
@@ -354,8 +356,9 @@ final class SlackConnectDriver: ConnectServiceDriving, ConnectLiveProbing {
             guard let model = connectFlow, model.isRunning, Self.target(of: model.step) == target else { return }
             flows[flowID]?.cancelled = true
             model.cancel()
-        case .add:
-            guard accounts.isSigningIn else { return }
+        case let .add(serialBefore):
+            // Only our own run: a newer sign-in from the sheet is not ours to cancel.
+            guard accounts.isSigningIn, accounts.authRunSerial == serialBefore + 1 else { return }
             flows[flowID]?.cancelled = true
             accounts.cancelConnect()
         case .update(running: false):
