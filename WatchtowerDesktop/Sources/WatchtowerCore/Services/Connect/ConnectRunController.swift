@@ -203,9 +203,12 @@ package final class ConnectRunController {
     }
 
     private func status() async -> Reply {
+        let before = activeFlow
         let status = await driver.status()
-        // A flow the status no longer shows has ended outside this run.
-        if activeFlow != nil, status.flow?.id != activeFlow, !ended { activeFlow = nil }
+        // A flow the status no longer shows has ended outside this run. Only
+        // the flow the snapshot was taken for: a start that finished during
+        // the await is newer than the snapshot.
+        if let before, activeFlow == before, status.flow?.id != before, !ended { forgetFlow(before) }
         return Self.result(status)
     }
 
@@ -223,7 +226,7 @@ package final class ConnectRunController {
             // another window): then it no longer makes this start busy.
             let current = await driver.status().flow?.id
             if let refusal = stoppedSince() { return refusal }
-            if activeFlow == flowID, current != flowID { activeFlow = nil }
+            if activeFlow == flowID, current != flowID { forgetFlow(flowID) }
         }
         if let step = cardStep {
             guard case .start = step.purpose else { return Self.cardOpen }
@@ -249,23 +252,51 @@ package final class ConnectRunController {
         flowStarting = false
         switch result {
         case let .success(flowID):
-            activeFlow = flowID
-            busyShown = false
-            connectedAccounts = nil
+            if !ended {  // a start that lands after the run ended leaves the panel alone
+                activeFlow = flowID
+                busyShown = false
+                connectedAccounts = nil
+            }
             return Self.result(ConnectStarted(flowID: flowID))
         case let .failure(error):
-            if error == .busy { busyShown = true }
+            if error == .busy, !ended { busyShown = true }
             return Self.reply(error)
         }
     }
 
+    /// The flow ended outside this run's wait (status no longer shows it):
+    /// calls held on it answer `failed`, and its wait is retired.
+    private func forgetFlow(_ flowID: String) {
+        activeFlow = nil
+        if let step = flowStep, step.flowID == flowID {
+            retire(step, reason: "the sign-in ended outside the assistant")
+        }
+    }
+
+    /// Ends a flow step that no longer has a flow to wait on.
+    private func retire(_ step: Step, reason: String) {
+        step.work?.cancel()
+        finish(step, Self.result(ConnectWaited(state: "failed", reason: reason)))
+    }
+
+    /// A flow step's cached answer, when it belongs to the flow a call now
+    /// waits on (or no newer flow runs); an older flow's answer is dropped.
+    private func cachedFlowAnswer() -> Step? {
+        guard let step = flowStep, step.outcome != nil else { return nil }
+        guard activeFlow == nil || activeFlow == step.flowID else {
+            flowStep = nil
+            return nil
+        }
+        return step
+    }
+
     private func waitOnFlow() async -> Reply {
         // A flow that ended between two calls: its answer waits here.
-        if let step = flowStep, step.outcome != nil { return await attach(step) }
+        if let step = cachedFlowAnswer() { return await attach(step) }
         if activeFlow == nil {
             let adopted = await driver.status().flow?.id  // a reopened run resumes the flow it left
             if let refusal = stoppedSince() { return refusal }
-            if let step = flowStep, step.outcome != nil { return await attach(step) }
+            if let step = cachedFlowAnswer() { return await attach(step) }
             if activeFlow == nil { activeFlow = adopted }
         }
         guard let flowID = activeFlow else { return .error(.failed, "no sign-in is running; call connect_start first") }
@@ -273,6 +304,7 @@ package final class ConnectRunController {
         if let current = flowStep, current.flowID == flowID {
             step = current
         } else {
+            if let old = flowStep, old.outcome == nil { retire(old, reason: "a newer sign-in replaced this one") }
             step = Step(purpose: .flow, flowID: flowID)
             flowStep = step
         }
@@ -305,12 +337,13 @@ package final class ConnectRunController {
         case .waiting:
             step.work = nil  // nobody is held: the next call asks the driver again
         case let .connected(account):
-            activeFlow = nil
+            if activeFlow == step.flowID { activeFlow = nil }
             finish(step, Self.result(ConnectWaited(state: "connected", account: account)))
             let accounts = await driver.status().accounts.count
-            if !ended { connectedAccounts = accounts }
+            // A newer start since then owns the panel's state.
+            if !ended, activeFlow == nil, !flowStarting { connectedAccounts = accounts }
         case let .failed(reason):
-            activeFlow = nil
+            if activeFlow == step.flowID { activeFlow = nil }
             finish(step, Self.result(ConnectWaited(state: "failed", reason: reason)))
         }
     }
@@ -319,11 +352,8 @@ package final class ConnectRunController {
         let flowID: String? = if let activeFlow { activeFlow } else { await driver.status().flow?.id }
         guard let flowID else { return Self.result(ConnectDone()) }
         await driver.cancel(flowID: flowID)
-        activeFlow = nil
-        if let step = flowStep, step.flowID == flowID {
-            step.work?.cancel()
-            finish(step, Self.result(ConnectWaited(state: "failed", reason: "the sign-in was cancelled")))
-        }
+        if activeFlow == flowID { activeFlow = nil }
+        if let step = flowStep, step.flowID == flowID { retire(step, reason: "the sign-in was cancelled") }
         return Self.result(ConnectDone())
     }
 
@@ -476,6 +506,7 @@ package final class ConnectRunController {
         let from = elapsed()
         let wake = await step.hold(for: budget, sleep: sleep)
         step.addSpent(elapsed() - from)
+        if ended { return Self.closed }  // the run ended while the call was held
         if let outcome = consume(step) { return outcome }
         switch wake {
         case .closed, .cancelled: return Self.closed
@@ -489,13 +520,18 @@ package final class ConnectRunController {
     /// is cancelled, and the run fails with `.timedOut` (Retry).
     private func timeOut(_ step: Step) async -> Reply {
         let reply = Reply.result(Self.json(ConnectPending(state: "timeout")))
-        if step === cardStep { pendingCard = nil }
+        // The run shows the error with Retry: no card stays open behind it.
+        pendingCard = nil
+        if let card = cardStep, card !== step, card.work == nil {  // still unanswered
+            finish(card, reply)
+            _ = consume(card)
+        }
         let abandonedFlow = step === flowStep ? step.flowID : nil
         if step === flowStep || step === checkStep {
             step.work?.cancel()
             waitingStep = nil
         }
-        if abandonedFlow != nil { activeFlow = nil }
+        if let abandonedFlow, activeFlow == abandonedFlow { activeFlow = nil }
         failure = .timedOut
         finish(step, reply)
         _ = consume(step)
