@@ -324,8 +324,10 @@ final class ConnectRunCore: @unchecked Sendable {
                 }
                 return
             }
-            // An accepted socket inherits O_NONBLOCK and keeps it: reads and
-            // writes wait in poll, which a shutdown wakes.
+            // Non-blocking, set here rather than trusting inheritance from
+            // the listener: reads and writes wait in poll, which a shutdown
+            // wakes.
+            _ = fcntl(conn, F_SETFL, fcntl(conn, F_GETFL) | O_NONBLOCK)
             var on: Int32 = 1
             setsockopt(conn, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
             guard ConnectRunServer.peerUID(conn) == ownerUID else {
@@ -509,6 +511,8 @@ final class ConnectRunPeer: @unchecked Sendable {
             let live = open
             lock.unlock()
             guard live else { return }
+            // One bound for the whole line, however many stalls it meets.
+            let deadline = writeTimeout.map { DispatchTime.now().uptimeNanoseconds + UInt64($0) * 1_000_000 }
             let sent = line.withUnsafeBytes { raw -> Bool in
                 guard let base = raw.baseAddress else { return true }
                 var offset = 0
@@ -519,7 +523,9 @@ final class ConnectRunPeer: @unchecked Sendable {
                         continue
                     }
                     if n < 0, errno == EINTR { continue }
-                    guard n < 0, errno == EAGAIN || errno == EWOULDBLOCK, waitWritable() else { return false }
+                    guard n < 0, errno == EAGAIN || errno == EWOULDBLOCK, waitWritable(until: deadline) else {
+                        return false
+                    }
                 }
                 return true
             }
@@ -529,13 +535,21 @@ final class ConnectRunPeer: @unchecked Sendable {
         }
     }
 
-    /// The socket buffer is full: waits until the peer reads, at most
-    /// `writeTimeout`. False when the time ran out or the socket was shut.
-    private func waitWritable() -> Bool {
+    /// The socket buffer is full: waits until the peer reads, up to the
+    /// line's `deadline` (monotonic uptime in nanoseconds; nil waits until
+    /// the socket is shut). False when the time ran out or the socket was
+    /// shut.
+    private func waitWritable(until deadline: UInt64?) -> Bool {
         onWriteStalled?()
         var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
         while true {
-            let ready = poll(&pfd, 1, writeTimeout ?? -1)
+            var wait: Int32 = -1
+            if let deadline {
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now < deadline else { return false }
+                wait = Int32(clamping: (deadline - now + 999_999) / 1_000_000)
+            }
+            let ready = poll(&pfd, 1, wait)
             if ready < 0, errno == EINTR { continue }
             return ready > 0 && pfd.revents & Int16(POLLOUT) != 0 && pfd.revents & Int16(POLLHUP | POLLERR) == 0
         }
