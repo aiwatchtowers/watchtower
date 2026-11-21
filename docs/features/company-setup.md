@@ -65,6 +65,7 @@ Per Jira account every 7 days (`last_pdr_at`), after the sync: `atlassianpdr.Run
 - More ways into the wizard and the code field (screens spec §2.1): the end of the overview's **Connect…** menu and Jira's empty state.
 - Gmail (D11): Email → **Add Account** → **Connect Gmail** opens the Google detail — the own Google project page when no stored company has a Google app (`gmailRoute`, +Gmail); the **Add Google Account** sheet shows Gmail off with a note unless the build is flavored.
 - A company link during onboarding waits for onboarding to end; a pasted code is refused with `pasteDuringOnboarding`.
+- Cancel for a waiting sign-in (2026-11-21, #2132, `docs/superpowers/specs/2026-11-21-sign-in-cancel-design.md`): a company card whose chain waits on a vendor's browser sign-in with its sheet closed shows `SignInWaitLine` (`CompaniesZone.connecting`); its **Cancel** is the chain's **Stop** (`CompanyConnectFlowModel.stop`), whose end path re-reads every list and re-wires the daemon for the vendors connected earlier. The wizard's Google/Atlassian **Check by signing in** shows the line too (`CompanySetupWizardModel.checkWait`); **Cancel** (`cancelCheck`) ends the check's child and puts the step back to not-run, with no failed line, then re-reads the draft (`rereadAfterCancel`). The wizard's Slack step has no browser sign-in, so no Cancel.
 
 ## v1 limits and follow-ups
 

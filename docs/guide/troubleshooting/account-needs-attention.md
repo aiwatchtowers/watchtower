@@ -36,6 +36,16 @@ A Slack row says **Signed in to a different Slack workspace (…) — Re-login t
 
 After the fix, the next sync fetches the days the account missed, up to 30 days back. Days a sync already passed over can be fetched again in a terminal: `watchtower slack backfill --account 1 --from 2026-03-02 --to 2026-03-06`, with the account id from `watchtower slack accounts` (at most 31 days per run). With digests on, it writes digests for each channel's days that had no digest yet, and rebuilds the daily summary of those days. On a day that already has a digest for a channel, the fetched messages are saved and searchable but not digested. Messages newer than a channel's latest digest (for a channel never digested, newer than the first sync's look-back) are left to the regular digests. Mentions from those days, and from the days the account was stopped, show in digests, not in the Inbox; your other accounts' mentions keep reaching the Inbox meanwhile.
 
+## A sign-in waits in the browser
+
+A row or section says **Waiting for the … sign-in in your browser…** with **Cancel**, and the connection's other buttons are greyed out. The sign-in waits for the browser page to come back to Watchtower, which never happens when the page shows an error (such as Google's "Access blocked") or you closed it.
+
+1. Press **Cancel**. The sign-in stops at once, with no error, and the row offers its own button again (**Re-login**, **Sign in again**, **Grant Confluence access**).
+2. Press that button to try again.
+3. If the browser shows the same error again, your company's admin has to allow the app for your account.
+
+If you pressed **Cancel** just as the sign-in finished, the account may show as connected anyway: that sign-in went through.
+
 ## How to check
 
 The dot turns green and the next sync cycle brings new data. The service dot stays red until every account under it is healthy.
