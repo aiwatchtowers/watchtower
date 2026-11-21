@@ -6,6 +6,6 @@ extension AppState {
     /// other Slack sign-in. Named apart from `SlackConnectionDetail`'s
     /// `cancelSlackReconnect`, which cancels the legacy workspace reconnect.
     func cancelCardSlackSignIn(accountID: Int64) {
-        slackAccountsViewModel?.cancelConnect(accountID: Int(accountID))
+        slackAccountsViewModel?.cancelCardSignIn(accountID: Int(accountID))
     }
 }

@@ -77,7 +77,10 @@ final class SlackAccountsViewModel {
     /// The awaitable body of `refresh()`, split out so tests can call it
     /// directly and observe `accounts` deterministically instead of racing a
     /// detached `Task`.
-    func refreshAsync() async {
+    /// `quiet`: a re-read for a cancelled attempt — a failure lands in
+    /// `readError` only, so the Cancel stays silent and a newer attempt's
+    /// `error` is never overwritten.
+    func refreshAsync(quiet: Bool = false) async {
         do {
             let (rows, syncs) = try await dbPool.read { db in
                 (try SlackAccountQueries.fetchAll(db), try SlackAccountQueries.fetchLastSyncs(db))
@@ -87,8 +90,9 @@ final class SlackAccountsViewModel {
             readError = nil
             await onAccountsChanged?()
         } catch {
-            self.error = "Failed to load accounts: \(error.localizedDescription)"
-            readError = self.error
+            let message = "Failed to load accounts: \(error.localizedDescription)"
+            if !quiet { self.error = message }
+            readError = message
         }
         if readsAccountFlags { await refreshFlags() }
     }
@@ -207,9 +211,13 @@ final class SlackAccountsViewModel {
     /// Desktop's running listener (a `slack login` would bind 18551, which
     /// that listener holds); no app to sign in with opens the connect section.
     /// The attempt is cancellable from its start, the route read included.
+    /// `forCard`: an agent card's Reconnect Slack, which `cancelCardSignIn`
+    /// ends.
     @discardableResult
-    func relogin(_ account: SlackAccount) async -> SignInOutcome {
+    func relogin(_ account: SlackAccount, forCard: Bool = false) async -> SignInOutcome {
         guard let mine = beginAttempt(accountID: account.id) else { return .failed(error ?? "") }
+        if forCard { cardAttempts[account.id] = mine }
+        defer { if cardAttempts[account.id] == mine { cardAttempts[account.id] = nil } }
         let loginArgs = Self.loginArgs(for: account)
         guard let flow = connectFlow else {
             return await runAuthFlow(mine, args: loginArgs, failurePrefix: "Re-login failed", daemonPolicy: .restart)
@@ -373,7 +381,7 @@ final class SlackAccountsViewModel {
         await afterAuthExit?()
         guard isCurrent(mine) else {
             guard result.exitCode == 0 else { return await cancelledAttemptEnded() }
-            await refreshAsync()
+            await refreshAsync(quiet: true)
             daemonRestartTask = daemonPolicy.apply(using: daemon)
             return .signedIn
         }
@@ -426,7 +434,7 @@ final class SlackAccountsViewModel {
     /// The end of an attempt a Cancel ended: a refresh-only re-read of the
     /// accounts, never a daemon restart.
     private func cancelledAttemptEnded() async -> SignInOutcome {
-        await refreshAsync()
+        await refreshAsync(quiet: true)
         return .cancelled
     }
 
@@ -442,10 +450,22 @@ final class SlackAccountsViewModel {
         endAttempt()
     }
 
-    /// Cancels the attempt re-consenting account `accountID` only (an agent
-    /// card's Cancel); another Slack sign-in on this VM keeps running.
+    /// Cancels the attempt re-consenting account `accountID` only (its
+    /// Connections row's Cancel); another Slack sign-in keeps running.
     func cancelConnect(accountID: Int) {
         guard attempt?.accountID == accountID else { return }
+        cancelConnect()
+    }
+
+    /// The attempt an agent card began for each account (`relogin(_:forCard:)`),
+    /// while it runs.
+    @ObservationIgnored private var cardAttempts: [Int: Int] = [:]
+
+    /// An agent card's Cancel: ends the attempt that card began for
+    /// `accountID`, once — never a Re-login started elsewhere, even of the
+    /// same account after the card's own was cancelled.
+    func cancelCardSignIn(accountID: Int) {
+        guard let mine = cardAttempts.removeValue(forKey: accountID), isCurrent(mine) else { return }
         cancelConnect()
     }
 

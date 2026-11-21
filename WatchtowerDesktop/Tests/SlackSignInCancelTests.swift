@@ -194,6 +194,55 @@ final class SlackSignInCancelTests: XCTestCase {
         XCTAssertEqual(rig.daemon.restartCount, 0)
     }
 
+    /// A cancelled attempt's re-read that fails stays quiet: `readError`
+    /// says so, `error` (the row's line, or a newer attempt's) is untouched.
+    func testFailedReReadAfterCancelStaysSilent() async throws {
+        let rig = try makeRig()
+        let vm = rig.vm
+        let entered = AsyncGate()
+        let held = AsyncGate()
+        try await holdRouteRead(vm, account: rig.account, entered: entered, held: held)
+        let run = Task { await vm.relogin(rig.account) }
+        await entered.wait()
+        try await rig.pool.write { db in try db.execute(sql: "DROP TABLE slack_accounts") }
+        vm.cancelConnect()
+        held.release()
+
+        let outcome = await run.value
+        XCTAssertEqual(outcome, .cancelled)
+        XCTAssertNil(vm.error, "the Cancel stays silent")
+        XCTAssertNotNil(vm.readError, "the failed re-read is still recorded")
+    }
+
+    /// The card's Cancel ends the attempt the card began, once: a Re-login of
+    /// the same account started from Connections meanwhile keeps running.
+    func testCardCancelEndsOnlyTheCardsOwnAttempt() async throws {
+        let rig = try makeRig()
+        let vm = rig.vm
+        rig.stub.ignoreSIGTERM(run: 1)
+        let card = Task { await vm.relogin(rig.account, forCard: true) }
+        let cardLive = try await rig.stub.started(1, unlessEnded: card)
+        vm.cancelCardSignIn(accountID: rig.account.id)
+        XCTAssertFalse(vm.isConnecting)
+
+        // The card still waits on its run (its child outlived the SIGTERM),
+        // so its Cancel is still on screen when Connections starts another.
+        let row = Task { await vm.relogin(rig.account) }
+        let rowLive = try await rig.stub.started(2, unlessEnded: row)
+        vm.cancelCardSignIn(accountID: rig.account.id)
+        XCTAssertTrue(vm.isConnecting, "the card's Cancel never ends a sign-in it did not begin")
+        XCTAssertEqual(vm.signInAccountID, rig.account.id)
+
+        rig.stub.release(1, exitCode: 1)
+        await cardLive.exited()
+        let cardOutcome = await card.value
+        XCTAssertEqual(cardOutcome, .cancelled)
+        rig.stub.release(2, exitCode: 0)
+        await rowLive.exited()
+        let rowOutcome = await row.value
+        XCTAssertEqual(rowOutcome, .signedIn)
+    }
+
     /// With nothing of its own running, Cancel leaves the busy state alone.
     func testCancelWithNoAttemptChangesNothing() async throws {
         let rig = try makeRig()

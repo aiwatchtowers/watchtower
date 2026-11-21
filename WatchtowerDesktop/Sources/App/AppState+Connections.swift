@@ -100,7 +100,7 @@ extension AppState {
         guard let account = vm.accounts.first(where: { $0.id == accountID }) else {
             return .failed("Slack account #\(accountID) is no longer connected.")
         }
-        return reconnectOutcome(await vm.relogin(account))
+        return reconnectOutcome(await vm.relogin(account, forCard: true))
     }
 
     /// How a card's Reconnect ended, from its own attempt's outcome; a
