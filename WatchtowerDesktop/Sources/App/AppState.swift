@@ -1587,7 +1587,7 @@ final class AppState {
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         if watchmanCenter == nil { watchmanCenter = WatchmanCenter(runner: ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()) }
         workbenchesViewModel?.watchman = watchmanCenter
-        watchmanCenter?.sessionTitle = { [weak self] in self?.workbenchesViewModel?.sessionTitle($0) } // the arm sheet's list
+        wireWatchmanSheets(dbPool: manager.dbPool)
         watchmanJournal = WatchmanJournalViewModel(pool: manager.dbPool, actions: watchmanJournalActions())
         initAccountPurges(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         initSlackLive(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())

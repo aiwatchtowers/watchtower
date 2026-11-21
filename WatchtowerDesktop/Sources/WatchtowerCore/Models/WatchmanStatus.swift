@@ -94,21 +94,25 @@ package enum WatchmanMode: String, Equatable, Sendable {
 /// One `armed_sessions` entry: `target` is the armed target whose subtree
 /// holds the session (0 = armed only by its own row; such a session goes
 /// back only with its target), `armedAt` that target's arming time, else
-/// the session row's.
+/// the session row's. `instructions` is the session row's own instruction
+/// for Watchman ("" = none, or a CLI that does not print it); the arm and
+/// edit sheets pre-fill it.
 package struct WatchmanArmedSession: Decodable, Equatable, Sendable {
     package let id: Int64
     package let target: Int64
     package let armedAt: Date?
+    package let instructions: String
 
     enum CodingKeys: String, CodingKey {
-        case id, target
+        case id, target, instructions
         case armedAt = "armed_at"
     }
 
-    package init(id: Int64, target: Int64 = 0, armedAt: Date? = nil) {
+    package init(id: Int64, target: Int64 = 0, armedAt: Date? = nil, instructions: String = "") {
         self.id = id
         self.target = target
         self.armedAt = armedAt
+        self.instructions = instructions
     }
 
     package init(from decoder: Decoder) throws {
@@ -116,6 +120,34 @@ package struct WatchmanArmedSession: Decodable, Equatable, Sendable {
         id = try container.decode(Int64.self, forKey: .id)
         target = try container.decodeIfPresent(Int64.self, forKey: .target) ?? 0
         armedAt = AutomationDates.parse(try container.decodeIfPresent(String.self, forKey: .armedAt))
+        // Tolerant: a missing or malformed key reads as no instruction.
+        instructions = (try? container.decodeIfPresent(String.self, forKey: .instructions)) ?? ""
+    }
+}
+
+/// `watchman instruct --json` (`cmd/watchman_instruct.go`, keys pinned by
+/// `TestWatchmanInstruct_JSONKeysPinned`): the stored text after Go's trim
+/// and clip.
+package struct WatchmanInstructReply: Decodable, Equatable, Sendable {
+    package let ok: Bool
+    package let instructions: String
+    package let error: String
+
+    enum CodingKeys: String, CodingKey {
+        case ok, instructions, error
+    }
+
+    package init(ok: Bool = true, instructions: String = "", error: String = "") {
+        self.ok = ok
+        self.instructions = instructions
+        self.error = error
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try container.decode(Bool.self, forKey: .ok)
+        instructions = try container.decodeIfPresent(String.self, forKey: .instructions) ?? ""
+        error = try container.decodeIfPresent(String.self, forKey: .error) ?? ""
     }
 }
 

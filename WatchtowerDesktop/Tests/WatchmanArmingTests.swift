@@ -46,6 +46,16 @@ private final class ArmingRunner: CLIRunnerProtocol, @unchecked Sendable {
         }
     }
 
+    /// Each stdin a verb read (`--instructions-file -`, `--text-file -`),
+    /// with the call it went with.
+    private var stdins: [(args: [String], text: String)] = []
+    var stdinCalls: [(args: [String], text: String)] { lock.withLock { stdins } }
+
+    func capture(args: [String], stdin: Data, timeout: TimeInterval) async throws -> CLICapturedResult {
+        lock.withLock { stdins.append((args, String(bytes: stdin, encoding: .utf8) ?? "<not UTF-8>")) }
+        return try await capture(args: args, timeout: timeout)
+    }
+
     func capture(args: [String], timeout: TimeInterval) async throws -> CLICapturedResult {
         if args.contains("--check"), let gate = lock.withLock({ () -> AsyncGate? in
             defer { checkGate = nil }
@@ -110,15 +120,18 @@ final class WatchmanArmingTests: XCTestCase {
         let sheet = try XCTUnwrap(center.sheet)
         XCTAssertEqual(sheet.scope, .session(5))
         XCTAssertEqual(sheet.content.title, "Hand acme-api to Watchman?")
+        XCTAssertEqual(sheet.content.mode, .firstTime)
         let lines = sheet.content.lines.map(\.text)
         XCTAssertTrue(lines.contains(Copy.analyticsLine))
         XCTAssertTrue(lines.contains("Learning from your history: ~1 850 decisions, est. 1.6 M tokens"))
-        XCTAssertTrue(lines.contains("Until learning finishes, Watchman parks everything for you"))
-        XCTAssertEqual(sheet.content.confirm, "Hand to Watchman")
+        XCTAssertTrue(lines.contains("Watchman learns this workbench first (about 1 850 decisions). Questions asked "
+            + "meanwhile wait and are decided once it finishes — or answer them yourself."))
+        XCTAssertEqual(sheet.content.confirm, "Hand over")
 
         runner.setStatus(Self.sessionArmed)
         await center.confirmShown()
         XCTAssertNil(center.sheet)
+        // An untouched empty field: no instruction flag.
         XCTAssertEqual(runner.verbs.filter { !$0.contains("--check") }, [["watchman", "arm", "--session", "5", "--json"]])
         XCTAssertEqual(WatchmanArmControl.arming(.session(5), in: center.lastStatus), .armed)
         // The reply's D21 line stays visible under the control.
@@ -132,8 +145,16 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertEqual(WatchmanArmControl.arming(.session(5), in: center.lastStatus), .unarmed)
 
         runner.setStatus(Self.sessionArmed)
-        await center.handTo(.session(5), workbench: "acme-api")
-        XCTAssertNil(center.sheet, "a learned workbench without warnings arms at once")
+        await center.handTo(.session(5), workbench: "acme-api", title: "Ship task 3")
+        // A learned workbench without warnings: the short sheet, for the instruction.
+        let sheet = try XCTUnwrap(center.sheet)
+        XCTAssertEqual(sheet.content.mode, .short)
+        XCTAssertEqual(sheet.content.title, "Hand to Watchman")
+        XCTAssertEqual(sheet.content.subject, "#5 Ship task 3")
+        XCTAssertEqual(sheet.content.lines, [])
+        XCTAssertEqual([sheet.content.cancel, sheet.content.confirm], ["Cancel", "Hand over"])
+        await center.confirmShown()
+        XCTAssertNil(center.sheet)
         XCTAssertEqual(Array(runner.invocations.suffix(3)), [
             ["watchman", "arm", "--session", "5", "--check", "--json"],
             ["watchman", "arm", "--session", "5", "--json"],
@@ -217,7 +238,7 @@ final class WatchmanArmingTests: XCTestCase {
         runner.reply("arm", #"{"ok":false,"armed":[],"error":"session 5 is not a running workbench agent session"}"#,
                      exitCode: 1)
         let center = await center(runner)
-        await center.handTo(.session(5), workbench: "acme-api")
+        await center.arm(.session(5))
 
         let notice = Copy.armFailed("session 5 is not a running workbench agent session")
         XCTAssertEqual(center.armNotices[.session(5)], notice)
@@ -252,8 +273,9 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertEqual(runner.verbs, [["watchman", "arm", "--all-running", "--check", "--json"]])
         let sheet = try XCTUnwrap(center.sheet)
         XCTAssertEqual(sheet.scope, .allRunning)
-        XCTAssertEqual(sheet.content.title, Copy.sheetTitleAllRunning)
-        XCTAssertTrue(sheet.content.lines.map(\.text).contains(Copy.analyticsLine))
+        XCTAssertEqual(sheet.content.mode, .tray)
+        XCTAssertEqual(sheet.content.title, Copy.shortTitle)
+        XCTAssertTrue(sheet.content.lines.map(\.text).contains(Copy.analyticsLine), "a first time shows what turns on")
 
         XCTAssertEqual(sheet.content.sessions, ["Session 5"], "no title known: the id")
         await center.confirmShown()
@@ -261,12 +283,16 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertEqual(runner.verbs.count, 3, "check, the check again on confirm, arm")
         XCTAssertEqual(center.armNotices[.allRunning], Copy.analyticsLine)
 
-        // Learned, no warning: no sheet, armed at once — as the checked set.
+        // Learned, no warning: still the sheet (for the instruction), without the lines.
         runner.reply("check", #"{"ok":true,"first_time":false,"sessions":[5]}"#)
         let again = await center.handAllRunning()
-        XCTAssertFalse(again)
+        XCTAssertTrue(again)
+        XCTAssertEqual(center.sheet?.content.mode, .tray)
+        XCTAssertEqual(center.sheet?.content.lines, [])
+        await center.confirmShown()
         XCTAssertNil(center.sheet)
-        XCTAssertEqual(Array(runner.verbs.suffix(2)), [
+        XCTAssertEqual(Array(runner.verbs.suffix(3)), [
+            ["watchman", "arm", "--all-running", "--check", "--json"],
             ["watchman", "arm", "--all-running", "--check", "--json"],
             ["watchman", "arm", "--all-running", "--only", "5", "--json"]
         ])
@@ -376,9 +402,19 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertEqual(WatchmanArmControl.arming(.session(9), in: center.lastStatus), .viaTarget)
         let control = WatchmanArmControl(center: center, scope: .session(9), workbench: "acme-api", style: .strip)
         XCTAssertNoThrow(try control.inspect().find(button: Copy.takeBack))
+        // Its own instruction is edited here too: the button and the edit sheet.
+        XCTAssertNoThrow(try control.inspect().find(button: Copy.instructionButton))
+        await center.editInstruction(.session(9))
+        XCTAssertEqual(center.sheet?.content.mode, .edit)
+        XCTAssertEqual(center.sheet?.scope, .session(9))
+        // Its chip's tooltip leads with its own instruction.
+        XCTAssertEqual(WatchmanArmControl.chipHelp(viaTarget: "Handed over through #4", instruction: "Ship task 3"),
+                       "Ship task 3\nHanded over through #4")
+        XCTAssertEqual(WatchmanArmControl.chipHelp(viaTarget: "Handed over through #4", instruction: nil),
+                       "Handed over through #4")
     }
 
-    /// "Sleep since" is the session's own arming time when the status
+    /// "since" is the session's own arming time when the status
     /// carries it, else `mode_since`.
     func testSinceIsTheSessionsOwnArmingTime() throws {
         let status = try WatchmanStatusFixtures.decode(#"""
@@ -421,10 +457,11 @@ final class WatchmanArmingTests: XCTestCase {
 
         // Session 6 started meanwhile.
         runner.reply("check", #"{"ok":true,"first_time":true,"sessions":[5,6],"estimate":null}"#)
-        await center.confirmShown()
+        await center.confirmShown("finish the plan")
         let refreshed = try XCTUnwrap(center.sheet, "the sheet asks again")
         XCTAssertEqual(refreshed.sessions, [5, 6])
         XCTAssertEqual(refreshed.content.notice, Copy.sessionsChanged)
+        XCTAssertEqual(refreshed.instruction, "finish the plan", "the typed text survives the new set")
         XCTAssertFalse(runner.verbs.contains { !$0.contains("--check") }, "nothing armed yet")
 
         // Confirmed as shown: exactly that set.
@@ -546,15 +583,18 @@ final class WatchmanArmingTests: XCTestCase {
         await center.confirmShown()
         XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--session", "1", "--json"])
 
-        // Learned, no warning: armed at once, still without --only.
+        // Learned, no warning: the short sheet, still without --only.
         let learned = real.replacingOccurrences(of: #""first_time": true"#, with: #""first_time": false"#)
             .replacingOccurrences(of: "Could not read main's protection on GitHub — treat it as unprotected", with: "")
         XCTAssertNotEqual(learned, real)
         runner.reply("check", learned)
         await center.handTo(.session(1), workbench: "acme")
+        XCTAssertEqual(center.sheet?.content.mode, .short)
+        await center.confirmShown()
         XCTAssertNil(center.sheet)
         XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--session", "1", "--json"])
         await center.handTo(.target(4), workbench: "acme")
+        await center.confirmShown()
         XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--target", "4", "--json"])
         XCTAssertFalse(runner.verbs.contains { $0.contains("--only") })
     }
@@ -588,6 +628,396 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertEqual(WatchmanArmSheet.listHeight(rows: 40), 6 * ListLayout.lineMinHeight)
     }
 
+    // MARK: - Instructions (tuning spec §2)
+
+    /// `status` with session `id` armed by its own row and its instruction.
+    private static func armedWith(_ id: Int64, instructions: String) -> String {
+        #"""
+        {"ok":true,"workbenches":[],"mode":"sleep","mode_since":"2026-11-17T01:40:00Z",
+         "armed":[{"scope":"session","id":\#(id),"armed_at":"2026-11-17T01:40:00Z"}],
+         "armed_sessions":[{"id":\#(id),"target":0,"armed_at":"2026-11-17T01:40:00Z","instructions":"\#(instructions)"}],
+         "daemon_running":true}
+        """#
+    }
+
+    private static let learnedCheck = #"{"ok":true,"first_time":false,"sessions":[5]}"#
+
+    /// Hand over with text: `arm --session N --instructions-file -`, the
+    /// text on stdin; the next sheet pre-fills it.
+    func testHandOverWithTextGoesOnStdin() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", Self.learnedCheck)
+        let center = await center(runner)
+        await center.handTo(.session(5), workbench: "acme-api")
+        XCTAssertEqual(center.sheet?.instruction, "", "nothing stored: an empty field")
+        runner.setStatus(Self.armedWith(5, instructions: "ship task 3 only"))
+        await center.confirmShown("ship task 3 only")
+        XCTAssertNil(center.sheet)
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--session", "5", "--instructions-file", "-", "--json"])
+        XCTAssertEqual(runner.stdinCalls.map(\.text), ["ship task 3 only"])
+        XCTAssertEqual(center.instructions[.session(5)], "ship task 3 only")
+
+        // Taken back, handed over again: the stored text pre-fills (D7).
+        runner.setStatus(Self.unarmed)
+        await center.disarm(.session(5))
+        await center.handTo(.session(5), workbench: "acme-api")
+        XCTAssertEqual(center.sheet?.instruction, "ship task 3 only")
+    }
+
+    /// A single scope's empty field passes the flag only when the owner
+    /// emptied a stored text; an untouched empty field passes none.
+    func testEmptyFieldClearsOnlyAStoredText() async throws {
+        let runner = ArmingRunner(status: Self.armedWith(5, instructions: "ship task 3 only"))
+        runner.reply("check", Self.learnedCheck)
+        let center = await center(runner)
+        // The database read is what makes the stored text known.
+        center.readInstruction = { $0 == .session(5) ? "ship task 3 only" : "" }
+        await center.handTo(.session(5), workbench: "acme-api")
+        XCTAssertEqual(center.sheet?.instruction, "ship task 3 only")
+        XCTAssertEqual(center.sheet?.stored, "ship task 3 only")
+        await center.confirmShown("  \n")
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--session", "5", "--instructions-file", "-", "--json"])
+        XCTAssertEqual(runner.stdinCalls.last?.text, "", "an empty file clears it")
+
+        await center.handTo(.session(6), workbench: "acme-api")
+        XCTAssertEqual(center.sheet?.instruction, "")
+        await center.confirmShown("")
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--session", "6", "--json"])
+        XCTAssertEqual(runner.stdinCalls.count, 1)
+
+        typealias Center = WatchmanCenter
+        XCTAssertEqual(Center.instructionFlag("x", stored: "", tray: false), "x")
+        XCTAssertNil(Center.instructionFlag(" ", stored: "", tray: false))
+        XCTAssertEqual(Center.instructionFlag("", stored: "old", tray: false), "")
+        XCTAssertNil(Center.instructionFlag("", stored: "old", tray: true))
+        XCTAssertEqual(Center.instructionFlag("x", stored: "", tray: true), "x")
+        XCTAssertNil(Center.instructionFlag("", stored: nil, tray: false), "an unknown stored text is never cleared")
+        XCTAssertEqual(Center.instructionFlag("x", stored: nil, tray: false), "x")
+    }
+
+    /// After a restart the app has seen nothing: the sheets pre-fill from
+    /// the database (D7).
+    func testPrefillReadsTheDatabaseAfterARestart() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", #"{"ok":true,"first_time":false,"sessions":[]}"#)
+        let center = await center(runner)
+        XCTAssertNil(center.instructions[.target(4)])
+        center.readInstruction = { scope in scope == .target(4) ? "keep the public API" : "" }
+        await center.handTo(.target(4), workbench: "acme-api")
+        XCTAssertEqual(center.sheet?.instruction, "keep the public API")
+        XCTAssertEqual(center.sheet?.stored, "keep the public API")
+        // Emptied by the owner: the stored text is cleared, knowingly.
+        await center.confirmShown("")
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--target", "4", "--instructions-file", "-", "--json"])
+        XCTAssertEqual(runner.stdinCalls.last?.text, "")
+
+        await center.editInstruction(.target(4))
+        XCTAssertEqual(center.sheet?.instruction, "keep the public API", "read again, not the cleared memory")
+    }
+
+    /// The read fails and the app saw nothing: the field opens empty, and
+    /// neither an untouched hand-over nor an empty Save clears the text.
+    func testUnreadStoredTextIsNeverCleared() async throws {
+        struct Locked: Error {}
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", Self.learnedCheck)
+        let center = await center(runner)
+        center.readInstruction = { _ in throw Locked() }
+        await center.handTo(.session(5), workbench: "acme-api")
+        XCTAssertEqual(center.sheet?.instruction, "")
+        XCTAssertNil(center.sheet?.stored)
+        await center.confirmShown("")
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--session", "5", "--json"], "no flag: nothing cleared")
+
+        await center.editInstruction(.target(4))
+        XCTAssertNil(center.sheet?.stored)
+        await center.confirmShown(" ")
+        XCTAssertFalse(runner.verbs.contains { $0.dropFirst().first == "instruct" }, "no empty file sent")
+        XCTAssertNotNil(center.sheet, "the sheet stays")
+        XCTAssertEqual(center.sheetError, Copy.instructionUnread)
+
+        // A failed read shows what the app saw, but never as known: it may be stale.
+        runner.reply("instruct", #"{"ok":true,"scope":"target","ref_id":4,"instructions":"keep the API","error":""}"#)
+        await center.confirmShown("keep the API")
+        XCTAssertEqual(runner.verbs.last, ["watchman", "instruct", "--target", "4", "--text-file", "-", "--json"])
+        await center.editInstruction(.target(4))
+        XCTAssertEqual(center.sheet?.instruction, "keep the API")
+        XCTAssertNil(center.sheet?.stored)
+        let instructs = runner.verbs.filter { $0.dropFirst().first == "instruct" }.count
+        await center.confirmShown("")
+        XCTAssertEqual(center.sheetError, Copy.instructionUnread, "an emptied cached text is not cleared")
+        XCTAssertEqual(runner.verbs.filter { $0.dropFirst().first == "instruct" }.count, instructs)
+    }
+
+    /// The cache (a status read) fills the field when the database read
+    /// fails, but an emptied field then clears nothing: another writer may
+    /// have changed the stored text since.
+    func testCachedTextIsNeverClearedOnAFailedRead() async throws {
+        struct Locked: Error {}
+        let runner = ArmingRunner(status: Self.armedWith(5, instructions: "old text"))
+        runner.reply("check", Self.learnedCheck)
+        let center = await center(runner)
+        center.readInstruction = { _ in throw Locked() }
+        await center.handTo(.session(5), workbench: "acme-api")
+        XCTAssertEqual(center.sheet?.instruction, "old text")
+        XCTAssertNil(center.sheet?.stored)
+        await center.confirmShown("")
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--session", "5", "--json"], "no flag: nothing cleared")
+        XCTAssertEqual(runner.stdinCalls.count, 0)
+    }
+
+    /// One sheet per open: a second press while the read runs does
+    /// nothing; a read that finishes after another sheet opened (or was
+    /// opened and cancelled) opens nothing; an open sheet is never replaced.
+    func testOneSheetPerOpen() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", #"{"ok":true,"first_time":false,"sessions":[]}"#)
+        let center = await center(runner)
+        var reads = ReadCounter()
+        /// Only the first read of #4 waits on `gate` (once `entered` opens);
+        /// every other read answers at once, so a broken guard fails an
+        /// assertion instead of hanging on the closed gate.
+        func slowTarget(_ entered: AsyncGate, _ gate: AsyncGate) {
+            let counter = ReadCounter()
+            reads = counter
+            center.readInstruction = { scope in
+                let first = await counter.add(scope) == 1
+                if scope == .target(4), first {
+                    entered.release()
+                    await gate.wait()
+                }
+                return "stored"
+            }
+        }
+
+        // A double tap: one read, one sheet.
+        var entered = AsyncGate()
+        var gate = AsyncGate()
+        slowTarget(entered, gate)
+        let first = Task { await center.editInstruction(.target(4)) }
+        await entered.wait()
+        await center.editInstruction(.target(4))
+        let again = await center.handTo(.target(4), workbench: "acme-api")
+        XCTAssertFalse(again, "the same scope's sheet is opening")
+        gate.release()
+        await first.value
+        let count = await reads.count(.target(4))
+        XCTAssertEqual(count, 1)
+        let sheet = try XCTUnwrap(center.sheet)
+        XCTAssertEqual(sheet.content.mode, .edit)
+        XCTAssertFalse(runner.verbs.contains { $0.contains("--check") })
+
+        // An open sheet is never replaced; the tray only brings it up.
+        let tray = await center.handAllRunning()
+        XCTAssertTrue(tray)
+        XCTAssertEqual(center.sheet?.token, sheet.token)
+        center.sheet = nil
+
+        // A slow read for #4 while another sheet opens: that sheet stays.
+        entered = AsyncGate()
+        gate = AsyncGate()
+        slowTarget(entered, gate)
+        let slow = Task { await center.editInstruction(.target(4)) }
+        await entered.wait()
+        await center.editInstruction(.session(5))
+        let other = try XCTUnwrap(center.sheet?.token)
+        gate.release()
+        await slow.value
+        XCTAssertEqual(center.sheet?.token, other)
+
+        // Cancelled meanwhile: the late read opens nothing.
+        center.sheet = nil
+        entered = AsyncGate()
+        gate = AsyncGate()
+        slowTarget(entered, gate)
+        let late = Task { await center.editInstruction(.target(4)) }
+        await entered.wait()
+        await center.editInstruction(.session(5))
+        XCTAssertNotNil(center.sheet)
+        center.sheet = nil // Cancel
+        gate.release()
+        await late.value
+        XCTAssertNil(center.sheet)
+
+        // A stale open does not block a fresh one: #4's slow read, #5's
+        // sheet opened and cancelled, then #4 clicked again reads anew and
+        // opens; the old read's late completion changes nothing.
+        entered = AsyncGate()
+        gate = AsyncGate()
+        slowTarget(entered, gate)
+        let stale = Task { await center.editInstruction(.target(4)) }
+        await entered.wait()
+        await center.editInstruction(.session(5))
+        center.sheet = nil // Cancel
+        await center.editInstruction(.target(4))
+        let fresh = try XCTUnwrap(center.sheet, "the fresh click opens its sheet")
+        XCTAssertEqual(fresh.scope, .target(4))
+        let freshReads = await reads.count(.target(4))
+        XCTAssertEqual(freshReads, 2, "a new read")
+        gate.release()
+        await stale.value
+        XCTAssertEqual(center.sheet?.token, fresh.token, "the stale completion is ignored")
+    }
+
+    /// The tray's confirm re-check failing, or finding nothing running,
+    /// keeps the sheet and its text with the line.
+    func testTrayRecheckFailureKeepsTheSheet() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", #"{"ok":true,"first_time":false,"sessions":[5]}"#)
+        let center = await center(runner)
+        _ = await center.handAllRunning()
+        let token = try XCTUnwrap(center.sheet?.token)
+        runner.reply("check", "", exitCode: 1, stderr: "database is locked")
+        await center.confirmShown("finish the plan")
+        XCTAssertEqual(center.sheet?.token, token)
+        XCTAssertEqual(center.sheetError, Copy.saveFailed("database is locked"))
+
+        runner.reply("check", #"{"ok":true,"first_time":false,"sessions":[]}"#)
+        await center.confirmShown("finish the plan")
+        XCTAssertEqual(center.sheet?.token, token, "the draft stays")
+        XCTAssertEqual(center.sheetError, Copy.nothingToHandOver)
+        XCTAssertFalse(runner.verbs.contains { !$0.contains("--check") }, "nothing armed")
+    }
+
+    /// A confirm while the scope's own arm runs sends nothing and says so.
+    func testConfirmDuringARunningArmSaysSo() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", Self.learnedCheck)
+        let center = await center(runner)
+        await center.handTo(.session(5), workbench: "acme-api")
+        let gate = AsyncGate()
+        runner.holdNextArm(gate)
+        let running = Task { await center.arm(.session(5)) }
+        await runner.armEntered.wait()
+        await center.confirmShown("x")
+        XCTAssertNotNil(center.sheet)
+        XCTAssertEqual(center.sheetError, Copy.armInProgress)
+        gate.release()
+        _ = await running.value
+        XCTAssertEqual(runner.stdinCalls.count, 0)
+    }
+
+    /// The tray's empty field keeps each session's text (no flag); a text
+    /// is set on every confirmed session.
+    func testTrayEmptyFieldPassesNoFlag() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", #"{"ok":true,"first_time":false,"sessions":[5,6]}"#)
+        let center = await center(runner)
+        _ = await center.handAllRunning()
+        XCTAssertEqual(center.sheet?.instruction, "", "the tray's field starts empty")
+        await center.confirmShown("")
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--all-running", "--only", "5,6", "--json"])
+        XCTAssertEqual(runner.stdinCalls.count, 0)
+
+        _ = await center.handAllRunning()
+        // Session 6 stopped before the arm: the CLI drops it, and it keeps its own text.
+        runner.reply("arm", #"{"ok":true,"sessions":[5],"dropped":[6]}"#)
+        await center.confirmShown("finish the plan")
+        XCTAssertEqual(runner.verbs.last,
+                       ["watchman", "arm", "--all-running", "--only", "5,6", "--instructions-file", "-", "--json"])
+        XCTAssertEqual(runner.stdinCalls.map(\.text), ["finish the plan"])
+        XCTAssertEqual(center.instructions[.session(5)], "finish the plan")
+        XCTAssertNil(center.instructions[.session(6)])
+    }
+
+    /// A failed hand-over keeps the sheet (and so its text) with `Could not
+    /// save: …`; Retry runs it again.
+    func testSaveFailureKeepsTheSheetAndRetryReruns() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", Self.learnedCheck)
+        runner.reply("arm", #"{"ok":false,"armed":[],"error":"database is locked"}"#, exitCode: 1)
+        let center = await center(runner)
+        await center.handTo(.session(5), workbench: "acme-api")
+        let token = try XCTUnwrap(center.sheet?.token)
+        await center.confirmShown("ship task 3 only")
+        XCTAssertEqual(center.sheet?.token, token, "the sheet stays")
+        XCTAssertEqual(center.sheetError, Copy.saveFailed("database is locked"))
+        XCTAssertEqual(center.sheetError, "Could not save: database is locked")
+        XCTAssertNil(center.armNotices[.session(5)], "the line is in the sheet, not under the control")
+        XCTAssertFalse(center.confirming)
+
+        // The sheet's Retry confirms again with the text it kept.
+        var retried: String?
+        let view = WatchmanArmSheet(content: try XCTUnwrap(center.sheet?.content), instruction: "ship task 3 only",
+                                    error: center.sheetError, onCancel: {}, onConfirm: { retried = $0 })
+        XCTAssertNoThrow(try view.inspect().find(text: "Could not save: database is locked"))
+        try view.inspect().find(button: Copy.retry).tap()
+        XCTAssertEqual(retried, "ship task 3 only")
+
+        runner.reply("arm", #"{"ok":true,"armed":[],"error":""}"#)
+        await center.confirmShown("ship task 3 only")
+        XCTAssertNil(center.sheet)
+        XCTAssertNil(center.sheetError)
+        XCTAssertEqual(runner.stdinCalls.map(\.text), ["ship task 3 only", "ship task 3 only"])
+    }
+
+    /// While a confirm runs the sheet's buttons wait and the confirm shows
+    /// a spinner; the counter shows past 1800 characters.
+    func testSheetBusyAndCounter() throws {
+        let content = WatchmanArmSheetContent.edit(subject: "#41 Ship task 3")
+        let busy = WatchmanArmSheet(content: content, instruction: "x", busy: true, onCancel: {}, onConfirm: { _ in })
+        XCTAssertTrue(try busy.inspect().find(button: Copy.save).isDisabled())
+        XCTAssertTrue(try busy.inspect().find(button: Copy.cancel).isDisabled())
+        XCTAssertNoThrow(try busy.inspect().find(ViewType.ProgressView.self))
+        let idle = WatchmanArmSheet(content: content, instruction: String(repeating: "a", count: 1801),
+                                    onCancel: {}, onConfirm: { _ in })
+        XCTAssertNoThrow(try idle.inspect().find(text: "1801 / 2000"))
+        XCTAssertThrowsError(try idle.inspect().find(ViewType.ProgressView.self))
+    }
+
+    /// Instruction… on the armed chip opens the edit sheet pre-filled from
+    /// the status; Save runs `watchman instruct`; a target remembers the
+    /// stored text for its next sheet.
+    func testEditRunsInstruct() async throws {
+        let runner = ArmingRunner(status: Self.armedWith(5, instructions: "ship task 3 only"))
+        let center = await center(runner)
+        await center.editInstruction(.session(5))
+        let sheet = try XCTUnwrap(center.sheet)
+        XCTAssertEqual(sheet.content.mode, .edit)
+        XCTAssertEqual(sheet.content.title, "Instruction for Watchman")
+        XCTAssertEqual(sheet.content.confirm, "Save")
+        XCTAssertEqual(sheet.content.subject, "Session 5")
+        XCTAssertEqual(sheet.instruction, "ship task 3 only")
+
+        runner.reply("instruct", #"{"ok":true,"scope":"session","ref_id":5,"instructions":"ship task 4","error":""}"#)
+        runner.setStatus(Self.armedWith(5, instructions: "ship task 4"))
+        await center.confirmShown("ship task 4\n")
+        XCTAssertNil(center.sheet)
+        XCTAssertEqual(runner.verbs.last, ["watchman", "instruct", "--session", "5", "--text-file", "-", "--json"])
+        XCTAssertEqual(runner.stdinCalls.last?.text, "ship task 4\n")
+        XCTAssertEqual(center.instructions[.session(5)], "ship task 4")
+
+        // A target: no read verb, the reply's text is remembered.
+        runner.reply("instruct", #"{"ok":true,"scope":"target","ref_id":4,"instructions":"keep the API","error":""}"#)
+        await center.editInstruction(.target(4), title: "Billing plan")
+        XCTAssertEqual(center.sheet?.content.subject, "#4 Billing plan")
+        XCTAssertEqual(center.sheet?.instruction, "")
+        await center.confirmShown("keep the API")
+        XCTAssertEqual(runner.verbs.last, ["watchman", "instruct", "--target", "4", "--text-file", "-", "--json"])
+        XCTAssertEqual(center.instructions[.target(4)], "keep the API")
+        runner.reply("check", #"{"ok":true,"first_time":false,"sessions":[]}"#)
+        await center.handTo(.target(4), workbench: "acme-api")
+        XCTAssertEqual(center.sheet?.instruction, "keep the API")
+        center.sheet = nil
+
+        // A refused save keeps the sheet with its line.
+        runner.reply("instruct", #"{"ok":false,"scope":"target","ref_id":4,"instructions":"","error":"there is no target 4"}"#,
+                     exitCode: 1)
+        await center.editInstruction(.target(4))
+        await center.confirmShown("x")
+        XCTAssertNotNil(center.sheet)
+        XCTAssertEqual(center.sheetError, Copy.saveFailed("there is no target 4"))
+        center.sheet = nil
+        XCTAssertNil(center.sheetError, "closing the sheet drops its line")
+    }
+
+    /// The armed chip's tooltip is the instruction's first line.
+    func testInstructionHelpIsTheFirstLine() {
+        XCTAssertEqual(Copy.instructionHelp("\n  Ship task 3 only, then finish.\nAsk me first."),
+                       "Ship task 3 only, then finish.")
+        XCTAssertNil(Copy.instructionHelp(" \n "))
+    }
+
     /// The button passes the token of the sheet it shows: a sheet replaced
     /// before the confirm runs is not confirmed.
     func testConfirmTokenOfAReplacedSheetDoesNothing() async throws {
@@ -596,19 +1026,34 @@ final class WatchmanArmingTests: XCTestCase {
         let center = await center(runner)
         _ = await center.handAllRunning()
         let pressed = try XCTUnwrap(center.sheet).token
-        _ = await center.handAllRunning() // replaced before the press runs
+        center.sheet = nil                // closed and opened again before the press runs
+        _ = await center.handAllRunning()
         XCTAssertNotEqual(center.sheet?.token, pressed)
         let checks = runner.verbs.count
-        await center.confirmSheet(token: pressed)
+        await center.confirmSheet(token: pressed, instruction: "")
         XCTAssertEqual(runner.verbs.count, checks, "no recheck, no arm")
         XCTAssertNotNil(center.sheet)
     }
 }
 
+/// How many instruction reads a test's reader served.
+private actor ReadCounter {
+    private var counts: [WatchmanArmScope: Int] = [:]
+
+    /// Counts a read of `scope`; its number among `scope`'s reads.
+    func add(_ scope: WatchmanArmScope) -> Int {
+        counts[scope, default: 0] += 1
+        return counts[scope] ?? 0
+    }
+
+    func count(_ scope: WatchmanArmScope) -> Int { counts[scope] ?? 0 }
+}
+
 private extension WatchmanCenter {
-    /// Hand to Watchman on the sheet on screen now.
-    func confirmShown() async {
+    /// Hand over (or Save) on the sheet on screen now, with `instruction`
+    /// in its field.
+    func confirmShown(_ instruction: String = "") async {
         guard let token = sheet?.token else { return }
-        await confirmSheet(token: token)
+        await confirmSheet(token: token, instruction: instruction)
     }
 }

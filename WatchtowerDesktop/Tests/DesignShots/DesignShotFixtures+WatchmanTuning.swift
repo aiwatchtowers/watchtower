@@ -4,13 +4,14 @@ import SwiftUI
 import WatchtowerCore
 @testable import WatchtowerDesktop
 
-/// Design-only scenes for the Watchman tuning spec (#2134,
-/// `docs/superpowers/specs/2026-11-21-watchman-tuning-design.md`): the
-/// instruction sheet in each state, the armed strip with Instruction… and
-/// while learning, the journal's wait-for-learning line and a stall card.
-/// Strings are `WatchmanTuningMockCopy`; the implementation moves them into
-/// `WatchmanArmingCopy` / the journal model and pins them there.
-/// Sample data only (`acme`, made-up ids).
+/// Scenes for the Watchman tuning spec (#2134,
+/// `docs/superpowers/specs/2026-11-21-watchman-tuning-design.md`). The
+/// instruction sheet in each state and the armed strip with Instruction…
+/// are the real views (`WatchmanArmSheet`, `WorkbenchSessionStrip`, Task
+/// 2b); the strip while learning, the journal's wait-for-learning line and
+/// a stall card are still design only, in `WatchmanTuningMockCopy` strings
+/// that their tasks move into the copy types. Sample data only (`acme`,
+/// made-up ids).
 @MainActor
 enum WatchmanTuningShotFixtures {
     enum Frame: String, CaseIterable {
@@ -37,16 +38,20 @@ enum WatchmanTuningShotFixtures {
 
         @MainActor @ViewBuilder var view: some View {
             switch self {
-            case .armShort: InstructionSheetMock(state: .idle, text: "")
-            case .armShortFilled: InstructionSheetMock(state: .idle, text: Copy.sampleInstruction)
-            case .armShortSaving: InstructionSheetMock(state: .saving, text: Copy.sampleInstruction)
-            case .armShortError: InstructionSheetMock(state: .failed, text: Copy.sampleInstruction)
-            case .armShortNearLimit: InstructionSheetMock(state: .idle, text: Copy.longInstruction, count: 1912)
-            case .armFirstTime: InstructionSheetMock(state: .idle, text: "", firstTime: true)
-            case .armTray: InstructionSheetMock(state: .idle, text: "", sessions: Copy.traySessions)
-            case .instructionEdit: InstructionSheetMock(state: .idle, text: Copy.sampleInstruction, edit: true)
-            case .stripArmedInstruction: StripMock(learning: false)
-            case .stripArmedLearning: StripMock(learning: true)
+            case .armShort: InstructionSheetShot(content: InstructionSheetShot.short)
+            case .armShortFilled: InstructionSheetShot(content: InstructionSheetShot.short, text: Copy.sampleInstruction)
+            case .armShortSaving:
+                InstructionSheetShot(content: InstructionSheetShot.short, text: Copy.sampleInstruction, busy: true)
+            case .armShortError:
+                InstructionSheetShot(content: InstructionSheetShot.short, text: Copy.sampleInstruction,
+                                     error: WatchmanArmingCopy.saveFailed(Copy.saveFailedReason))
+            case .armShortNearLimit: InstructionSheetShot(content: InstructionSheetShot.short, text: Copy.longInstruction)
+            case .armFirstTime: InstructionSheetShot(content: InstructionSheetShot.firstTime)
+            case .armTray: InstructionSheetShot(content: InstructionSheetShot.tray)
+            case .instructionEdit:
+                InstructionSheetShot(content: .edit(subject: Copy.session), text: Copy.sampleInstruction)
+            case .stripArmedInstruction: WatchmanArmingShotFixture.strip(armed: true, instructions: Copy.sampleInstruction)
+            case .stripArmedLearning: StripMock()
             case .journalWaitingLearning: JournalWaitingMock()
             case .journalStall: JournalStallMock()
             }
@@ -60,7 +65,8 @@ enum WatchmanTuningShotFixtures {
     }
 }
 
-/// The spec's strings, one place, pinned by `WatchmanTuningMockCopyTests`.
+/// The spec's strings, one place, pinned by `WatchmanTuningMockCopyTests`
+/// (which also checks the implemented ones against `WatchmanArmingCopy`).
 enum WatchmanTuningMockCopy {
     static let icon = "shield.lefthalf.filled"
     static let sheetTitle = "Hand to Watchman"
@@ -71,7 +77,7 @@ enum WatchmanTuningMockCopy {
     static let handOver = "Hand over"
     static let save = "Save"
     static let cancel = "Cancel"
-    static let retry = "Retry"
+    static let saveFailedReason = "the database is busy — try again"
     static let saveFailed = "Could not save: the database is busy — try again"
     static let session = "#41 Ship task 3 of the billing plan"
     static let traySessions = ["#41 Ship task 3 of the billing plan", "#42 Fix the login redirect",
@@ -81,14 +87,8 @@ enum WatchmanTuningMockCopy {
     static let sampleInstruction = "Ship task 3 only, then finish.\nAsk me before touching the schema."
     static let longInstruction = String(repeating: "Prefer the smaller change; keep the public API as is. ", count: 34)
     static func counter(_ n: Int) -> String { "\(n) / 2000" }
-    static let firstTimeTitle = "Hand acme-api sessions to Watchman"
-    static let firstTimeBody = "Watchman answers this session's asks, permission prompts and reviews the way you would, "
-        + "and notes every decision in the journal for the morning."
     static let learningLine = "Watchman learns this workbench first (about 1,850 decisions). Questions asked meanwhile "
         + "wait and are decided once it finishes — or answer them yourself."
-    static let analyticsLine = "Agent analytics turned on — Watchman learns from your sessions"
-    static let limitsLine = "Merges to main, releases, pushes of tags and outward messages always wait for you"
-    static let stripArmed = "Watchman · since 23:10"
     static let stripLearning = "Watchman · learning 42%"
     static let instructionButton = "Instruction…"
     static let takeBack = "Take back"
@@ -108,117 +108,46 @@ private let watchmanTone = Tone.status("purple")
 
 // MARK: - The instruction sheet
 
-private struct InstructionSheetMock: View {
-    enum State { case idle, saving, failed }
-    let state: State
-    let text: String
-    var count: Int?
-    var firstTime = false
-    var edit = false
-    var sessions: [String] = []
+/// The real `WatchmanArmSheet` in one state: the content its hand-over or
+/// Instruction… builds, the field's text, busy or failed.
+private struct InstructionSheetShot: View {
+    let content: WatchmanArmSheetContent
+    var text = ""
+    var busy = false
+    var error: String?
+
+    /// A later hand-over of session #41: the short sheet.
+    static let short = WatchmanArmSheetContent.handOver(
+        .session(41), workbench: "acme-api", reply: WatchmanArmReply(), subject: Copy.session, sessions: [])
+    /// The first hand-over on acme-api: what turns on, the learning line.
+    static let firstTime = WatchmanArmSheetContent(
+        workbench: "acme-api",
+        reply: WatchmanArmReply(firstTime: true,
+                                estimate: WatchmanEstimate(decisions: 1850, needLabels: 1200, tokens: 1_600_000)),
+        sessions: [Copy.session])
+    /// The tray's sheet over eight running sessions: the list scrolls past six.
+    static let tray = WatchmanArmSheetContent.handOver(
+        .allRunning, workbench: nil, reply: WatchmanArmReply(sessions: Array(41...48)), subject: "",
+        sessions: Copy.traySessions)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(edit ? Copy.editTitle : (firstTime ? Copy.firstTimeTitle : Copy.sheetTitle))
-                    .font(.title3.weight(.semibold))
-                if !sessions.isEmpty {
-                    Text(Copy.trayHeader(sessions.count)).font(.callout.weight(.semibold))
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(sessions, id: \.self) { session in
-                                Text(session).font(.callout).lineLimit(1).frame(minHeight: ListLayout.lineMinHeight)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(height: CGFloat(min(sessions.count, 6)) * ListLayout.lineMinHeight)
-                } else if firstTime {
-                    Text(Copy.firstTimeBody).font(.callout).fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Label(Copy.session, systemImage: "terminal").font(.callout).foregroundStyle(.secondary)
-                }
-            }
-            if firstTime {
-                VStack(alignment: .leading, spacing: Spacing.medium) {
-                    line("chart.bar", Copy.analyticsLine)
-                    line(Copy.icon, Copy.learningLine)
-                    line("hand.raised", Copy.limitsLine)
-                }
-                .padding(Spacing.medium)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .card()
-            }
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.fieldLabel).font(.headline)
-                ZStack(alignment: .topLeading) {
-                    TextField("", text: .constant(text), axis: .vertical)
-                        .textFieldStyle(.kit)
-                        .lineLimit(3...8)
-                        .disabled(state == .saving)
-                    if text.isEmpty {
-                        Text(Copy.placeholder)
-                            .font(.body)
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, Spacing.compact)
-                            .padding(.vertical, Spacing.small)
-                            .allowsHitTesting(false)
-                    }
-                }
-                if let count {
-                    Text(Copy.counter(count))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-                if state == .failed {
-                    HStack(spacing: Spacing.small) {
-                        Label(Copy.saveFailed, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(Tone.warning)
-                        Button(Copy.retry) {}.buttonStyle(.kitQuiet).fixedSize()
-                    }
-                }
-            }
-            HStack(spacing: Spacing.regular) {
-                Spacer()
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary).disabled(state == .saving)
-                Button {} label: {
-                    HStack(spacing: Spacing.small) {
-                        if state == .saving { ProgressView().controlSize(.mini) }
-                        Text(edit ? Copy.save : Copy.handOver)
-                    }
-                }
-                .buttonStyle(.kitPrimary)
-                .disabled(state == .saving)
-            }
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-
-    private func line(_ icon: String, _ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            Image(systemName: icon).foregroundStyle(.secondary).frame(width: IconSize.composer)
-            Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
-        }
+        WatchmanArmSheet(content: content, instruction: text, busy: busy, error: error, onCancel: {}, onConfirm: { _ in })
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .detailBackground()
     }
 }
 
 // MARK: - The session strip
 
+/// The armed strip while the workbench still learns (Task 3), design only.
 private struct StripMock: View {
-    let learning: Bool
-
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: Spacing.regular) {
                 Image(systemName: "terminal").foregroundStyle(.secondary)
                 Text(Copy.session).font(.callout.weight(.semibold)).lineLimit(1)
                 Spacer(minLength: Spacing.regular)
-                Chip(text: learning ? Copy.stripLearning : Copy.stripArmed, color: watchmanTone, dot: true).fixedSize()
+                Chip(text: Copy.stripLearning, color: watchmanTone, dot: true).fixedSize()
                 Button {} label: { Label(Copy.instructionButton, systemImage: "text.quote") }
                     .buttonStyle(.kitSecondary)
                     .fixedSize()
