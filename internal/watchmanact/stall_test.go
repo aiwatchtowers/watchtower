@@ -443,19 +443,70 @@ func TestStall_DraftHoldsPing(t *testing.T) {
 	}
 }
 
-// A ping pasted but not submitted (typed) is not counted and is offered
-// again on the next tick.
-func TestStall_TypedNotCounted(t *testing.T) {
+// A ping pasted but not submitted (typed) counts as an attempt: it reached
+// the prompt and is never submitted or cleared by Watchman. While no later
+// ping gets through and the session stays stopped, it is parked
+// StallStuckAfter (9 min) after that attempt — with no new stop, and with a
+// new stop whose offers are all held behind the typed line.
+func TestStall_TypedThenStuckParks(t *testing.T) {
+	for _, newStop := range []bool{false, true} {
+		name := "no new stop"
+		if newStop {
+			name = "offers held"
+		}
+		t.Run(name, func(t *testing.T) {
+			e := newStallEnv(t)
+			e.port.set(askanswer.DeliverTyped, nil)
+			e.stop(stallT0)
+			typed := stallT0.Add(StallAfter)
+			e.check(typed)
+			if st := e.row(); st == nil || st.Pings != 1 || st.LastPingAt == nil || !st.LastPingAt.Equal(typed) {
+				t.Fatalf("row = %+v, want the typed ping counted", st)
+			}
+			e.port.set(askanswer.DeliverHeld, nil)
+			if newStop {
+				e.stop(typed.Add(30 * time.Second)) // the owner's own turn
+			}
+			for m := 1; m < 9; m++ {
+				e.check(typed.Add(time.Duration(m) * time.Minute))
+				if st := e.row(); st.ParkedAt != nil {
+					t.Fatalf("parked %d min after the typed ping", m)
+				}
+			}
+			e.check(typed.Add(StallStuckAfter))
+			st := e.row()
+			if st.ParkedAt == nil || st.Pings != 1 {
+				t.Fatalf("row = %+v, want parked after 9 min", st)
+			}
+			items := e.stallItems()
+			if len(items) != 1 || items[0].ParkReason != StallReason {
+				t.Fatalf("stall items = %+v", items)
+			}
+			n := len(e.port.delivered())
+			e.check(typed.Add(StallStuckAfter + 5*time.Minute))
+			if len(e.port.delivered()) != n || len(e.stallItems()) != 1 {
+				t.Fatal("offers or items after the park")
+			}
+		})
+	}
+}
+
+// The owner clears the typed line and the agent stops again: the next ping
+// is submitted and counting goes on as usual.
+func TestStall_TypedThenSubmittedCountsNormally(t *testing.T) {
 	e := newStallEnv(t)
 	e.port.set(askanswer.DeliverTyped, nil)
 	e.stop(stallT0)
-	e.check(stallT0.Add(StallAfter))
-	if st := e.row(); st != nil {
-		t.Fatalf("a typed ping counted: %+v", st)
-	}
+	typed := stallT0.Add(StallAfter)
+	e.check(typed)
 	e.port.set("", nil)
-	if n := e.check(stallT0.Add(StallAfter + time.Minute)); n != 2 {
+	stop := typed.Add(time.Minute)
+	e.stop(stop)
+	if n := e.check(stop.Add(StallAfter)); n != 2 {
 		t.Fatalf("offers = %d, want 2", n)
+	}
+	if st := e.row(); st.Pings != 2 || st.ParkedAt != nil {
+		t.Fatalf("row = %+v, want 2 pings, not parked", st)
 	}
 }
 
@@ -531,14 +582,32 @@ func TestStall_LiveSubSessionNotPinged(t *testing.T) {
 	e.port.mu.Lock()
 	delete(e.port.live, child)
 	e.port.mu.Unlock()
-	lastSeen := stallT0.Add(30 * time.Minute)
-	for _, after := range []time.Duration{time.Minute, StallAfter - time.Second} {
-		if n := e.check(lastSeen.Add(after)); n != 0 {
-			t.Fatalf("pinged %v after the sub-session was last seen", after)
+	// The first tick that sees no live child is when the stop counts from.
+	firstFree := stallT0.Add(31 * time.Minute)
+	for _, at := range []time.Time{firstFree, firstFree.Add(time.Minute), firstFree.Add(StallAfter - time.Second)} {
+		if n := e.check(at); n != 0 {
+			t.Fatalf("pinged %v after the first child-free tick", at.Sub(firstFree))
 		}
 	}
-	if n := e.check(lastSeen.Add(StallAfter)); n != 1 {
-		t.Fatalf("pings = %d, want 1 three minutes after the sub-session ended", n)
+	if n := e.check(firstFree.Add(StallAfter)); n != 1 {
+		t.Fatalf("pings = %d, want 1 three minutes after the first child-free tick", n)
+	}
+}
+
+// The stall watch's memory of a session goes once it is no longer handed
+// over.
+func TestStall_MemoForgottenWhenTakenBack(t *testing.T) {
+	e := newStallEnv(t)
+	e.stop(stallT0)
+	e.check(stallT0.Add(time.Minute))
+	if _, ok := e.twin.stalls[e.session]; !ok {
+		t.Fatal("no memo for the armed session")
+	}
+	_, err := e.db.DeleteWatchmanArming("session", e.session)
+	e.must(err)
+	e.check(stallT0.Add(2 * time.Minute))
+	if _, ok := e.twin.stalls[e.session]; ok {
+		t.Fatal("the memo outlived Take back")
 	}
 }
 

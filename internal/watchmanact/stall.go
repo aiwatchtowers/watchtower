@@ -45,9 +45,18 @@ func GitHead(run func(ctx context.Context, dir, name string, args ...string) ([]
 // parked session's HEAD was last read.
 type stallMemo struct {
 	hostFailing bool
-	childrenAt  time.Time
-	headAt      time.Time
+	// childLive: the last tick saw a live sub-session; childrenAt is the
+	// first tick after that saw none (the stop counts from it).
+	childLive  bool
+	childrenAt time.Time
+	headAt     time.Time
 }
+
+// StallStuckAfter is how long a session may stay stopped after its last
+// counted ping while no further ping reaches the agent (a ping left typed
+// in the prompt, offers held behind it or behind a draft) before it is
+// parked for the owner anyway: 3×StallAfter.
+const StallStuckAfter = 3 * StallAfter
 
 func (t *Twin) memo(id int64) *stallMemo {
 	t.mu.Lock()
@@ -77,6 +86,7 @@ func (t *Twin) CheckStalls(ctx context.Context) {
 		log.Printf("watchman stall: reading the arming: %v", err)
 		return
 	}
+	t.forgetStalls(sessions)
 	for _, s := range sessions {
 		if ctx.Err() != nil {
 			return
@@ -105,10 +115,12 @@ func (t *Twin) liveChildren(ctx context.Context, id int64) (int, error) {
 // count (and lifts a park); the owner's Mark done on the stall item does
 // too. Below StallMaxPings the ping is offered — the arming read again
 // right before (WATCHMAN-04) — through SubmitLineNow, which never queues
-// it: only a submitted ping counts, anything else (a draft in the prompt, a
-// permission prompt, no session) sends nothing and is tried again on a
-// later tick, which reads the state and the arming again. At StallMaxPings
-// the stall is journalled once.
+// it: a submitted ping counts, and so does one left typed (it reached the
+// prompt; nothing here submits or clears it). Anything else (a draft in the
+// prompt, a permission prompt, no session) sends nothing; a later tick
+// reads the state and the arming again before another offer. At
+// StallMaxPings — or when no ping has reached the agent for
+// StallStuckAfter while it stays stopped — the stall is journalled once.
 func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 	id := s.SessionID
 	memo := t.memo(id)
@@ -134,7 +146,9 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 		return
 	}
 	if row.LiveChildren > 0 {
-		memo.childrenAt = now
+		memo.childLive = true
+	} else if memo.childLive {
+		memo.childLive, memo.childrenAt = false, now
 	}
 	if sessionstate.Resolve(row, now) != sessionstate.StateStopped {
 		return
@@ -144,7 +158,7 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 		return
 	}
 	if memo.childrenAt.After(stoppedAt) {
-		stoppedAt = memo.childrenAt // stopped since its last sub-session ended
+		stoppedAt = memo.childrenAt // stopped since its sub-sessions were first seen ended
 	}
 	if now.Sub(stoppedAt) < StallAfter {
 		return
@@ -155,7 +169,13 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 		return
 	}
 	if st != nil && st.LastPingAt != nil && !stoppedAt.After(*st.LastPingAt) {
-		return // the agent has not stopped again since the last ping
+		// The agent has not stopped again since the last ping: a ping left
+		// typed in the prompt started no turn. Past StallStuckAfter it is
+		// parked for the owner.
+		if st.ParkedAt == nil && now.Sub(*st.LastPingAt) >= StallStuckAfter {
+			t.parkStall(s, st, now)
+		}
+		return
 	}
 	asks, err := t.d.DB.WatchmanSessionAskCount(id)
 	if err != nil {
@@ -188,19 +208,11 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 		}
 	}
 	st.StoppedAt = stoppedAt
+	if st.ParkedAt != nil {
+		return // parked: no ping until progress or Mark done
+	}
 	if st.Pings >= StallMaxPings {
-		if st.ParkedAt != nil {
-			return // parked: no ping until progress or Mark done
-		}
-		if err := t.d.DB.InsertWatchmanStallItem(id, s.TargetID, s.WorkbenchID, StallReason, now); err != nil {
-			log.Printf("watchman stall: %v", err)
-			return
-		}
-		st.ParkedAt = &now
-		if err := t.d.DB.UpsertWatchmanStall(*st); err != nil {
-			log.Printf("watchman stall: %v", err)
-		}
-		log.Printf("watchman stall: session %d parked for the owner after %d pings", id, st.Pings)
+		t.parkStall(s, st, now)
 		return
 	}
 	if armed, err := t.d.DB.WatchmanSessionArmed(id); err != nil || !armed {
@@ -209,8 +221,16 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 		}
 		return
 	}
-	if delivery := t.d.Answerer.SubmitLineNow(ctx, id, StallPing); delivery != askanswer.DeliverySubmitted {
-		log.Printf("watchman stall: session %d: ping not sent (%s), tried again later", id, delivery)
+	switch delivery := t.d.Answerer.SubmitLineNow(ctx, id, StallPing); delivery {
+	case askanswer.DeliverySubmitted, askanswer.DeliveryTyped:
+		// Typed: the line reached the prompt but no Return followed. It is
+		// never submitted or cleared here (the prompt may hold the owner's
+		// text); it counts as an attempt, and StallStuckAfter parks it.
+	default:
+		log.Printf("watchman stall: session %d: ping not sent (%s)", id, delivery)
+		if st.LastPingAt != nil && st.ParkedAt == nil && now.Sub(*st.LastPingAt) >= StallStuckAfter {
+			t.parkStall(s, st, now) // offers held ever since the last ping
+		}
 		return
 	}
 	st.Pings++
@@ -220,6 +240,35 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 		return
 	}
 	log.Printf("watchman stall: session %d pinged (%d of %d)", id, st.Pings, StallMaxPings)
+}
+
+// parkStall journals the stall once (one open item per session) and marks
+// the row parked: no ping goes until progress or the owner's Mark done.
+func (t *Twin) parkStall(s db.ArmedSession, st *db.WatchmanStallRow, now time.Time) {
+	if err := t.d.DB.InsertWatchmanStallItem(s.SessionID, s.TargetID, s.WorkbenchID, StallReason, now); err != nil {
+		log.Printf("watchman stall: %v", err)
+		return
+	}
+	st.ParkedAt = &now
+	if err := t.d.DB.UpsertWatchmanStall(*st); err != nil {
+		log.Printf("watchman stall: %v", err)
+	}
+	log.Printf("watchman stall: session %d parked for the owner after %d pings", s.SessionID, st.Pings)
+}
+
+// forgetStalls drops the memory of sessions no longer handed over.
+func (t *Twin) forgetStalls(sessions []db.ArmedSession) {
+	armed := make(map[int64]bool, len(sessions))
+	for _, s := range sessions {
+		armed[s.SessionID] = true
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for id := range t.stalls {
+		if !armed[id] {
+			delete(t.stalls, id)
+		}
+	}
 }
 
 // readHead is the session's worktree HEAD, "" when it cannot be read.
