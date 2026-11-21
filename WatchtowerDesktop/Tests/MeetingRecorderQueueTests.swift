@@ -928,6 +928,11 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         let stopSecond = Task { await center.stopAndProcess(config: config) }
         var entered = gate.enteredStream.makeAsyncIterator()
         _ = await entered.next() // the live pass owns the engine; job 2 is parked
+        // The live pass runs off the main actor and can reach the gate before
+        // Stop is back from `recorder.stop()`, so the gate is no sync point
+        // for Stop: wait until Stop ended the capture and enqueued job 2 (one
+        // main-actor step); its tail then waits on the gate.
+        await untilObserved { center.jobs.count == 2 }
 
         // `phase` still reports the lingering failure, which is only possible
         // while NO job is running — job 2 is parked, not active.

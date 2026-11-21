@@ -33,6 +33,10 @@ final class CodeIndexCenter {
     /// The debounce never holds a change longer than this: a folder written
     /// continuously (a log, test output) would otherwise reset it forever.
     private let debounceMaxWait: Duration
+    /// The debounce's clock — the continuous clock in the app; a test moves
+    /// it by hand, so the wait and its cap never ride the scheduler.
+    private let debounceNow: () -> ContinuousClock.Instant
+    private let debounceSleep: @MainActor (Duration) async throws -> Void
     private let idleTTL: TimeInterval
     private let clock: () -> Date
     private let hiddenNames: Set<String>
@@ -60,6 +64,8 @@ final class CodeIndexCenter {
         environment: @escaping () -> [String: String] = Constants.resolvedEnvironmentIfReady,
         debounce: Duration = .milliseconds(300),
         debounceMaxWait: Duration = .seconds(1),
+        debounceNow: @escaping () -> ContinuousClock.Instant = { .now },
+        debounceSleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         idleTTL: TimeInterval = 300,
         clock: @escaping () -> Date = Date.init,
         hiddenNames: Set<String> = CodeFileTree.hiddenNames,
@@ -71,6 +77,8 @@ final class CodeIndexCenter {
         self.environment = environment
         self.debounce = debounce
         self.debounceMaxWait = debounceMaxWait
+        self.debounceNow = debounceNow
+        self.debounceSleep = debounceSleep
         self.idleTTL = idleTTL
         self.clock = clock
         self.hiddenNames = hiddenNames
@@ -136,13 +144,13 @@ final class CodeIndexCenter {
         }
         let paths = batch.paths.filter { !$0.isEmpty }
         guard !paths.isEmpty else { return }
-        let now = ContinuousClock.now
+        let now = debounceNow()
         if session.debouncing.isEmpty { session.debounceDeadline = now + debounceMaxWait }
         session.debouncing.formUnion(paths)
         session.debounceTask?.cancel()
         let wait = max(.zero, min(debounce, session.debounceDeadline - now))
-        session.debounceTask = Task { @MainActor [weak self, weak session] in
-            try? await Task.sleep(for: wait)
+        session.debounceTask = Task { @MainActor [weak self, weak session, debounceSleep] in
+            try? await debounceSleep(wait)
             guard !Task.isCancelled, let self, let session else { return }
             session.queued.formUnion(session.debouncing)
             session.debouncing = []

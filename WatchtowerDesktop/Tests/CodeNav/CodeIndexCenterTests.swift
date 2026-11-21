@@ -45,13 +45,20 @@ final class CodeIndexCenterTests: XCTestCase {
     }
 
     private func makeCenter(
-        _ env: [String: String] = [:], executable: String? = nil, rulesDebounce: Duration = .milliseconds(500)
+        _ env: [String: String] = [:],
+        executable: String? = nil,
+        rulesDebounce: Duration = .milliseconds(500),
+        debounceClock: HandMovedDebounceClock? = nil
     ) -> CodeIndexCenter {
         let path = executable ?? stub.executable.path
         let environment = stub.environment(["STUB_FILES": "one.swift two.swift"].merging(env) { $1 })
         let made = CodeIndexCenter(
-            resolveExecutable: { path }, environment: { environment }, clock: { [clock] in clock.now }, rulesFile: rulesFile,
-            rulesDebounce: rulesDebounce
+            resolveExecutable: { path }, environment: { environment },
+            debounceNow: { debounceClock?.now ?? .now },
+            debounceSleep: { wait in
+                if let debounceClock { try await debounceClock.sleep(for: wait) } else { try await Task.sleep(for: wait) }
+            },
+            clock: { [clock] in clock.now }, rulesFile: rulesFile, rulesDebounce: rulesDebounce
         )
         center = made
         return made
@@ -161,19 +168,29 @@ final class CodeIndexCenterTests: XCTestCase {
     }
 
     /// A folder written every 200 ms (under the 300 ms debounce) still gets
-    /// indexed: the wait is capped at 1 s after the first change.
+    /// indexed: the wait is capped at 1 s after the first change. The
+    /// debounce runs on a clock the test moves, so only the cap can make a
+    /// wait come due between two writes.
     func testContinuousWritesDoNotStarveTheDebounce() async throws {
-        let center = makeCenter()
+        let debounceClock = HandMovedDebounceClock()
+        let center = makeCenter(debounceClock: debounceClock)
         center.markShown(root: root(7))
         let index = center.index(for: root(7))
         let ready = await eventually { index.state == .ready }
         XCTAssertTrue(ready)
         let paths = (0 ..< 10).map { "log\($0).swift" }
-        for path in paths {
+        for (written, path) in paths.enumerated() {
             center.applyWatcherBatch(FolderWatcher.Batch(paths: [path]), root: root(7))
-            try await Task.sleep(for: .milliseconds(200))
+            await debounceClock.untilSleeps(written + 1) // the write restarted the debounce
+            let sent = stub.requests.count
+            // A wait that came due goes out before the next write.
+            if debounceClock.advance(by: .milliseconds(200)) > 0 {
+                let arrived = await eventually { self.stub.requests.count > sent }
+                XCTAssertTrue(arrived)
+            }
         }
         XCTAssertFalse(stub.requests.isEmpty, "a request went out while the writes went on")
+        XCTAssertEqual(stub.requests, [Array(paths[..<5]), Array(paths[5...])], "one request per 1 s cap")
         let all = await eventually { Set(self.stub.requests.joined()) == Set(paths) }
         XCTAssertTrue(all, "requests: \(stub.requests)")
     }
@@ -374,5 +391,77 @@ final class CodeIndexCenterTests: XCTestCase {
         )
         XCTAssertNil(CodeIndexPathExpansion.files(for: ["lib"], in: folder, hidden: hidden, cap: 1), "over the cap: a full run")
         XCTAssertEqual(CodeIndexPathExpansion.files(for: ["bad\tname"], in: folder, hidden: hidden, cap: 10), [])
+    }
+}
+
+/// The debounce's clock, moved by hand: `sleep(for:)` returns once
+/// `advance(by:)` reaches its deadline, or throws when its task is cancelled
+/// (the next batch restarts the debounce). No wall clock.
+private final class HandMovedDebounceClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = ContinuousClock.now
+    private var sleepers: [(id: UUID, deadline: ContinuousClock.Instant, continuation: CheckedContinuation<Void, Error>)] = []
+    private var calls = 0
+    private var callWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var now: ContinuousClock.Instant {
+        lock.withLock { current }
+    }
+
+    func sleep(for duration: Duration) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                lock.lock()
+                calls += 1
+                let reached = callWaiters.filter { $0.count <= calls }.map(\.continuation)
+                callWaiters.removeAll { $0.count <= calls }
+                defer { reached.forEach { $0.resume() } }
+                let deadline = current + duration
+                if Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume(throwing: CancellationError())
+                } else if deadline <= current {
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    sleepers.append((id, deadline, continuation))
+                    lock.unlock()
+                }
+            }
+        } onCancel: {
+            let sleeper = lock.withLock { () -> CheckedContinuation<Void, Error>? in
+                guard let index = sleepers.firstIndex(where: { $0.id == id }) else { return nil }
+                return sleepers.remove(at: index).continuation
+            }
+            sleeper?.resume(throwing: CancellationError())
+        }
+    }
+
+    /// Returns once `sleep(for:)` has been called `count` times in all.
+    func untilSleeps(_ count: Int) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if calls >= count {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                callWaiters.append((count, continuation))
+                lock.unlock()
+            }
+        }
+    }
+
+    /// Moves the clock on and wakes the sleeps that came due; returns how many.
+    @discardableResult
+    func advance(by duration: Duration) -> Int {
+        let due = lock.withLock { () -> [CheckedContinuation<Void, Error>] in
+            current += duration
+            let due = sleepers.filter { $0.deadline <= current }.map(\.continuation)
+            sleepers.removeAll { $0.deadline <= current }
+            return due
+        }
+        due.forEach { $0.resume() }
+        return due.count
     }
 }
