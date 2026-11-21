@@ -262,7 +262,6 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
 
     /// The entry points' agent buttons (§7): secondary, with the sparkles icon.
     package static func connectWith(_ harness: ConnectHarness) -> String { "Connect with \(harness.name)" }
-    package static func reconnectWith(_ harness: ConnectHarness) -> String { "Reconnect with \(harness.name)" }
     /// The Connect… menu's company entry (preflight F22).
     package static func setUpCompanyWith(_ harness: ConnectHarness) -> String {
         "Set up for my company with \(harness.name)"

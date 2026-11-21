@@ -142,7 +142,6 @@ struct ConnectAssistantPresentationTests {
     @Test("the entry points' agent buttons name the harness; today's path is the quiet link")
     func agentButtons() {
         #expect(Pres.connectWith(claude) == "Connect with Claude")
-        #expect(Pres.reconnectWith(codex) == "Reconnect with Codex")
         #expect(Pres.setUpCompanyWith(claude) == "Set up for my company with Claude")
         #expect([Pres.connectByHand, Pres.reconnectByHand] == ["Connect", "Reconnect"])
         #expect([Pres.companyName, Pres.ownGoogleProjectName] == ["your company", "your Google project"])

@@ -32,9 +32,15 @@ final class ConnectEntryPointsTests: XCTestCase {
     // MARK: - Gating
 
     func testNoButtonWhenSourceBlocked() throws {
-        let state = appState(policy: ["AllowedSources": ["slack"], "AllowOwnGoogleProject": false])
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let state = appState(policy: ["AllowedSources": ["slack"], "AllowOwnGoogleProject": false,
+                                      "AllowedQuickConnections": [String]()])
+        XCTAssertNil(state.connectAssistantButton(for: "slack"), "no button whose driver cannot be made yet")
+        state.initSlackAccounts(dbPool: pool)
+        state.initExternalConnections(dbPool: pool)
         XCTAssertEqual(state.connectAssistantButton(for: "slack")?.name, "Claude")
-        for blocked in ["google", "jira", "email", "linear", "google_own_project"] {
+        for blocked in ["google", "jira", "email", "linear", "google_own_project", "quickConnections"] {
             XCTAssertNil(state.connectAssistantButton(for: blocked), blocked)
         }
         XCTAssertNotNil(state.connectAssistantButton(for: "company"), "no managed key gates company setup")
@@ -108,7 +114,9 @@ final class ConnectEntryPointsTests: XCTestCase {
 
     // MARK: - Overview
 
-    func testAttentionBannerOffersReconnectWith() throws {
+    /// The banner keeps today's Reconnect only: no driver signs an existing
+    /// account in again, so an agent "Reconnect" would add a new one.
+    func testAttentionBannerKeepsTodaysReconnect() throws {
         var opened: [String] = []
         var detail: [ConnectionService] = []
         let claude = ConnectHarness.fixture("claude")
@@ -123,9 +131,9 @@ final class ConnectEntryPointsTests: XCTestCase {
             summaries: summaries, companies: EmptyView(), onCompanyAction: { _ in }, agent: agent, onOpen: openDetail)
 
         let banner = try view.inspect().find(ConnectionAttentionBanner.self)
-        try banner.find(button: "Reconnect with Claude").tap()
+        XCTAssertThrowsError(try banner.find(button: "Reconnect with Claude"))
         try banner.find(button: "Reconnect").tap()
-        XCTAssertEqual(opened, ["jira"])
+        XCTAssertEqual(opened, [])
         XCTAssertEqual(detail, [.jira])
 
         // An empty card offers the pair; a connected or broken one does not.
@@ -133,7 +141,7 @@ final class ConnectEntryPointsTests: XCTestCase {
         XCTAssertEqual(cards.count, 2)
         try view.inspect().find(button: "Connect with Claude").tap()
         try view.inspect().find(button: "Connect").tap()
-        XCTAssertEqual(opened, ["jira", "google"])
+        XCTAssertEqual(opened, ["google"])
         XCTAssertEqual(detail, [.jira, .google])
         XCTAssertEqual(try view.inspect().findAll(ViewType.Button.self) { button in
             (try? button.labelView().find(text: "Connect with Claude")) != nil
@@ -226,4 +234,125 @@ final class ConnectEntryPointsTests: XCTestCase {
         XCTAssertEqual(dismissed, 1)
         XCTAssertTrue(sent.isEmpty)
     }
+
+    // MARK: - Review round 1
+
+    /// Set up by hand on Quick Connections follows the manual Add button's
+    /// gates: no sheet while the view model is busy or the policy allows none.
+    func testQuickConnectionAddFollowsTheManualGates() throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let open = appState()
+        XCTAssertFalse(open.canAddQuickConnection, "not before the view model loads")
+        open.initExternalConnections(dbPool: pool)
+        XCTAssertTrue(open.canAddQuickConnection)
+        open.externalConnectionsViewModel?.isBusy = true
+        XCTAssertFalse(open.canAddQuickConnection)
+
+        let none = appState(policy: ["AllowedQuickConnections": [String]()])
+        none.initExternalConnections(dbPool: pool)
+        XCTAssertFalse(none.canAddQuickConnection)
+        XCTAssertNil(none.connectAssistantButton(for: "quickConnections"))
+    }
+
+    /// A cached session whose harness the current offer no longer holds:
+    /// the picker drops it, and Retry starts over on the current harness
+    /// instead of running on the blocked one.
+    func testRetryOnAHarnessNoLongerOfferedStartsOver() async throws {
+        let state = appState(ready: ["codex"])
+        let ai = ScriptedAIService()
+        install(ai: ai, in: state)
+        state.openConnectAssistant(service: "company")
+        let session = try XCTUnwrap(state.connectAssistants.loaded("company"))
+        XCTAssertEqual(session.harness.id, "codex")
+        let turn = await startRun(session, ai: ai)
+        ai.emit(.failure(ChatSessionError(turnID: "t", code: .rateLimit, message: "You've hit your usage limit",
+                                          retryable: false, reason: "quota_exhausted")), call: turn)
+        ai.finish(call: turn)
+        await untilObserved { session.state == .failed(.quota) }
+
+        // Codex is taken away (the policy, its CLI gone); Claude is offered.
+        state.connectReadyProviders = ["claude"]
+        XCTAssertEqual(state.connectPickerHarnesses(session), [], "the picker offers no blocked harness")
+        state.connectAssistantRun(.retry, service: "company")
+        let fresh = try XCTUnwrap(state.connectAssistants.loaded("company"))
+        XCTAssertFalse(fresh === session, "a new session over the current offer")
+        XCTAssertEqual(fresh.harness.id, "claude")
+        XCTAssertEqual(fresh.state, .empty, "nothing runs on its own")
+        XCTAssertEqual(ai.calls.count, turn + 1, "no run on the blocked harness")
+        XCTAssertEqual(state.connectAssistantService, "company")
+
+        // Nothing offered at all: the panel closes.
+        state.connectReadyProviders = []
+        state.connectAssistantRun(.start, service: "company")
+        XCTAssertNil(state.connectAssistantService)
+    }
+
+    /// Open it focuses the related assistant only while its run holds the
+    /// sign-in; a related run that is just talking goes to today's screen.
+    func testOpenItFocusesOnlyTheRunHoldingTheSignIn() async throws {
+        let state = appState(ready: ["codex"])
+        let ai = ScriptedAIService()
+        install(ai: ai, in: state)
+        state.openConnectAssistant(service: "google_own_project")
+        let own = try XCTUnwrap(state.connectAssistants.loaded("google_own_project"))
+        _ = await startRun(own, ai: ai)
+        XCTAssertNotEqual(own.state, .empty)
+
+        state.connectAssistantService = "google"
+        state.connectAssistantOpenOther(service: "google")
+        XCTAssertEqual(state.connectAssistantService, "google", "a run with no sign-in is not focused")
+        XCTAssertEqual(state.selectedConnection, .google)
+
+        _ = await own.handle(ConnectWireRequest(id: 1, tool: "connect_start", args: Data("{}".utf8)))
+        XCTAssertNotNil(own.controller?.activeFlow)
+        state.connectAssistantOpenOther(service: "google")
+        XCTAssertEqual(state.connectAssistantService, "google_own_project")
+        own.close()
+    }
+
+    // MARK: - Helpers
+
+    /// The app state's sessions over a scripted AI and a one-flow driver:
+    /// the real session, no CLI.
+    private func install(ai: ScriptedAIService, in state: AppState) {
+        state.connectAssistant.center = ConnectAssistantCenter { [weak state] service in
+            guard let state, let initial = state.connectHarnesses.initial else { return nil }
+            return ConnectAssistantSession(
+                service: service, displayName: AppState.connectServiceName(service),
+                harnesses: state.connectHarnesses.harnesses, initial: initial, driver: OneFlowDriver(service: service),
+                aiService: ai, probe: ConnectBrowserProbe(aiService: ai), gate: EmbeddedStreamGate())
+        }
+        addTeardownBlock { @MainActor in state.connectAssistant.closeAll() }
+    }
+
+    private func startRun(_ session: ConnectAssistantSession, ai: ScriptedAIService) async -> Int {
+        session.start()
+        await session.prepared()
+        await session.engine?.started()
+        return ai.calls.count - 1
+    }
+}
+
+/// A driver whose `connect_start` starts one flow that never ends.
+@MainActor
+private final class OneFlowDriver: ConnectServiceDriving {
+    let service: String
+    let secretKinds: Set<String> = []
+
+    init(service: String) {
+        self.service = service
+    }
+
+    func status() async -> ConnectStatus { ConnectStatus(service: service) }
+    func start(options: [String: String]) async -> Result<String, ConnectDriverError> { .success("flow-1") }
+    func wait(flowID: String) async -> ConnectWaitOutcome { .waiting }
+    func cancel(flowID: String) async {}
+    func submitSecret(kind: String, value: String) async -> Result<Data, ConnectDriverError> {
+        .failure(.badArgs("no secret"))
+    }
+    func setFields(_ fields: [String: String]) async -> Result<Void, ConnectDriverError> { .success(()) }
+    func choose(kind: String, select: [String]?) async -> Result<[ConnectChoice], ConnectDriverError> { .success([]) }
+    func confirmNeeded(tool: String, options: [String: String]) -> ConnectAssistantConfirm? { nil }
+    func policyAllows() -> Bool { true }
 }

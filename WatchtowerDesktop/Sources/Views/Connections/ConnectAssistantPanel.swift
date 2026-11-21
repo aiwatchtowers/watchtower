@@ -302,7 +302,7 @@ struct ConnectAssistantHost: View {
         let state = session.state
         ConnectAssistantPanel(
             presentation: session.presentation,
-            harnesses: session.harnesses,
+            harnesses: appState.connectPickerHarnesses(session),
             engine: session.engine,
             acceptsQuestions: Self.acceptsQuestions(state),
             onHarness: { session.switchHarness($0) },
@@ -328,9 +328,7 @@ struct ConnectAssistantHost: View {
 
     private func perform(_ action: ConnectAssistantPresentation.Action) {
         switch action {
-        case .start: session.start()
-        case .guideInWords: session.guideInWords()
-        case .retry: session.retry()
+        case .start, .guideInWords, .retry: appState.connectAssistantRun(action, service: session.service)
         case .cancel: session.cancel()
         case .setUpByHand: appState.connectAssistantSetUpByHand(service: session.service)
         case .openIt: appState.connectAssistantOpenOther(service: session.service)

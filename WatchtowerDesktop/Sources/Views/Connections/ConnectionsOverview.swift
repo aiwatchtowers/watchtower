@@ -63,8 +63,7 @@ struct ConnectionsOverviewContent<Companies: View>: View {
             VStack(alignment: .leading, spacing: Spacing.large) {
                 header
                 ForEach(summaries.filter(\.needsAttention)) { summary in
-                    ConnectionAttentionBanner(summary: summary, agentHarness: harness(summary.service),
-                                              onAgent: openAgent(summary.service), onReconnect: openDetail(summary.service))
+                    ConnectionAttentionBanner(summary: summary, onReconnect: openDetail(summary.service))
                 }
                 companies
                 group("Sources", ConnectionService.sources)
@@ -172,7 +171,7 @@ struct ConnectionCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
+        VStack(alignment: .leading, spacing: 0) {
             Button(action: onOpen) {
                 VStack(alignment: .leading, spacing: Spacing.small) {
                     HStack(spacing: Spacing.regular) {
@@ -192,6 +191,9 @@ struct ConnectionCard: View {
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                .padding([.top, .horizontal], Spacing.medium)
+                // The whole card above the pair opens the detail, its padding too.
+                .padding(.bottom, agentPair == nil ? Spacing.medium : Spacing.small)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
@@ -203,22 +205,21 @@ struct ConnectionCard: View {
                     Button(ConnectAssistantPresentation.connectByHand, action: onOpen)
                         .buttonStyle(.kitQuiet)
                 }
+                .padding([.horizontal, .bottom], Spacing.medium)
                 .padding(.top, Spacing.small)
             }
         }
-        .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
     }
 }
 
-/// "Slack · acme: token expired" with Reconnect, which opens the service;
-/// with a harness offered, **Reconnect with <harness>** first and Reconnect
-/// quiet beside it.
+/// "Slack · acme: token expired" with Reconnect, which opens the service.
+/// No **Reconnect with <harness>** (spec §7) yet: no connect driver signs
+/// an existing account in again — a plain connect would add a new one
+/// (Google: the shared client, losing a custom client and its scopes).
 struct ConnectionAttentionBanner: View {
     let summary: ConnectionSummary
-    var agentHarness: ConnectHarness?
-    var onAgent: () -> Void = {}
     let onReconnect: () -> Void
 
     var body: some View {
@@ -230,14 +231,8 @@ struct ConnectionAttentionBanner: View {
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
-            if let agentHarness, !summary.blocked {
-                ConnectAgentButton(title: ConnectAssistantPresentation.reconnectWith(agentHarness), action: onAgent)
-                Button(ConnectAssistantPresentation.reconnectByHand, action: onReconnect)
-                    .buttonStyle(.kitQuiet)
-            } else {
-                Button(ConnectAssistantPresentation.reconnectByHand, action: onReconnect)
-                    .buttonStyle(.kitSecondary)
-            }
+            Button(ConnectAssistantPresentation.reconnectByHand, action: onReconnect)
+                .buttonStyle(.kitSecondary)
         }
         .padding(Spacing.medium)
         .card()

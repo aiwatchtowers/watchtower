@@ -110,7 +110,8 @@ struct QuickConnectionsDetail: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .opensAddSheet(.quickConnections) { showAddConnectionSheet = true }
+        // The manual Add button's gates: not while busy, not when the policy allows none.
+        .opensAddSheet(.quickConnections) { if appState.canAddQuickConnection { showAddConnectionSheet = true } }
         .sheet(isPresented: $showAddConnectionSheet) {
             AddExternalConnectionView()
                 .environment(appState)

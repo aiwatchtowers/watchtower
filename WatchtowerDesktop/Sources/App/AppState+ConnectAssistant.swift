@@ -68,10 +68,12 @@ extension AppState {
     }
 
     /// The harness a service's agent button names; nil = no button: the
-    /// service is unknown or blocked by the policy, or no harness is offered
-    /// (spec §6: a blocked source or provider never opens the panel).
+    /// service is unknown or blocked by the policy, no harness is offered
+    /// (spec §6: a blocked source or provider never opens the panel), or its
+    /// driver cannot be made yet (the view model is not loaded), so no
+    /// button silently does nothing.
     func connectAssistantButton(for service: String) -> ConnectHarness? {
-        guard connectServiceAllowed(service) else { return nil }
+        guard connectServiceAllowed(service), connectDriver(for: service) != nil else { return nil }
         return connectHarnesses.initial
     }
 
@@ -83,6 +85,9 @@ extension AppState {
             return true  // no managed key gates company setup (Task 12)
         case Self.ownGoogleProjectConnectService:
             return PolicySourceMap.allowed("google", policy: policy) && policy.ownGoogleProjectAllowed
+        case ConnectionService.quickConnections.rawValue:
+            // The manual Add is locked when the policy allows no connection (#608).
+            return policy.allowedQuickConnections?.isEmpty != true
         default:
             guard let known = ConnectionService(rawValue: service), known != .companySetup else { return false }
             return PolicySourceMap.allowed(known.rawValue, policy: policy)
@@ -90,19 +95,56 @@ extension AppState {
     }
 
     /// Opens the panel on `service` in the Connections tab. A session made
-    /// earlier is reused, so a running chat shows again; an idle one whose
-    /// harnesses changed since (a CLI installed, the policy) is made anew.
-    /// Another service's run keeps going: only Close ends a run.
+    /// earlier is reused, so a running chat shows again; one made over
+    /// another harness list (a CLI found since, the policy) is made anew
+    /// unless its run is under way on a harness still offered. Another
+    /// service's run keeps going: only Close ends a run.
     func openConnectAssistant(service: String) {
-        let offered = connectHarnesses
-        guard connectServiceAllowed(service), offered.initial != nil else { return }
-        if let existing = connectAssistants.loaded(service), existing.harnesses != offered.harnesses,
-           existing.state == .empty {
-            connectAssistants.drop(service)
-        }
-        guard connectAssistants.session(for: service) != nil else { return }
+        guard connectServiceAllowed(service), connectHarnesses.initial != nil,
+              currentConnectSession(service) != nil else { return }
         connectAssistantService = service
         selectedDestination = .connections
+    }
+
+    /// The service's session, checked against the current offer: a session
+    /// whose harness list is stale is dropped and made again, except while
+    /// its run is under way on a harness that is still offered. nil when
+    /// nothing is offered or the driver cannot be made.
+    func currentConnectSession(_ service: String) -> ConnectAssistantSession? {
+        let offered = connectHarnesses
+        guard offered.initial != nil else { return nil }
+        if let existing = connectAssistants.loaded(service), existing.harnesses != offered.harnesses {
+            let keeps = Self.runUnderWay(existing.state) && offered.harnesses.contains(existing.harness)
+            if !keeps { connectAssistants.drop(service) }
+        }
+        return connectAssistants.session(for: service)
+    }
+
+    /// The panel's Start, Guide me in words and Retry: a run starts only on
+    /// a harness the current offer still holds. A session whose harness was
+    /// taken away (the policy, the CLI gone) is made again and shows its
+    /// empty state on the current initial harness; with none offered the
+    /// panel closes.
+    func connectAssistantRun(_ action: ConnectAssistantPresentation.Action, service: String) {
+        guard let cached = connectAssistants.loaded(service) else { return }
+        let offered = connectHarnesses
+        guard offered.harnesses.contains(cached.harness) else {
+            connectAssistants.drop(service)
+            if currentConnectSession(service) == nil, connectAssistantService == service { connectAssistantService = nil }
+            return
+        }
+        switch action {
+        case .start: cached.start()
+        case .guideInWords: cached.guideInWords()
+        case .retry: cached.retry()
+        default: break
+        }
+    }
+
+    /// The header's picker: the session's harnesses the current offer still holds.
+    func connectPickerHarnesses(_ session: ConnectAssistantSession) -> [ConnectHarness] {
+        let offered = connectHarnesses.harnesses
+        return session.harnesses.filter(offered.contains)
     }
 
     /// The panel's Close: the run ends and its chat goes (spec §8: a driver
@@ -131,11 +173,21 @@ extension AppState {
         }
     }
 
+    /// A run that is working or waiting on the customer: not before Start,
+    /// not after it failed, ended in another window's favour or finished.
+    static func runUnderWay(_ state: ConnectAssistantState) -> Bool {
+        switch state {
+        case .thinking, .listening, .waiting, .secret, .confirm: true
+        case .empty, .failed, .busy, .done: false
+        }
+    }
+
     /// The busy state's **Open it**: the related assistant whose run holds
-    /// the sign-in, else the screen where today's flow runs.
+    /// the running sign-in (its controller's flow), else the screen where
+    /// today's flow runs.
     func connectAssistantOpenOther(service: String) {
         if let other = Self.relatedConnectServices[service],
-           let session = connectAssistants.loaded(other), session.state != .empty {
+           let session = connectAssistants.loaded(other), session.controller?.activeFlow != nil {
             connectAssistantService = other
             return
         }
@@ -241,6 +293,15 @@ extension AppState {
         case .companySetup, nil:
             return nil
         }
+    }
+}
+
+extension AppState {
+    /// Quick Connections' **Add Connection** may open its sheet: the view
+    /// model is loaded and idle, and the policy allows a connection (#608).
+    var canAddQuickConnection: Bool {
+        guard let vm = externalConnectionsViewModel, !vm.isBusy else { return false }
+        return managedPolicy.policy.allowedQuickConnections?.isEmpty != true
     }
 }
 
