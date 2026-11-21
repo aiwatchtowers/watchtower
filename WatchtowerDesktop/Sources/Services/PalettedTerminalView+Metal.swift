@@ -36,6 +36,48 @@ extension PalettedTerminalView {
         keepLayerBackgroundUnderMetal()
     }
 
+    /// Redraws one Metal view; a seam for tests.
+    static var redrawMetal: (MTKView) -> Void = { $0.setNeedsDisplay($0.bounds) }
+
+    /// Under Metal SwiftTerm 1.20 draws the cursor inside the frame, from
+    /// `hasFocus` as it is when the frame draws — no longer a layer of its
+    /// own that follows focus by itself (board #2126). AppKit does not
+    /// resign a first responder that leaves its window, so a session
+    /// switched away and back kept its old focus and drew a stale cursor.
+    /// So on every move into a window and on every key or occlusion change
+    /// of that window the focus is taken from the window's first responder
+    /// (SwiftTerm still ANDs in key status), and the Metal frame is asked
+    /// for at once rather than only through SwiftTerm's deferred request.
+    func syncFocusWithWindow() {
+        guard let window else { return }
+        hasFocus = window.firstResponder === self
+        guard isUsingMetalRenderer else { return }
+        for case let metal as MTKView in subviews {
+            Self.redrawMetal(metal)
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateMetalForWindow()
+        observeWindowFocus()
+        syncFocusWithWindow()
+    }
+
+    /// Observes this view's own window for `syncFocusWithWindow`, dropping
+    /// the previous window's observers; none outside a window.
+    private func observeWindowFocus() {
+        windowFocusObservers = nil
+        guard let window else { return }
+        let names = [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                     NSWindow.didChangeOcclusionStateNotification]
+        windowFocusObservers = NotificationObservers(names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.syncFocusWithWindow() }
+            }
+        })
+    }
+
     /// SwiftTerm's Metal renderer clears the view's layer and paints the
     /// background in its own; the host's margin mirrors that layer, and a
     /// clear set over a clear layer notifies nobody (an appearance change
@@ -73,5 +115,19 @@ extension PalettedTerminalView {
         for overlay in subviews where !(overlay is MTKView) {
             addSubview(overlay, positioned: .above, relativeTo: nil)
         }
+    }
+}
+
+/// Block observers removed when the holder goes — replaced, or freed with
+/// a view that never left its window.
+final class NotificationObservers {
+    private let tokens: [NSObjectProtocol]
+
+    init(_ tokens: [NSObjectProtocol]) {
+        self.tokens = tokens
+    }
+
+    deinit {
+        tokens.forEach(NotificationCenter.default.removeObserver)
     }
 }
