@@ -67,9 +67,12 @@ func newWorld(t *testing.T) *world {
 	w.shell = filepath.Join(w.stub, "loginshell")
 	writeScript(t, w.shell, "PATH='"+bin+":/usr/bin:/bin'; export PATH\nshift\nexec /bin/sh \"$@\"\n")
 	writeScript(t, filepath.Join(bin, "claude"), "out='"+w.stub+"'\nrow=\"$"+SessionRowEnv+"\"\n"+
-		"printf '%s\\n' \"$@\" > \"$out/argv.$row\"\npwd -P > \"$out/cwd.$row\"\n"+
-		"printf '%s\\n%s' \"$"+aiconsent.EnvOrigin+"\" \"$"+aiconsent.EnvAdmitted+"\" > \"$out/origin.$row\"\n"+
-		"printf '%s' \"$"+AutomationRunEnv+"\" > \"$out/run.$row\"\n"+
+		// Each file is written aside and renamed in, so a test that sees it
+		// sees all of it (a test polling for a file read it empty in CI).
+		"put() { cat > \"$out/$1.$row.tmp\" && mv \"$out/$1.$row.tmp\" \"$out/$1.$row\"; }\n"+
+		"printf '%s\\n' \"$@\" | put argv\npwd -P | put cwd\n"+
+		"printf '%s\\n%s' \"$"+aiconsent.EnvOrigin+"\" \"$"+aiconsent.EnvAdmitted+"\" | put origin\n"+
+		"printf '%s' \"$"+AutomationRunEnv+"\" | put run\n"+
 		"stty raw -echo\nprintf '\\033[?2004h'\nexec cat >> \"$out/pty.$row\"\n")
 
 	l, err := sessionhost.Listen(w.socket)
