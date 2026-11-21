@@ -129,6 +129,9 @@ final class QuickConnectionConnectDriver: ConnectServiceDriving {
             self?.signingIn = id
             await model.signIn(row)
             self?.signingIn = nil
+            // The sign-in only schedules its reload: read the row back before
+            // answering, so connect_status shows what the sign-in wrote.
+            await model.refreshAsync()
             if let error = model.error { return .failed(reason: error) }
             // Only the model's word that the sign-in was interrupted counts:
             // a Cancel that came after it finished changed nothing.

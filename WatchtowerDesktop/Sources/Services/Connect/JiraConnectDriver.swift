@@ -136,15 +136,23 @@ final class JiraConnectDriver: ConnectServiceDriving {
             let end = await model.addAccount(
                 withConfluence: withConfluence, company: company, site: site, daemonPolicy: .deferred)
             self?.dropPendingSite(of: id)
+            let addError = model.error
             await model.refreshAsync()
-            if end == .cancelled { return .failed(reason: ConnectFlowBook.cancelled) }
+            let reloadFailed = model.error != nil && model.error != addError
+            let added = model.accounts.contains { !before.contains($0.id) }
+            // The restart follows what the add wrote, not the reload or a
+            // late Cancel: a site was saved when the list shows a new one,
+            // when the Cancel came after the save, or when the add succeeded
+            // but the list could not be re-read. Its restart waits for the
+            // board pick, unless no board step follows or the run is over.
+            if added || end == .cancelledAfterConnecting || (end == .finished && addError == nil && reloadFailed) {
+                self?.siteAdded(boardStepFollows: end == .finished)
+            }
+            if end == .cancelled, !added { return .failed(reason: ConnectFlowBook.cancelled) }
             let outcome = ConnectOutcome.of(
                 error: model.error, before: Set(before.map(String.init)),
                 after: model.accounts.map { ConnectAccountRow(id: $0.id, ConnectionAccountState($0)) },
                 cancelled: flows.wasCancelled(id), noun: "site")
-            // A site was added: its restart waits for the board pick, unless
-            // a Cancel came too late (no board step follows) or the run is over.
-            if case .connected = outcome { self?.siteAdded(boardStepFollows: end == .finished) }
             guard withConfluence, case let .connected(name) = outcome else { return outcome }
             let line = await steps.confluenceLine(accountIDsBefore: before)
             return .connected(account: line.isEmpty ? name : "\(name). \(line)")

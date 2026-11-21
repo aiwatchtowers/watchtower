@@ -559,6 +559,51 @@ final class PersonalConnectDriverTests: XCTestCase {
         XCTAssertTrue(model.sheetHeldRestart, "B's held restart is intact")
     }
 
+    /// The add saved the site, but the list could not be re-read: the
+    /// restart still follows the save.
+    func testJiraSavedSiteRestartsEvenWhenTheReloadFails() async throws {
+        let model = FakeJiraModel()
+        model.reloadFails = true
+        let daemon = FakeDaemonRestarter()
+        let driver = JiraConnectDriver(
+            model: model, steps: FakeJiraSteps(), policy: Self.open, companySlug: Self.noCompany, daemon: daemon)
+        let flowID = try await driver.start(options: [:]).get()
+        model.gate.open()
+        await driver.flows.finished(flowID)
+        let outcome = await driver.wait(flowID: flowID)
+        guard case .failed = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertNil(driver.restartTask, "held for the board pick")
+        driver.runEnded()
+        await driver.restartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
+    }
+
+    /// A Cancel that lands after the CLI saved the site: no board step
+    /// follows, so the restart runs at once.
+    func testJiraLateCancelAfterSaveRestarts() async throws {
+        let model = FakeJiraModel()
+        model.cancelLate = true
+        let daemon = FakeDaemonRestarter()
+        let driver = JiraConnectDriver(
+            model: model, steps: FakeJiraSteps(), policy: Self.open, companySlug: Self.noCompany, daemon: daemon)
+        let flowID = try await driver.start(options: [:]).get()
+        model.gate.open()
+        await driver.flows.finished(flowID)
+        await driver.restartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
+    }
+
+    func testQuickConnectionSignInIsReadBackBeforeTheAnswer() async throws {
+        let model = FakeQuickModel()
+        let driver = QuickConnectionConnectDriver(model: model, policy: Self.open)
+        _ = try await driver.setFields(["name": "docs", "kind": "http", "url": "https://mcp.example.com", "oauth": "true"]).get()
+        let flowID = try await driver.start(options: [:]).get()
+        await driver.flows.finished(flowID)
+        XCTAssertEqual(model.events.suffix(2), ["signIn", "refresh"])
+        let outcome = await driver.wait(flowID: flowID)
+        XCTAssertEqual(outcome, .connected(account: "docs"))
+    }
+
     func testQuickConnectionCancelDuringAddOpensNoSignIn() async throws {
         let model = FakeQuickModel()
         let driver = QuickConnectionConnectDriver(model: model, policy: Self.open)
@@ -752,6 +797,10 @@ private final class FakeJiraModel: JiraConnectModel {
     var policies: [DaemonRestartPolicy] = []
     /// The add sheet's held restart for its own site (not the driver's to touch).
     var sheetHeldRestart = false
+    /// The add saves the site but the reload fails (the list keeps the old rows).
+    var reloadFails = false
+    /// The Cancel lands after the CLI saved the site.
+    var cancelLate = false
 
     func addAccount(
         withConfluence: Bool, company: String?, site: String?, daemonPolicy: DaemonRestartPolicy
@@ -762,8 +811,9 @@ private final class FakeJiraModel: JiraConnectModel {
         await gate.wait()
         isConnecting = false
         guard connects else { return .cancelled }
+        if reloadFails { return .finished }
         accounts.append(JiraAccount(row: ["id": accounts.count + 1, "site_name": "acme", "enabled": true]))
-        return .finished
+        return cancelLate ? .cancelledAfterConnecting : .finished
     }
 
     func chooseSite(_ site: JiraSiteChoice) {
@@ -775,7 +825,9 @@ private final class FakeJiraModel: JiraConnectModel {
         gate.open()
     }
 
-    func refreshAsync() async {}
+    func refreshAsync() async {
+        if reloadFails { error = "Failed to load accounts: disk I/O error" }
+    }
 
     /// Yields until `condition` holds (the driver's flow task runs on the main actor).
     func until(_ condition: () -> Bool) async {
@@ -872,6 +924,7 @@ private final class FakeQuickModel: QuickConnectionConnectModel {
     var signInCancelCalls = 0
     var onAdd: (() async -> Void)?
     var onSignInDone: (() async -> Void)?
+    var events: [String] = []
 
     func addConnection(
         name: String, kind: String, command: String, args: [String], url: String, secretJSON: String?, useOAuth: Bool
@@ -886,6 +939,7 @@ private final class FakeQuickModel: QuickConnectionConnectModel {
 
     func signIn(_ connection: ExternalConnection) async {
         signIns.append(connection.name)
+        events.append("signIn")
         lastSignInCancelled = signInCancels
         await onSignInDone?()
     }
@@ -906,5 +960,7 @@ private final class FakeQuickModel: QuickConnectionConnectModel {
         signInCancelCalls += 1
     }
 
-    func refreshAsync() async {}
+    func refreshAsync() async {
+        events.append("refresh")
+    }
 }
