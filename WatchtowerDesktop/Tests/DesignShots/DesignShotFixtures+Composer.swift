@@ -14,15 +14,15 @@ enum ComposerShotFixtures {
     private static var poolPaths: [String] = []
     private static var chats: [ChatViewModel] = []
     private static var held: [Any] = []
-    private static var files: URL?
+    private static var files: [URL] = []
 
     static func cleanUp() {
         chats = []
         held = []
         poolPaths.forEach(TestDatabase.cleanup(path:))
         poolPaths = []
-        if let files { try? FileManager.default.removeItem(at: files) }
-        files = nil
+        files.forEach { try? FileManager.default.removeItem(at: $0) }
+        files = []
     }
 
     static var shots: [DesignShot] {
@@ -204,7 +204,7 @@ enum ComposerShotFixtures {
     /// A text file, an image and a PDF under a scratch folder, so each chip draws its own icon.
     private static func sampleFiles() -> [URL] {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("composer-shots-\(UUID().uuidString)")
-        files = dir
+        files.append(dir)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] + [UInt8](repeating: 0, count: 32))
         let pdf = Data("%PDF-1.4\n%acme\n".utf8)

@@ -20,6 +20,7 @@ final class ConfigSaveBarTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("watchtower-configsavebar-tests-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
         let path = dir.appendingPathComponent("config.yaml").path
         try? yaml.write(toFile: path, atomically: true, encoding: .utf8)
         return path

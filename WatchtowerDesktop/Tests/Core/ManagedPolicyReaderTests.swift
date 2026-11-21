@@ -2,13 +2,17 @@ import CoreFoundation
 import Foundation
 import Testing
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// The reader against a throwaway domain under a temp path: CFPreferences
 /// writes `<path>.plist` there, never this Mac's real preferences.
 @Suite("ManagedPolicyReader")
 struct ManagedPolicyReaderTests {
+    /// The plist cfprefsd leaves behind is removed when the test process exits.
     private func tempDomain() -> String {
-        FileManager.default.temporaryDirectory.appendingPathComponent("policytest-\(UUID().uuidString)").path
+        let domain = FileManager.default.temporaryDirectory.appendingPathComponent("policytest-\(UUID().uuidString)").path
+        TestTempDirectories.register(domain + ".plist")
+        return domain
     }
 
     private func write(_ value: Any?, key: String, domain: String) {

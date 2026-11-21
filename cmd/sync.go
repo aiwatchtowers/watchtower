@@ -1071,6 +1071,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	messagePort := sessionstart.NewPort(sessionStartDeps(cfg, database), nil)
 	defer func() { _ = messagePort.Close() }()
 	d.SetMessageDeliverer(&delivery.Deliverer{DB: database, Port: messagePort, Log: logger.Printf})
+	// Ended sessions' worktrees, branches and build output (#2131): the
+	// same port lists the host's live runs.
+	d.SetSessionCleanup(sessionCleanupPass(cfg, database, messagePort, logger))
 	// The sweep's relaunch is background work: the reviewer carries its
 	// origin (D20 of #1886).
 	d.SetSpecReviewLaunch(func(ctx context.Context, askID int64) error {

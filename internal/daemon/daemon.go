@@ -145,6 +145,9 @@ type Daemon struct {
 	planUsageDisable    func() error
 	messages            MessageDeliverer                             // nil = agent messages not delivered by this daemon
 	specReviewLaunch    func(ctx context.Context, askID int64) error // nil = the spec review sweep is off
+	// sessionCleanup is one automatic session-cleanup pass (#2131,
+	// session_cleanup.go); nil = none.
+	sessionCleanup func(ctx context.Context)
 	// watchmanBacktestLaunch starts a detached backtest child; nil = the weekly backtest is off.
 	watchmanBacktestLaunch func(ctx context.Context, workbenchID int64) error
 	pidPath                string
@@ -651,6 +654,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer stopPlanUsage()
 	stopMessages := d.startSessionMessages(ctx)
 	defer stopMessages()
+	stopSessionCleanup := d.startSessionCleanup(ctx)
+	defer stopSessionCleanup()
 
 	// Calendars first on startup: a calendar sync takes seconds, while the
 	// first cycle's Slack sync of a fresh install takes minutes and runSync

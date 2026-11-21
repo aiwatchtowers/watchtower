@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"watchtower/internal/aiconsent"
 	"watchtower/internal/aiconsent/aiconsenttest"
@@ -145,7 +149,9 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}
-	home, err := os.MkdirTemp("", "watchtower-cmd-tests-home-")
+	testRealHome = os.Getenv("HOME")
+	sweepStaleTestHomes(os.TempDir(), time.Now().Add(-testHomeStaleAge))
+	home, err := os.MkdirTemp("", testHomePrefix)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
@@ -180,7 +186,80 @@ func TestMain(m *testing.M) {
 	// Tests calling a command's RunE directly see it guarded, as every
 	// Execute does through cobra's initializers (#608).
 	applySourceGuards()
-	code := m.Run()
-	_ = os.RemoveAll(home)
-	os.Exit(code)
+	os.Exit(finishTestMain(m.Run(), home, os.Stderr))
+}
+
+// testHomePrefix names TestMain's temp HOME under os.TempDir().
+const testHomePrefix = "watchtower-cmd-tests-home-"
+
+// testHomeStaleAge is how old a leftover temp HOME must be before a later
+// run sweeps it: far past any live run, so a concurrent one is never hit.
+const testHomeStaleAge = 24 * time.Hour
+
+// testRealHome is the developer's HOME before TestMain replaced it, for a
+// test that runs the go tool (its module cache lives under the real HOME).
+var testRealHome string
+
+// finishTestMain removes the package's temp HOME after m.Run (os.Exit skips
+// deferred calls) and returns the exit code unchanged: a HOME it cannot
+// remove (a straggling child still writing) is a warning, not a red run
+// (#2130).
+func finishTestMain(code int, home string, stderr io.Writer) int {
+	if err := removeTestHome(home); err != nil {
+		fmt.Fprintf(stderr, "testmain: warning: test HOME left behind: %v\n", err)
+	}
+	return code
+}
+
+// sweepStaleTestHomes removes the temp HOMEs under parent that runs which
+// never reached finishTestMain (a panic, -timeout, a kill) left behind and
+// that were last modified before cutoff. Best effort: errors are ignored.
+func sweepStaleTestHomes(parent string, cutoff time.Time) {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), testHomePrefix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		_ = removeTestHome(filepath.Join(parent, e.Name()))
+	}
+}
+
+// removeTestHome removes a temp HOME and reports what is left. A read-only
+// subtree (a Go module cache a `go` run downloaded under it) is made
+// writable first: os.RemoveAll alone stops at its files. One retry covers a
+// child that wrote a last file between the walk and the removal.
+func removeTestHome(home string) error {
+	if root, err := os.OpenRoot(home); err == nil {
+		_ = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
+			if err == nil && d.IsDir() {
+				_ = root.Chmod(path, 0o700)
+			}
+			return nil
+		})
+		_ = root.Close()
+	}
+	var err error
+	for range 2 {
+		err = os.RemoveAll(home)
+		if _, statErr := os.Lstat(home); errors.Is(statErr, fs.ErrNotExist) {
+			return nil
+		}
+	}
+	left, _ := os.ReadDir(home)
+	names := make([]string, 0, 10)
+	for _, e := range left {
+		if len(names) == 10 {
+			names = append(names, "...")
+			break
+		}
+		names = append(names, e.Name())
+	}
+	return fmt.Errorf("%s still holds %v (%v)", home, names, err)
 }
