@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
+	"watchtower/internal/connectplay"
+	"watchtower/internal/connectwire"
 	"watchtower/internal/db"
 	internalmcp "watchtower/internal/mcp"
 	"watchtower/internal/tools"
@@ -411,4 +413,90 @@ func TestMCP_WorkbenchStillRunsRootSchemaFormatHook(t *testing.T) {
 	v.SetConfigFile(configPath)
 	require.NoError(t, v.ReadInConfig())
 	assert.Equal(t, db.CurrentSchemaFormat, v.GetInt("db.schema_format"), "rootCmd's ensureSchemaFormat must still run")
+}
+
+// `--connect` runs alone (spec §5.3): never next to --chat, --workbench,
+// --surface or the automation flags. --db-path, which both mount paths
+// append, is accepted and ignored.
+func TestMCPConnect_ExclusiveWithChat(t *testing.T) {
+	t.Setenv(connectwire.SocketEnv, "")
+	t.Setenv(connectwire.TokenEnv, "")
+	for _, extra := range [][]string{
+		{"--chat"}, {"--workbench", "7"}, {"--surface", "main"}, {"--automation-run", "3"},
+		{"--automation-tools", "a"}, {"--turn", "t1"}, {"--agent", "codex"},
+	} {
+		args := append([]string{"mcp", "--connect", "slack", "--db-path", "/nonexistent/db"}, extra...)
+		_, _, err := runRootCmd(t, []*cobra.Command{mcpCmd}, args...)
+		require.Error(t, err, extra)
+		assert.Contains(t, err.Error(), "--connect runs alone", extra)
+		assert.Contains(t, err.Error(), extra[0])
+	}
+
+	_, _, err := runRootCmd(t, []*cobra.Command{mcpCmd}, "mcp", "--connect", "slack", "--db-path", "/nonexistent/db")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "runs alone", "--db-path goes with --connect")
+	assert.Contains(t, err.Error(), connectwire.SocketEnv)
+}
+
+func TestMCPConnect_NoSocketEnvRefused(t *testing.T) {
+	env := map[string]string{}
+	getenv := func(k string) string { return env[k] }
+	err := runMCPConnect(context.Background(), "slack", getenv)
+	require.ErrorContains(t, err, connectwire.SocketEnv)
+
+	env[connectwire.SocketEnv] = "/nonexistent/sock"
+	err = runMCPConnect(context.Background(), "slack", getenv)
+	require.ErrorContains(t, err, connectwire.TokenEnv, "a socket without a token is refused too")
+
+	const token = "9999999999999999999999999999999999999999999999999999999999999999"
+	env[connectwire.TokenEnv] = token
+	err = runMCPConnect(context.Background(), "slack", getenv)
+	var we *connectwire.Error
+	require.ErrorAs(t, err, &we)
+	assert.Equal(t, connectwire.CodeClosed, we.Code, "no run behind the socket")
+	assert.NotContains(t, err.Error(), token, "the run token never shows in an error")
+}
+
+func TestMCPConnect_UnknownServiceRefused(t *testing.T) {
+	getenv := func(string) string { return "" }
+	for _, svc := range []string{"nope", "Slack", ""} {
+		err := runMCPConnect(context.Background(), svc, getenv)
+		require.ErrorContains(t, err, "unknown", svc)
+	}
+	_, _, err := runRootCmd(t, []*cobra.Command{mcpCmd}, "mcp", "--connect", "nope")
+	require.ErrorContains(t, err, `connect service "nope": unknown`)
+}
+
+// DEV-01 / AGENT-01: plain `watchtower mcp` mounts no connect tool, and a
+// connect tool name is no registry tool any other mode could mount.
+func TestMCP_PlainModeUnchanged(t *testing.T) {
+	resetMCPFlags(t)
+	assert.Empty(t, mcpFlagConnect)
+	database := openMCPTestDB(t)
+	cfg := &config.Config{ActiveWorkspace: "test-ws"}
+	opts, err := mcpModeOptions(cfg, database, "", nil)
+	require.NoError(t, err)
+	names, _ := localToolNames(t, database, opts)
+	reg := buildToolRegistry(cfg, openMCPTestDB(t))
+	for _, name := range connectplay.KnownTools {
+		assert.False(t, names[name], "plain mcp must not mount %s", name)
+		_, ok := reg.Get(name)
+		assert.False(t, ok, "%s must not be a registry tool", name)
+	}
+	assert.True(t, names["list_targets"], "the read tools stay")
+}
+
+// An empty --connect fails closed: never the plain mode's database open.
+func TestMCPConnect_EmptyServiceRefused(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "never.db")
+	for _, args := range [][]string{
+		{"mcp", "--connect", "", "--db-path", dbPath},
+		{"mcp", "--connect=", "--db-path", dbPath},
+		{"mcp", "--connect", " ", "--db-path", dbPath},
+	} {
+		_, _, err := runRootCmd(t, []*cobra.Command{mcpCmd}, args...)
+		require.ErrorContains(t, err, "--connect needs a service", args)
+		_, statErr := os.Stat(dbPath)
+		assert.ErrorIs(t, statErr, os.ErrNotExist, "no database is opened")
+	}
 }
