@@ -399,6 +399,17 @@ package final class SlackAppSetupModel {
         }
     }
 
+    /// The connect assistant's update of the workspace's existing app
+    /// (agent connect, `docs/guide/connect/slack.md` steps 10–14): the adopt
+    /// form for the token's workspace (no `--team`), so the next
+    /// `startAdopt(token:appID:)` runs. Only after the customer pressed the
+    /// PKCE confirm card in the assistant's panel, since every adopt passes
+    /// `--enable-pkce`. Opens no sheet; nothing while a run is running.
+    package func prepareUpdate() {
+        guard !isRunning else { return }
+        reset(.adopt(Adopt(target: SlackSetupTarget(teamID: "", teamName: ""))))
+    }
+
     /// **Add the link** (§3.3).
     package func startLink(team: String, token: String) {
         startRun(token: token, steps: Self.linkSteps) { [self] token in

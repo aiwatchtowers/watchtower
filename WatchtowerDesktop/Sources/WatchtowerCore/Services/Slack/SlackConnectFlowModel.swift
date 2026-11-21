@@ -198,8 +198,9 @@ package final class SlackConnectFlowModel {
     @ObservationIgnored private let host: SlackConnectListenerHost
     @ObservationIgnored private let now: () -> Date
     /// Cancel landed before the child named the started flow: cancel it once
-    /// it does. Until then no new flow starts.
-    @ObservationIgnored private var cancelAfterStart = false
+    /// it does. Until then no new flow starts. Observed: `isRunning` reads
+    /// it, so a waiter on `isRunning` sees the flow end once the child answers.
+    private var cancelAfterStart = false
     /// Flows the owner cancelled, until each one's answer arrives: a late
     /// `connected` is still shown (the account was written), the expected
     /// `failed(cancelled)` is not.

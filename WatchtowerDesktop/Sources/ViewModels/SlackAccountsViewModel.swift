@@ -2,6 +2,21 @@ import Foundation
 import GRDB
 import WatchtowerCore
 
+/// How a browser sign-in (`slack add`, `slack login`) ended. A success
+/// names the account a `slack login --account N` re-bound; an add leaves
+/// it nil (the new row is the one not there before).
+enum SlackAuthRunEnd: Equatable {
+    case succeeded(accountID: Int?)
+    case cancelled
+    case failed(String)
+}
+
+/// One ended sign-in run: its `authRunSerial` and how it ended.
+struct SlackAuthRun: Equatable {
+    let serial: Int
+    let end: SlackAuthRunEnd
+}
+
 /// Drives the multi-workspace Slack connections shown in Connections → Slack and
 /// the add-workspace sheet. Each row is a DB-backed `slack_accounts` record —
 /// any number of Slack workspaces side by side, each independently granting
@@ -25,6 +40,15 @@ final class SlackAccountsViewModel {
     /// non-blocking notice, cleared by the next management command
     /// (enable, disable, remove).
     private(set) var revokeNotice: String?
+    /// The last ended `slack add`/`slack login` run (nil before any). The
+    /// connect assistant reads it: `error` is nil both after a success and
+    /// after a Cancel. A newer run replaces it only when that run ends.
+    private(set) var lastAuthRun: SlackAuthRun?
+    /// A browser sign-in (`slack add`/`slack login`) runs. Unlike
+    /// `isConnecting`, not set by the Re-login route read.
+    private(set) var isSigningIn = false
+    /// Bumped as each sign-in run begins: one serial per attempt.
+    private(set) var authRunSerial = 0
 
     /// The restart the last successful account change kicked off under
     /// `.restart` (nil under `.deferred`) — held so tests can await it.
@@ -162,7 +186,7 @@ final class SlackAccountsViewModel {
     /// The OAuth consent happens in the loopback browser; the detached Process
     /// is held in `authProcess` so `cancelConnect()` can terminate it mid-flow.
     func addAccount(daemonPolicy: DaemonRestartPolicy = .restart) async {
-        await runAuthFlow(args: Self.addArgs, failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
+        await runAuthFlow(args: Self.addArgs, accountID: nil, failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
     }
 
     // MARK: - Re-login
@@ -186,7 +210,7 @@ final class SlackAccountsViewModel {
     @discardableResult
     func relogin(_ account: SlackAccount) async -> SlackReloginRoute? {
         guard let flow = connectFlow else {
-            await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
+            await runAuthFlow(args: Self.loginArgs(for: account), accountID: account.id, failurePrefix: "Re-login failed", daemonPolicy: .restart)
             return .builtin
         }
         let route: SlackReloginRoute
@@ -211,7 +235,7 @@ final class SlackAccountsViewModel {
             error = "Another connection is already in progress."
             return nil
         }
-        await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
+        await runAuthFlow(args: Self.loginArgs(for: account), accountID: account.id, failurePrefix: "Re-login failed", daemonPolicy: .restart)
         return route
     }
 
@@ -306,7 +330,7 @@ final class SlackAccountsViewModel {
 
     /// Browser-consent flow (`add`/`login`) — holds the detached Process in
     /// `authProcess` so `cancelConnect()` can terminate it while this awaits.
-    private func runAuthFlow(args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy) async {
+    private func runAuthFlow(args: [String], accountID: Int?, failurePrefix: String, daemonPolicy: DaemonRestartPolicy) async {
         guard !isConnecting else {
             error = "Another connection is already in progress."
             return
@@ -317,6 +341,9 @@ final class SlackAccountsViewModel {
         }
 
         isConnecting = true
+        isSigningIn = true
+        authRunSerial += 1
+        let serial = authRunSerial
         error = nil
 
         let process = Process()
@@ -329,12 +356,49 @@ final class SlackAccountsViewModel {
         // running (Cancel visible); a Cancel or a newer attempt meanwhile
         // drops this launch.
         process.environment = await loginEnvironment()
-        guard authProcess === process else { return }
+        guard authProcess === process else {
+            endSignIn(serial, .cancelled)
+            return
+        }
 
         let result = await Self.runProcess(process)
         authProcess = nil
         isConnecting = false
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
+        let account = accountID ?? Self.printedAccountID(result.stdout)
+        endSignIn(serial, Self.authEnd(exitCode: result.exitCode, error: error, accountID: account))
+    }
+
+    private func endSignIn(_ serial: Int, _ end: SlackAuthRunEnd) {
+        lastAuthRun = Self.recorded(lastAuthRun, SlackAuthRun(serial: serial, end: end))
+        if serial == authRunSerial { isSigningIn = false }
+    }
+
+    /// The run `lastAuthRun` keeps: an older run that ends after a newer one
+    /// (a cancelled attempt whose child exits late) never replaces it.
+    static func recorded(_ current: SlackAuthRun?, _ ended: SlackAuthRun) -> SlackAuthRun {
+        guard let current, current.serial > ended.serial else { return ended }
+        return current
+    }
+
+    /// The account `slack add`/`slack login` wrote, from its "Account id: N"
+    /// line (`printSlackConnectionResult`); nil when it printed none.
+    static func printedAccountID(_ stdout: String) -> Int? {
+        let prefix = "Account id: "
+        for line in stdout.split(whereSeparator: \.isNewline) where line.hasPrefix(prefix) {
+            return Int(line.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces))
+        }
+        return nil
+    }
+
+    /// How a sign-in child ended: 0 succeeded, SIGTERM/SIGKILL cancelled
+    /// (`cancelConnect`), anything else failed with `error`'s text.
+    static func authEnd(exitCode: Int32, error: String?, accountID: Int?) -> SlackAuthRunEnd {
+        switch exitCode {
+        case 0: .succeeded(accountID: accountID)
+        case 15, 9: .cancelled
+        default: .failed(error ?? "the sign-in failed (exit \(exitCode))")
+        }
     }
 
     /// Non-browser management command (`enable`/`disable`/`remove`) — a plain
