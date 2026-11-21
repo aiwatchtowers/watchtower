@@ -70,7 +70,7 @@ since: 0.29.0
 
 Each hand-over takes an optional instruction Watchman follows within its limits; **Instruction…** by the chip edits it.
 
-An agent stopped with nothing running is nudged after 3 minutes, three times at most. After the third nudge, or when none gets through for 9 minutes, it waits for you in the journal with **Open session** and **Mark done**.
+A stopped agent is nudged after 3 minutes. Stopped again without progress after the third nudge, or with a nudge typed but unsent for 9 minutes, it waits for you in the journal. A nudge held by your unsent draft is retried.
 
 **Take back** stops new decisions; one already under way still finishes. On a session also handed over through its target, Take back on the strip removes only the direct hand-over.
 
