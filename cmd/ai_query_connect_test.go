@@ -195,6 +195,17 @@ func TestAIQueryConnect_ProbeRun(t *testing.T) {
 	assert.Equal(t, "STATE: no Slack account yet", string(system), "no playbook prompt")
 }
 
+// TestAIQueryConnect_ProbeEnvFailsClosed: an environment holding only the
+// connect variables gives the probe child an empty one, never nil (which
+// the transport reads as "inherit this process's", socket and token too).
+func TestAIQueryConnect_ProbeEnvFailsClosed(t *testing.T) {
+	env := connectProbeEnv([]string{connectwire.SocketEnv + "=/tmp/connect.sock", connectwire.TokenEnv + "=tok-sample"})
+	require.NotNil(t, env)
+	assert.Empty(t, env)
+	assert.Equal(t, []string{"HOME=/tmp"},
+		connectProbeEnv([]string{"HOME=/tmp", connectwire.TokenEnv + "=tok-sample"}))
+}
+
 // TestAIQueryConnect_ProbeRefusals: a probe needs a browser: codex (words),
 // ollama (none) and a policy-blocked claude are refused before any model
 // call, at the CLI's check and in the client factory.

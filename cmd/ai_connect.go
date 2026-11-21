@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -75,12 +74,12 @@ func connectProbeCheck(provider string) error {
 	return nil
 }
 
-// connectProbeEnv is the probe child's environment: this process's,
+// connectProbeEnv is the probe child's environment: environ (this process's),
 // without the connect run's socket and token (the Desktop does not send
 // them to a probe; a parent that has them keeps them to itself).
-func connectProbeEnv() []string {
-	var env []string
-	for _, kv := range os.Environ() {
+func connectProbeEnv(environ []string) []string {
+	env := []string{} // never nil: nil would mean "inherit everything"
+	for _, kv := range environ {
 		name, _, _ := strings.Cut(kv, "=")
 		if name != connectwire.SocketEnv && name != connectwire.TokenEnv {
 			env = append(env, kv)

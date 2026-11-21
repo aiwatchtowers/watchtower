@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"time"
@@ -212,7 +213,7 @@ func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (
 		opts.DBPath, opts.Model = dbPath, model
 		opts.BrowserProbe = true
 		// Nor does the probe's child inherit them from this process.
-		opts.ChildEnv = connectProbeEnv()
+		opts.ChildEnv = connectProbeEnv(os.Environ())
 		return buildQuerier(cfg, opts), noop, nil
 	}
 	if aiFlagTools == toolsConnect {
