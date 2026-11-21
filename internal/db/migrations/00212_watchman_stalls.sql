@@ -66,7 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_watchman_items_wb ON watchman_items(workbench_id,
 CREATE INDEX IF NOT EXISTS idx_watchman_items_created ON watchman_items(created_at);
 CREATE TABLE IF NOT EXISTS watchman_stalls (
     session_id   INTEGER PRIMARY KEY REFERENCES terminal_sessions(id) ON DELETE CASCADE,
-    stopped_at   TEXT NOT NULL,                -- RFC 3339 UTC: the agent_state_at of the stop counted
+    stopped_at   TEXT NOT NULL,                -- RFC 3339 UTC: when the stopped state began (the turn end, or later the end of background work)
     pings        INTEGER NOT NULL DEFAULT 0,   -- pings delivered since the last progress
     last_ping_at TEXT,                         -- RFC 3339 UTC
     head         TEXT NOT NULL DEFAULT '',     -- the worktree's HEAD at the last ping

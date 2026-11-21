@@ -380,6 +380,42 @@ func TestAnswerer_ClosePermissionOwnerFirst(t *testing.T) {
 
 // A line of no ask goes as an answer's does, and when held never outlives
 // its Answerer (nothing of it is kept in the store).
+// SubmitLineNow (the stall ping) asks the host to hold rather than paste
+// beside a draft, and never keeps a line for later: a prompt, a draft or a
+// session gone send nothing and queue nothing (DeliverHeld types nothing).
+func TestAnswerer_SubmitLineNowNeverQueues(t *testing.T) {
+	e := newEnv(t)
+	s := e.seedAsk()
+	e.port.start(s.session)
+	e.hooksReport(s.session, "approval")
+	if got := e.a.SubmitLineNow(context.Background(), s.session, "ping"); got != DeliveryHeld {
+		t.Fatalf("into a permission prompt: %q", got)
+	}
+	if n := len(e.port.lines()); n != 0 {
+		t.Fatalf("typed into a permission prompt (%d)", n)
+	}
+	e.hooksReport(s.session, "waiting")
+	e.port.result = DeliverResult{Outcome: DeliverHeld, Reason: "prompt_has_text"}
+	if got := e.a.SubmitLineNow(context.Background(), s.session, "ping"); got != DeliveryHeld {
+		t.Fatalf("beside a draft: %q", got)
+	}
+	lines := e.port.lines()
+	if len(lines) != 1 || !lines[0].HoldIfPromptText {
+		t.Fatalf("lines = %+v, want one asking the host to hold beside a draft", lines)
+	}
+	e.port.result = DeliverResult{Outcome: DeliverSubmitted}
+	e.a.DeliverHeld(context.Background())
+	if n := len(e.port.lines()); n != 1 {
+		t.Fatalf("a held line was queued and sent later (%d)", n)
+	}
+	if got := e.a.SubmitLineNow(context.Background(), s.session, "ping"); got != DeliverySubmitted {
+		t.Fatalf("delivery = %q", got)
+	}
+	if got := e.a.SubmitLineNow(context.Background(), 9999, "ping"); got != DeliveryNoSession {
+		t.Fatalf("no session: %q", got)
+	}
+}
+
 func TestAnswerer_DeliverLineHeldInMemoryOnly(t *testing.T) {
 	e := newEnv(t)
 	s := e.seedAsk()

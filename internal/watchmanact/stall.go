@@ -13,11 +13,12 @@ import (
 )
 
 // The stall watch (spec 2026-11-21-watchman-tuning §4b): an armed session
-// whose agent stopped — its turn ended with no ask, no finish and nothing in
-// the background — gets StallPing once it has been stopped StallAfter, at
-// most StallMaxPings times without progress (a new ask, a finish, the
-// worktree's HEAD moved); then a 'stall' item waits for the owner with
-// StallReason, and no ping goes until progress or his Mark done.
+// whose agent stopped — its turn ended with no ask, no finish, nothing in
+// the background and no live sub-session — gets StallPing once it has been
+// stopped StallAfter, at most StallMaxPings times without progress (a new
+// ask, a finish, the worktree's HEAD moved); then a 'stall' item waits for
+// the owner with StallReason, and no ping goes until progress or his Mark
+// done.
 const (
 	StallAfter    = 3 * time.Minute
 	StallMaxPings = 3
@@ -37,17 +38,39 @@ func GitHead(run func(ctx context.Context, dir, name string, args ...string) ([]
 	}
 }
 
+// stallMemo is what the stall watch remembers of a session between ticks,
+// in memory only (a restart forgets it, which at worst pings sooner or logs
+// once more): a host read failing (logged once per streak), when live
+// sub-sessions were last seen (the stop counts from then), and when a
+// parked session's HEAD was last read.
+type stallMemo struct {
+	hostFailing bool
+	childrenAt  time.Time
+	headAt      time.Time
+}
+
+func (t *Twin) memo(id int64) *stallMemo {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stalls == nil {
+		t.stalls = map[int64]*stallMemo{}
+	}
+	m := t.stalls[id]
+	if m == nil {
+		m = &stallMemo{}
+		t.stalls[id] = m
+	}
+	return m
+}
+
 // CheckStalls is one tick of the stall watch over every armed live session
-// (the daemon runs it every minute). It first drops the counts of sessions
-// it no longer acts for (taken back, finished, ended). Every failure is
-// quiet: a read that fails sends no ping this tick (a missed ping is
-// cheaper than one typed into a working session).
+// (the daemon runs it every minute on one goroutine; its upkeep prunes the
+// counts of sessions no longer handed over). Every failure is quiet: a read
+// that fails sends no ping this tick (a missed ping is cheaper than one
+// typed into a working session).
 func (t *Twin) CheckStalls(ctx context.Context) {
 	if t.d.Live == nil || t.d.Answerer == nil || ctx.Err() != nil {
 		return
-	}
-	if _, err := t.d.DB.PruneWatchmanStalls(); err != nil {
-		log.Printf("watchman stall: %v", err)
 	}
 	sessions, err := t.d.DB.WatchmanArmedSessions()
 	if err != nil {
@@ -62,29 +85,68 @@ func (t *Twin) CheckStalls(ctx context.Context) {
 	}
 }
 
+// liveChildren is Row.LiveChildren for session id from the session host
+// (PROJ-11: a parent resting while its sub-sessions run waits on them, not
+// on the owner); a child whose run cannot be read counts as live.
+func (t *Twin) liveChildren(ctx context.Context, id int64) (int, error) {
+	n, err := sessionstate.CountLiveChildren(ctx, t.d.DB, id, func(child int64) bool {
+		run, ok, err := t.d.Live(ctx, child)
+		return err != nil || (ok && !run.Exited)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("counting the live sub-sessions: %w", err)
+	}
+	return n, nil
+}
+
 // checkStall handles one armed session: only a live run that Resolve reads
-// as stopped for StallAfter, after a stop later than the last ping, counts.
-// Progress since the last ping resets the count (and lifts a park); the
-// owner's Mark done on the stall item does too. Below StallMaxPings the
-// ping is delivered — the arming read again right before (WATCHMAN-04) —
-// and counted only when submitted or typed; at StallMaxPings the stall is
-// journalled once.
+// as stopped (its live sub-sessions counted) for StallAfter, after a stop
+// later than the last ping, counts. Progress since the last ping resets the
+// count (and lifts a park); the owner's Mark done on the stall item does
+// too. Below StallMaxPings the ping is offered — the arming read again
+// right before (WATCHMAN-04) — through SubmitLineNow, which never queues
+// it: only a submitted ping counts, anything else (a draft in the prompt, a
+// permission prompt, no session) sends nothing and is tried again on a
+// later tick, which reads the state and the arming again. At StallMaxPings
+// the stall is journalled once.
 func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 	id := s.SessionID
+	memo := t.memo(id)
 	live, ok, err := t.d.Live(ctx, id)
-	if err != nil || !ok || live.Exited {
-		if err != nil {
+	if err != nil {
+		if !memo.hostFailing {
 			log.Printf("watchman stall: session %d not read from the host", id)
 		}
+		memo.hostFailing = true
+		return
+	}
+	memo.hostFailing = false
+	if !ok || live.Exited {
 		return
 	}
 	now := t.d.Clock()
-	state, row, fresh := askanswer.ReadState(ctx, t.d.DB, id, live, now)
-	if !fresh || state != sessionstate.StateStopped {
+	_, row, fresh := askanswer.ReadState(ctx, t.d.DB, id, live, now)
+	if !fresh {
+		return
+	}
+	if row.LiveChildren, err = t.liveChildren(ctx, id); err != nil {
+		log.Printf("watchman stall: session %d: %v", id, err)
+		return
+	}
+	if row.LiveChildren > 0 {
+		memo.childrenAt = now
+	}
+	if sessionstate.Resolve(row, now) != sessionstate.StateStopped {
 		return
 	}
 	stoppedAt, ok := sessionstate.StoppedSince(row)
-	if !ok || now.Sub(stoppedAt) < StallAfter {
+	if !ok {
+		return
+	}
+	if memo.childrenAt.After(stoppedAt) {
+		stoppedAt = memo.childrenAt // stopped since its last sub-session ended
+	}
+	if now.Sub(stoppedAt) < StallAfter {
 		return
 	}
 	st, err := t.d.DB.WatchmanStall(id)
@@ -100,22 +162,26 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 		log.Printf("watchman stall: %v", err)
 		return
 	}
-	head := ""
-	if t.d.Head != nil && s.Folder != "" {
-		if head, err = t.d.Head(ctx, s.Folder); err != nil {
-			log.Printf("watchman stall: session %d: %v", id, err)
-			head = ""
+	parked := st != nil && st.ParkedAt != nil
+	progress := st != nil && asks > st.AsksSeen
+	if parked && !progress {
+		if progress, err = t.d.DB.WatchmanStallItemDone(id); err != nil {
+			log.Printf("watchman stall: %v", err)
+			return
 		}
+	}
+	// HEAD is read whenever a ping may be due; for a parked session with no
+	// other progress, at most once every StallAfter.
+	head := ""
+	if !parked || progress || now.Sub(memo.headAt) >= StallAfter {
+		head = t.readHead(ctx, s)
+		memo.headAt = now
 	}
 	if st == nil {
 		st = &db.WatchmanStallRow{SessionID: id}
 	} else {
-		progress := asks > st.AsksSeen || (head != "" && st.Head != "" && head != st.Head)
-		if !progress && st.ParkedAt != nil {
-			if progress, err = t.d.DB.WatchmanStallItemDone(id); err != nil {
-				log.Printf("watchman stall: %v", err)
-				return
-			}
+		if head != "" && st.Head != "" && head != st.Head {
+			progress = true
 		}
 		if progress {
 			st.Pings, st.ParkedAt = 0, nil
@@ -137,21 +203,14 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 		log.Printf("watchman stall: session %d parked for the owner after %d pings", id, st.Pings)
 		return
 	}
-	// A ping still held for the session goes when it can take it
-	// (DeliverHeld); a second copy is not queued behind it.
-	if t.d.Answerer.HoldsLine(id, StallPing) {
-		return
-	}
 	if armed, err := t.d.DB.WatchmanSessionArmed(id); err != nil || !armed {
 		if err != nil {
 			log.Printf("watchman stall: %v", err)
 		}
 		return
 	}
-	switch delivery := t.d.Answerer.DeliverLine(ctx, id, StallPing); delivery {
-	case askanswer.DeliverySubmitted, askanswer.DeliveryTyped:
-	default:
-		log.Printf("watchman stall: session %d: ping not delivered (%s)", id, delivery)
+	if delivery := t.d.Answerer.SubmitLineNow(ctx, id, StallPing); delivery != askanswer.DeliverySubmitted {
+		log.Printf("watchman stall: session %d: ping not sent (%s), tried again later", id, delivery)
 		return
 	}
 	st.Pings++
@@ -161,4 +220,17 @@ func (t *Twin) checkStall(ctx context.Context, s db.ArmedSession) {
 		return
 	}
 	log.Printf("watchman stall: session %d pinged (%d of %d)", id, st.Pings, StallMaxPings)
+}
+
+// readHead is the session's worktree HEAD, "" when it cannot be read.
+func (t *Twin) readHead(ctx context.Context, s db.ArmedSession) string {
+	if t.d.Head == nil || s.Folder == "" {
+		return ""
+	}
+	head, err := t.d.Head(ctx, s.Folder)
+	if err != nil {
+		log.Printf("watchman stall: session %d: %v", s.SessionID, err)
+		return ""
+	}
+	return head
 }

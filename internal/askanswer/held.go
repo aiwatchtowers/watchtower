@@ -142,21 +142,6 @@ func (a *Answerer) DeliverHeld(ctx context.Context) {
 	}
 }
 
-// HoldsLine reports whether a line of no ask (DeliverLine) with exactly this
-// text still waits held for sessionID: DeliverHeld will try it again, so a
-// caller that would type the same line again (the twin's stall ping) waits
-// for it instead of queueing a second copy.
-func (a *Answerer) HoldsLine(sessionID int64, line string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, l := range a.held {
-		if l.askID == 0 && l.sessionID == sessionID && l.line == line {
-			return true
-		}
-	}
-	return false
-}
-
 // takeHeld removes line from the held set and Held; false when it was no
 // longer there.
 func (a *Answerer) takeHeld(line heldLine) bool {

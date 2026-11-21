@@ -14,8 +14,8 @@ import (
 // WatchmanStallRow is one session's stall count.
 type WatchmanStallRow struct {
 	SessionID int64
-	// StoppedAt is when the stop last counted began (the agent's turn ended
-	// with nothing left in the background).
+	// StoppedAt is when the stopped state last counted began: the turn's
+	// end, or the end of its background work when that came later.
 	StoppedAt time.Time
 	// Pings counts the pings delivered since the last progress (a new ask,
 	// a finish, the worktree HEAD moved).

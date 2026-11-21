@@ -88,6 +88,8 @@ type Twin struct {
 	// in this process, so a pass never starts one twice.
 	mu       sync.Mutex
 	starting map[int64]bool
+	// stalls is the stall watch's memory between ticks (stallMemo).
+	stalls map[int64]*stallMemo
 }
 
 // NewTwin builds the twin worker.

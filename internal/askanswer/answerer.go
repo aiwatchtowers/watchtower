@@ -306,14 +306,7 @@ func (a *Answerer) deliver(ctx context.Context, line heldLine) string {
 	}
 	res, err := a.d.Sessions.Deliver(ctx, DeliverRequest{
 		SessionID: line.sessionID, Run: live.Run, Text: line.line, Settle: SubmitSettle,
-		Check: func(ctx context.Context) CheckAnswer {
-			s, r, fresh := ReadState(ctx, a.d.DB, line.sessionID, live, a.d.Clock())
-			return CheckAnswer{
-				Fresh:         fresh,
-				CanSubmit:     fresh && sessionstate.HooksReported(r) && !sessionstate.NeedsApproval(s),
-				AnswersDialog: sessionstate.NeedsApproval(s),
-			}
-		},
+		Check: a.lineCheck(line.sessionID, live),
 	})
 	if err != nil {
 		log.Printf("askanswer: ask %d: session %d did not take the line", line.askID, line.sessionID)
@@ -335,6 +328,62 @@ func (a *Answerer) deliver(ctx context.Context, line heldLine) string {
 		if hooks.NoPasteMode != nil {
 			return hooks.NoPasteMode(line.line)
 		}
+		return DeliveryCannotType
+	}
+	return DeliveryNoSession
+}
+
+// lineCheck is the re-check after a line's paste (PROJ-12): the Return
+// follows only when the hooks reported this run and no permission prompt
+// shows.
+func (a *Answerer) lineCheck(sessionID int64, live LiveRun) func(ctx context.Context) CheckAnswer {
+	return func(ctx context.Context) CheckAnswer {
+		s, r, fresh := ReadState(ctx, a.d.DB, sessionID, live, a.d.Clock())
+		return CheckAnswer{
+			Fresh:         fresh,
+			CanSubmit:     fresh && sessionstate.HooksReported(r) && !sessionstate.NeedsApproval(s),
+			AnswersDialog: sessionstate.NeedsApproval(s),
+		}
+	}
+}
+
+// SubmitLineNow types a line that answers no ask into sessionID only when
+// the session can take it now (the twin's stall ping): the PROJ-12 gates as
+// for an answer's line, and the host holds it rather than paste it beside
+// the owner's draft (HoldIfPromptText). Nothing is ever kept for later — a
+// line the session cannot take now returns DeliveryHeld (a failed read, a
+// permission prompt, the owner's draft), DeliveryNoSession or
+// DeliveryCannotType and is not queued; the caller tries again itself.
+// DeliverySubmitted is the only outcome that reached the agent.
+func (a *Answerer) SubmitLineNow(ctx context.Context, sessionID int64, line string) string {
+	live, ok, err := a.d.Sessions.Live(ctx, sessionID)
+	if err != nil {
+		return DeliveryHeld
+	}
+	if !ok || live.Exited {
+		return DeliveryNoSession
+	}
+	if s, _, fresh := ReadState(ctx, a.d.DB, sessionID, live, a.d.Clock()); !fresh || sessionstate.NeedsApproval(s) {
+		return DeliveryHeld
+	}
+	res, err := a.d.Sessions.Deliver(ctx, DeliverRequest{
+		SessionID: sessionID, Run: live.Run, Text: line, HoldIfPromptText: true, Settle: SubmitSettle,
+		Check: a.lineCheck(sessionID, live),
+	})
+	if err != nil {
+		return DeliveryNoSession
+	}
+	switch res.Outcome {
+	case DeliverSubmitted:
+		if hooks := a.currentHooks(); hooks.Submitted != nil {
+			hooks.Submitted(sessionID, a.d.Clock())
+		}
+		return DeliverySubmitted
+	case DeliverTyped:
+		return DeliveryTyped
+	case DeliverHeld:
+		return DeliveryHeld
+	case DeliverNoPasteMode:
 		return DeliveryCannotType
 	}
 	return DeliveryNoSession

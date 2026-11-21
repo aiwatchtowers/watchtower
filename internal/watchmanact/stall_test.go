@@ -24,6 +24,7 @@ type stallPort struct {
 	outcome    string
 	deliverErr error
 	lines      []string
+	holds      []bool // each request's HoldIfPromptText
 }
 
 func (p *stallPort) Live(_ context.Context, id int64) (askanswer.LiveRun, bool, error) {
@@ -42,6 +43,7 @@ func (p *stallPort) Deliver(_ context.Context, r askanswer.DeliverRequest) (aska
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.lines = append(p.lines, r.Text)
+	p.holds = append(p.holds, r.HoldIfPromptText)
 	if p.deliverErr != nil {
 		return askanswer.DeliverResult{}, p.deliverErr
 	}
@@ -349,7 +351,8 @@ func TestStall_ProgressResets(t *testing.T) {
 			// starts counting from zero.
 			_, err := e.db.Exec(`UPDATE terminal_sessions SET finished_at = ? WHERE id = ?`, db.AgentStateStamp(at), e.session)
 			e.must(err)
-			e.twin.CheckStalls(context.Background())
+			_, err = e.db.PruneWatchmanStalls() // the daemon's upkeep
+			e.must(err)
 			if e.row() != nil {
 				e.t.Fatal("a finished session kept its count")
 			}
@@ -408,23 +411,134 @@ func TestStall_MarkDoneResumesPings(t *testing.T) {
 	}
 }
 
-// A line the host holds is not a ping: not counted, and not typed again
-// while it waits held (DeliverHeld retries it).
-func TestStall_HeldLineNotCounted(t *testing.T) {
+// The owner's draft in the prompt: the host holds the ping instead of
+// pasting it beside the draft. Nothing is sent or queued (DeliverHeld types
+// nothing later), nothing counts, and the next tick offers it again.
+func TestStall_DraftHoldsPing(t *testing.T) {
 	e := newStallEnv(t)
 	e.port.set(askanswer.DeliverHeld, nil)
 	e.stop(stallT0)
 	if n := e.check(stallT0.Add(StallAfter)); n != 1 {
-		t.Fatalf("lines = %d, want the one held", n)
+		t.Fatalf("offers = %d, want 1", n)
 	}
-	if st := e.row(); st != nil && st.Pings != 0 {
-		t.Fatalf("a held line counted: %+v", st)
+	e.port.mu.Lock()
+	hold := e.port.holds[0]
+	e.port.mu.Unlock()
+	if !hold {
+		t.Fatal("the ping did not ask the host to hold beside a draft")
 	}
-	if !e.answerer.HoldsLine(e.session, StallPing) {
-		t.Fatal("the line is not held")
+	if st := e.row(); st != nil {
+		t.Fatalf("a held ping counted: %+v", st)
 	}
-	if n := e.check(stallT0.Add(StallAfter + time.Minute)); n != 1 {
-		t.Fatalf("lines = %d: a second copy went behind the held one", n)
+	e.port.set("", nil)
+	e.answerer.DeliverHeld(context.Background())
+	if n := len(e.port.delivered()); n != 1 {
+		t.Fatal("the held ping was queued and sent later")
+	}
+	if n := e.check(stallT0.Add(StallAfter + time.Minute)); n != 2 {
+		t.Fatalf("offers = %d, want the ping offered again", n)
+	}
+	if st := e.row(); st == nil || st.Pings != 1 {
+		t.Fatalf("row = %+v, want 1 ping once submitted", st)
+	}
+}
+
+// A ping pasted but not submitted (typed) is not counted and is offered
+// again on the next tick.
+func TestStall_TypedNotCounted(t *testing.T) {
+	e := newStallEnv(t)
+	e.port.set(askanswer.DeliverTyped, nil)
+	e.stop(stallT0)
+	e.check(stallT0.Add(StallAfter))
+	if st := e.row(); st != nil {
+		t.Fatalf("a typed ping counted: %+v", st)
+	}
+	e.port.set("", nil)
+	if n := e.check(stallT0.Add(StallAfter + time.Minute)); n != 2 {
+		t.Fatalf("offers = %d, want 2", n)
+	}
+}
+
+// Take back while a ping would have been held: nothing is ever delivered
+// after it — no held queue, and the next ticks see the session unarmed.
+func TestStall_TakeBackWhileHeldNoDelivery(t *testing.T) {
+	e := newStallEnv(t)
+	e.port.set(askanswer.DeliverHeld, nil)
+	e.stop(stallT0)
+	e.check(stallT0.Add(StallAfter))
+	_, err := e.db.DeleteWatchmanArming("session", e.session)
+	e.must(err)
+	e.port.set("", nil)
+	e.answerer.DeliverHeld(context.Background())
+	for i := 1; i <= 5; i++ {
+		e.check(stallT0.Add(StallAfter + time.Duration(i)*time.Minute))
+	}
+	if n := len(e.port.delivered()); n != 1 {
+		t.Fatalf("offers = %d after Take back, want only the held one before it", n)
+	}
+}
+
+// Ticks the host holds, around submitted pings, never push the count past
+// three: three submitted pings, then the park, and nothing submitted after.
+func TestStall_HeldTicksNeverExceedThreePings(t *testing.T) {
+	e := newStallEnv(t)
+	at := stallT0
+	submitted := 0
+	for cycle := 0; cycle < 6; cycle++ {
+		e.stop(at)
+		e.port.set(askanswer.DeliverHeld, nil)
+		for i := 0; i < 3; i++ {
+			e.check(at.Add(StallAfter + time.Duration(i)*time.Minute))
+		}
+		e.port.set("", nil)
+		before := len(e.port.delivered())
+		at = at.Add(StallAfter + 3*time.Minute)
+		submitted += e.check(at) - before
+		if st := e.row(); st != nil && st.Pings > StallMaxPings {
+			t.Fatalf("cycle %d: pings = %d", cycle, st.Pings)
+		}
+		at = at.Add(time.Second)
+	}
+	if submitted != StallMaxPings {
+		t.Fatalf("submitted pings = %d, want %d", submitted, StallMaxPings)
+	}
+	if st := e.row(); st == nil || st.Pings != StallMaxPings || st.ParkedAt == nil {
+		t.Fatalf("row = %+v, want parked at 3 pings", st)
+	}
+	if items := e.stallItems(); len(items) != 1 {
+		t.Fatalf("stall items = %d", len(items))
+	}
+}
+
+// PROJ-11: a parent resting while a sub-session runs waits on it, not on
+// the owner — no ping; once the child ends, the ping comes 3 minutes after
+// it was last seen running.
+func TestStall_LiveSubSessionNotPinged(t *testing.T) {
+	e := newStallEnv(t)
+	res, err := e.db.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, parent_session_id)
+		VALUES (?, 'claude', 'Sub', '/tmp/acme', 'uuid-child', ?)`, e.wb, e.session)
+	e.must(err)
+	child, _ := res.LastInsertId()
+	e.port.mu.Lock()
+	e.port.live[child] = true
+	e.port.mu.Unlock()
+	e.stop(stallT0)
+	for _, after := range []time.Duration{StallAfter, 30 * time.Minute} {
+		if n := e.check(stallT0.Add(after)); n != 0 {
+			t.Fatalf("pinged %v after the stop while a sub-session runs", after)
+		}
+	}
+	e.port.mu.Lock()
+	delete(e.port.live, child)
+	e.port.mu.Unlock()
+	lastSeen := stallT0.Add(30 * time.Minute)
+	for _, after := range []time.Duration{time.Minute, StallAfter - time.Second} {
+		if n := e.check(lastSeen.Add(after)); n != 0 {
+			t.Fatalf("pinged %v after the sub-session was last seen", after)
+		}
+	}
+	if n := e.check(lastSeen.Add(StallAfter)); n != 1 {
+		t.Fatalf("pings = %d, want 1 three minutes after the sub-session ended", n)
 	}
 }
 
