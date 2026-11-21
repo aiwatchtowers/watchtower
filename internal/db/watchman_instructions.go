@@ -95,7 +95,8 @@ func (db *DB) WatchmanSessionInstructionTexts() (map[int64]string, error) {
 // WatchmanSessionInstructions is the text of the armed target covering
 // sessionID (the oldest-armed one whose subtree holds the session's ticket,
 // as WatchmanSessionsUnderArmedTargets picks; "" when none covers it or it
-// has no text) and the session's own text.
+// has no text) and the session's own text. A session being deleted reads
+// no target text (PROJ-17).
 func (db *DB) WatchmanSessionInstructions(sessionID int64) (target, session string, err error) {
 	err = db.QueryRow(`
 		WITH RECURSIVE sub(root, id) AS (
@@ -107,7 +108,7 @@ func (db *DB) WatchmanSessionInstructions(sessionID int64) (target, session stri
 			SELECT sub.root AS root FROM terminal_sessions ts
 			JOIN sub ON ts.target_id = sub.id
 			JOIN watchman_arming a ON a.scope = 'target' AND a.ref_id = sub.root
-			WHERE ts.id = ?1
+			WHERE ts.id = ?1 AND ts.`+NotDeletingSQL+`
 			ORDER BY a.armed_at, sub.root LIMIT 1
 		)
 		SELECT
