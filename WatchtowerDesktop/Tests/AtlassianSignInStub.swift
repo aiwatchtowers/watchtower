@@ -12,13 +12,27 @@ import XCTest
 final class AtlassianSignInStub {
     let cli: String
     private let dir: URL
+    /// Each run's `started` pipe, held open for reading and writing from
+    /// the start: the stub's write never waits for a reader, and the flow's
+    /// own end can always write to it (`started(_:of:)`).
+    private var startedPipes: [Int: Int32] = [:]
+
+    /// The run's flow ended before its stub started.
+    struct NeverStarted: Error {
+        let run: Int
+    }
 
     init(ignoresTerm: Bool = false, runs: Int = 3, test: XCTestCase) throws {
         dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         for run in 1...runs {
-            XCTAssertEqual(mkfifo(dir.appendingPathComponent("started-\(run)").path, 0o600), 0)
+            let started = dir.appendingPathComponent("started-\(run)").path
+            XCTAssertEqual(mkfifo(started, 0o600), 0)
             XCTAssertEqual(mkfifo(dir.appendingPathComponent("gate-\(run)").path, 0o600), 0)
+            // O_RDWR on a FIFO opens at once on Darwin and keeps both ends.
+            let fd = open(started, O_RDWR)
+            XCTAssertGreaterThanOrEqual(fd, 0)
+            startedPipes[run] = fd
         }
         let path = dir.path
         let script = """
@@ -38,33 +52,30 @@ final class AtlassianSignInStub {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
         cli = stub.path
         let dir = dir
+        let pipes = Array(startedPipes.values)
         test.addTeardownBlock {
             Self.killAll(in: dir)
+            pipes.forEach { close($0) }
             try? FileManager.default.removeItem(at: dir)
         }
     }
 
     /// Returns once run `run` is up (it wrote to its `started` pipe). If
-    /// the flow ends first (the stub never launched), the test fails
-    /// instead of hanging: the flow's end writes the pipe itself.
-    func started<T>(_ run: Int, of flow: Task<T, Never>, file: StaticString = #filePath, line: UInt = #line) async {
-        let path = dir.appendingPathComponent("started-\(run)").path
-        _ = Task.detached {
+    /// the flow ends first (the stub never launched), it throws instead of
+    /// hanging: the flow's end writes the pipe itself, so whichever comes
+    /// first is read, and the caller never goes on to a blocking `release`.
+    func started<T>(_ run: Int, of flow: Task<T, Never>) async throws {
+        guard let fd = startedPipes[run] else { throw NeverStarted(run: run) }
+        Task.detached {
             _ = await flow.value
-            // Non-blocking: with no reader left (the stub started) this fails at once.
-            let fd = open(path, O_WRONLY | O_NONBLOCK)
-            guard fd >= 0 else { return }
             _ = "ended\n".withCString { write(fd, $0, strlen($0)) }
-            close(fd)
         }
-        let said = await Task.detached {
-            (try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)).readToEnd()).flatMap {
-                String(bytes: $0, encoding: .utf8)
-            } ?? ""
+        let said = await Task.detached { () -> String in
+            var buffer = [UInt8](repeating: 0, count: 64)
+            let count = read(fd, &buffer, buffer.count)
+            return count > 0 ? String(bytes: buffer[..<count], encoding: .utf8) ?? "" : ""
         }.value
-        if !said.hasPrefix("started") {
-            XCTFail("run \(run) ended before the stub started", file: file, line: line)
-        }
+        guard said.hasPrefix("started") else { throw NeverStarted(run: run) }
     }
 
     /// Lets run `run` end with `exitCode` (a non-zero one prints an error).

@@ -112,7 +112,11 @@ final class JiraAccountsViewModel {
     /// The awaitable body of `refresh()`, split out so tests can call it
     /// directly and observe `accounts` deterministically instead of racing a
     /// detached `Task`.
-    func refreshAsync() async {
+    ///
+    /// `quiet` (the re-read after a Cancel) reports a failed read through
+    /// `readError` only, never `error`: a Cancel stays silent, and a newer
+    /// flow's result is never overwritten.
+    func refreshAsync(quiet: Bool = false) async {
         do {
             let rows = try await dbPool.read { db in try JiraAccountQueries.fetchAll(db) }
             self.accounts = rows
@@ -120,7 +124,7 @@ final class JiraAccountsViewModel {
             hasRead = true
             await onAccountsChanged?()
         } catch {
-            self.error = "Failed to load accounts: \(error.localizedDescription)"
+            if !quiet { self.error = "Failed to load accounts: \(error.localizedDescription)" }
             readError = error.localizedDescription
             hasRead = true
             return
@@ -454,7 +458,7 @@ final class JiraAccountsViewModel {
             guard result.exitCode == 0 else {
                 // Killed, maybe part-way through saving: re-read the
                 // accounts so whatever landed shows (no daemon restart).
-                await refreshAsync()
+                await refreshAsync(quiet: true)
                 return .cancelled
             }
             refresh()

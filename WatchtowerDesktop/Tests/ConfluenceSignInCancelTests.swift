@@ -242,7 +242,7 @@ final class ConfluenceSignInCancelTests: XCTestCase {
         XCTAssertThrowsError(try section().inspect().find(text: copy.line))
 
         let run = Task { await start(vm) }
-        await stub.started(1, of: run)
+        try await stub.started(1, of: run)
         XCTAssertTrue(jira.isConnecting)
         XCTAssertNoThrow(try section().inspect().find(text: copy.line))
         XCTAssertNoThrow(try section().inspect().find(text: copy.hint))
@@ -267,7 +267,7 @@ final class ConfluenceSignInCancelTests: XCTestCase {
         let wired = try await wired(needsConsent: false, stub: stub)
         let (vm, section) = (wired.vm, wired.section)
         let run = Task { await vm.allowEditingAsync() }
-        await stub.started(1, of: run)
+        try await stub.started(1, of: run)
 
         wired.runner.accessJSON = #"{"read":false,"write":false}"#
         await vm.load()
@@ -288,11 +288,11 @@ final class ConfluenceSignInCancelTests: XCTestCase {
         let (jira, vm) = (wired.jira, wired.vm)
         let other = try XCTUnwrap(wired.accounts.first { Int64($0.id) != vm.accountID })
         let grant = Task { await vm.reconsentAsync() }
-        await stub.started(1, of: grant)
+        try await stub.started(1, of: grant)
         jira.cancelConnect()
 
         let relogin = Task { await jira.relogin(other) }
-        await stub.started(2, of: relogin)
+        try await stub.started(2, of: relogin)
         XCTAssertTrue(vm.isWaitingForSignIn, "the grant's flow has not ended yet")
         vm.cancelReconsent()
         XCTAssertTrue(jira.isConnecting, "the other site's Re-login still runs")

@@ -39,7 +39,7 @@ final class JiraSignInCancelTests: XCTestCase {
     func testCancelEndsTheReloginSilently() async throws {
         let (vm, stub, account, _) = try await make()
         let run = Task { await vm.relogin(account) }
-        await stub.started(1, of: run)
+        try await stub.started(1, of: run)
         XCTAssertTrue(vm.isConnecting)
         XCTAssertEqual(vm.signInAccountID, account.id)
 
@@ -59,7 +59,7 @@ final class JiraSignInCancelTests: XCTestCase {
     func testCancelAsTheReloginEndsIsSilent() async throws {
         let (vm, stub, account, _) = try await make()
         let run = Task { await vm.relogin(account) }
-        await stub.started(1, of: run)
+        try await stub.started(1, of: run)
         await stub.release(1, exitCode: 0)
         vm.cancelConnect()
 
@@ -74,11 +74,11 @@ final class JiraSignInCancelTests: XCTestCase {
     func testStaleReloginEndKeepsTheNewRunBusy() async throws {
         let (vm, stub, account, _) = try await make(ignoresTerm: true)
         let first = Task { await vm.relogin(account) }
-        await stub.started(1, of: first)
+        try await stub.started(1, of: first)
         vm.cancelConnect()
 
         let second = Task { await vm.relogin(account) }
-        await stub.started(2, of: second)
+        try await stub.started(2, of: second)
         await stub.release(1, exitCode: 1)
         await first.value
         XCTAssertTrue(vm.isConnecting, "the first run's end did not reset the second")
@@ -91,6 +91,21 @@ final class JiraSignInCancelTests: XCTestCase {
         await second.value
         XCTAssertFalse(vm.isConnecting)
         XCTAssertNil(vm.error)
+    }
+
+    /// The re-read after a Cancel fails: it says so through `readError`
+    /// only, and the Cancel stays silent.
+    func testFailedRereadAfterCancelSetsNoError() async throws {
+        let (vm, stub, account, pool) = try await make()
+        let run = Task { await vm.relogin(account) }
+        try await stub.started(1, of: run)
+        try await pool.write { db in try db.execute(sql: "DROP TABLE jira_accounts") }
+        vm.cancelConnect()
+
+        await run.value
+        XCTAssertNil(vm.error, "a Cancel is not an error, even when its re-read fails")
+        XCTAssertNotNil(vm.readError)
+        XCTAssertFalse(vm.isConnecting)
     }
 
     // MARK: - The row
@@ -107,7 +122,7 @@ final class JiraSignInCancelTests: XCTestCase {
         XCTAssertThrowsError(try idle.inspect().find(text: copy.line))
 
         let run = Task { await vm.relogin(account) }
-        await stub.started(1, of: run)
+        try await stub.started(1, of: run)
         let waiting = JiraConnectionDetail().environment(appState)
         XCTAssertNoThrow(try waiting.inspect().find(text: copy.line))
         XCTAssertNoThrow(try waiting.inspect().find(text: copy.hint))
@@ -127,7 +142,7 @@ final class JiraSignInCancelTests: XCTestCase {
     func testConfluenceGrantDoesNotMarkTheRow() async throws {
         let (vm, stub, account, _) = try await make()
         let run = Task { await vm.reloginWithConfluence(accountID: account.id) }
-        await stub.started(1, of: run)
+        try await stub.started(1, of: run)
         XCTAssertTrue(vm.isConnecting)
         XCTAssertNil(vm.signInAccountID)
         vm.cancelConnect()
