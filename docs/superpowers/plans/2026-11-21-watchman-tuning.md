@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Icon: SF Symbol `binoculars`, from one constant `WatchmanStyle.icon`.
+- Icon: SF Symbol `shield.lefthalf.filled` (ask #1714, replacing `binoculars`), from one constant `WatchmanStyle.icon`.
 - Instruction: at most 2000 runes after trim (Go clips); counter shows past 1800; never lifts a hard limit (WATCHMAN-01).
 - Learning: no time budget for an unlearned workbench; one learner per workbench via `<workspace>/watchman/learn-<id>.lock`; background-AI consent checked between batches (BGAI-01).
 - While learning: `ask`/`check`/`handover`/`review_doc`/`review_code` items are **not leased** — they stay `queued`, untouched (D5); `permission` is leased and still parks with `LearningReason`.
@@ -59,14 +59,14 @@ Board: Task 1 = #2135, 2a = #2140, 2b = #2141, 3a = #2142, 3b = #2143, 4a = #214
 - Modify: `Views/Workbench/WatchmanArmControl.swift` (2× `moon.stars`), `Views/Home/WatchmanHomeRow.swift`, `Views/Inbox/WatchmanJournalView.swift`, `ViewModels/WatchmanJournalViewModel.swift`, the `inboxWatchman` row of `EmptyStateCopyTable`, the tray item and the Inbox entry icon (grep `moon.stars` under `WatchtowerDesktop/Sources`)
 - Test: `WatchtowerDesktop/Tests/Core/WatchmanStyleTests.swift`
 
-**Interfaces:** Produces `package enum WatchmanStyle { package static let icon = "binoculars" }`.
+**Interfaces:** Produces `package enum WatchmanStyle { package static let icon = "shield.lefthalf.filled" }`.
 
-- [ ] Write `testIconIsBinoculars` (`XCTAssertEqual(WatchmanStyle.icon, "binoculars")`) and `testNoMoonStarsInWatchmanSources`: walks `WatchtowerDesktop/Sources` (path from `#filePath`) and fails on any file containing `"moon.stars"` whose name contains `Watchman` or which is `EmptyStateCopyTable.swift`/the tray menu file.
+- [ ] Write `testIconIsShield` (`XCTAssertEqual(WatchmanStyle.icon, "shield.lefthalf.filled")`) and `testNoMoonStarsInWatchmanSources`: walks `WatchtowerDesktop/Sources` (path from `#filePath`) and fails on any file containing `"moon.stars"` whose name contains `Watchman` or which is `EmptyStateCopyTable.swift`/the tray menu file.
 - [ ] Run `make test-swift FILTER=WatchmanStyleTests` → FAIL.
 - [ ] Replace every Watchman `moon.stars` with `WatchmanStyle.icon`.
 - [ ] Run the filter → PASS; `make lint-swift`.
-- [ ] `make desktop-shots DESKTOP_SHOTS=build/shots` filtered to `testWatchmanShotsRender`; copy the re-rendered `watchman-*` PNGs over `docs/design/mockups/watchman/`; look at three (strip, journal, home) to confirm binoculars.
-- [ ] Commit `feat(watchman): binoculars icon (#2135)`.
+- [ ] `make desktop-shots DESKTOP_SHOTS=build/shots` filtered to `testWatchmanShotsRender`; copy the re-rendered `watchman-*` PNGs over `docs/design/mockups/watchman/`; look at three (strip, journal, home) to confirm the shield.
+- [ ] Commit `feat(watchman): Watchman icon from one constant (#2135)`.
 
 ### Task 2a: Instructions — data, CLI, twin
 

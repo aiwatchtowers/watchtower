@@ -6,14 +6,14 @@ The first real night with Watchman (2026-11-20) showed four gaps. This spec clos
 
 | # | Gap seen | What changes |
 |---|---|---|
-| 1 | The icon is the wrong one (`moon.stars`, left from "Sleep") | `binoculars` everywhere Watchman shows |
+| 1 | The icon is the wrong one (`moon.stars`, left from "Sleep") | `shield.lefthalf.filled` everywhere Watchman shows |
 | 2 | Watchman cannot be told what a session is for | An optional instruction on every hand-over, editable while armed |
 | 3 | Nothing happens at first: learning starts only on the first hand-over, runs 5 min per daemon cycle (75 min on the owner's workbench), and every question asked meanwhile is parked and never looked at again | Learning starts when Watchman is turned on for the workbench and runs to the end in one go; questions asked meanwhile wait and are decided once it ends. Turned on from Settings before the first hand-over, Watchman decides from the first question; turned on by the hand-over itself, it decides from the end of learning (one continuous run instead of 75 min of slices), not from the first minute |
 | 4 | An agent can end its turn with a question as text, or just stop, and nobody notices | The Stop guard sends back a text question in a handed session; Watchman pings a session that has stopped with nothing running, at most 3 times, then puts it in WAITING FOR YOU |
 
 ## Decisions
 
-- D1 — Icon is SF Symbol `binoculars` (ask #1699).
+- D1 — Icon is SF Symbol `shield.lefthalf.filled` (ask #1714; ask #1699 first chose `binoculars`, which turned out to be the app icon, the Watch tab and the track icon already).
 - D2 — Learning starts when Watchman is turned on for a workbench (Settings **Start Learning**, `watchman learn --start`, or the first hand-over) and runs in one go until done (ask #1699).
 - D3 — Instructions per session/target and "questions held while learning are decided after it" accepted (ask #1699, "Да, пиши спеку").
 - D4 — The stall ping must tell a stopped agent from one whose sub-agents or background jobs still run (ask #1699, owner's comment "надо понимать что бегут там агенты или фоновая задача"). The thresholds (3 min, 3 pings) were this spec's proposal, **approved with the spec (ask #1705)** (he answered "тут надо смотреть"); they are constants in one place (`watchmanact.StallAfter`, `StallMaxPings`) so a later change is one line.
@@ -23,7 +23,7 @@ The first real night with Watchman (2026-11-20) showed four gaps. This spec clos
 
 ## 1. Icon (Task 1)
 
-- One constant `WatchmanStyle.icon = "binoculars"` in WatchtowerCore; every Watchman glyph reads it: the **Hand to Watchman** / **Take back** button and the armed chip (`WatchmanArmControl`), the target panel, the Home row (`WatchmanHomeRow`), the journal header and empty state (`WatchmanJournalView`, `EmptyStateCopyTable.inboxWatchman`, `WatchmanJournalViewModel`'s fallback), the Inbox entry and the tray item.
+- One constant `WatchmanStyle.icon = "shield.lefthalf.filled"` in WatchtowerCore; every Watchman glyph reads it: the **Hand to Watchman** / **Take back** button and the armed chip (`WatchmanArmControl`), the target panel, the Home row (`WatchmanHomeRow`), the journal header and empty state (`WatchmanJournalView`, `EmptyStateCopyTable.inboxWatchman`, `WatchmanJournalViewModel`'s fallback), the Inbox entry and the tray item.
 - A test greps the Watchman view and copy files for `moon.stars` and fails on a hit, so the old glyph does not come back through a new view.
 - Mockups: every existing Watchman frame is re-rendered (`make desktop-shots`), no layout change.
 
@@ -144,7 +144,7 @@ The twin worker gets a 60 s tick for armed sessions with a live run (the session
 
 | Task | Promise | Tests |
 |---|---|---|
-| 1 Icon | binoculars everywhere | `WatchmanStyleTests` (constant), the `moon.stars` grep test; re-rendered shots |
+| 1 Icon | `shield.lefthalf.filled` everywhere | `WatchmanStyleTests` (constant), the `moon.stars` grep test; re-rendered shots |
 | 2 Instructions | field on every hand-over, edit while armed, twin uses it, never lifts a limit | migration golden; `TestWatchmanArm_InstructionsKeptOnRearm`, `TestWatchmanDisarm_KeepsInstruction`, `TestWatchmanArmAllRunning_EmptyKeepsInstructions`, `TestWatchmanInstruct_UnarmedStoredNotActed`, `TestWatchmanUpkeep_PrunesInstructions`, `TestWatchmanInstruct_RefusedUnderAgent`, JSON keys pinned; `TestLiveContext_SessionInstructions` (target then session); `TestTwin_InstructionNeverLiftsHardLimit`; Swift: `WatchmanArmingCopyTests` (all new strings), `WatchmanCenterTests` (arm with text, save failure keeps text + Retry), status decoding fixture with `instructions` |
 | 3 Learning | starts on turn-on, runs to the end, one learner per workbench, items wait and are decided after | `TestLearner_RunsToEndWithoutBudget`, `TestLearner_StopsOnShutdownAndResumes`, `TestLearner_PausedByConsent`, `TestLearner_LockSkipsSecond`, `TestTwin_DoesNotLeaseWhileLearning`, `TestTwin_PermissionParksWhileLearning`, `TestTwin_LeasesHeldItemsAfterLearning`, `TestTwin_OwnerAnswersWhileLearning_OwnerFirst`; Swift: busy line and chip copy tests |
 | 4a Stop guard | armed → owner read as away | `TestPROJ13_…` armed case, `TestAskGuard_ArmingUnreadableKeepsPresence` |
@@ -162,7 +162,7 @@ The twin worker gets a 60 s tick for armed sessions with a live run (the session
 - [`journal-waiting-learning`](../../design/mockups/watchman-tuning/journal-waiting-learning-light.png) — tonight's busy line `Waiting for learning (42%): 3 questions`.
 - [`journal-stall`](../../design/mockups/watchman-tuning/journal-stall-light.png) — a `stall` card under WAITING FOR YOU with **Open session** / **Mark done**.
 - There is no empty or loading state of its own: the sheet opens filled from the arming it already read; the journal's empty, loading and error states are unchanged.
-- Every existing `watchman-*` frame re-rendered with binoculars.
+- Every existing `watchman-*` frame re-rendered with the shield.
 
 ## Out of scope
 

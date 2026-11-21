@@ -8,7 +8,7 @@ final class WatchmanTuningMockCopyTests: XCTestCase {
     typealias Copy = WatchmanTuningMockCopy
 
     func testStringsMatchTheSpec() {
-        XCTAssertEqual(Copy.icon, "binoculars")
+        XCTAssertEqual(Copy.icon, "shield.lefthalf.filled")
         XCTAssertEqual(Copy.fieldLabel, "Instruction for Watchman (optional)")
         XCTAssertEqual(Copy.editTitle, "Instruction for Watchman")
         XCTAssertEqual(Copy.handOver, "Hand over")

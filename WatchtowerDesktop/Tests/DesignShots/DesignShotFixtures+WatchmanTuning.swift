@@ -62,7 +62,7 @@ enum WatchmanTuningShotFixtures {
 
 /// The spec's strings, one place, pinned by `WatchmanTuningMockCopyTests`.
 enum WatchmanTuningMockCopy {
-    static let icon = "binoculars"
+    static let icon = "shield.lefthalf.filled"
     static let sheetTitle = "Hand to Watchman"
     static let editTitle = "Instruction for Watchman"
     static let fieldLabel = "Instruction for Watchman (optional)"
