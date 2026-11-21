@@ -150,12 +150,18 @@ func (c *Client) Call(ctx context.Context, tool string, args json.RawMessage) (j
 
 	callCtx, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
-	if err := c.write(callCtx, line); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err() // cancelled before the line went out
+	if started, err := c.write(callCtx, line); err != nil {
+		if started {
+			// Part of the frame may be on the socket: the next line would
+			// be glued to it. Drop the connection; every call gets closed.
+			_ = c.conn.Close()
+			return nil, errClosed
 		}
-		_ = c.conn.Close()
-		return nil, errClosed
+		// Nothing was sent; the connection and the other calls are fine.
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, &Error{Code: CodeFailed, Message: fmt.Sprintf("%s was not sent: the connection stayed busy for %s; nothing changed, call it again", tool, CallTimeout)}
 	}
 	select {
 	case r, ok := <-ch:
@@ -172,30 +178,46 @@ func (c *Client) Call(ctx context.Context, tool string, args json.RawMessage) (j
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, &Error{Code: CodeFailed, Message: fmt.Sprintf("the Watchtower app did not answer %s within %s; call it again", tool, CallTimeout)}
+		return nil, &Error{Code: CodeFailed, Message: noAnswer(tool)}
 	}
 }
 
-// write sends one line under the call's budget: a call cancelled while it
-// waits for the write turn never reaches the Desktop, and the write
-// deadline (the budget left) keeps a Desktop that stopped reading from
-// hanging the call.
-func (c *Client) write(ctx context.Context, line []byte) error {
+// reattachTools are the calls a repeat cannot start anything new with: a
+// read, or a re-attach to the same waiting step.
+var reattachTools = map[string]bool{"connect_status": true, "connect_wait": true, "request_secret": true}
+
+// noAnswer is a timed-out call's message. The outcome is unknown: only a
+// re-attach tool may simply be called again; anything else may have
+// started a flow, so the agent checks connect_status first.
+func noAnswer(tool string) string {
+	msg := fmt.Sprintf("the Watchtower app did not answer %s within %s; ", tool, CallTimeout)
+	if reattachTools[tool] {
+		return msg + "call it again"
+	}
+	return msg + "the outcome is unknown: call connect_status before repeating it"
+}
+
+// write sends one line under the call's budget: a call cancelled or out of
+// budget while it waits for the write turn sends nothing (started false),
+// and the write deadline (the budget left) keeps a Desktop that stopped
+// reading from hanging the call. started reports that Write was entered,
+// so part of the line may be on the socket.
+func (c *Client) write(ctx context.Context, line []byte) (started bool, err error) {
 	select {
 	case c.writeTurn <- struct{}{}:
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 	defer func() { <-c.writeTurn }()
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	deadline, _ := ctx.Deadline()
 	if err := c.conn.SetWriteDeadline(deadline); err != nil {
-		return err
+		return true, err // the socket is gone: close it like a failed write
 	}
-	_, err := c.conn.Write(append(line, '\n'))
-	return err
+	_, err = c.conn.Write(append(line, '\n'))
+	return true, err
 }
 
 // Close drops the connection; waiting calls get closed.

@@ -6,10 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"testing/iotest"
 	"testing/synctest"
 	"time"
 
@@ -411,5 +414,125 @@ func TestCall_CancelledCallIsNeverSent(t *testing.T) {
 			tools = append(tools, tl)
 		}
 		assert.Equal(t, []string{"connect_status"}, tools, "only the live call reached the Desktop")
+	})
+}
+
+// A write cut mid-frame closes the connection: the next call gets closed,
+// and nothing is ever appended to the partial line.
+func TestCall_WriteCutMidFrameClosesTheConnection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client, server := net.Pipe()
+		defer func() { _ = server.Close() }()
+		rest := make(chan []byte, 1)
+		go func() {
+			// Unbuffered reads: net.Pipe hands a reader only what it asks for,
+			// so the client's write stays half done.
+			r := iotest.OneByteReader(server)
+			for b := make([]byte, 1); b[0] != '\n'; {
+				if _, err := r.Read(b); err != nil {
+					return
+				}
+			}
+			if _, err := server.Write([]byte("{\"ok\":true}\n")); err != nil {
+				return
+			}
+			head := make([]byte, 5)
+			if _, err := io.ReadFull(r, head); err != nil {
+				return
+			}
+			time.Sleep(CallTimeout + time.Second) // stop reading mid-frame
+			tail, _ := io.ReadAll(server)
+			rest <- tail
+		}()
+		c, err := handshake(context.Background(), client, testToken, "slack")
+		require.NoError(t, err)
+
+		// The caller's own deadline cuts the write (the path that once left
+		// the partial frame on an open socket).
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err = c.Call(ctx, "connect_start", json.RawMessage(`{"code":"https://acme.example.com/connect"}`))
+		var we *Error
+		require.ErrorAs(t, err, &we)
+		assert.Equal(t, CodeClosed, we.Code)
+
+		_, err = c.Call(context.Background(), "connect_status", nil)
+		require.ErrorAs(t, err, &we)
+		assert.Equal(t, CodeClosed, we.Code, "the next call never writes after the partial frame")
+		assert.NotContains(t, string(<-rest), "\n", "the Desktop sees the socket end, never a completed or glued line")
+	})
+}
+
+// A call whose budget runs out while it waits for the write turn sends
+// nothing and fails alone: the connection stays, and an overlapping call
+// in flight still gets its answer.
+func TestCall_NotSentTimeoutKeepsTheConnection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		got := make(chan string, 4)
+		c := pipeRun(t, func(server net.Conn, r Request) {
+			got <- r.Tool
+			if r.Tool == "connect_wait" {
+				<-release
+			}
+			b, _ := json.Marshal(Response{ID: r.ID, Result: json.RawMessage(`{"state":"waiting"}`)})
+			_, _ = server.Write(append(b, '\n'))
+		})
+
+		// Own budget: a queued call times out unsent.
+		c.writeTurn <- struct{}{} // a write in progress
+		_, err := c.Call(context.Background(), "connect_start", nil)
+		var we *Error
+		require.ErrorAs(t, err, &we)
+		assert.Equal(t, CodeFailed, we.Code)
+		assert.Contains(t, we.Message, "was not sent")
+		<-c.writeTurn
+
+		// Overlap: connect_wait in flight, a queued call with a shorter
+		// budget gives up unsent, connect_wait still gets its answer.
+		waitRes := make(chan error, 1)
+		go func() {
+			_, err := c.Call(context.Background(), "connect_wait", nil)
+			waitRes <- err
+		}()
+		synctest.Wait()
+		c.writeTurn <- struct{}{}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, err = c.Call(ctx, "company_publish", nil)
+		cancel()
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		<-c.writeTurn
+		close(release)
+		require.NoError(t, <-waitRes, "the in-flight call is unharmed")
+
+		_, err = c.Call(context.Background(), "connect_status", nil)
+		require.NoError(t, err, "the connection still serves")
+		synctest.Wait()
+		close(got)
+		var tools []string
+		for tl := range got {
+			tools = append(tools, tl)
+		}
+		assert.Equal(t, []string{"connect_wait", "connect_status"}, tools, "the unsent calls never reached the Desktop")
+	})
+}
+
+// After a transport timeout only a re-attach tool is told to call again;
+// a tool that may have started something is told to check connect_status.
+func TestCall_TimeoutMessagePerToolKind(t *testing.T) {
+	for _, tool := range []string{"connect_status", "connect_wait", "request_secret"} {
+		assert.True(t, strings.HasSuffix(noAnswer(tool), "call it again"), tool)
+	}
+	for _, tool := range []string{"connect_start", "company_publish", "company_check", "set_fields", "connect_cancel", "choose", "company_draft", "slack_live_probe"} {
+		msg := noAnswer(tool)
+		assert.NotContains(t, msg, "call it again", tool)
+		assert.Contains(t, msg, "outcome is unknown: call connect_status before repeating it", tool)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		c := pipeRun(t, func(net.Conn, Request) {})
+		_, err := c.Call(context.Background(), "connect_start", nil)
+		var we *Error
+		require.ErrorAs(t, err, &we)
+		assert.Contains(t, we.Message, "connect_status before repeating", "the real timeout path uses it")
 	})
 }
