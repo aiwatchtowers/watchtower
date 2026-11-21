@@ -1,8 +1,7 @@
 # Watchtower security surfaces
 
-The attack surfaces the `/security-audit` skill
-(`.claude/skills/security-audit/`) hands to the audit engine as context, and the map
-its Range mode uses to say which surfaces a tag diff touches.
+The surfaces covered by the [Watchtower security review](review-workflow.md),
+and the path map its Range mode uses to identify surfaces touched by a tag diff.
 
 Format, per surface: `Paths:` is a fenced block of git pathspecs, one per line (a
 directory prefix ending in `/` matches everything under it; `*` matches across `/`, as
