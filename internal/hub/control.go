@@ -422,7 +422,7 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 	defer func() {
 		if pl != nil && pl.ckNonce != "" {
 			nonce := pl.ckNonce
-			s.withHub(func(h *hubRuntime) ControlAnswer { h.abandonCode(nonce); return ControlAnswer{} })
+			s.withHubDo(func(h *hubRuntime) { h.abandonCode(nonce) })
 		}
 		s.pairMu.Lock()
 		if pl != nil {
@@ -723,6 +723,16 @@ func boolInt(b bool) int {
 	return 0
 }
 
+// withHubDo runs fn on the running hub, holding it so it cannot stop
+// meanwhile; nothing when none runs.
+func (s *supervisor) withHubDo(fn func(*hubRuntime)) {
+	s.hubMu.RLock()
+	defer s.hubMu.RUnlock()
+	if s.hub != nil {
+		fn(s.hub)
+	}
+}
+
 // withHub runs fn on the running hub, holding it so it cannot stop
 // meanwhile; hub_off when none runs.
 func (s *supervisor) withHub(fn func(*hubRuntime) ControlAnswer) ControlAnswer {
@@ -853,10 +863,9 @@ func LinkErrClass(err error) string {
 	case errors.Is(err, link.ErrCodeChanged):
 		return ErrClassCodeChanged
 	case errors.As(err, &accountErr):
-		switch accountErr.Account {
-		case transport.AccountNoAccount, transport.AccountRestricted, transport.AccountNoEntitlement:
+		if a := accountErr.Account; a == transport.AccountNoAccount || a == transport.AccountRestricted ||
+			a == transport.AccountNoEntitlement {
 			return ErrClassNoICloud
-		case transport.AccountTemporarilyUnavailable, transport.AccountAvailable:
 		}
 		// Temporarily unavailable, or unreadable (AccountUnreadable): retryable.
 		return ErrClassICloudUnreachable
