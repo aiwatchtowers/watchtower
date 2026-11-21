@@ -1070,6 +1070,17 @@ func TestTheOwnCodesAreDroppedOnceTheStartsCloseRan(t *testing.T) {
 	if n := ownCodes(gaveUp); n != 0 {
 		t.Errorf("%d own codes kept after the start's close gave up", n)
 	}
+	// Skipped: a run with no CloudKit shares (the relay transport) never
+	// runs the start's close.
+	relayRun := r.ckCenter(DefaultSweep)
+	r.c = relayRun
+	r.issue()
+	relayRun.SkipStartClose()
+	r.issue()
+	r.issue()
+	if n := ownCodes(relayRun); n != 0 {
+		t.Errorf("%d own codes kept on a run without the start's close", n)
+	}
 }
 
 func TestALateHelloAfterACloseReadsTheClosesRefusal(t *testing.T) {

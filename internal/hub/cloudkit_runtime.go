@@ -174,6 +174,7 @@ func (h *hubRuntime) passTick(ctx context.Context) {
 func (h *hubRuntime) cloudKitStart(ctx context.Context) {
 	s, ok := h.shares()
 	if !ok {
+		h.center.SkipStartClose() // no CloudKit link to close: keep no own codes
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)

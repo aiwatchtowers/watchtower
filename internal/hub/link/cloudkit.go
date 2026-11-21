@@ -605,11 +605,7 @@ func (c *Center) CloseLink(ctx context.Context, s transport.Shares, reason Close
 // closes the earlier run's link once no code is on screen; the waiting
 // requests are then refused by the next close or expire.
 func (c *Center) CloseOnStart(ctx context.Context, s transport.Shares) error {
-	defer func() {
-		c.ck.mu.Lock()
-		c.ck.ownCodes, c.ck.startClosed = nil, true
-		c.ck.mu.Unlock()
-	}()
+	defer c.SkipStartClose()
 	select {
 	case c.issueSem <- struct{}{}:
 	case <-ctx.Done():
@@ -645,6 +641,15 @@ func (c *Center) CloseOnStart(ctx context.Context, s transport.Shares) error {
 		return err
 	}
 	return nil
+}
+
+// SkipStartClose ends the start's close's watch over the own codes: for a
+// run with no CloudKit shares, where CloseOnStart never runs, so its codes
+// are not kept for the run's life. CloseOnStart ends with it too.
+func (c *Center) SkipStartClose() {
+	c.ck.mu.Lock()
+	defer c.ck.mu.Unlock()
+	c.ck.ownCodes, c.ck.startClosed = nil, true
 }
 
 // CloseOnStop closes the link of a code still on screen when the hub stops
