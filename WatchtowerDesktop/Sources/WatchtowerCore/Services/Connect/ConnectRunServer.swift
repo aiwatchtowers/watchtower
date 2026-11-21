@@ -30,9 +30,9 @@ package final class ConnectRunServer: @unchecked Sendable {
     package static let socketName = "connect.sock"
     /// Seconds a connection has to send its hello.
     package static let helloTimeout: TimeInterval = 5
-    /// Seconds one answer may wait for a peer that stopped reading before
-    /// the connection is cut.
-    static let writeTimeout = 45
+    /// Milliseconds one answer may wait for a peer that stopped reading
+    /// before the connection is cut.
+    static let writeTimeout: Int32 = 45_000
     /// `sun_path` holds 104 bytes on macOS, the terminating NUL included.
     static let maxPathBytes = 103
 
@@ -125,10 +125,34 @@ final class ConnectRunCore: @unchecked Sendable {
     private var queue: AsyncStream<Queued>.Continuation?
     private var dispatcherTask: Task<Void, Never>?
 
-    /// Tests: told when a request is queued for the main actor, and when a
-    /// connection's descriptor is closed.
-    var onQueued: (@Sendable () -> Void)?
-    var onClosed: (@Sendable () -> Void)?
+    /// Test seams, set before `start`.
+    struct Hooks {
+        /// Told when a request is queued for the main actor.
+        var onQueued: (@Sendable () -> Void)?
+        /// Told when a connection's descriptor is closed.
+        var onClosed: (@Sendable () -> Void)?
+        /// Told when an answer's write waits on a peer that stopped reading.
+        var onWriteStalled: (@Sendable () -> Void)?
+        /// Awaited by the dispatcher before it takes each queued request.
+        var beforeDispatch: (@MainActor () async -> Void)?
+        /// The stalled-write bound in milliseconds; nil waits until the
+        /// connection is cut.
+        var writeTimeout: Int32? = ConnectRunServer.writeTimeout
+    }
+
+    private var storedHooks = Hooks()
+    var hooks: Hooks {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedHooks
+        }
+        set {
+            lock.lock()
+            storedHooks = newValue
+            lock.unlock()
+        }
+    }
 
     private let acceptQueue = DispatchQueue(label: "connect-run.accept")
     private let connectionQueue = DispatchQueue(label: "connect-run.connection", attributes: .concurrent)
@@ -203,7 +227,7 @@ final class ConnectRunCore: @unchecked Sendable {
         token = ConnectRunServer.drawToken()
         let (stream, continuation) = AsyncStream.makeStream(of: Queued.self)
         queue = continuation
-        dispatcherTask = Self.dispatch(stream, handler: handler)
+        dispatcherTask = Self.dispatch(stream, before: storedHooks.beforeDispatch, handler: handler)
         return (path, token)
     }
 
@@ -237,10 +261,12 @@ final class ConnectRunCore: @unchecked Sendable {
     /// and still overlap. A request whose peer ended is skipped.
     private static func dispatch(
         _ stream: AsyncStream<Queued>,
+        before: (@MainActor () async -> Void)?,
         handler: @escaping @MainActor (ConnectWireRequest) async -> ConnectWireResponse
     ) -> Task<Void, Never> {
         Task { @MainActor in
             for await (request, peer) in stream {
+                await before?()
                 guard peer.isLive else { continue }
                 await withCheckedContinuation { (started: CheckedContinuation<Void, Never>) in
                     // This task cannot run before the loop suspends here, so
@@ -298,17 +324,17 @@ final class ConnectRunCore: @unchecked Sendable {
                 }
                 return
             }
-            // An accepted socket inherits O_NONBLOCK; its reads block in poll.
-            _ = fcntl(conn, F_SETFL, fcntl(conn, F_GETFL) & ~O_NONBLOCK)
+            // An accepted socket inherits O_NONBLOCK and keeps it: reads and
+            // writes wait in poll, which a shutdown wakes.
             var on: Int32 = 1
             setsockopt(conn, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
-            var sendTimeout = timeval(tv_sec: ConnectRunServer.writeTimeout, tv_usec: 0)
-            setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
             guard ConnectRunServer.peerUID(conn) == ownerUID else {
                 close(conn)
                 continue
             }
-            let peer = ConnectRunPeer(fd: conn) { [weak self] peer in self?.forget(peer) }
+            let hooks = self.hooks
+            let peer = ConnectRunPeer(fd: conn, writeTimeout: hooks.writeTimeout,
+                                      onWriteStalled: hooks.onWriteStalled) { [weak self] peer in self?.forget(peer) }
             lock.lock()
             let open = !stopped
             if open { peers[ObjectIdentifier(peer)] = peer }
@@ -330,7 +356,7 @@ final class ConnectRunCore: @unchecked Sendable {
         lock.lock()
         peers[ObjectIdentifier(peer)] = nil
         if admitted === peer { admitted = nil }
-        let onClosed = self.onClosed
+        let onClosed = storedHooks.onClosed
         lock.unlock()
         onClosed?()
     }
@@ -358,7 +384,7 @@ final class ConnectRunCore: @unchecked Sendable {
             guard let request = try? JSONDecoder().decode(ConnectWireRequest.self, from: line) else { return false }
             lock.lock()
             let queue = self.queue
-            let onQueued = self.onQueued
+            let onQueued = storedHooks.onQueued
             lock.unlock()
             guard let queue else { return false }
             queue.yield((request, peer))
@@ -393,14 +419,16 @@ final class ConnectRunCore: @unchecked Sendable {
 
 /// One connection's descriptor, its writes and its running calls. Writes go
 /// through one serial queue (a line is never cut by another, and a peer that
-/// stops reading never blocks the main actor; `SO_SNDTIMEO` bounds each
-/// write); the descriptor is closed on that queue too, so no write races its
+/// stops reading never blocks the main actor; a stalled write waits in poll
+/// for at most `writeTimeout`, and a shutdown wakes it); the descriptor is closed on that queue too, so no write races its
 /// close. The server keeps the peer registered until that close, so `stop`
 /// can always cut it.
 final class ConnectRunPeer: @unchecked Sendable {
     let fd: Int32
     private let lock = NSLock()
     private let onClose: @Sendable (ConnectRunPeer) -> Void
+    private let writeTimeout: Int32?
+    private let onWriteStalled: (@Sendable () -> Void)?
     /// False once the descriptor is closed.
     private var open = true
     /// True once the connection ended: queued requests do not start and
@@ -410,8 +438,15 @@ final class ConnectRunPeer: @unchecked Sendable {
     private var calls: [Int: Task<Void, Never>] = [:]
     private let writeQueue = DispatchQueue(label: "connect-run.write")
 
-    init(fd: Int32, onClose: @escaping @Sendable (ConnectRunPeer) -> Void) {
+    init(
+        fd: Int32,
+        writeTimeout: Int32? = ConnectRunServer.writeTimeout,
+        onWriteStalled: (@Sendable () -> Void)? = nil,
+        onClose: @escaping @Sendable (ConnectRunPeer) -> Void
+    ) {
         self.fd = fd
+        self.writeTimeout = writeTimeout
+        self.onWriteStalled = onWriteStalled
         self.onClose = onClose
     }
 
@@ -479,15 +514,30 @@ final class ConnectRunPeer: @unchecked Sendable {
                 var offset = 0
                 while offset < raw.count {
                     let n = Darwin.write(fd, base + offset, raw.count - offset)
+                    if n > 0 {
+                        offset += n
+                        continue
+                    }
                     if n < 0, errno == EINTR { continue }
-                    guard n > 0 else { return false }
-                    offset += n
+                    guard n < 0, errno == EAGAIN || errno == EWOULDBLOCK, waitWritable() else { return false }
                 }
                 return true
             }
-            // A cut line or a peer that stopped reading past SO_SNDTIMEO:
+            // A cut line, or a peer that stopped reading past writeTimeout:
             // end the connection, the reader wakes and finishes.
             if !sent { cut() }
+        }
+    }
+
+    /// The socket buffer is full: waits until the peer reads, at most
+    /// `writeTimeout`. False when the time ran out or the socket was shut.
+    private func waitWritable() -> Bool {
+        onWriteStalled?()
+        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+        while true {
+            let ready = poll(&pfd, 1, writeTimeout ?? -1)
+            if ready < 0, errno == EINTR { continue }
+            return ready > 0 && pfd.revents & Int16(POLLOUT) != 0 && pfd.revents & Int16(POLLHUP | POLLERR) == 0
         }
     }
 
@@ -595,7 +645,7 @@ struct ConnectLineReader {
             if ready < 0, errno == EINTR { continue }
             guard ready > 0 else { return .end }
             let n = read(fd, &chunk, chunk.count)
-            if n < 0, errno == EINTR { continue }
+            if n < 0, errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
             guard n > 0 else { return .end }
             buffer.append(contentsOf: chunk[0..<n])
         }

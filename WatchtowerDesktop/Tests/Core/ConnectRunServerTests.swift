@@ -343,8 +343,12 @@ final class ConnectRunServerTests: XCTestCase {
     func testQueuedRequestsNeverStartAfterStop() async throws {
         let log = HandlerLog()
         let server = makeServer(log: log)
-        let queued = DispatchSemaphore(value: 0)
-        server.core.onQueued = { queued.signal() }
+        let queued = Self.events { server.core.hooks.onQueued = $0 }
+        // The dispatcher waits at this gate before each request, so both are
+        // still queued (not started) when the run stops.
+        let (release, opener) = AsyncStream.makeStream(of: Void.self)
+        let gate = Task { for await _ in release { break } }
+        server.core.hooks.beforeDispatch = { await gate.value }
         let (path, token) = try server.start()
         let client = try await admittedClient(path, token: token)
 
@@ -352,10 +356,11 @@ final class ConnectRunServerTests: XCTestCase {
             #"{"id":1,"tool":"connect_status","args":{}}"#,
             #"{"id":2,"tool":"connect_status","args":{}}"#
         ].joined(separator: "\n"))
-        // The main actor stays blocked until both are queued, so the
-        // dispatcher cannot start either before the stop.
-        Self.waitBlocking(queued, times: 2)
+        var queuedEvents = queued.makeAsyncIterator()
+        _ = await queuedEvents.next()
+        _ = await queuedEvents.next()
         server.stop()
+        opener.finish()
 
         await server.core.dispatcher?.value
         XCTAssertEqual(log.started, [])
@@ -364,18 +369,18 @@ final class ConnectRunServerTests: XCTestCase {
     }
 
     /// A peer that stops reading in the middle of a large answer, then sends
-    /// garbage: its reader ends, the blocked write is failed, and the
-    /// descriptor closes.
+    /// garbage: its reader ends, the stalled write is failed, and the
+    /// descriptor closes. The write has no time bound here, so only the
+    /// reader's end can free it.
     func testReaderEndUnblocksStuckWrite() async throws {
-        let log = HandlerLog()
-        let server = makeServer(log: log)
-        let closed = Self.closedEvents(server)
+        let server = makeServer()
+        let (closed, stalled) = Self.stuckWriteEvents(server)
         let (path, token) = try server.start()
         let client = try await admittedClient(path, token: token)
 
         client.send(#"{"id":1,"tool":"big","args":{}}"#)
-        var event = await log.next()
-        while let current = event, current != .finished(1, cancelled: false) { event = await log.next() }
+        var stalls = stalled.makeAsyncIterator()
+        _ = await stalls.next()
         client.send("garbage")
 
         var events = closed.makeAsyncIterator()
@@ -384,16 +389,15 @@ final class ConnectRunServerTests: XCTestCase {
         _ = try await admittedClient(path, token: token)
     }
 
-    /// The same stuck peer, still connected: stop cuts it.
+    /// The same stuck peer, still connected: only stop can free it.
     func testStopCutsPeerThatStoppedReading() async throws {
-        let log = HandlerLog()
-        let server = makeServer(log: log)
-        let closed = Self.closedEvents(server)
+        let server = makeServer()
+        let (closed, stalled) = Self.stuckWriteEvents(server)
         let (path, token) = try server.start()
         let client = try await admittedClient(path, token: token)
         client.send(#"{"id":1,"tool":"big","args":{}}"#)
-        var event = await log.next()
-        while let current = event, current != .finished(1, cancelled: false) { event = await log.next() }
+        var stalls = stalled.makeAsyncIterator()
+        _ = await stalls.next()
 
         server.stop()
         var events = closed.makeAsyncIterator()
@@ -436,17 +440,22 @@ final class ConnectRunServerTests: XCTestCase {
         XCTAssertTrue(ConnectRunPeer.peekMeansHungUp(-1, errno: ECONNRESET))
     }
 
-    /// Blocks the calling thread (the main actor here) until `semaphore` is
-    /// signalled `times` times.
-    nonisolated private static func waitBlocking(_ semaphore: DispatchSemaphore, times: Int) {
-        for _ in 0..<times { semaphore.wait() }
+    /// A stream fed by the hook `install` sets.
+    private static func events(_ install: (@escaping @Sendable () -> Void) -> Void) -> AsyncStream<Void> {
+        let (stream, continuation) = AsyncStream.makeStream(of: Void.self)
+        install { continuation.yield() }
+        return stream
     }
 
-    /// One event per closed connection descriptor.
-    private static func closedEvents(_ server: ConnectRunServer) -> AsyncStream<Void> {
-        let (stream, continuation) = AsyncStream.makeStream(of: Void.self)
-        server.core.onClosed = { continuation.yield() }
-        return stream
+    /// Closed descriptors and stalled writes, with no bound on a stalled
+    /// write: nothing but the path under test can end it.
+    private static func stuckWriteEvents(
+        _ server: ConnectRunServer
+    ) -> (closed: AsyncStream<Void>, stalled: AsyncStream<Void>) {
+        server.core.hooks.writeTimeout = nil
+        let closed = events { server.core.hooks.onClosed = $0 }
+        let stalled = events { server.core.hooks.onWriteStalled = $0 }
+        return (closed, stalled)
     }
 
     func testTokenComparison() {
