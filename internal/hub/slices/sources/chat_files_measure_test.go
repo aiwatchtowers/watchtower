@@ -21,8 +21,8 @@ const measureSamples = 10
 
 // TestMeasure_ChatFileEventToChange is the hub-side half of the phone
 // Workchat latency promise (#2112 Task 10): the wall time from a transcript
-// append to the session_chat source's OnChange (the publisher's fast-lane
-// nudge), with the real fsnotify watcher, StandardChatTiming and a real
+// append to the session_chat source's OnChange (wired to the hub's debounced
+// publishSoon), with the real fsnotify watcher, StandardChatTiming and a real
 // sessionfeed.ReadChat of a Claude-format transcript. It does not cover the
 // relay hop or the phone's apply. Not part of the default run (wall-clock):
 //
@@ -87,9 +87,11 @@ func TestMeasure_ChatFileEventToChange(t *testing.T) {
 	sorted := slices.Clone(got)
 	slices.Sort(sorted)
 	t.Logf("measure: append → OnChange samples %v", got)
-	// p50 and p90 by nearest rank.
+	// Median as the mean of the middle samples; p90 by nearest rank.
+	n := len(sorted)
+	median := (sorted[(n-1)/2] + sorted[n/2]) / 2
 	t.Logf("measure: append → OnChange median %s p90 %s min %s max %s (n=%d)",
-		sorted[len(sorted)/2].Round(time.Millisecond), sorted[(len(sorted)*9+9)/10-1].Round(time.Millisecond),
+		median.Round(time.Millisecond), sorted[(len(sorted)*9+9)/10-1].Round(time.Millisecond),
 		sorted[0].Round(time.Millisecond), sorted[len(sorted)-1].Round(time.Millisecond), len(sorted))
 }
 

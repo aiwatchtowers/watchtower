@@ -292,11 +292,12 @@ a `PASSWORD=` env and a `user:pass@` URL reaches the payload as `[secret]`); the
 | Sheet Working rows with step + timer; without `live` "Running" | `WorkchatAgents` test |
 | Badge from `live`, finished-in-live counts as done | `WorkchatAgents` test |
 | No new phone timer outside the visible line | review check + the tests in §9; energy log not run (needs a device, owner hand-off) |
-| Event-to-phone latency ~1 s | hub side measured, see "Latency, as measured" below; relay + phone part is an owner hand-off |
+| Event-to-phone latency ~1 s | hub side measured (≥ 0.4 s to the saved record, relay + phone not included), see "Latency, as measured" below; relay + phone part is an owner hand-off |
 
 ### Latency, as measured (Task 10, 2026-11-21)
 
-**Hub side only: transcript append → `OnChange`** (the publisher's fast-lane nudge), real fsnotify (kqueue) watcher,
+**Hub side only: transcript append → `OnChange`** (wired to the hub's `publishSoon`, which then waits the
+publisher's 150 ms trailing `slices.Debounce` before the record is saved and sent), real fsnotify (kqueue) watcher,
 `StandardChatTiming`, a real `sessionfeed.ReadChat` of a Claude-format transcript, each append a new Bash step 2 s after
 the last (a lone event), one Mac: `go test -tags measure ./internal/hub/slices/sources -run TestMeasure_ -v`
 (`chat_files_measure_test.go`). 10 samples: **median 254 ms, p90 262 ms** (min 251, max 263). That is the 250 ms
@@ -304,9 +305,10 @@ debounce plus about 4 ms of kqueue delivery, read and encode. It does not cover 
 
 **Not measured here.** The local relay stand has no session-chat run (its `TestMeasure_HubLatencyOverTheStand` times
 actions, not transcript appends), and the stand's `wrangler` was not installed in the relay checkout on this machine.
-The stand's last numbers for the next leg (live-link.md "Stand numbers", 2026-11-18, loopback): `nudge_saved`
-p50 20 ms, p90 175 ms; `read_applied` p50 0 ms. Adding them gives a loopback **estimate** of about 275 ms p50 and
-440 ms p90 from append to record, not a measurement. Left for the owner: the same leg on the real relay with the phone
+The stand's `nudge_saved` numbers (live-link.md) time the `PublishNow` path, which skips the 150 ms debounce
+`session_chat` goes through, and percentiles of separate runs do not add, so no end-to-end figure is derived from them.
+What is known: append → record saved is at least the measured hub time plus the 150 ms debounce (about 0.4 s),
+before the relay hop and the phone's apply. Left for the owner: the same leg on the real relay with the phone
 (append on the Mac → record applied on the phone, 10 samples), and the energy log above.
 
 ## Mockups

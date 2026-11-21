@@ -8,7 +8,7 @@ A long test run looks the same as a stuck agent when all you see is **Working**.
 
 ## How it works
 
-The Mac reads the session's transcript as soon as it changes and sends the line to the open chat, usually within a second. Nothing runs on the phone while the chat is closed, and the timer ticks only while the line is on screen.
+The Mac reads the session's transcript as soon as it changes and sends the line to the open chat; it lands a moment later. Nothing runs on the phone while the chat is closed, and the timer ticks only while the line is on screen.
 
 The line shows a tool's one-line summary (a command, a file, a search pattern), never its output. Passwords, tokens and keys in it become **[secret]** before it leaves the Mac. An older Mac sends no line, and the chat looks as it did before.
 
