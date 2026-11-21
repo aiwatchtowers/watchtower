@@ -53,8 +53,16 @@ final class WatchmanCenter {
     /// The arm or instruction sheet on screen. Setting it (or nil, Cancel)
     /// drops the last confirm's failure line.
     var sheet: WatchmanArmSheetRequest? {
-        didSet { if sheet?.token != oldValue?.token { sheetError = nil } }
+        didSet {
+            sheetGeneration += 1
+            if sheet?.token != oldValue?.token { sheetError = nil }
+        }
     }
+    /// Bumped by every sheet change (opened, replaced, cancelled): a sheet
+    /// whose read started before one is not opened.
+    @ObservationIgnored private var sheetGeneration = 0
+    /// Scopes whose sheet is being opened (the check, the read).
+    @ObservationIgnored private var opening: Set<WatchmanArmScope> = []
     /// The sheet's confirm runs now (the check again, the arm or the save):
     /// its buttons wait.
     private(set) var confirming = false
@@ -255,9 +263,16 @@ final class WatchmanCenter {
     /// pre-filled with the scope's stored instruction (`storedInstruction`);
     /// the tray's starts empty. True when the sheet opened — the tray then
     /// brings the main window up for it.
+    /// One sheet at a time: while one is open nothing replaces it (the tray
+    /// only brings it up, so a draft is never lost), and a press while the
+    /// same scope's sheet is being opened does nothing.
     @discardableResult
     func handTo(_ scope: WatchmanArmScope, workbench: String?, title: String? = nil) async -> Bool {
-        guard armingHere.insert(scope).inserted else { return false }
+        if sheet != nil { return true }
+        guard !opening.contains(scope), armingHere.insert(scope).inserted else { return false }
+        opening.insert(scope)
+        defer { opening.remove(scope) }
+        let generation = sheetGeneration
         armNotices[scope] = nil
         let check = await check(scope)
         armingHere.remove(scope)
@@ -271,22 +286,32 @@ final class WatchmanCenter {
                 return false
             }
             // The tray's field starts empty and never clears: no read.
-            let stored = scope == .allRunning ? "" : await storedInstruction(scope)
+            let stored = scope == .allRunning ? StoredInstruction(field: "", known: "") : await storedInstruction(scope)
+            // Another sheet opened (or one was opened and cancelled) meanwhile: it wins.
+            guard sheet == nil, sheetGeneration == generation else { return sheet != nil }
             sheet = makeSheet(scope, workbench: workbench, title: title, reply: reply,
-                              instruction: stored ?? "", stored: stored)
+                              instruction: stored.field, stored: stored.known)
             return true
         }
     }
 
-    /// The scope's stored instruction: read from the database, else the
-    /// last one this app saw; nil when neither is known (the read failed
-    /// and nothing was seen), so an empty field must not clear it.
-    private func storedInstruction(_ scope: WatchmanArmScope) async -> String? {
+    /// What a sheet opens with: the field's text, and the stored text when
+    /// a fresh database read says what it is (nil otherwise: an empty field
+    /// then never clears it).
+    struct StoredInstruction {
+        let field: String
+        let known: String?
+    }
+
+    /// The scope's stored instruction. Only a successful database read makes
+    /// it known; when the read fails the last text this app saw only fills
+    /// the field, since another writer may have changed it since.
+    private func storedInstruction(_ scope: WatchmanArmScope) async -> StoredInstruction {
         if let readInstruction, let text = try? await readInstruction(scope) {
             instructions[scope] = text
-            return text
+            return StoredInstruction(field: text, known: text)
         }
-        return instructions[scope]
+        return StoredInstruction(field: instructions[scope] ?? "", known: nil)
     }
 
     /// The tray's Hand all running sessions to Watchman: the same check and
@@ -297,11 +322,15 @@ final class WatchmanCenter {
 
     /// Instruction… on an armed chip or panel: the edit sheet, pre-filled
     /// with the scope's stored instruction (`storedInstruction`).
+    /// The same one-sheet rule as `handTo`.
     func editInstruction(_ scope: WatchmanArmScope, title: String? = nil) async {
-        guard scope != .allRunning else { return }
+        guard scope != .allRunning, sheet == nil, opening.insert(scope).inserted else { return }
+        defer { opening.remove(scope) }
+        let generation = sheetGeneration
         let stored = await storedInstruction(scope)
+        guard sheet == nil, sheetGeneration == generation else { return }
         sheet = WatchmanArmSheetRequest(
-            scope: scope, sessions: [], instruction: stored ?? "", stored: stored,
+            scope: scope, sessions: [], instruction: stored.field, stored: stored.known,
             content: .edit(subject: subject(scope, title)))
     }
 
@@ -373,8 +402,12 @@ final class WatchmanCenter {
     private func armFromSheet(_ request: WatchmanArmSheetRequest, only: [Int64], instruction: String?) async {
         let scope = request.scope
         guard let outcome = await runArm(scope, only: only, instruction: instruction) else {
-            // The scope's own arm or Take back runs: nothing was sent.
-            if sheet?.token == request.token { sheetError = WatchmanArmingCopy.armInProgress }
+            // Nothing was sent: every running session without a set, or the
+            // scope's own arm or Take back runs.
+            if sheet?.token == request.token {
+                sheetError = scope == .allRunning && only.isEmpty
+                    ? WatchmanArmingCopy.nothingToHandOver : WatchmanArmingCopy.armInProgress
+            }
             return
         }
         let onScreen = sheet?.token == request.token
