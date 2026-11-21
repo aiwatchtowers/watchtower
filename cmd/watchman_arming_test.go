@@ -107,6 +107,7 @@ func TestWatchmanArm_FirstArmTurnsAnalyticsAndLearningOn(t *testing.T) {
 	wb, gen := watchmanFixture(t)
 	s1, _ := armSession(t, wb, "claude", nil, false)
 	s2, _ := armSession(t, wb, "codex", nil, false)
+	wakes := countLearnerWakes(t)
 
 	r, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--json")
 	require.NoError(t, err, out)
@@ -114,6 +115,7 @@ func TestWatchmanArm_FirstArmTurnsAnalyticsAndLearningOn(t *testing.T) {
 	assert.True(t, r.FirstTime)
 	assert.True(t, r.AnalyticsTurnedOn)
 	assert.True(t, r.LearningStarted)
+	assert.Equal(t, 1, *wakes, "the first hand-over wakes the daemon's learner")
 	enabled, precedents, analytics := watchmanState(t, wb)
 	assert.True(t, enabled)
 	assert.True(t, analytics)
@@ -126,6 +128,7 @@ func TestWatchmanArm_FirstArmTurnsAnalyticsAndLearningOn(t *testing.T) {
 	assert.True(t, r.FirstTime)
 	assert.False(t, r.AnalyticsTurnedOn)
 	assert.False(t, r.LearningStarted)
+	assert.Equal(t, 1, *wakes, "learning already started: no second wake")
 
 	// The text form says the D21 line once.
 	require.NoError(t, func() error {

@@ -512,10 +512,7 @@ func (db *DB) LeaseArmedWatchmanItem(now time.Time, lease time.Duration, eligibl
 func (db *DB) leaseWatchmanItem(now time.Time, lease time.Duration, eligible func(WatchmanItem) bool, armedOnly bool) (*WatchmanItem, error) {
 	armed := ""
 	if armedOnly {
-		// A handover outlives its session (finish_session ends it): it is
-		// leased by its arming row; every other kind needs a live armed session.
-		armed = ` AND (CASE WHEN kind = 'handover' THEN ` + watchmanHandoverArmed + `
-			ELSE session_id IN (SELECT id FROM (` + armedSessionsFrom + `)) END)`
+		armed = ` AND ` + watchmanItemArmedSQL
 	}
 	nowS := wmTime(now)
 	until := now.Add(lease)
@@ -795,6 +792,13 @@ const watchmanHandoverArmed = `COALESCE(watchman_items.session_id IN (SELECT ref
 	OR watchman_items.target_id IN (` + watchmanArmedTargets + `)
 	OR (SELECT ts.target_id FROM terminal_sessions ts WHERE ts.id = watchman_items.session_id AND ts.` + NotDeletingSQL + `)
 		IN (` + watchmanArmedTargets + `), 0)`
+
+// watchmanItemArmedSQL is the lease's arming rule on a watchman_items row
+// (unaliased): a handover outlives its session (finish_session ends it), so
+// it is armed by its arming row or a target (watchmanHandoverArmed); every
+// other kind needs a live armed session.
+const watchmanItemArmedSQL = `(CASE WHEN watchman_items.kind = 'handover' THEN ` + watchmanHandoverArmed + `
+	ELSE watchman_items.session_id IN (SELECT id FROM (` + armedSessionsFrom + `)) END)`
 
 // watchmanStartArmed authorises starting a handover's next session on the
 // item's target (its destination): the session's own arming row, or an armed

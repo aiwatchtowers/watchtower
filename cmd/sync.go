@@ -1358,7 +1358,7 @@ func wireWatchmanTwin(d *daemon.Daemon, cfg *config.Config, database *db.DB) (cl
 		DB: database, Sessions: port,
 		Held: watchmanact.FileHeldStore{Dir: cfg.WorkspaceDir()}, HeldKey: watchmanHeldKey,
 	})
-	d.SetWatchmanTwin(answerer, func(ctx context.Context, workbenchID, targetID int64, brief string) error {
+	d.SetWatchmanTwin(answerer, port.Live, func(ctx context.Context, workbenchID, targetID int64, brief string) error {
 		_, err := port.Start(ctx, handlers.StartRequest{Workbench: workbenchID, Target: &targetID, Brief: brief})
 		return err
 	})

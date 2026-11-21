@@ -273,3 +273,28 @@ func TestWatchmanUpkeep_PrunesInstructionRows(t *testing.T) {
 	assert.Equal(t, "keep", text)
 	assert.Contains(t, logs.String(), "2 instruction(s)")
 }
+
+// The upkeep drops the stall counts of sessions no longer handed over; an
+// armed live session keeps its count (spec 2026-11-21-watchman-tuning §4b).
+func TestWatchmanUpkeep_PrunesStallRows(t *testing.T) {
+	d, database, logs, _ := newUpkeepDaemon(t)
+	d.SetWatchmanAwake((&fakeAwake{}).hold)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	armed := upkeepSession(t, database, wb, t.TempDir())
+	taken := upkeepSession(t, database, wb, t.TempDir())
+	require.NoError(t, database.UpsertWatchmanArming(db.WatchmanArming{Scope: "session", RefID: armed, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	for _, s := range []int64{armed, taken} {
+		require.NoError(t, database.UpsertWatchmanStall(db.WatchmanStallRow{SessionID: s, StoppedAt: time.Now(), Pings: 2}))
+	}
+
+	d.phaseWatchmanUpkeep(context.Background())
+	st, err := database.WatchmanStall(armed)
+	require.NoError(t, err)
+	require.NotNil(t, st)
+	assert.Equal(t, 2, st.Pings)
+	st, err = database.WatchmanStall(taken)
+	require.NoError(t, err)
+	assert.Nil(t, st, "a session not handed over loses its count")
+	assert.Contains(t, logs.String(), "1 stall count(s)")
+}

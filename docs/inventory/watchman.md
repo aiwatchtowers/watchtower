@@ -58,7 +58,7 @@ Two modes read the same table: the twin and the backtest are **strict** (every s
 
 **Test guards:**
 - `internal/watchman/guard_test.go::TestWATCHMAN03_SourcesAreOwnerOnly` (the source names are the closed list, `journal` included; automation, open and dismissed asks, pending, expired and answered-on-Mac permissions, and every ask, spec verdict, permission and review round a twin item decided are not read; the owner's answer after a twin park or hand-back, and owner-first and superseded items, are read)
-- `internal/watchman/source_journal_test.go::TestJournalSource_UnreviewedItemIsNot`, `TestJournalSource_OKBecomesPrecedent`, `TestJournalSource_CorrectionWeighsMore`, `TestJournalSource_CorrectionWithoutTextIsSkipped` (phase 2); `WatchtowerDesktop/Tests/Core/WatchmanFeedbackQueriesTests.swift` (the Desktop writes feedback only on a finished, not yet judged twin decision)
+- `internal/watchman/source_journal_test.go::TestJournalSource_UnreviewedItemIsNot`, `TestJournalSource_OKBecomesPrecedent`, `TestJournalSource_CorrectionWeighsMore`, `TestJournalSource_CorrectionWithoutTextIsSkipped` (phase 2), `TestJournalSource_StallItemIsNot` (tuning §4b); `WatchtowerDesktop/Tests/Core/WatchmanFeedbackQueriesTests.swift` (the Desktop writes feedback only on a finished, not yet judged twin decision)
 - `internal/watchman/source_asks_test.go::TestAsksSource_SkipsAutomationAndOpen`, `internal/watchman/source_permission_test.go::TestPermissionSource_SkipsPendingExpiredAndAnsweredOnMac`, `internal/watchman/source_git_test.go::TestGitSource_SkipsAgentCommits`, `internal/watchman/source_git_test.go::TestGitSource_ForeignAuthorNotOwner` (a colleague's commit is not the owner's), `internal/watchman/source_turns_test.go::TestTurnSource_SkipsAutomationSessions`
 
 ## WATCHMAN-04 — nothing acts on a session that is not armed
@@ -70,8 +70,8 @@ Two modes read the same table: the twin and the backtest are **strict** (every s
 **Why locked:** The owner hands work over explicitly; a twin that acted on a session he did not hand it, or kept acting after **Take back**, would decide behind his back.
 
 **Test guards:**
-- `internal/watchmanact/twin_test.go::TestWATCHMAN04_NothingActsOnUnarmedSession` (never armed, and armed then disarmed: no lease, no attempt, no model call)
-- supporting: `internal/watchman/mode_test.go::TestMode`, `TestMode_ReadsNothingElse`; `internal/watchmanact/twin_test.go::TestTwin_ActsWhileOwnerPresent` (D47), `TestTwin_DisarmLeavesQueued`, `TestTwin_ArmingReadErrorLeavesQueued`, `TestTwin_DecidingItemFinishesAfterDisarm`, `TestTwin_HandoverStartStopsWhenDisarmed`, `TestTwin_HandoverStartNeedsTheDestinationArmed`; `internal/watchmanact/githooks_test.go::TestPrePush_UnarmedPassesThrough`; `cmd/workbench_watchman_guard_test.go::TestWatchmanGuard_UnarmedReadsOneRow`; `cmd/watchman_arming_test.go::TestWatchmanArm_RefusedUnderAgent`
+- `internal/watchmanact/twin_test.go::TestWATCHMAN04_NothingActsOnUnarmedSession` (never armed, and armed then disarmed: no lease, no attempt, no model call, no stall ping)
+- supporting: `internal/watchman/mode_test.go::TestMode`, `TestMode_ReadsNothingElse`; `internal/watchmanact/twin_test.go::TestTwin_ActsWhileOwnerPresent` (D47), `TestTwin_DisarmLeavesQueued`, `TestTwin_ArmingReadErrorLeavesQueued`, `TestTwin_DecidingItemFinishesAfterDisarm`, `TestTwin_HandoverStartStopsWhenDisarmed`, `TestTwin_HandoverStartNeedsTheDestinationArmed`; `internal/watchmanact/githooks_test.go::TestPrePush_UnarmedPassesThrough`; `cmd/workbench_watchman_guard_test.go::TestWatchmanGuard_UnarmedReadsOneRow`; `cmd/watchman_arming_test.go::TestWatchmanArm_RefusedUnderAgent`; `internal/watchmanact/stall_test.go::TestStall_DisarmBeforeDeliveryNoPing` (the stall watch re-reads the arming right before each ping)
 
 **Locked since:** 2026-11-18
 
@@ -106,6 +106,7 @@ Two modes read the same table: the twin and the backtest are **strict** (every s
 
 ## Changelog
 
+- 2026-11-21 (Watchman tuning §4b, #2145, spec approved with its contract list): additive, no guard relaxed — WATCHMAN-04 gains the stall watch as an actor (`TestWATCHMAN04_NothingActsOnUnarmedSession` gains "no stall ping to an unarmed or taken-back session"; `TestStall_DisarmBeforeDeliveryNoPing`); WATCHMAN-03 unchanged, its journal source now also reads only finished `answered`/`approved`/`changes` decisions, never a check or a `stall` item (`TestJournalSource_StallItemIsNot`).
 - 2026-11-19 (multi-folder workbench merged with Watchman, board #2003): additive, no guard relaxed — WATCHMAN-04 holds for folder suggestions too (a `kind='folder'` ask is never queued, answered or learned by the twin; `TestScanWatchmanWaitPoints_SkipsFolderAsks`, `TestTextAnswer_RefusesAFolderAsk`); a review ask's protected-document check reads the inventory of its own document folder and parks on an unresolvable one (`TestTwin_ReviewDocUsesTheDocFoldersInventory`); arming checks every covered repository (`TestWatchmanArm_ChecksTheCoveredFolders`). v1 limits (feature note): precedents dedupe by key on a bench merge, the merged bench's cursors drop, sibling-folder edits are denied as `outside_folder`, the git source reads the home folder's PR states only.
 - 2026-11-16 (phase 1, board #1823): file created with WATCHMAN-03 and WATCHMAN-06 (new, beyond the spec's five).
 - 2026-11-16 (final review fixes): WATCHMAN-03 tightened — git commits count only for the folder's `user.email`, automation-started sessions leave the turn source; guards added.
