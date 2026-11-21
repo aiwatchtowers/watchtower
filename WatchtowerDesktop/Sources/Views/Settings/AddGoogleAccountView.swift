@@ -81,7 +81,9 @@ struct AddGoogleAccountView: View {
             Spacer()
 
             HStack {
-                if vm?.isConnecting == true {
+                // Only this sheet's own sign-in waits here: another place's
+                // run (a Re-login, Calendar's Reconnect) keeps its own Cancel.
+                if connectAttempted, vm?.signIn == .section {
                     ProgressView().controlSize(.small)
                     Text(Copy.connecting)
                         .font(.caption)
@@ -100,7 +102,7 @@ struct AddGoogleAccountView: View {
                         connect()
                     }
                     .buttonStyle(.kitPrimary)
-                    .disabled(!canConnect)
+                    .disabled(!canConnect || vm?.isConnecting == true)
                 }
             }
 

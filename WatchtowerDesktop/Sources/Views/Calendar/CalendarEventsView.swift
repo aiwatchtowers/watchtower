@@ -64,13 +64,8 @@ struct CalendarEventsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if signInWaitSpot == .top, let vm = appState.googleAccountsViewModel {
-                // G4 (#2132): a Google sign-in no account banner carries waits here.
-                signInWaitLine(vm)
-                    .padding(Spacing.cozy)
-                    .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.row))
-                    .padding(.horizontal)
-                    .padding(.top, Spacing.medium)
+            if let vm = appState.googleAccountsViewModel {
+                topSignInLine(vm)
             }
             Group {
                 if hasCalendarSource, !google.isRunning, let calVM = appState.calendarViewModel {
@@ -79,6 +74,12 @@ struct CalendarEventsView: View {
                     notConnectedView
                 }
             }
+        }
+        // A Google sign-in ended (a Reconnect connected, or a Cancel re-read
+        // what landed): read the connect state and sync health now, not at
+        // the next 15 s tick.
+        .onChange(of: appState.googleAccountsViewModel?.isConnecting ?? false) { wasConnecting, isConnecting in
+            if wasConnecting && !isConnecting { Task { await refreshSyncHealth() } }
         }
         .task {
             while !Task.isCancelled {
@@ -106,8 +107,40 @@ struct CalendarEventsView: View {
         return .top
     }
 
+    /// Pure: a failed Google sign-in's error shows at the top unless the
+    /// account-error banner (or screen), which shows that error, is up.
+    static func showsSignInFailureAtTop(_ failed: GoogleAccountsViewModel.SignInPlace?, health: CalendarSyncHealth) -> Bool {
+        guard failed != nil else { return false }
+        if case .accountError = health { return false }
+        return true
+    }
+
     private var signInWaitSpot: SignInWaitSpot {
         Self.signInWaitSpot(appState.googleAccountsViewModel?.signIn, health: syncHealth)
+    }
+
+    /// G4 (#2132): a Google sign-in no account banner carries waits at the
+    /// top; when it fails, its error stays there (the banner shows its own).
+    @ViewBuilder
+    private func topSignInLine(_ vm: GoogleAccountsViewModel) -> some View {
+        if signInWaitSpot == .top || Self.showsSignInFailureAtTop(vm.failedSignIn, health: syncHealth) {
+            Group {
+                if signInWaitSpot == .top {
+                    signInWaitLine(vm)
+                } else if let error = vm.error {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(Tone.error)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(Spacing.cozy)
+            .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.row))
+            .padding(.horizontal)
+            .padding(.top, Spacing.medium)
+        }
     }
 
     private func signInWaitLine(_ vm: GoogleAccountsViewModel) -> some View {
@@ -836,7 +869,7 @@ struct CalendarEventsView: View {
             Button("Reconnect") {
                 appState.googleAccountsViewModel?.relogin(account, daemonPolicy: appState.accountDaemonPolicy)
             }
-            .disabled(appState.googleAccountsViewModel?.isConnecting == true)
+            .disabled(appState.googleAccountsViewModel?.isConnecting == true || google.isRunning)
         }
     }
 

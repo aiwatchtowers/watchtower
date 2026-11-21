@@ -30,7 +30,13 @@ final class GoogleAccountsViewModel {
     var signInAccountID: Int? {
         if case .account(let id) = signIn { id } else { nil }
     }
-    var error: String?
+    var error: String? {
+        // Any newer error (or none) is no longer that sign-in's.
+        didSet { failedSignIn = nil }
+    }
+    /// Where the sign-in whose failure `error` holds was waiting, so a place
+    /// with no row or banner of its own (Calendar's top line) can say why.
+    private(set) var failedSignIn: SignInPlace?
     /// The last account read failed (the error's own text); nil once one
     /// succeeds. Only the read: an action's failure stays in `error` (the
     /// Connections tab's "Couldn't read accounts" reads this).
@@ -61,6 +67,9 @@ final class GoogleAccountsViewModel {
     @ObservationIgnored var loginEnvironment: @Sendable () async -> [String: String] = {
         await Constants.resolvedEnvironmentAsync()
     }
+    /// Runs between the launch check and the launch; a test holds it to land
+    /// a Cancel in that window.
+    @ObservationIgnored var beforeLaunch: @Sendable () async -> Void = {}
 
     init(
         dbPool: DatabasePool,
@@ -152,7 +161,7 @@ final class GoogleAccountsViewModel {
         daemonPolicy: DaemonRestartPolicy = .restart
     ) -> Bool {
         guard !isConnecting else {
-            error = "Another connection is already in progress."
+            error = Self.busyMessage
             return false
         }
         guard let cliPath = cliPath() else {
@@ -188,20 +197,35 @@ final class GoogleAccountsViewModel {
     /// used when an account's status is "error"/"revoked" and needs a fresh
     /// grant.
     func relogin(_ account: GoogleAccount, daemonPolicy: DaemonRestartPolicy = .restart) {
+        relogin(args: Self.loginArgs(for: account), accountID: account.id, daemonPolicy: daemonPolicy)
+    }
+
+    /// Re-consents account `accountID` that no successful read has listed
+    /// yet (Calendar's revoked alert before the first read, or after a failed
+    /// one): `google login --account <id> --app-return` with no service
+    /// flags, so the CLI re-requests what the account already granted.
+    func relogin(accountID: Int, daemonPolicy: DaemonRestartPolicy = .restart) {
+        relogin(args: ["google", "login", "--account", String(accountID), "--app-return"], accountID: accountID,
+                daemonPolicy: daemonPolicy)
+    }
+
+    private func relogin(args: [String], accountID: Int, daemonPolicy: DaemonRestartPolicy) {
         guard !isConnecting else {
-            error = "Another connection is already in progress."
+            error = Self.busyMessage
             return
         }
         guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
             return
         }
-
         let process = Process()
-        process.arguments = Self.loginArgs(for: account)
-        startSignIn(process, cliPath: cliPath, place: .account(account.id), failure: "Re-login failed",
+        process.arguments = args
+        startSignIn(process, cliPath: cliPath, place: .account(accountID), failure: "Re-login failed",
                     daemonPolicy: daemonPolicy)
     }
+
+    /// Another Google sign-in or command runs.
+    static let busyMessage = "Another connection is already in progress."
 
     /// The `calendar login` args of the revoked-calendar alert when it names
     /// no account that exists: the CLI resolves account #1 itself.
@@ -213,7 +237,7 @@ final class GoogleAccountsViewModel {
     /// runs beside another Google sign-in and offers the same Cancel.
     func reloginLegacyCalendar(daemonPolicy: DaemonRestartPolicy = .restart) {
         guard !isConnecting else {
-            error = "Another connection is already in progress."
+            error = Self.busyMessage
             return
         }
         guard let cliPath = cliPath() else {
@@ -245,11 +269,13 @@ final class GoogleAccountsViewModel {
         authProcess = process
 
         let environment = loginEnvironment
+        let beforeLaunch = beforeLaunch
         signInTask = Task.detached {
             // The login environment is awaited here, off the main actor; a
             // Cancel (or a newer attempt) while it resolves drops this launch.
             process.environment = await environment()
             guard await MainActor.run(body: { self.authProcess === process }) else { return }
+            await beforeLaunch()
             // A Cancel that landed while the launch was under way found
             // nothing running to terminate: stop the child once it exists.
             let onLaunch: @Sendable (Process) -> Void = { launched in
@@ -258,7 +284,7 @@ final class GoogleAccountsViewModel {
                 }
             }
             let result = await ProcessPipes.run(process, stdin: stdin, onLaunch: onLaunch).trimmed
-            await self.finishSignIn(process, result: result, failure: failure, daemonPolicy: daemonPolicy)
+            await self.finishSignIn(process, place: place, result: result, failure: failure, daemonPolicy: daemonPolicy)
         }
     }
 
@@ -269,13 +295,15 @@ final class GoogleAccountsViewModel {
     /// landed shows — a half-saved account as one that needs Re-login.
     private func finishSignIn(
         _ process: Process,
+        place: SignInPlace,
         result: (exitCode: Int32, stdout: String, stderr: String),
         failure: String,
         daemonPolicy: DaemonRestartPolicy
     ) async {
         guard authProcess === process else {
             if result.exitCode == 0 {
-                refresh()
+                // Quiet while a newer run is active: its result is never overwritten.
+                await refreshAsync(quiet: isConnecting)
                 daemonRestartTask = daemonPolicy.apply(using: daemon)
             } else {
                 await refreshAsync(quiet: true)
@@ -298,6 +326,7 @@ final class GoogleAccountsViewModel {
             error = result.stderr.isEmpty
                 ? "\(failure) (exit \(result.exitCode))"
                 : String(result.stderr.prefix(200))
+            failedSignIn = place
         }
     }
 
@@ -327,7 +356,7 @@ final class GoogleAccountsViewModel {
     /// daemon restart: the daemon reads labels when it needs them.
     func rename(accountID: Int, to name: String) async {
         guard !isConnecting else {
-            error = "Another connection is already in progress."
+            error = Self.busyMessage
             return
         }
         error = await AccountRename.run(source: "google", id: accountID, name: name, cliPath: cliPath())
@@ -346,7 +375,7 @@ final class GoogleAccountsViewModel {
     /// Removes `account` via `watchtower google remove <id>`.
     func remove(_ account: GoogleAccount, daemonPolicy: DaemonRestartPolicy = .restart) async {
         guard !isConnecting else {
-            error = "Another connection is already in progress."
+            error = Self.busyMessage
             return
         }
         guard let cliPath = cliPath() else {

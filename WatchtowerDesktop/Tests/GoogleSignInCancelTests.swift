@@ -274,4 +274,59 @@ final class GoogleSignInCancelTests: XCTestCase {
             XCTAssertNil(vm.error)
         }
     }
+
+    /// N2: before the first accounts read (or after a failed one) the
+    /// flagged account is not "gone": it re-logs by its id, never the legacy
+    /// account-#1 login.
+    func testReconnectBeforeTheFirstReadReloginsTheFlaggedID() async throws {
+        let stub = try stub()
+        let cli = try logging(stub)
+        let (vm, _) = makeVM(try pool(), cli: cli.path)
+        XCTAssertFalse(vm.hasRead)
+        let appState = appState(vm)
+
+        appState.reconnectGoogleCalendar(accountID: 7)
+        XCTAssertEqual(vm.signIn, .account(7))
+        let run = try XCTUnwrap(vm.signInTask)
+        _ = try await stub.nextRun(or: run)
+        XCTAssertEqual(try args(cli.log), ["google login --account 7 --app-return"])
+
+        vm.cancelConnect()
+        await run.value
+        XCTAssertNil(vm.error)
+    }
+
+    // MARK: - Cancel between the launch check and the launch
+
+    /// A Cancel that lands after the launch check found nothing running to
+    /// terminate: the child is stopped as soon as it exists, and the run
+    /// ends as a cancelled one (a quiet re-read, no daemon restart).
+    func testCancelBeforeTheLaunchStopsTheChild() async throws {
+        let stub = try stub()
+        let pool = try pool()
+        let (vm, daemon) = makeVM(pool, cli: stub.path)
+        let account = try await brokenAccount(pool, vm: vm)
+        let counter = countReads(vm)
+        let entered = AsyncGate()
+        let held = AsyncGate()
+        vm.beforeLaunch = { entered.release(); await held.wait() }
+
+        vm.relogin(account)
+        let run = try XCTUnwrap(vm.signInTask)
+        await entered.wait()
+        vm.cancelConnect()
+        held.release()
+        // Killed before or after it announced itself; were it left running,
+        // exiting 0 here would end it as a connect and fail below, not hang.
+        if let pid = try? await stub.nextRun(or: run) {
+            await stub.release(pid, exitCode: 0, or: run)
+        }
+        await run.value
+
+        XCTAssertFalse(vm.isConnecting)
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(counter.reads, 1)
+        XCTAssertNil(vm.daemonRestartTask)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
 }

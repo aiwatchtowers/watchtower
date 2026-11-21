@@ -127,4 +127,98 @@ final class GoogleSignInWaitViewTests: XCTestCase {
     }
 
     private static let connectCalendarTitle = "Connect Google Calendar"
+
+    /// A §4.3 status row (Re-login to finish the setup) gives its status way
+    /// to the waiting lines while its Re-login waits.
+    func testWaitingRowHidesItsStatus() async throws {
+        let (appState, _) = LinearConnectionDetailTests.wired()
+        let pool = try pool()
+        _ = try await pool.write { db in
+            try TestDatabase.insertGoogleAccount(db, email: "team@acme.example", calendarEnabled: true,
+                                                 status: "ok", error: "pdr_scope_missing")
+        }
+        let vm = GoogleAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter()) { "/usr/bin/false" }
+        let gate = AsyncGate()
+        vm.loginEnvironment = { await gate.wait(); return [:] }
+        await vm.refreshAsync()
+        addTeardownBlock { @MainActor in
+            vm.cancelConnect()
+            gate.release()
+            await vm.signInTask?.value
+        }
+        appState.googleAccountsViewModel = vm
+        let view = detail(appState)
+        XCTAssertNoThrow(try view.inspect().find(text: CompanyConnectionsPresentation.pdrScopeMissing))
+
+        vm.relogin(try XCTUnwrap(vm.accounts.first))
+        XCTAssertThrowsError(try view.inspect().find(text: CompanyConnectionsPresentation.pdrScopeMissing))
+        XCTAssertNoThrow(try view.inspect().find(text: copy.line))
+    }
+
+    /// The list failed to read: a waiting sign-in still shows its line and
+    /// Cancel in the section (a Re-login has no row on screen).
+    func testReadFailedListKeepsTheWaitingLine() async throws {
+        let (appState, _) = LinearConnectionDetailTests.wired()
+        let pool = try pool()
+        try await pool.write { db in try db.execute(sql: "DROP TABLE google_accounts") }
+        let vm = GoogleAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter()) { "/usr/bin/false" }
+        let gate = AsyncGate()
+        vm.loginEnvironment = { await gate.wait(); return [:] }
+        await vm.refreshAsync()
+        XCTAssertNotNil(vm.readError)
+        addTeardownBlock { @MainActor in
+            vm.cancelConnect()
+            gate.release()
+            await vm.signInTask?.value
+        }
+        appState.googleAccountsViewModel = vm
+        let view = detail(appState)
+
+        for start in [{ vm.reloginLegacyCalendar() }, { vm.relogin(accountID: 3) }] {
+            start()
+            let line = try view.inspect().find(SignInWaitLine.self)
+            try line.find(button: copy.cancelTitle).tap()
+            XCTAssertFalse(vm.isConnecting)
+            XCTAssertThrowsError(try view.inspect().find(SignInWaitLine.self))
+        }
+    }
+
+    /// The Add sheet waits only for its own sign-in: while another place's
+    /// runs, it offers no Cancel and its Connect is disabled.
+    func testAddSheetLeavesAnotherPlacesSignInAlone() async throws {
+        let (appState, _) = LinearConnectionDetailTests.wired()
+        let (vm, account) = try await makeVM(status: "error", gate: AsyncGate())
+        appState.googleAccountsViewModel = vm
+        let view = AddGoogleAccountView(offersGmail: false).environment(appState)
+
+        vm.relogin(account)
+        XCTAssertThrowsError(try view.inspect().find(button: "Cancel"))
+        XCTAssertTrue(try view.inspect().find(button: "Connect").isDisabled())
+        XCTAssertTrue(vm.isConnecting)
+    }
+
+    /// A Reconnect from the alert with no account banner that fails: its
+    /// error shows at Calendar's top, where its waiting line was.
+    func testCalendarTopShowsAFailedSignInsError() async throws {
+        let stub = try GatedLoginStub()
+        addTeardownBlock { stub.reap() }
+        let appState = AppState.isolated()
+        let vm = GoogleAccountsViewModel(dbPool: try pool(), daemon: FakeDaemonRestarter()) { stub.path }
+        vm.loginEnvironment = { [:] }
+        await vm.refreshAsync()
+        appState.googleAccountsViewModel = vm
+        let view = CalendarEventsView().environment(appState)
+
+        appState.reconnectGoogleCalendar(accountID: nil)
+        let run = try XCTUnwrap(vm.signInTask)
+        await stub.release(try await stub.nextRun(or: run), exitCode: 1)
+        await run.value
+
+        let error = try XCTUnwrap(vm.error)
+        XCTAssertEqual(vm.failedSignIn, .section)
+        XCTAssertNoThrow(try view.inspect().find(text: error))
+        XCTAssertThrowsError(try view.inspect().find(SignInWaitLine.self))
+        XCTAssertTrue(CalendarEventsView.showsSignInFailureAtTop(.section, health: .ok))
+        XCTAssertFalse(CalendarEventsView.showsSignInFailureAtTop(nil, health: .ok))
+    }
 }

@@ -107,7 +107,8 @@ struct GoogleConnectionDetail: View {
             blocked: sourceBlocked,
             busy: appState.companyDetailBusy(.google),
             error: vm?.error,
-            signInWait: vm?.signIn == .section ? SignInWait(copy: .google) { vm?.cancelConnect() } : nil,
+            signInWait: sectionSignInWaits(vm) ? SignInWait(copy: .google) { vm?.cancelConnect() } : nil,
+            signInRunning: vm?.signIn != nil,
             locks: appState.companyLocks,
             perform: perform,
             bannerAction: { action in
@@ -120,6 +121,16 @@ struct GoogleConnectionDetail: View {
                 }
             }
         )
+    }
+
+    /// A waiting sign-in the section shows: a new account's (or the legacy
+    /// Calendar login's), or a Re-login whose row is not on screen (the list
+    /// is loading, failed or no longer has it), so its Cancel never vanishes.
+    private func sectionSignInWaits(_ vm: GoogleAccountsViewModel?) -> Bool {
+        guard let vm, let signIn = vm.signIn else { return false }
+        guard case .account(let id) = signIn else { return true }
+        guard case .groups = appState.companyAccountsList(.google) else { return true }
+        return !vm.accounts.contains { $0.id == id }
     }
 
     /// **Use my own Google project** opens its page (§5.2).
@@ -137,7 +148,9 @@ struct GoogleConnectionDetail: View {
         return CompanyAccountRow(
             title: account.displayName,
             tag: CompanyConnectionsPresentation.tag(ref),
-            status: status,
+            // While its Re-login waits, the row's status gives way to the
+            // waiting lines under a grey dot.
+            status: waiting ? nil : status,
             line: CompanyConnectionsPresentation.googleRowLine(ref, calendar: account.calendarEnabled,
                                                                gmail: account.gmailEnabled),
             dot: waiting ? Tone.status("gray") : statusColor(account),
