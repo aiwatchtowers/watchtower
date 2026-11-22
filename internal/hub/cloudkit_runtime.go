@@ -78,6 +78,61 @@ func (h *hubRuntime) shares() (transport.Shares, bool) {
 	return s, ok
 }
 
+// cloudKitCodes reports whether a link code is a CloudKit one — the hub's
+// active transport is CloudKit (a desktop host's switch on CloudKit, or a
+// CloudKit hub) — and the shares it is issued over; ok is false when such a
+// hub has no shares (no code then: a relay code would link the phone where
+// the hub does not publish). The active transport can change before the
+// code is stored; that code is then the one the phone is answered on
+// (accepted: a switch takes a person and minutes).
+func (h *hubRuntime) cloudKitCodes() (s transport.Shares, cloudKit, ok bool) {
+	if h.tr.Kind() != transport.KindCloudKit {
+		return nil, false, false
+	}
+	s, ok = h.shares()
+	return s, true, ok
+}
+
+// pairCloudKit issues a CloudKit code (link.Center.IssueCloudKit, which
+// emits the qr and waiting events as Issue does) and runs a pass at once
+// for the phone's hello. A refusal is answered with its class (LinkErrClass:
+// no_icloud, icloud_unreachable, icloud_changed, else failed); a hub stopping
+// meanwhile answers hub_off. Called off hubMu with the hub held by its wait
+// group.
+func (h *hubRuntime) pairCloudKit(s transport.Shares) (ControlAnswer, string) {
+	ctx, cancel := context.WithTimeout(h.ctx, opTimeout)
+	defer cancel()
+	p, _, err := h.center.IssueCloudKit(ctx, s)
+	if err != nil {
+		class := LinkErrClass(err)
+		if h.ctx.Err() != nil {
+			class = ErrClassHubOff
+		}
+		log.Printf("hub: CloudKit code not issued (%s, %s)", class, errClass(err))
+		return ControlAnswer{Error: class}, ""
+	}
+	h.kick(h.passKick)
+	return ControlAnswer{OK: true}, p.Nonce
+}
+
+// abandonCode closes, in the background, the link of the CloudKit code
+// nonce a pairing stream issued, once that stream ended (the sheet closed,
+// the CLI stopped) — only while that code is still the one on screen
+// (link.Center.CloseCode): waiting phones read not_confirmed and the
+// shares' public URLs close now, not at the code's expiry. Called with the
+// supervisor's hubMu read-held.
+func (h *hubRuntime) abandonCode(nonce string) {
+	s, ok := h.shares()
+	if !ok {
+		return
+	}
+	h.inBackground(func(ctx context.Context) {
+		if err := h.center.CloseCode(ctx, s, nonce, link.CloseSheetClosed); err != nil {
+			log.Printf("hub: closing an abandoned code's link failed (%s): retried", errClass(err))
+		}
+	})
+}
+
 // passTickEvery is the worker's pass ticker: Options.passEvery on the hosted
 // relay (live events, a backstop only), CloudKitActivePass on CloudKit, where
 // each tick asks the cadence whether a pass is due.
@@ -111,17 +166,41 @@ func (h *hubRuntime) passTick(ctx context.Context) {
 }
 
 // cloudKitStart closes, once at start, a CloudKit link an earlier run left
-// open (a crash with the QR on screen): CloseLink(CloseRestart), which
-// sweeps only when the sweep is marked pending (worker only).
+// open (a crash with the QR on screen): link.Center.CloseOnStart, which
+// sweeps only when the sweep is marked pending, refuses only the earlier
+// run's waiting requests (no pair event) and leaves alone a code this run already issued
+// (a pair can come before the worker gets here); a failure schedules a
+// deferred sweep (worker only).
 func (h *hubRuntime) cloudKitStart(ctx context.Context) {
 	s, ok := h.shares()
 	if !ok {
+		h.center.SkipStartClose() // no CloudKit link to close: keep no own codes
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	if err := h.center.CloseLink(ctx, s, link.CloseRestart); err != nil {
+	if err := h.center.CloseOnStart(ctx, s); err != nil {
 		log.Printf("hub: closing the link an earlier run left open failed (%s): retried", errClass(err))
+	}
+}
+
+// stopCloseTimeout bounds the stop's close of a CloudKit code's link.
+const stopCloseTimeout = 10 * time.Second
+
+// cloudKitStop closes, at stop while the bridge still runs, the link of a
+// CloudKit code still on screen (link.Center.CloseOnStop), so the shares'
+// public URLs do not outlive the hub. Best effort and bounded: a failure,
+// and the participants' sweep, are left to the next start's close. No share
+// call when no code is open.
+func (h *hubRuntime) cloudKitStop() {
+	s, ok := h.shares()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), stopCloseTimeout)
+	defer cancel()
+	if err := h.center.CloseOnStop(ctx, s); err != nil {
+		log.Printf("hub: closing the link at stop failed (%s): closed at the next start", errClass(err))
 	}
 }
 

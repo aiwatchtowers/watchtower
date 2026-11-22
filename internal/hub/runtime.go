@@ -1376,6 +1376,7 @@ func (h *hubRuntime) stop(keep func(slices.Kind) bool) {
 		}
 		cancel()
 	}
+	h.cloudKitStop() // while the bridge still runs
 	h.stopBridge()
 	h.closeTransports()
 	h.kr.Wipe()

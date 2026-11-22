@@ -17,6 +17,24 @@ import WatchtowerCore
 final class JiraAccountsViewModel {
     private(set) var accounts: [JiraAccount] = []
     var isConnecting = false
+    /// The account sign-in that waits in the browser, nil while none runs
+    /// (`jira add` names no account yet).
+    private(set) var waitingSignIn: WaitingSignIn?
+    /// The account whose Re-login waits in the browser (its row shows the
+    /// waiting line and Cancel). A Confluence grant shows its wait in the
+    /// Confluence section instead.
+    var signInAccountID: Int? {
+        if case .relogin(let id) = waitingSignIn { return id }
+        return nil
+    }
+
+    /// Which account sign-in a running browser flow is.
+    enum WaitingSignIn: Equatable {
+        /// The row's Re-login.
+        case relogin(Int)
+        /// Grant Confluence access or Allow editing (`--with-confluence[-write]`).
+        case confluenceGrant(Int)
+    }
     var error: String?
     /// The last account read failed (the error's own text); nil once one
     /// succeeds. Only the read: an action's failure stays in `error` (the
@@ -98,7 +116,11 @@ final class JiraAccountsViewModel {
     /// The awaitable body of `refresh()`, split out so tests can call it
     /// directly and observe `accounts` deterministically instead of racing a
     /// detached `Task`.
-    func refreshAsync() async {
+    ///
+    /// `quiet` (the re-read after a Cancel) reports a failed read through
+    /// `readError` only, never `error`: a Cancel stays silent, and a newer
+    /// flow's result is never overwritten.
+    func refreshAsync(quiet: Bool = false) async {
         do {
             let rows = try await dbPool.read { db in try JiraAccountQueries.fetchAll(db) }
             self.accounts = rows
@@ -106,7 +128,7 @@ final class JiraAccountsViewModel {
             hasRead = true
             await onAccountsChanged?()
         } catch {
-            self.error = "Failed to load accounts: \(error.localizedDescription)"
+            if !quiet { self.error = "Failed to load accounts: \(error.localizedDescription)" }
             readError = error.localizedDescription
             hasRead = true
             return
@@ -280,7 +302,8 @@ final class JiraAccountsViewModel {
     /// OAuth loopback-browser flow shape as `addAccount`, used when an
     /// account's status is "error"/"revoked" and needs a fresh grant.
     func relogin(_ account: JiraAccount) async {
-        await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
+        await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart,
+                          waiting: .relogin(account.id))
     }
 
     /// Connections → Jira → Confluence "Grant Confluence access": the same
@@ -290,7 +313,8 @@ final class JiraAccountsViewModel {
         await runAuthFlow(
             args: Self.loginArgs(accountID: accountID, withConfluence: true),
             failurePrefix: "Granting Confluence access failed",
-            daemonPolicy: .restart
+            daemonPolicy: .restart,
+            waiting: .confluenceGrant(accountID)
         )
     }
 
@@ -301,7 +325,8 @@ final class JiraAccountsViewModel {
         await runAuthFlow(
             args: Self.loginArgs(accountID: accountID, withConfluenceWrite: true),
             failurePrefix: "Allowing Confluence editing failed",
-            daemonPolicy: .restart
+            daemonPolicy: .restart,
+            waiting: .confluenceGrant(accountID)
         )
     }
 
@@ -312,8 +337,17 @@ final class JiraAccountsViewModel {
         }
         authProcess = nil
         isConnecting = false
+        waitingSignIn = nil
         connectStatus = nil
         siteChoices = nil
+    }
+
+    /// The Confluence section's Cancel: ends the running flow only when it is
+    /// still that account's Confluence grant, so a stale Cancel (its flow
+    /// already ended elsewhere) never stops another sign-in.
+    func cancelConfluenceGrant(accountID: Int) {
+        guard isConnecting, waitingSignIn == .confluenceGrant(accountID) else { return }
+        cancelConnect()
     }
 
     // MARK: - Enable / Disable
@@ -378,9 +412,16 @@ final class JiraAccountsViewModel {
     /// the Cancel, and a newer flow may already own it, so the ended one
     /// touches nothing after its process exits, except wiring in an account
     /// change that finished before the Cancel landed.
+    ///
+    /// `waiting` names the account sign-in the flow is; it is published
+    /// while the flow runs.
     @discardableResult
     private func runAuthFlow(
-        args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy, picksSite: Bool = false
+        args: [String],
+        failurePrefix: String,
+        daemonPolicy: DaemonRestartPolicy,
+        picksSite: Bool = false,
+        waiting: WaitingSignIn? = nil
     ) async -> AuthFlowEnd {
         // A flow that never starts wrote nothing: reset before the guards,
         // so an early return leaves no earlier flow's success behind.
@@ -395,6 +436,7 @@ final class JiraAccountsViewModel {
         }
 
         isConnecting = true
+        waitingSignIn = waiting
         error = nil
         lastAuthFlowCancelled = false
         lastAuthFlowTimedOut = false
@@ -438,13 +480,19 @@ final class JiraAccountsViewModel {
         guard authProcess === process else {
             // It may still have finished before the Cancel landed (F9): the
             // account change happened, so wire it in like a finished one.
-            guard result.exitCode == 0 else { return .cancelled }
+            guard result.exitCode == 0 else {
+                // Killed, maybe part-way through saving: re-read the
+                // accounts so whatever landed shows (no daemon restart).
+                await refreshAsync(quiet: true)
+                return .cancelled
+            }
             refresh()
             daemonRestartTask = daemonPolicy.apply(using: daemon)
             return .cancelledAfterConnecting
         }
         authProcess = nil
         isConnecting = false
+        waitingSignIn = nil
         connectStatus = nil
         siteChoices = nil
         if siteChoiceDeclined {

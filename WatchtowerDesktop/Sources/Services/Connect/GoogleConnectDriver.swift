@@ -8,8 +8,8 @@ protocol GoogleConnectModel: AnyObject {
     var isConnecting: Bool { get }
     var error: String? { get }
     var connectRows: [ConnectAccountRow] { get }
-    /// The running `addAccount` sign-in.
-    var addTask: Task<Void, Never>? { get }
+    /// The running sign-in (`addAccount`'s here).
+    var signInTask: Task<Void, Never>? { get }
     func addAccount(
         calendar: Bool, gmail: Bool, clientID: String, clientSecret: String, daemonPolicy: DaemonRestartPolicy
     ) -> Bool
@@ -19,6 +19,7 @@ protocol GoogleConnectModel: AnyObject {
 
 extension GoogleAccountsViewModel: GoogleConnectModel {
     var connectRows: [ConnectAccountRow] { accounts.map { ConnectAccountRow(id: $0.id, ConnectionAccountState($0)) } }
+    func refreshAsync() async { await refreshAsync(quiet: false) }
 }
 
 /// The google playbook's driver (docs/guide/connect/google.md): `scopes`
@@ -62,7 +63,7 @@ final class GoogleConnectDriver: ConnectServiceDriving {
                                clientID: "", clientSecret: "", daemonPolicy: daemonPolicy()) else {
             return .failure(.failed(model.error ?? "Google did not start the sign-in"))
         }
-        let task = model.addTask
+        let task = model.signInTask
         return .success(flows.begin { [model, flows] id in
             await task?.value
             await model.refreshAsync()

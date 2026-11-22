@@ -98,9 +98,10 @@ extension AppState {
             || slackAccountsViewModel?.isConnecting == true
     }
 
-    /// The card's spinner: the company whose chain waits on a vendor.
+    /// The card's waiting line: the company whose chain waits on a vendor
+    /// while its sheet is closed (the sheet shows the chain itself).
     var companyConnecting: (slug: String, vendor: CompanyVendor)? {
-        guard let flow = companyConnect, let vendor = flow.currentVendor else { return nil }
+        guard let flow = companyConnect, !flow.isPresented, let vendor = flow.currentVendor else { return nil }
         return (flow.slug, vendor)
     }
 
@@ -113,6 +114,8 @@ extension AppState {
             connectAll: { [weak self] slug in self?.runCompanyFlow { await $0.connectAll(slug: slug) } },
             connectRest: { [weak self] slug in self?.runCompanyFlow { await $0.connectRest(slug: slug) } },
             relogin: { [weak self] slug, vendors in self?.reloginCompany(slug: slug, vendors: vendors) },
+            // The chain's own end re-reads the companies and the accounts (`onChainEnded`).
+            stopChain: { [weak self] in self?.companyConnect?.stop() },
             submitCode: { [weak self] in self?.submitCompanyCode() }
         )
     }

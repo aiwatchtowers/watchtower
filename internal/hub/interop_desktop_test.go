@@ -109,6 +109,8 @@ func startDesktopHub(t *testing.T, opts interopOpts) *interopHub {
 	t.Cleanup(stubs.kill) // registered first: runs after the hub and the bridge stopped
 	h := &interopHub{t: t, origin: origin, dir: dir, tap: &wireTap{}, rec: &recorder{}}
 	h.bridge = bridgefake.Serve(t, dir)
+	// The Mac's iCloud user: a CloudKit code names it (OpPair on CloudKit).
+	h.bridge.SetOwnerUser("_owner-acme")
 
 	o.Mode, o.Host = ModeLive, hostkind.Desktop
 	o.Desktop = &Desktop{

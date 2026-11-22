@@ -18,7 +18,13 @@ struct WatchmanArmControl: View {
     /// The workbench the sheet's title names.
     let workbench: String
     let style: Style
-    /// "Sleep since" on this clock (a design shot pins one).
+    /// The session's or target's title the short and edit sheets name (nil:
+    /// the session's own title, else its id).
+    var title: String?
+    /// The session's workbench (the strip): while Watchman still learns it
+    /// the chip reads the learning percent. nil: never.
+    var workbenchID: Int64?
+    /// "since 01:40" on this clock (a design shot pins one).
     @Environment(\.calendar) private var calendar
 
     private typealias Copy = WatchmanArmingCopy
@@ -49,7 +55,7 @@ struct WatchmanArmControl: View {
         }
     }
 
-    /// "Sleep since": the session's own arming time (its target's when it
+    /// "since": the session's own arming time (its target's when it
     /// came with one) or the target row's; else the status's `mode_since`.
     static func since(_ scope: WatchmanArmScope, in status: WatchmanStatus?) -> Date? {
         guard let status else { return nil }
@@ -80,6 +86,22 @@ struct WatchmanArmControl: View {
         return Copy.viaTargetHelp(target: entry.target, direct: direct)
     }
     private var since: Date? { Self.since(scope, in: center.lastStatus) }
+
+    /// The strip chip: `Watchman · learning <p>%` while the workbench is
+    /// still learning (tuning spec §3), else `Watchman · since <HH:MM>`.
+    static func chipText(
+        _ scope: WatchmanArmScope, workbench: Int64?, in status: WatchmanStatus?, calendar: Calendar
+    ) -> String {
+        if let workbench, let percent = status?.workbench(workbench)?.learningPercent {
+            return Copy.stripLearning(percent: percent)
+        }
+        return Copy.stripArmed(since: since(scope, in: status), calendar: calendar)
+    }
+
+    private var chipText: String {
+        Self.chipText(scope, workbench: workbenchID, in: center.lastStatus, calendar: calendar)
+    }
+
     /// The warning lines under a control: the daemon is stopped while it is
     /// handed over (nothing decides), then the last call's notice.
     static func noticeLines(arming: Arming, daemon: WatchmanDaemonState, notice: String?) -> [String] {
@@ -100,9 +122,30 @@ struct WatchmanArmControl: View {
             case .panel: panel
             }
         }
-        // Each appearance rereads the arming (an arm made elsewhere shows).
-        .task(id: scope) { await center.reread() }
+        // Each appearance rereads the arming (an arm made elsewhere shows);
+        // a handed strip keeps rereading while its workbench learns, from
+        // the moment learning starts (a first hand-over turns it on).
+        .task(id: FollowKey(scope: scope, learning: followed != nil)) {
+            await center.reread(followingLearning: followed)
+        }
     }
+
+    private struct FollowKey: Hashable {
+        let scope: WatchmanArmScope
+        let learning: Bool
+    }
+
+    /// The workbench whose learning a strip follows: its own, only while
+    /// the strip is handed to Watchman and the workbench still learns — an
+    /// unarmed strip reads the status once and never polls.
+    static func followedWorkbench(_ workbench: Int64?, arming: Arming, in status: WatchmanStatus?) -> Int64? {
+        guard arming != .unarmed, let workbench, status?.workbench(workbench)?.isStillLearning == true else {
+            return nil
+        }
+        return workbench
+    }
+
+    private var followed: Int64? { Self.followedWorkbench(workbenchID, arming: arming, in: center.lastStatus) }
 
     // MARK: - Strip
 
@@ -112,12 +155,16 @@ struct WatchmanArmControl: View {
             if hasNotices { notices.frame(maxWidth: ListLayout.textColumn).layoutPriority(1) }
             switch arming {
             case .armed:
-                Chip(text: Copy.stripArmed(since: since, calendar: calendar), color: Self.tone, dot: true).fixedSize()
+                Chip(text: chipText, color: Self.tone, dot: true)
+                    .fixedSize()
+                    .help(instructionHelp ?? "")
+                instructionButton
                 takeBackButton.help(Copy.takeBackHelp)
             case .viaTarget:
-                Chip(text: Copy.stripArmed(since: since, calendar: calendar), color: Self.tone, dot: true)
+                Chip(text: chipText, color: Self.tone, dot: true)
                     .fixedSize()
-                    .help(viaTargetHelp)
+                    .help(Self.chipHelp(viaTarget: viaTargetHelp, instruction: instructionHelp))
+                instructionButton
                 // Also handed over itself: Take back removes that row only.
                 if let target = Self.directUnderTarget(scope, in: center.lastStatus) {
                     takeBackButton.help(Copy.takeBackDirectHelp(target: target))
@@ -149,7 +196,7 @@ struct WatchmanArmControl: View {
     private func armedCard(_ target: Int64) -> some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
             HStack(spacing: Spacing.regular) {
-                Image(systemName: "moon.stars").foregroundStyle(Self.tone)
+                Image(systemName: WatchmanStyle.icon).foregroundStyle(Self.tone)
                 Text(Copy.targetArmed(since: since, calendar: calendar))
                     .font(.callout.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
@@ -160,6 +207,8 @@ struct WatchmanArmControl: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // Under the caption: the panel is narrow, and the line keeps its width.
+            instructionButton
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -168,11 +217,36 @@ struct WatchmanArmControl: View {
 
     // MARK: - Parts
 
+    /// A via-target chip's tooltip: the session's own instruction first,
+    /// then where it is taken back.
+    static func chipHelp(viaTarget: String, instruction: String?) -> String {
+        [instruction, viaTarget].compactMap(\.self).filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    /// The first line of the scope's instruction, the chip's tooltip; nil
+    /// without one.
+    private var instructionHelp: String? {
+        Copy.instructionHelp(center.instructions[scope] ?? "")
+    }
+
+    /// Instruction…: the edit sheet, the text it opens with as its tooltip.
+    private var instructionButton: some View {
+        Button {
+            Task { await center.editInstruction(scope, title: title) }
+        } label: {
+            Label(Copy.instructionButton, systemImage: Copy.instructionIcon)
+        }
+        .buttonStyle(.kitSecondary)
+        .fixedSize()
+        .help(instructionHelp ?? "")
+        .disabled(busy)
+    }
+
     private var handButton: some View {
         Button {
-            Task { await center.handTo(scope, workbench: workbench) }
+            Task { await center.handTo(scope, workbench: workbench, title: title) }
         } label: {
-            Label(Copy.handTo, systemImage: "moon.stars")
+            Label(Copy.handTo, systemImage: WatchmanStyle.icon)
         }
         .buttonStyle(.kitSecondary)
         .fixedSize()

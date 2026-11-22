@@ -48,6 +48,7 @@ struct ActionStripView: View {
                         }
                     },
                     onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
+                    reconnectSlackWait: { appState.cardSlackSignInWait(accountID: $0) },
                     sessionHoldsCall: { appState.chatHoldsSessionCall($0) },
                     emptyState: appState.emptyStateContext,
                     onOpenConnections: { appState.openConnections() },
@@ -66,7 +67,9 @@ struct ActionStripView: View {
                     artifactMenu: appState.inboxArtifactMenu,
                     onReadWatchmanStatus: { await appState.watchmanCenter?.load() },
                     watchmanJournal: appState.watchmanJournal,
-                    watchmanDaemon: appState.watchmanCenter?.daemon ?? .unknown
+                    watchmanDaemon: appState.watchmanCenter?.daemon ?? .unknown,
+                    watchmanLearning: appState.watchmanCenter?.lastStatus?.learningPercents ?? [:],
+                    backgroundAIPaused: !appState.backgroundAI.isAllowed
                 )
             } else {
                 ProgressView()
@@ -206,6 +209,8 @@ struct ActionStripActionsView: View {
     var onRetryBuiltin: ((String) -> Void)?
     /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
     var onReconnectSlack: ((Int64) async -> SlackReconnectOutcome)?
+    /// Its waiting line while a card's sign-in runs (`AppState.cardSlackSignInWait`).
+    var reconnectSlackWait: ((Int64) -> MacAgentActionCard.SlackSignInWait?)?
     /// `MacAgentActionCard.sessionHoldsCall` for a row (a connector call).
     var sessionHoldsCall: ((AgentAction) -> Bool)?
     /// The empty list's readiness and actions (`AppState.emptyStateContext`).
@@ -244,6 +249,10 @@ struct ActionStripActionsView: View {
     var watchmanJournal: WatchmanJournalViewModel?
     /// `watchman status`'s `daemon_running`.
     var watchmanDaemon: WatchmanDaemonState = .unknown
+    /// `watchman status`'s learning percent of each workbench still learning.
+    var watchmanLearning: [Int64: Int] = [:]
+    /// `AppState.backgroundAI` reads paused (Home's "Background AI is paused").
+    var backgroundAIPaused = false
 
     /// What the header opened in the reading pane, and the Idea finder's
     /// open row; settable at init so a design shot can open one.
@@ -521,6 +530,12 @@ struct ActionStripActionsView: View {
                 WatchmanJournalView(model: watchmanJournal, readStatus: onReadWatchmanStatus)
                     .onChange(of: watchmanDaemon, initial: true) { _, daemon in
                         watchmanJournal.daemon = daemon
+                    }
+                    .onChange(of: watchmanLearning, initial: true) { _, learning in
+                        watchmanJournal.learningPercents = learning
+                    }
+                    .onChange(of: backgroundAIPaused, initial: true) { _, paused in
+                        watchmanJournal.backgroundAIPaused = paused
                     }
             } else {
                 pane(nil)
@@ -827,6 +842,7 @@ struct ActionStripActionsView: View {
             onOpen: onOpen,
             onApproveEdited: { patch in Task { await vm.approve(action.id, shownArgs: action.argsJSON, patch: patch) } },
             onReconnectSlack: onReconnectSlack,
+            reconnectSlackWait: reconnectSlackWait,
             contextLabel: vm.actionLabels[action.id],
             onOpenContext: openContext(action),
             onDismiss: { Task { await vm.dismiss(action.id) } },

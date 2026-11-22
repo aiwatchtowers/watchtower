@@ -71,6 +71,18 @@ func (d *Daemon) phaseWatchmanUpkeep(ctx context.Context) {
 	} else if n > 0 {
 		d.logger.Printf("watchman upkeep: %d arming row(s) of ended sessions or removed targets dropped", n)
 	}
+	// Instructions outlive Take back (D7) but not their session or target.
+	if n, err := d.db.PruneWatchmanInstructions(); err != nil {
+		d.logger.Printf("watchman upkeep: %v", err)
+	} else if n > 0 {
+		d.logger.Printf("watchman upkeep: %d instruction(s) of deleted sessions or removed targets dropped", n)
+	}
+	// The stall watch's counts go with the arming (spec 2026-11-21 §4b).
+	if n, err := d.db.PruneWatchmanStalls(); err != nil {
+		d.logger.Printf("watchman upkeep: %v", err)
+	} else if n > 0 {
+		d.logger.Printf("watchman upkeep: %d stall count(s) of taken back or ended sessions dropped", n)
+	}
 	arming, err := watchmanact.RefreshSidecar(ctx, d.config.WorkspaceDir(), d.db)
 	if err != nil {
 		d.logger.Printf("watchman upkeep: %v", err)

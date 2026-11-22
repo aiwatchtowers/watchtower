@@ -50,6 +50,14 @@ type Item struct {
 	// several folders): the Desktop pairs the worktree row with its branch
 	// by this key, never by name. "" when the worktree has no branch.
 	BranchKey string `json:"branch_key,omitempty"`
+	// BuildsRemoved are the build folders an ended session's apply deleted
+	// from this worktree, which it kept for the work in it (#2131,
+	// builds.go); BuildError is why that stopped; BuildsChecked: the prune
+	// ran to its end and no build folder is left to delete. None changes
+	// the item's action, done or error.
+	BuildsRemoved []string `json:"builds_removed,omitempty"`
+	BuildError    string   `json:"build_error,omitempty"`
+	BuildsChecked bool     `json:"builds_checked,omitempty"`
 }
 
 // OwnerHint is the sweep's guess at whose an item is: the session that
@@ -122,6 +130,9 @@ func Summarize(items []Item) string {
 	}
 	if n := countWhere(items, func(it Item) bool { return it.Error != "" }); n > 0 {
 		parts = append(parts, plural(n, "error", "errors"))
+	}
+	if n := countWhere(items, func(it Item) bool { return len(it.BuildsRemoved) > 0 }); n > 0 {
+		parts = append(parts, "build output removed from "+plural(n, "kept worktree", "kept worktrees"))
 	}
 	if len(parts) == 0 {
 		return "nothing to clean up"

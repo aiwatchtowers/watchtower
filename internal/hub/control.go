@@ -22,6 +22,7 @@ import (
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/platform"
 	"watchtower/internal/policy"
@@ -114,6 +115,16 @@ const (
 	ErrClassFailed        = "failed"
 	ErrClassTooManyIDs    = "too_many_ids"
 	ErrClassNotAdopted    = adopt.ClassNotAdopted
+	// ErrClassNoICloud: a CloudKit code was refused, the Mac has no usable
+	// iCloud account (none, restricted, or the build lacks the entitlement).
+	ErrClassNoICloud = "no_icloud"
+	// ErrClassICloudUnreachable: a CloudKit code was refused, the Mac's
+	// iCloud account or user could not be read just now (the bridge failed
+	// or timed out, iCloud is temporarily unavailable); a retry may work.
+	ErrClassICloudUnreachable = "icloud_unreachable"
+	// ErrClassICloudChanged: the Mac's iCloud account changed while a
+	// CloudKit code was being made; none was issued.
+	ErrClassICloudChanged = "icloud_changed"
 )
 
 // ControlRequest is one request on the control socket. Device names a phone
@@ -283,10 +294,14 @@ func listenControl(path string) (net.Listener, error) {
 // of events (written by its own goroutine, so a stalled client never holds
 // up the other streams) and the code each phone was shown on it.
 type pairListener struct {
-	w     *answerWriter
-	queue chan ControlAnswer // guarded by supervisor.pairMu for sends and close
-	mu    sync.Mutex
-	codes map[string]string
+	// ckNonce is the CloudKit code this stream issued last ("" none): its
+	// link closes when the stream ends (hubRuntime.abandonCode). Written
+	// and read on the connection's goroutine only.
+	ckNonce string
+	w       *answerWriter
+	queue   chan ControlAnswer // guarded by supervisor.pairMu for sends and close
+	mu      sync.Mutex
+	codes   map[string]string
 }
 
 func (p *pairListener) code(device string) (string, bool) {
@@ -405,6 +420,10 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 		return p
 	}
 	defer func() {
+		if pl != nil && pl.ckNonce != "" {
+			nonce := pl.ckNonce
+			s.withHubDo(func(h *hubRuntime) { h.abandonCode(nonce) })
+		}
 		s.pairMu.Lock()
 		if pl != nil {
 			delete(s.pairs, pl)
@@ -489,7 +508,9 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		return ControlAnswer{OK: true, Name: name}
 	case OpUnlink, OpAllow:
 		return s.withHubOr(func(h *hubRuntime) ControlAnswer { return h.handle(r, pl) }, func() ControlAnswer { return s.offlineLink(r) })
-	case OpPair, OpConfirm:
+	case OpPair:
+		return s.pair(r, pl)
+	case OpConfirm:
 		return s.withHub(func(h *hubRuntime) ControlAnswer { return h.handle(r, pl) })
 	case OpDesktopHeartbeat:
 		now := s.o.Clock()
@@ -702,6 +723,16 @@ func boolInt(b bool) int {
 	return 0
 }
 
+// withHubDo runs fn on the running hub, holding it so it cannot stop
+// meanwhile; nothing when none runs.
+func (s *supervisor) withHubDo(fn func(*hubRuntime)) {
+	s.hubMu.RLock()
+	defer s.hubMu.RUnlock()
+	if s.hub != nil {
+		fn(s.hub)
+	}
+}
+
 // withHub runs fn on the running hub, holding it so it cannot stop
 // meanwhile; hub_off when none runs.
 func (s *supervisor) withHub(fn func(*hubRuntime) ControlAnswer) ControlAnswer {
@@ -722,6 +753,42 @@ func (s *supervisor) withHubOr(fn func(*hubRuntime) ControlAnswer, off func() Co
 		return off()
 	}
 	return fn(s.hub)
+}
+
+// pair issues a link code (OpPair). A hub whose active transport is
+// CloudKit issues a CloudKit code (hubRuntime.pairCloudKit), so the phone
+// links on the transport the hub publishes on; its share calls run outside
+// hubMu, the hub held by its wait group, which stop cancels and waits for.
+// Such a hub without the shares answers failed, never a relay code. Any
+// other hub issues a relay code under hubMu (hubRuntime.handle).
+func (s *supervisor) pair(r ControlRequest, pl *pairListener) ControlAnswer {
+	var (
+		h      *hubRuntime
+		shares transport.Shares
+	)
+	a := s.withHub(func(rt *hubRuntime) ControlAnswer {
+		sh, cloudKit, ok := rt.cloudKitCodes()
+		switch {
+		case !cloudKit:
+			return rt.handle(r, pl)
+		case !ok:
+			log.Printf("hub: no code: CloudKit is active but its shares are not available")
+			return ControlAnswer{Error: ErrClassFailed}
+		}
+		shares = sh
+		rt.wg.Add(1) // under hubMu: stop has not begun
+		h = rt
+		return ControlAnswer{}
+	})
+	if h == nil {
+		return a
+	}
+	defer h.wg.Done()
+	a, nonce := h.pairCloudKit(shares)
+	if nonce != "" && pl != nil {
+		pl.ckNonce = nonce // the connection's own goroutine: no lock
+	}
+	return a
 }
 
 // handle runs a request that needs the running hub.
@@ -770,6 +837,11 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 			return ControlAnswer{Error: LinkErrClass(err)}
 		}
 		h.afterConfirm(r.Device)
+		if r.Confirm {
+			// The code is used (afterConfirm closes it CloseUsed) or was
+			// expired or used meanwhile: the stream's end closes nothing.
+			pl.ckNonce = ""
+		}
 		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device)}
 	}
 	return ControlAnswer{Error: ErrClassBadRequest}
@@ -778,6 +850,7 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 // LinkErrClass maps a link error to its answer class (the CLI's offline
 // path words its refusals through it too).
 func LinkErrClass(err error) string {
+	var accountErr *link.AccountError
 	switch {
 	case errors.Is(err, ErrIdentityMissing):
 		return ErrClassNoIdentity
@@ -789,6 +862,17 @@ func LinkErrClass(err error) string {
 		return ErrClassNoRequest
 	case errors.Is(err, link.ErrCodeChanged):
 		return ErrClassCodeChanged
+	case errors.As(err, &accountErr):
+		if a := accountErr.Account; a == transport.AccountNoAccount || a == transport.AccountRestricted ||
+			a == transport.AccountNoEntitlement {
+			return ErrClassNoICloud
+		}
+		// Temporarily unavailable, or unreadable (AccountUnreadable): retryable.
+		return ErrClassICloudUnreachable
+	case errors.Is(err, link.ErrOwnerUnknown):
+		return ErrClassICloudUnreachable
+	case errors.Is(err, link.ErrAccountChanged):
+		return ErrClassICloudChanged
 	}
 	return ErrClassFailed
 }

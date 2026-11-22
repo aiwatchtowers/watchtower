@@ -18,12 +18,14 @@ protocol SlackAccountsConnecting: AnyObject {
     var lastAuthRun: SlackAuthRun? { get }
     /// `builtin_app` of `slack accounts --json`: the build signs in through its own app.
     var builtinApp: Bool { get }
-    func addAccount(daemonPolicy: DaemonRestartPolicy) async
+    @discardableResult func addAccount(daemonPolicy: DaemonRestartPolicy) async -> SlackAccountsViewModel.SignInOutcome
     func cancelConnect()
     func refreshAsync() async
 }
 
-extension SlackAccountsViewModel: SlackAccountsConnecting {}
+extension SlackAccountsViewModel: SlackAccountsConnecting {
+    func refreshAsync() async { await refreshAsync(quiet: false) }
+}
 
 /// The connect assistant's Slack driver (agent connect spec §5.3; playbook
 /// `docs/guide/connect/slack.md`). It runs each call on the models the

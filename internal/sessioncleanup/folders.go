@@ -46,9 +46,14 @@ func sweepBuilders(ctx context.Context, d Deps, r Request) ([]*builder, error) {
 	if r.WorkbenchID == 0 {
 		return nil, errors.New("session cleanup: a sweep needs a workbench")
 	}
-	folders, err := d.DB.BenchFolders(ctx, r.WorkbenchID)
-	if err != nil {
-		return nil, fmt.Errorf("reading workbench %d folders: %w", r.WorkbenchID, err)
+	var folders []string
+	if r.scope != nil {
+		folders = r.scope.bench // the set Apply locked
+	} else {
+		var err error
+		if folders, err = d.DB.BenchFolders(ctx, r.WorkbenchID); err != nil {
+			return nil, fmt.Errorf("reading workbench %d folders: %w", r.WorkbenchID, err)
+		}
 	}
 	if len(folders) <= 1 {
 		// The home folder is pinned, so the apply's re-checks read the
@@ -68,6 +73,10 @@ func sweepBuilders(ctx context.Context, d Deps, r Request) ([]*builder, error) {
 	byRepo := map[string]*builder{}
 	for _, f := range folders {
 		folder := resolvePath(f)
+		if note, ok := r.scope.unlockedNote(folder); ok {
+			notes = append(notes, note) // its lock is not held: never evaluated
+			continue
+		}
 		if note := unsweptNote(folder); note != "" {
 			notes = append(notes, note)
 			continue
@@ -203,4 +212,13 @@ func dropForeignNotInPlan(items []Item) []Item {
 		out = append(out, it)
 	}
 	return out
+}
+
+// unlockedNote is the note of a folder Apply could not lock (repoScope.unlocked).
+func (s *repoScope) unlockedNote(folder string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	note, ok := s.unlocked[folder]
+	return note, ok
 }

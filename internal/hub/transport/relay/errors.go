@@ -75,10 +75,13 @@ func classOf(code relayv1.ErrorCode) error {
 	switch code {
 	case relayv1.ErrorCode_ERROR_CODE_UNSUPPORTED_VERSION:
 		return transport.ErrUnsupportedVersion
-	case relayv1.ErrorCode_ERROR_CODE_UNAUTHENTICATED, relayv1.ErrorCode_ERROR_CODE_FORBIDDEN:
+	case relayv1.ErrorCode_ERROR_CODE_UNAUTHENTICATED:
 		// UNAUTHENTICATED reaches us only after the client's own new login was
 		// refused too: the relay does not accept this hub's key.
 		return transport.ErrForbidden
+	case relayv1.ErrorCode_ERROR_CODE_FORBIDDEN:
+		// The op's zone is closed to this hub (ErrForbidden too).
+		return transport.ErrZoneForbidden
 	case relayv1.ErrorCode_ERROR_CODE_TOKEN_EXPIRED:
 		return transport.ErrTokenExpired
 	case relayv1.ErrorCode_ERROR_CODE_RECORD_TOO_LARGE, relayv1.ErrorCode_ERROR_CODE_ATTACHMENT_TOO_LARGE:

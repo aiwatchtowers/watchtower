@@ -32,7 +32,8 @@ const (
 	HandedPrefix = db.WatchmanHandedPrefix
 	// CheckAnswerText answers a check the twin cannot run.
 	CheckAnswerText = "The owner is away — verify what you can yourself (tests, screenshots, make desktop-shots) and continue"
-	// LearningReason parks every item of a workbench Watchman is still learning.
+	// LearningReason parks a permission prompt of a workbench Watchman is
+	// still learning; its other items wait queued (RunOnce).
 	LearningReason = "Watchman is still learning this workbench"
 )
 
@@ -152,15 +153,6 @@ func (t *Twin) handle(ctx context.Context, it db.WatchmanItem) {
 		j.park(ctx, reasonUnreadableAsk)
 		return
 	}
-	learning, err := t.stillLearning(it.WorkbenchID)
-	if err != nil {
-		j.fail(ctx, err)
-		return
-	}
-	if learning {
-		j.park(ctx, LearningReason)
-		return
-	}
 	switch it.Kind {
 	case "check":
 		j.answerText(ctx, p, CheckAnswerText, j.outcome(OutcomeAnswered))
@@ -198,21 +190,34 @@ func (j *job) closeHeld(ctx context.Context, ask *db.OwnerAsk, err error) {
 	}
 }
 
-// stillLearning reports a workbench whose learning is not done: no
-// learned_through yet, or precedents the relabel pass has not tried.
-func (t *Twin) stillLearning(workbenchID int64) (bool, error) {
-	st, err := t.d.DB.WatchmanWorkbench(workbenchID)
+// ownerClosed reports an ask-bound item whose ask the owner closed himself
+// (answered, withdrawn or gone): leased while its workbench is still
+// learning, it closes owner_first, superseded or goes with no model call
+// (handle, closeHeld for a held handover). A handover beside the twin's own
+// earlier answer is not: it would be decided, so it waits for the learning.
+// A read error is not closed (the item stays queued).
+func (t *Twin) ownerClosed(it db.WatchmanItem) bool {
+	if it.RefKind != "ask" {
+		return false
+	}
+	ask, err := t.d.DB.GetOwnerAskByID(it.RefID)
+	switch {
+	case errors.Is(err, db.ErrAskNotFound):
+		return true
+	case err != nil:
+		log.Printf("watchman twin: item %d: %v", it.ID, err)
+		return false
+	case ask.Status == "open":
+		return false
+	case it.Kind != "handover" || ask.Status == "withdrawn":
+		return true
+	}
+	ours, err := t.d.DB.WatchmanAskAnsweredByTwin(ask.ID)
 	if err != nil {
-		return false, err
+		log.Printf("watchman twin: item %d: %v", it.ID, err)
+		return false
 	}
-	if st == nil || st.LearnedThrough == nil {
-		return true, nil
-	}
-	pending, err := t.d.DB.WatchmanFlagsPending(workbenchID)
-	if err != nil {
-		return false, err
-	}
-	return pending > 0, nil
+	return !ours
 }
 
 // situation is the redacted ask text the model decides on (title, summary,
@@ -294,6 +299,7 @@ func (j *job) decide(ctx context.Context, p asks.Payload, it watchman.Item) bool
 		return false
 	}
 	it.WorkbenchID, it.Situation, it.DecidedBefore = j.it.WorkbenchID, situation, j.now()
+	it.ItemID, it.SessionID = j.it.ID, j.it.SessionID
 	dec, err := j.t.d.Decide(ctx, it)
 	if err != nil {
 		j.decideFailed(ctx, err)

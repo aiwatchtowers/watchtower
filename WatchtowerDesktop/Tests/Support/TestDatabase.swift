@@ -20,9 +20,11 @@ package enum TestDatabase {
     /// Each pool lives alone in its own directory: app code that derives a
     /// workspace from the database path (`<dir>/memory/`, sidecars) then gets
     /// one per test, not the shared temp dir another test process is using.
+    ///
+    /// The directory is removed when the test process exits
+    /// (`TestTempDirectories`) even when the test never calls `cleanup`.
     package static func createPool() throws -> (DatabasePool, String) {
-        let dir = NSTemporaryDirectory() + "watchtower_test_\(UUID().uuidString)"
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let dir = try TestTempDirectories.make(prefix: "watchtower_test_")
         let path = dir + "/watchtower.db"
         let pool = try DatabasePool(path: path)
         try pool.write { db in

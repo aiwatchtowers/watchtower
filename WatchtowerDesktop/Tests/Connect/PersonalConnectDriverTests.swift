@@ -797,7 +797,7 @@ private final class FakeGoogleModel: GoogleConnectModel {
     var isConnecting = false
     var error: String?
     var connectRows: [ConnectAccountRow] = []
-    var addTask: Task<Void, Never>?
+    var signInTask: Task<Void, Never>?
     var added: (calendar: Bool, gmail: Bool, clientID: String)?
     var newRow: ConnectAccountRow?
     var cancels = 0
@@ -808,7 +808,7 @@ private final class FakeGoogleModel: GoogleConnectModel {
     ) -> Bool {
         added = (calendar, gmail, clientID)
         isConnecting = true
-        addTask = Task {
+        signInTask = Task {
             await gate.wait()
             isConnecting = false
             if let newRow { connectRows.append(newRow) }
@@ -850,7 +850,7 @@ private final class FakeEmailModel: EmailConnectModel {
         return true
     }
 
-    func connectOutlook() {
+    func connectOutlook() -> Task<Void, Never>? {
         calls.append("outlook")
         isRunning = true
         outlookTask = Task {
@@ -858,6 +858,7 @@ private final class FakeEmailModel: EmailConnectModel {
             isRunning = false
             error = outlookError
         }
+        return outlookTask
     }
 
     func cancelConnect() {

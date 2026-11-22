@@ -20,6 +20,13 @@ struct CompanyAccountsSections<Row: View>: View {
     var busy = false
     /// The last command's failure, under the buttons.
     var error: String?
+    /// A browser sign-in of the detail waits with no row of its own to show
+    /// it (#2132): the waiting line with Cancel, in whichever state the list
+    /// is.
+    var signInWait: SignInWait?
+    /// A browser sign-in of the detail waits, here or in a row: its Cancel
+    /// shows there, so no bare spinner beside the buttons.
+    var signInRunning = false
     /// The policy locks in force: their groups end with the lock card.
     var locks: Set<LockKey> = []
     /// The connect assistant's entries (agent connect spec §7): **Connect
@@ -42,12 +49,14 @@ struct CompanyAccountsSections<Row: View>: View {
                     ProgressView().controlSize(.small)
                     Text(text).font(.caption).foregroundStyle(.secondary)
                 }
+                waitLine
             }
         case .readFailed(let text):
             SettingsSection(title: CompanyConnectionsPresentation.accountsTitle) {
                 errorCaption(text)
                 Button(CompanyConnectionsPresentation.tryAgain, action: tryAgain)
                     .buttonStyle(.kitSecondary)
+                waitLine
             }
         case .empty(let text):
             SettingsSection(title: CompanyConnectionsPresentation.detailTitle(vendor)) {
@@ -68,6 +77,15 @@ struct CompanyAccountsSections<Row: View>: View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: Spacing.regular) { buttonRow(actions) }
             VStack(alignment: .leading, spacing: Spacing.regular) { buttonRow(actions) }
+        }
+        waitLine
+    }
+
+    @ViewBuilder
+    private var waitLine: some View {
+        if let signInWait {
+            SignInWaitLine(line: signInWait.copy.line, hint: signInWait.copy.hint,
+                           cancelTitle: signInWait.copy.cancelTitle, onCancel: signInWait.cancel)
         }
     }
 
@@ -96,7 +114,7 @@ struct CompanyAccountsSections<Row: View>: View {
                 .disabled(busy)
             }
         }
-        if busy { ProgressView().controlSize(.small) }
+        if busy && signInWait == nil && !signInRunning { ProgressView().controlSize(.small) }
     }
 
     /// The connect service of this detail's vendor; nil for a vendor these
@@ -108,6 +126,12 @@ struct CompanyAccountsSections<Row: View>: View {
         case .slack, .linear, .microsoft: nil
         }
     }
+}
+
+/// A section-level browser sign-in that waits: whose sign-in it is and its Cancel.
+struct SignInWait {
+    let copy: SignInWaitCopy
+    let cancel: () -> Void
 }
 
 /// One empty-state or add-section button in its emphasis.

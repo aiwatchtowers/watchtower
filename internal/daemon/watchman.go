@@ -32,11 +32,28 @@ var (
 	}
 )
 
+// watchmanSources are the sources a workbench learns from: the database
+// sources, the owner's turns where Agent analytics is on (turned off later,
+// that source stays empty), and the folder's git history. A seam tests
+// replace.
+var watchmanSources = func(ctx context.Context, d *Daemon, wb int64) []watchman.Source {
+	sources := watchman.DBSources()
+	analytics, err := d.db.WorkbenchAgentAnalytics(wb)
+	if err != nil {
+		d.logger.Printf("watchman learn: workbench %d: %v", wb, err)
+	}
+	if analytics {
+		sources = append(sources, watchman.TurnSource(watchmanFeedReader(ctx, d)))
+	}
+	return append(sources, watchman.GitSource(watchmanGit))
+}
+
 // phaseWatchmanLearn continues learning on each workbench Watchman is on for
-// (spec 2026-11-16-watchman-design §8): the database sources, the owner's
-// turns where Agent analytics is on (turned off later, that source stays
-// empty), and the folder's git history. Mechanical except the light-tier
-// labels. Logs carry ids and counts, never text.
+// and has learned (spec 2026-11-16-watchman-design §8): the new decisions
+// since, in one 5-minute budget shared per cycle. A workbench still
+// learning (db.WatchmanLearningSQL) is the learner's (startWatchmanLearner),
+// and one whose learn lock is held is skipped. Mechanical except the
+// light-tier labels. Logs carry ids and counts, never text.
 func (d *Daemon) phaseWatchmanLearn(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
@@ -46,7 +63,18 @@ func (d *Daemon) phaseWatchmanLearn(ctx context.Context) {
 		d.logger.Printf("watchman learn: %v", err)
 		return
 	}
-	if len(ids) == 0 {
+	var learned []int64
+	for _, wb := range ids {
+		learning, err := d.db.WatchmanStillLearning(wb)
+		if err != nil {
+			d.logger.Printf("watchman learn: workbench %d: %v", wb, err)
+			continue
+		}
+		if !learning {
+			learned = append(learned, wb)
+		}
+	}
+	if len(learned) == 0 {
 		return
 	}
 	d.trackedPipelineRun("watchman-learn", func() pipelineRunStats {
@@ -54,27 +82,24 @@ func (d *Daemon) phaseWatchmanLearn(ctx context.Context) {
 		labeler := watchman.NewLLMLabeler(d.watchmanGenerator(ctx), prompts.New(d.db, nil))
 		var stats pipelineRunStats
 		var errs []error
-		for _, wb := range ids {
+		for _, wb := range learned {
 			left := watchmanLearnBudget - time.Since(start)
 			if left <= 0 {
 				d.logger.Printf("watchman learn: cycle budget reached, continuing next cycle")
 				break
 			}
-			sources := watchman.DBSources()
-			analytics, err := d.db.WorkbenchAgentAnalytics(wb)
+			unlock, ok, err := watchman.TryLearnLock(d.config.WorkspaceDir(), wb)
 			if err != nil {
 				d.logger.Printf("watchman learn: workbench %d: %v", wb, err)
+				continue
 			}
-			if analytics {
-				sources = append(sources, watchman.TurnSource(watchmanFeedReader(ctx, d)))
+			if !ok {
+				continue // another learner has it
 			}
-			sources = append(sources, watchman.GitSource(watchmanGit))
-			st, err := watchman.Learn(ctx, d.db, wb, watchman.LearnOptions{Budget: left, Sources: sources, Labeler: labeler})
+			st, err := watchman.Learn(ctx, d.db, wb, watchman.LearnOptions{Budget: left, Sources: watchmanSources(ctx, d, wb), Labeler: labeler})
+			unlock()
 			stats.items += st.Written + st.Relabelled
-			if st.Written+st.Unlabelled+st.Skipped+st.Relabelled > 0 || st.Incomplete {
-				d.logger.Printf("watchman learn: workbench %d: %d written, %d labelled, %d unlabelled, %d unreadable, %d relabelled, incomplete=%v",
-					wb, st.Written, st.Labelled, st.Unlabelled, st.Skipped, st.Relabelled, st.Incomplete)
-			}
+			d.logWatchmanLearn(wb, st)
 			if err != nil {
 				if isBenignShutdownErr(ctx, err) {
 					// The cursors move only with their batch: the next cycle
@@ -89,6 +114,14 @@ func (d *Daemon) phaseWatchmanLearn(ctx context.Context) {
 		stats.err = errors.Join(errs...)
 		return stats
 	})
+}
+
+// logWatchmanLearn logs a pass's counts (never text) when it did anything.
+func (d *Daemon) logWatchmanLearn(wb int64, st watchman.LearnStats) {
+	if st.Written+st.Unlabelled+st.Skipped+st.Relabelled > 0 || st.Incomplete {
+		d.logger.Printf("watchman learn: workbench %d: %d written, %d labelled, %d unlabelled, %d unreadable, %d relabelled, incomplete=%v",
+			wb, st.Written, st.Labelled, st.Unlabelled, st.Skipped, st.Relabelled, st.Incomplete)
+	}
 }
 
 // watchmanGenerator shares the worker pool with the rest of the cycle, like
@@ -192,9 +225,10 @@ func (d *Daemon) phaseWatchmanProfile(ctx context.Context) {
 const watchmanBacktestRetryAfter = 24 * time.Hour
 
 // phaseWatchmanAI runs Watchman's AI phases in their order, each held whole
-// while background AI is paused (aiPhase, BGAI-01): the learning (mechanical
-// reads plus light-tier labels, its own 5-minute budget shared across
-// workbenches), the weekly category profiles (strong tier) and learned sleep
+// while background AI is paused (aiPhase, BGAI-01): the learning of learned
+// workbenches (mechanical reads plus light-tier labels, its own 5-minute
+// budget shared across workbenches; the first learning is the learner's,
+// startWatchmanLearner), the weekly category profiles (strong tier) and learned sleep
 // window, then the weekly backtest launch, whose detached child carries the
 // phase's origin.
 func (d *Daemon) phaseWatchmanAI(ctx context.Context) {

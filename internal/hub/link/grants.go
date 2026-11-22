@@ -2,12 +2,16 @@ package link
 
 import (
 	"context"
+	"crypto/ecdh"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
+	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/wire"
 )
@@ -27,13 +31,17 @@ func (c *Center) Grants() ([]wire.DeviceGrant, error) {
 
 // Keyboxes is the device_grant slice (the Swift DeviceGrantSlice), what the
 // data zone carries: one keybox per phone the hub answers, sealed later to
-// that phone's key under keybox-<id>: every linked phone (never capped,
-// newest link first; only a phone linked through a confirmed hello carries
-// the epoch keys, and only while Config.KeysInZone says yes for it), then the
-// waiting requests (awaiting_confirmation, confirm_nonce, link_code_tag),
-// the refusals younger than RefusalLifetime and the revoked phones younger
-// than RevokedLifetime, each newest first, filling what is left of
-// MaxGrantRecords. A phone appears once: linked, waiting, refused, revoked.
+// that phone's key under keybox-<id>: every phone the hub lists as linked,
+// never capped and newest link first (only a phone linked through a confirmed
+// hello carries the epoch keys, and only while Config.KeysInZone says yes for
+// it) — except a re-link (#1127: the hub still lists the phone as linked, but
+// the phone ended its own link, by Forget or a reinstall, and sent a new
+// hello; a phone that considers itself linked never sends one), which reads
+// its waiting request, then its refusal, in that row's place, uncapped too;
+// then the other waiting requests (awaiting_confirmation, confirm_nonce,
+// link_code_tag), the refusals younger than RefusalLifetime and the revoked
+// phones younger than RevokedLifetime, each newest first, filling what is
+// left of MaxGrantRecords. A phone appears once.
 // Every grant announces ordered_actions 1, the hub's transports and its relay
 // identity. It holds the center's lock across the device read and the key
 // read, so an Unlink (which rotates) never lands between them: a phone read
@@ -51,20 +59,37 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
-	var linked, rest []wire.Keybox
+	// replaced: the keyboxes shown in place of a linked row (a re-link's
+	// waiting request or refusal), never capped, as the row they replace.
+	var linked, replaced, rest []wire.Keybox
 	keyed := false
 	err := c.st.ReadTx(context.Background(), func(tx *sql.Tx) error {
-		var err error
-		if linked, keyed, err = c.linkedRows(tx); err != nil {
-			return err
-		}
-		answered := map[string]bool{}
-		for _, r := range linked {
-			answered[r.Grant.DeviceID] = true
-		}
 		pending, err := pendingDevicesTx(tx)
 		if err != nil {
 			return err
+		}
+		if linked, keyed, err = c.linkedRows(tx); err != nil {
+			return err
+		}
+		// A re-link — the hub still lists the phone as linked, but the
+		// phone ended its own link (Forget, a reinstall) and sent a new
+		// hello — reads its waiting grant until the owner answers: the
+		// compare code, and no keys meanwhile. Confirm links it again with
+		// its grants kept; a refusal or an expiry is answered with the
+		// refusal until Sweep forgets it, then its linked row is back.
+		relinking, err := refusedRelinksTx(tx)
+		if err != nil {
+			return err
+		}
+		for _, p := range pending {
+			relinking[strings.ToUpper(p.deviceID)] = true
+		}
+		var relinked map[string]bool
+		linked, relinked = splitRelinks(linked, relinking)
+		var waiting []wire.Keybox
+		answered := map[string]bool{}
+		for _, r := range linked {
+			answered[r.Grant.DeviceID] = true
 		}
 		for i := len(pending) - 1; i >= 0; i-- {
 			p := pending[i]
@@ -75,14 +100,14 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 				if raw, err := base64.RawURLEncoding.DecodeString(p.linkNonce); err == nil {
 					g.LinkCodeTag = ptr(secure.LinkCodeTag(raw))
 				}
-				rest = append(rest, wire.Keybox{Grant: g})
+				waiting = append(waiting, wire.Keybox{Grant: g})
 			}
 		}
 		refused, err := c.refusedRows(tx, now, answered)
 		if err != nil {
 			return err
 		}
-		rest = append(rest, refused...)
+		replaced, rest = splitBy(append(waiting, refused...), relinked)
 		revoked, err := c.revokedRows(tx, now, answered)
 		if err != nil {
 			return err
@@ -118,8 +143,65 @@ func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 			linked[i].Keys = &keys
 		}
 	}
-	room := max(0, MaxGrantRecords-len(linked))
-	return append(linked, rest[:min(room, len(rest))]...), nil
+	room := max(0, MaxGrantRecords-len(linked)-len(replaced))
+	rest = rest[:min(room, len(rest))]
+	// The recipients are read now, under the lock a hello takes too, so
+	// each keybox is sealed to the key of the row it shows: a linked row to
+	// its link's key, any other row to its own (a re-link's included).
+	if err := fillRecipients(linked, c.keys.LinkedKeyboxRecipient); err != nil {
+		return nil, err
+	}
+	for _, boxes := range [][]wire.Keybox{replaced, rest} {
+		if err := fillRecipients(boxes, c.keys.KeyboxRecipient); err != nil {
+			return nil, err
+		}
+	}
+	return append(append(linked, replaced...), rest...), nil
+}
+
+// fillRecipients sets each keybox's To from recipient. The Keyring reads
+// only the local sidecar (no bridge, no network), so it runs under
+// Center.mu. A keybox with no stored key keeps To nil (sealing refuses it,
+// as before); a device id that is not a UUID is left too.
+func fillRecipients(boxes []wire.Keybox, recipient func(secure.ID) (*ecdh.PublicKey, error)) error {
+	for i := range boxes {
+		id, err := secure.ParseID(boxes[i].Grant.DeviceID)
+		if err != nil {
+			continue
+		}
+		to, err := recipient(id)
+		if err != nil && !errors.Is(err, identity.ErrNoKeyboxRecipient) {
+			return fmt.Errorf("link: keybox recipient: %w", err)
+		}
+		boxes[i].To = to
+	}
+	return nil
+}
+
+// splitRelinks takes out of linked the rows of the phones relinking names
+// (a re-link: a waiting request or its refusal shows in their place): the
+// rows kept and the device ids taken out.
+func splitRelinks(linked []wire.Keybox, relinking map[string]bool) ([]wire.Keybox, map[string]bool) {
+	taken := map[string]bool{}
+	for _, kb := range linked {
+		if relinking[kb.Grant.DeviceID] {
+			taken[kb.Grant.DeviceID] = true
+		}
+	}
+	return slices.DeleteFunc(linked, func(kb wire.Keybox) bool { return taken[kb.Grant.DeviceID] }), taken
+}
+
+// splitBy splits boxes, in order, into those of the devices in ids and the
+// others.
+func splitBy(boxes []wire.Keybox, ids map[string]bool) (in, out []wire.Keybox) {
+	for _, kb := range boxes {
+		if ids[kb.Grant.DeviceID] {
+			in = append(in, kb)
+		} else {
+			out = append(out, kb)
+		}
+	}
+	return in, out
 }
 
 // newGrant is the grant every row starts from; ok is false for a phone
@@ -188,11 +270,34 @@ func (c *Center) linkedRows(tx *sql.Tx) ([]wire.Keybox, bool, error) {
 	return out, anyKeyed, rows.Err()
 }
 
+// refusedRelinksTx are the linked phones whose re-link was refused
+// (refusePending keeps a linked phone's refusal; linking deletes it, Sweep
+// forgets it after RefusalLifetime), uppercase. Not filtered by age: the
+// refusal shows until Sweep deletes it, as state.Store.RelinkKey seals it.
+func refusedRelinksTx(tx *sql.Tx) (map[string]bool, error) {
+	rows, err := tx.Query(`SELECT UPPER(r.device_id) FROM link_refusals r
+		JOIN devices d ON d.device_id = r.device_id COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 // refusedRows are the refusals younger than RefusalLifetime, newest first;
 // decided_at is the refusal's time, so a second identical refusal still
 // reads as a new answer.
 func (c *Center) refusedRows(tx *sql.Tx, now time.Time, answered map[string]bool) ([]wire.Keybox, error) {
 	rows, err := tx.Query(`SELECT device_id, name, scope, reason, at FROM link_refusals WHERE at >= ?
+		OR EXISTS (SELECT 1 FROM devices d WHERE d.device_id = link_refusals.device_id COLLATE NOCASE)
 		ORDER BY at DESC, device_id`, secs(now.Add(-RefusalLifetime)))
 	if err != nil {
 		return nil, err

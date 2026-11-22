@@ -269,4 +269,94 @@ final class WatchmanJournalQueriesTests: XCTestCase {
         XCTAssertTrue(try queue.write { try WatchmanFeedbackQueries.ownerDone($0, itemID: failed.id) })
         XCTAssertEqual(try nights(queue).first?.waiting.count, 0, "Mark done takes it out of Waiting for you")
     }
+
+    /// A stall item (tuning spec §4b, Go's stall watch) waits for the owner
+    /// with its session's title, counts in Home's waiting (as Go's
+    /// `WatchmanJournalSummaryTx`), and leaves both on Mark done.
+    func testStallWaitsUntilMarkDone() throws {
+        let queue = try TestDatabase.create()
+        let stall = try queue.write { db -> Int64 in
+            let wb = try TestDatabase.insertWorkbench(db, name: "acme-api")
+            try db.execute(sql: """
+                INSERT INTO terminal_sessions (id, project_id, kind, claude_session_id, title, folder_path)
+                VALUES (41, ?, 'claude', 'uuid-41', 'Ship task 3 of the billing plan', '/tmp/acme')
+                """, arguments: [wb])
+            try item(db, workbench: wb, created: "2026-11-16T01:00:00Z")
+            try db.execute(sql: """
+                INSERT INTO watchman_items (workbench_id, session_id, kind, ref_kind, ref_id, state, outcome,
+                    question, park_reason, created_at, decided_at)
+                VALUES (?, 41, 'stall', 'session', 41, 'done', 'parked', '',
+                        'The agent stopped and did not go on after 3 pings', '2026-11-16T01:14:00Z',
+                        '2026-11-16T01:14:00Z')
+                """, arguments: [wb])
+            return db.lastInsertedRowID
+        }
+        let night = try XCTUnwrap(nights(queue).first)
+        XCTAssertEqual(night.waiting.map(\.id), [stall])
+        XCTAssertFalse(night.decided.contains { $0.id == stall }, "a stall is not a decision")
+        let waiting = try XCTUnwrap(night.waiting.first)
+        XCTAssertTrue(waiting.isStall)
+        XCTAssertEqual(waiting.sessionTitle, "Ship task 3 of the billing plan")
+        XCTAssertEqual(WatchmanJournalCopy.stallTitle(waiting), "#41 Ship task 3 of the billing plan")
+        XCTAssertTrue(waiting.sessionExists)
+        let calendar = calendar
+        let now = date("2026-11-16T07:00:00Z")
+        func home() throws -> WatchmanNightCounts? {
+            try queue.read { try WatchmanJournalQueries.homeNight($0, now: now, calendar: calendar) }
+        }
+        XCTAssertEqual(try home()?.waiting, 1, "Home's waiting count holds the stall")
+        XCTAssertTrue(try queue.write { try WatchmanFeedbackQueries.ownerDone($0, itemID: stall) })
+        XCTAssertEqual(try nights(queue).first?.waiting.count, 0, "Mark done takes it out of Waiting for you")
+        XCTAssertEqual(try home()?.waiting, 0)
+    }
+
+    /// A stall whose session row was deleted reads as gone, with no title.
+    func testStallWithSessionGone() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let wb = try TestDatabase.insertWorkbench(db, name: "acme-api")
+            try db.execute(sql: """
+                INSERT INTO watchman_items (workbench_id, session_id, kind, ref_kind, ref_id, state, outcome,
+                    question, park_reason, created_at)
+                VALUES (?, 41, 'stall', 'session', 41, 'done', 'parked', '',
+                        'The agent stopped and did not go on after 3 pings', '2026-11-16T01:14:00Z')
+                """, arguments: [wb])
+        }
+        let waiting = try XCTUnwrap(nights(queue).first?.waiting.first)
+        XCTAssertFalse(waiting.sessionExists)
+        XCTAssertEqual(waiting.sessionTitle, "")
+        XCTAssertEqual(WatchmanJournalCopy.stallTitle(waiting), "Session 41")
+    }
+
+    /// A stall whose session is being deleted (PROJ-17: `delete_requested_at`
+    /// set) reads as gone too: the item stays, with no title and no session.
+    func testStallWithSessionBeingDeleted() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let wb = try TestDatabase.insertWorkbench(db, name: "acme-api")
+            try db.execute(sql: """
+                INSERT INTO terminal_sessions (id, project_id, kind, claude_session_id, title, folder_path,
+                    delete_requested_at)
+                VALUES (41, ?, 'claude', 'uuid-41', 'Ship task 3 of the billing plan', '/tmp/acme',
+                        '2026-11-16T02:00:00Z')
+                """, arguments: [wb])
+            try db.execute(sql: """
+                INSERT INTO watchman_items (workbench_id, session_id, kind, ref_kind, ref_id, state, outcome,
+                    question, park_reason, created_at)
+                VALUES (?, 41, 'stall', 'session', 41, 'done', 'parked', '',
+                        'The agent stopped and did not go on after 3 pings', '2026-11-16T01:14:00Z')
+                """, arguments: [wb])
+        }
+        let waiting = try XCTUnwrap(nights(queue).first?.waiting.first, "the item stays")
+        XCTAssertFalse(waiting.sessionExists)
+        XCTAssertEqual(waiting.sessionTitle, "")
+        XCTAssertEqual(WatchmanJournalCopy.stallTitle(waiting), "Session 41")
+    }
+
+    /// The observation covers the tables the Desktop writes that the
+    /// journal reads: an ask answered here, a session renamed or deleted.
+    func testObservedTables() {
+        XCTAssertEqual(Set(WatchmanJournalQueries.observedTables),
+                       ["watchman_items", "watchman_gaps", "owner_asks", "terminal_sessions"])
+    }
 }

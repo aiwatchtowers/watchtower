@@ -60,6 +60,31 @@ func TestJournalSource_UnreviewedItemIsNot(t *testing.T) {
 	require.True(t, done)
 }
 
+// A stall item (the stall watch's park, spec 2026-11-21-watchman-tuning
+// §4b) is not a decision: never learned, even with feedback on it — nor a
+// parked or check item (WATCHMAN-03: only answered/approved/changes).
+func TestJournalSource_StallItemIsNot(t *testing.T) {
+	d := openSourceDB(t)
+	at := srcT0.Add(time.Hour)
+	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+		VALUES (1, 'claude', 'New session', '/tmp/acme', 'uuid')`)
+	require.NoError(t, err)
+	session, _ := res.LastInsertId()
+	require.NoError(t, d.InsertWatchmanStallItem(session, 0, 1, "The agent stopped and did not go on after 3 pings", srcT0))
+	parked := seedJournalItem(t, d, 2, "sqlite", "ok", "", &at)
+	checkItem := seedJournalItem(t, d, 3, "done", "ok", "", &at)
+	_, err = d.Exec(`UPDATE watchman_items SET feedback = 'ok', feedback_at = ?, choice = 'x' WHERE kind = 'stall'`, stamp(at))
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE watchman_items SET outcome = 'parked' WHERE id = ?`, parked)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE watchman_items SET kind = 'check' WHERE id = ?`, checkItem)
+	require.NoError(t, err)
+	ps, _, done, err := (&journalSource{}).Next(context.Background(), d, 1, "", 50)
+	require.NoError(t, err)
+	require.Empty(t, ps)
+	require.True(t, done)
+}
+
 func TestJournalSource_CorrectionWithoutTextIsSkipped(t *testing.T) {
 	d := openSourceDB(t)
 	at := srcT0.Add(time.Hour)

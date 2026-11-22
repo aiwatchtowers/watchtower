@@ -2566,40 +2566,6 @@ CREATE TABLE IF NOT EXISTS "watchman_precedents" (
     flags_at     TEXT,     -- §9.1: when the relabel pass tried the row (even if both flags stayed NULL)
     UNIQUE (workbench_id, source, source_key)
 );
-CREATE TABLE IF NOT EXISTS "watchman_items" (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    workbench_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    session_id    INTEGER,
-    target_id     INTEGER,
-    kind          TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard')),
-    ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),
-    ref_id        INTEGER NOT NULL,
-    state         TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
-    outcome       TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes','superseded')),
-    attempts      INTEGER NOT NULL DEFAULT 0,
-    lease_until   TEXT,
-    not_before    TEXT,
-    question      TEXT NOT NULL DEFAULT '',  -- redacted, at most 2048 runes
-    choice        TEXT NOT NULL DEFAULT '',
-    rationale     TEXT NOT NULL DEFAULT '',
-    precedent_ids TEXT NOT NULL DEFAULT '[]',  -- JSON array of watchman_precedents ids
-    confidence    TEXT NOT NULL DEFAULT '',
-    importance    TEXT NOT NULL DEFAULT '',
-    category      TEXT NOT NULL DEFAULT '',
-    unsure        INTEGER NOT NULL DEFAULT 1 CHECK (unsure IN (0, 1)),  -- every twin decision is journalled unsure (D43)
-    park_reason   TEXT NOT NULL DEFAULT '',
-    delivery      TEXT NOT NULL DEFAULT '',
-    round_id      INTEGER,
-    cost_usd      REAL NOT NULL DEFAULT 0,
-    error         TEXT NOT NULL DEFAULT '',
-    created_at    TEXT NOT NULL,
-    decided_at    TEXT,
-    feedback      TEXT NOT NULL DEFAULT '' CHECK (feedback IN ('','ok','corrected')),  -- written by the Desktop only
-    feedback_text TEXT NOT NULL DEFAULT '',
-    feedback_at   TEXT,
-    check_done_at TEXT, owner_done_at TEXT, correction_sent_at TEXT, moves INTEGER,
-    UNIQUE (ref_kind, ref_id, kind)
-);
 CREATE TABLE IF NOT EXISTS workbench_folders (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -2687,6 +2653,60 @@ CREATE TABLE IF NOT EXISTS session_outside_touches (
     nudged_at  TEXT,
     quiet      INTEGER NOT NULL DEFAULT 0 CHECK (quiet IN (0,1)),
     PRIMARY KEY (session_id, repo_root)
+);
+CREATE TABLE IF NOT EXISTS watchman_instructions (
+    scope      TEXT NOT NULL CHECK (scope IN ('session','target')),
+    ref_id     INTEGER NOT NULL,          -- session or target id
+    text       TEXT NOT NULL,             -- trimmed, at most 2000 runes
+    updated_at TEXT NOT NULL,             -- RFC 3339 UTC
+    PRIMARY KEY (scope, ref_id)
+);
+CREATE TABLE IF NOT EXISTS "watchman_items" (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    workbench_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id    INTEGER,
+    target_id     INTEGER,
+    kind          TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard','stall')),
+    ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),
+    ref_id        INTEGER NOT NULL,
+    state         TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
+    outcome       TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes','superseded')),
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    lease_until   TEXT,
+    not_before    TEXT,
+    question      TEXT NOT NULL DEFAULT '',  -- redacted, at most 2048 runes
+    choice        TEXT NOT NULL DEFAULT '',
+    rationale     TEXT NOT NULL DEFAULT '',
+    precedent_ids TEXT NOT NULL DEFAULT '[]',  -- JSON array of watchman_precedents ids
+    confidence    TEXT NOT NULL DEFAULT '',
+    importance    TEXT NOT NULL DEFAULT '',
+    category      TEXT NOT NULL DEFAULT '',
+    unsure        INTEGER NOT NULL DEFAULT 1 CHECK (unsure IN (0, 1)),  -- every twin decision is journalled unsure (D43)
+    park_reason   TEXT NOT NULL DEFAULT '',
+    delivery      TEXT NOT NULL DEFAULT '',
+    round_id      INTEGER,
+    cost_usd      REAL NOT NULL DEFAULT 0,
+    error         TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    decided_at    TEXT,
+    feedback      TEXT NOT NULL DEFAULT '' CHECK (feedback IN ('','ok','corrected')),  -- written by the Desktop only
+    feedback_text TEXT NOT NULL DEFAULT '',
+    feedback_at   TEXT,
+    check_done_at TEXT,
+    owner_done_at TEXT,
+    correction_sent_at TEXT,
+    moves         INTEGER,
+    UNIQUE (ref_kind, ref_id, kind)
+);
+CREATE TABLE IF NOT EXISTS watchman_stalls (
+    session_id   INTEGER PRIMARY KEY REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    stopped_at   TEXT NOT NULL,                -- RFC 3339 UTC: when the stopped state began (the turn end, or later the end of background work)
+    pings        INTEGER NOT NULL DEFAULT 0,   -- pings delivered since the last progress
+    last_ping_at TEXT,                         -- RFC 3339 UTC
+    head         TEXT NOT NULL DEFAULT '',     -- the worktree's HEAD at the last ping
+    asks_seen    INTEGER NOT NULL DEFAULT 0,   -- the session's ask count at the last ping
+    parked_at    TEXT,                         -- the stall was journalled (kind 'stall')
+    last_delivery TEXT NOT NULL DEFAULT ''     -- the last counted ping: 'submitted' or 'typed'
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
@@ -3051,9 +3071,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_client_key ON chat_messages(
 CREATE INDEX IF NOT EXISTS idx_tower_requests_at ON tower_requests(at);
 CREATE INDEX IF NOT EXISTS idx_watchman_backtests_wb ON watchman_backtests(workbench_id, id);
 CREATE INDEX IF NOT EXISTS idx_watchman_precedents_wb ON watchman_precedents(workbench_id, category, decided_at);
-CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not_before);
-CREATE INDEX IF NOT EXISTS idx_watchman_items_wb ON watchman_items(workbench_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_watchman_items_created ON watchman_items(created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workbench_folders_live_path ON workbench_folders(folder_path COLLATE NOCASE) WHERE removed_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workbench_folders_live_name ON workbench_folders(workbench_id, name COLLATE NOCASE) WHERE removed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_workbench_folders_bench ON workbench_folders(workbench_id, position);
@@ -3062,6 +3079,9 @@ CREATE INDEX IF NOT EXISTS idx_owner_asks_project ON owner_asks(project_id, stat
 CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_messages_state ON session_messages(state);
 CREATE INDEX IF NOT EXISTS idx_session_messages_to ON session_messages(to_session_id, state);
+CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not_before);
+CREATE INDEX IF NOT EXISTS idx_watchman_items_wb ON watchman_items(workbench_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_watchman_items_created ON watchman_items(created_at);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;

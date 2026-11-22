@@ -134,6 +134,9 @@ type Daemon struct {
 	watchmanWakeCh      chan struct{}    // the twin's wake, ticked by every AutomationWakeSignal (forwardWakes)
 	watchmanTwin        WatchmanTwin     // nil = the twin worker is not wired (SetWatchmanTwin)
 	watchmanTwinCycle   chan struct{}    // each cycle's nudge to the twin worker (nudgeWatchmanTwin)
+	watchmanLearnWake   chan struct{}    // the learner's wake, ticked with watchmanWakeCh (forwardWakes)
+	watchmanLearnCycle  chan struct{}    // each cycle's nudge to the learner (nudgeWatchmanLearner)
+	watchmanLearnFailed map[int64]bool   // workbenches whose learner pass failed, retried next cycle (learner goroutine only)
 	automationScheduler AutomationRunner // nil = automations not wired
 	automationExecutor  AutomationRunner
 	automationEvents    AutomationEvents // nil = no event automations
@@ -142,6 +145,9 @@ type Daemon struct {
 	planUsageDisable    func() error
 	messages            MessageDeliverer                             // nil = agent messages not delivered by this daemon
 	specReviewLaunch    func(ctx context.Context, askID int64) error // nil = the spec review sweep is off
+	// sessionCleanup is one automatic session-cleanup pass (#2131,
+	// session_cleanup.go); nil = none.
+	sessionCleanup func(ctx context.Context)
 	// watchmanBacktestLaunch starts a detached backtest child; nil = the weekly backtest is off.
 	watchmanBacktestLaunch func(ctx context.Context, workbenchID int64) error
 	pidPath                string
@@ -640,10 +646,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// items waited for) before the forwarder.
 	stopTwin := d.startWatchmanTwin(ctx)
 	defer stopTwin()
+	// The learner, woken with the twin: stopped (its pass ended) before the
+	// twin, which it nudges when a workbench is learned.
+	stopLearner := d.startWatchmanLearner(ctx)
+	defer stopLearner()
 	stopPlanUsage := d.startPlanUsage(ctx)
 	defer stopPlanUsage()
 	stopMessages := d.startSessionMessages(ctx)
 	defer stopMessages()
+	stopSessionCleanup := d.startSessionCleanup(ctx)
+	defer stopSessionCleanup()
 
 	// Calendars first on startup: a calendar sync takes seconds, while the
 	// first cycle's Slack sync of a fresh install takes minutes and runSync
@@ -698,9 +710,10 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Every cycle, before the fetches: the keep-awake hold while anything
 	// is handed to Watchman, the arm sidecar, the slept-through gaps.
 	d.phaseWatchmanUpkeep(ctx)
-	// The twin's pass (scan, then lease) runs on its own goroutine: the
-	// cycle only nudges it.
+	// The twin's pass (scan, then lease) and the learner's run on their own
+	// goroutines: the cycle only nudges them.
 	d.nudgeWatchmanTwin()
+	d.nudgeWatchmanLearner()
 	d.setSection(sectionSlackFetch)
 	d.markFetchProgress()
 	d.sampleLockStats(fetchCtx)

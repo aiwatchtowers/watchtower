@@ -72,7 +72,8 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertEqual(status.armed.last, WatchmanArmedEntry(
             scope: .target, id: 4, armedAt: AutomationDates.parse("2026-11-02T13:00:00Z")))
         XCTAssertEqual(status.armedSessions, [
-            1: WatchmanArmedSession(id: 1, target: 0, armedAt: AutomationDates.parse("2026-11-02T12:00:00Z")),
+            1: WatchmanArmedSession(id: 1, target: 0, armedAt: AutomationDates.parse("2026-11-02T12:00:00Z"),
+                                    instructions: "ship task 3 only"),
             // Covered by target 4: its arming time.
             2: WatchmanArmedSession(id: 2, target: 4, armedAt: AutomationDates.parse("2026-11-02T13:00:00Z"))
         ])
@@ -277,5 +278,28 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertEqual(malformed.armed.count, 1)
         XCTAssertEqual(malformed.daemon, .running)
         XCTAssertTrue(malformed.isArmed(session: 3), "the arming row still says so")
+    }
+
+    /// `armed_sessions[].instructions` (tuning spec §2): missing or not a
+    /// string reads as none, never as a lost entry.
+    func testArmedSessionInstructionsDecodeTolerantly() throws {
+        let status = try JSONDecoder().decode(WatchmanStatus.self, from: Data(#"""
+            {"ok":true,"workbenches":[],"mode":"sleep","armed_sessions":[
+              {"id":3,"target":0,"instructions":"ship task 3 only\nask first"},
+              {"id":5,"target":0},{"id":7,"target":0,"instructions":null},{"id":9,"target":0,"instructions":4}]}
+            """#.utf8))
+        XCTAssertEqual(status.armedSessions[3]?.instructions, "ship task 3 only\nask first")
+        XCTAssertEqual(status.armedSessions[5]?.instructions, "")
+        XCTAssertEqual(status.armedSessions[7]?.instructions, "")
+        XCTAssertEqual(status.armedSessions[9]?.instructions, "")
+        XCTAssertEqual(status.armedSessions.count, 4)
+    }
+
+    func testInstructReplyDecodes() throws {
+        let reply = try JSONDecoder().decode(WatchmanInstructReply.self, from: Data(
+            #"{"ok":true,"scope":"target","ref_id":4,"instructions":"keep the API","error":""}"#.utf8))
+        XCTAssertEqual(reply, WatchmanInstructReply(instructions: "keep the API"))
+        let bare = try JSONDecoder().decode(WatchmanInstructReply.self, from: Data(#"{"ok":false,"error":"busy"}"#.utf8))
+        XCTAssertEqual(bare, WatchmanInstructReply(ok: false, error: "busy"))
     }
 }

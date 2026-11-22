@@ -35,7 +35,8 @@ struct OwnGoogleProjectPage: View {
                     }
                     switch model.status {
                     case .note(let text): WizardCaption(text)
-                    case .busy(let text): WizardBusy(text: text)
+                    case .waiting(let copy):
+                        SignInWaitLine(line: copy.line, hint: copy.hint, cancelTitle: copy.cancelTitle) { model.cancel() }
                     case .problem(let text): WizardProblem(text: text)
                     }
                 }

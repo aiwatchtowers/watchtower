@@ -183,9 +183,12 @@ type Center struct {
 	shareTimeout time.Duration
 	// Test seams (cloudkit.go): beforeIssueStore runs before a CloudKit code
 	// is stored (an error fails the store); afterSweep runs after a deferred
-	// sweep returned, before its outcome is recorded.
-	beforeIssueStore func() error
-	afterSweep       func()
+	// sweep returned, before its outcome is recorded; beforeStartRefusal
+	// runs in CloseOnStart between its read of the own codes and the
+	// refusal of the earlier run's requests.
+	beforeIssueStore   func() error
+	afterSweep         func()
+	beforeStartRefusal func()
 	// drawConfirm fills a confirm nonce (hello.go decideHello); nil is
 	// crypto/rand. A test seam: it counts and names the draws.
 	drawConfirm func([]byte) error
@@ -414,7 +417,10 @@ func (c *Center) Sweep() error {
 	c.mu.Lock()
 	defer c.unlock()
 	now := c.now()
-	var refused []pendingDevice
+	var (
+		refused []pendingDevice
+		forgot  int64 // refusals forgotten
+	)
 	err := c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
 		all, err := pendingDevicesTx(tx)
 		if err != nil {
@@ -433,7 +439,12 @@ func (c *Center) Sweep() error {
 			}
 			refused = append(refused, p)
 		}
-		if _, err := tx.Exec(`DELETE FROM link_refusals WHERE at < ?`, secs(now.Add(-RefusalLifetime))); err != nil {
+		res, err := tx.Exec(`DELETE FROM link_refusals WHERE at < ?`, secs(now.Add(-RefusalLifetime)))
+		if err != nil {
+			return err
+		}
+		forgot, err = res.RowsAffected()
+		if err != nil {
 			return err
 		}
 		_, err = tx.Exec(`DELETE FROM revoked_devices WHERE removed_at <= ?`, secs(now.Add(-RevokedLifetime)))
@@ -447,6 +458,10 @@ func (c *Center) Sweep() error {
 	}
 	if len(refused) > 0 {
 		log.Printf("hub link: %d waiting requests refused at their code's expiry", len(refused))
+	}
+	if forgot > 0 {
+		// A re-linked phone's refusal gone: its linked keybox is back now.
+		c.changed()
 	}
 	return nil
 }

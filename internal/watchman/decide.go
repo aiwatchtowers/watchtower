@@ -46,6 +46,15 @@ type Item struct {
 	Exclude       []int64
 	Profile       string
 	Instructions  string
+	// SessionInstructions is the owner's instruction for the session the
+	// item waits in ("Target: …" then "Session: …", LiveDecide); "" in the
+	// backtest, which has no session. It never lifts a hard limit: those
+	// run in Go before and after the model (WATCHMAN-01).
+	SessionInstructions string
+	// ItemID and SessionID place a live item (its watchman_items row and
+	// session; 0 = none) for LiveDecide's read and log. Never sent to the
+	// model.
+	ItemID, SessionID int64
 	// Findings are the spec review's findings of a review_doc item, by key:
 	// what the reply's marks may name.
 	Findings []Finding
@@ -133,13 +142,16 @@ type decidePrecedent struct {
 }
 
 type decideInput struct {
-	Category     string            `json:"category"`
-	Situation    string            `json:"situation"`
-	Options      []string          `json:"options"`
-	Precedents   []decidePrecedent `json:"precedents"`
-	Profile      string            `json:"profile"`
-	Instructions string            `json:"instructions"`
-	Findings     []Finding         `json:"findings,omitempty"`
+	Category   string            `json:"category"`
+	Situation  string            `json:"situation"`
+	Options    []string          `json:"options"`
+	Precedents []decidePrecedent `json:"precedents"`
+	Profile    string            `json:"profile"`
+	// SessionInstructions sits between the profile and the standing
+	// instructions, as in the prompt (watchman.decide v5).
+	SessionInstructions string    `json:"session_instructions"`
+	Instructions        string    `json:"instructions"`
+	Findings            []Finding `json:"findings,omitempty"`
 }
 
 type decideReply struct {
@@ -187,7 +199,8 @@ func Decide(ctx context.Context, d *db.DB, gen digest.Generator, store *prompts.
 func buildDecideUser(it Item, ps []db.WatchmanPrecedent) (string, error) {
 	in := decideInput{
 		Category: it.Category, Situation: it.Situation, Options: it.Options,
-		Precedents: make([]decidePrecedent, 0, len(ps)), Profile: it.Profile, Instructions: it.Instructions,
+		Precedents: make([]decidePrecedent, 0, len(ps)), Profile: it.Profile,
+		SessionInstructions: it.SessionInstructions, Instructions: it.Instructions,
 	}
 	if it.Category == CategoryReviewDoc {
 		in.Findings = it.Findings

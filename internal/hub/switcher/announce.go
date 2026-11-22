@@ -150,7 +150,7 @@ func (s *Switcher) notice(target transport.Kind, epoch uint32, by string, at wir
 		return wire.Control{}, false
 	}
 	defer clear(payload)
-	sealed, err := s.sealer.Keybox(s.data, id, payload)
+	sealed, err := s.sealer.KeyboxTo(s.data, id, payload, kb.To)
 	if err != nil {
 		log.Printf("hub: switch: a keybox does not seal (%s): that phone gets no notice", errClass(err))
 		return wire.Control{}, false

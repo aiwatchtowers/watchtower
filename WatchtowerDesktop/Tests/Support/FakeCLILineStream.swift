@@ -100,6 +100,26 @@ package final class FakeCLILineStream: CLILineStreaming, @unchecked Sendable {
         open(args: args, record: true)
     }
 
+    /// As `lines(args:stdin:)`: a queued reply is a session that already
+    /// printed it and exited; otherwise a session the test drives.
+    package func oneShot(args: [String], stdin: Data?) -> any CLILineSession {
+        lock.lock()
+        recorded.append(Invocation(args: args, stdin: stdin))
+        let reply = queued.isEmpty ? nil : queued.removeFirst()
+        lock.unlock()
+        guard let reply else {
+            let session = open(args: args, record: false)
+            if let stdin { session.write(stdin) }
+            session.closeInput()
+            return session
+        }
+        signal.changed()
+        let session = FakeCLILineSession(args: args, signal: signal)
+        reply.lines.forEach { session.emit($0) }
+        session.exit(code: reply.exitCode, stderr: reply.stderr)
+        return session
+    }
+
     private func open(args: [String], record: Bool) -> FakeCLILineSession {
         let session = FakeCLILineSession(args: args, signal: signal)
         lock.lock()
@@ -122,6 +142,7 @@ package final class FakeCLILineSession: CLILineSession, @unchecked Sendable {
     private var written: [Data] = []
     private var inputClosedFlag = false
     private var terminatedFlag = false
+    private var exitsOnTerminateFlag = true
     private var exited = false
     private var exitWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -158,11 +179,11 @@ package final class FakeCLILineSession: CLILineSession, @unchecked Sendable {
     }
 
     /// The child exits: 0 finishes the stream, any other code throws.
-    package func exit(code: Int32 = 0) {
+    package func exit(code: Int32 = 0, stderr: String = "") {
         if code == 0 {
             sink.finish()
         } else {
-            sink.finish(throwing: CLIRunnerError.nonZeroExit(code: code, stderr: ""))
+            sink.finish(throwing: CLIRunnerError.nonZeroExit(code: code, stderr: stderr))
         }
         markExited()
     }
@@ -181,11 +202,20 @@ package final class FakeCLILineSession: CLILineSession, @unchecked Sendable {
         signal.changed()
     }
 
+    /// `terminate()` ends the child at once (default). False: it is only
+    /// recorded and the child lives on until the test calls `exit`, as a
+    /// killed process does until it is reaped.
+    package var exitsOnTerminate: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return exitsOnTerminateFlag }
+        set { lock.lock(); exitsOnTerminateFlag = newValue; lock.unlock() }
+    }
+
     package func terminate() {
         lock.lock()
         terminatedFlag = true
+        let exits = exitsOnTerminateFlag
         lock.unlock()
-        exit(code: 0)
+        if exits { exit(code: 0) }
     }
 
     package func waitForExit() async {

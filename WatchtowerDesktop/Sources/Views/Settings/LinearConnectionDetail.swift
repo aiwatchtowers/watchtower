@@ -146,8 +146,7 @@ struct LinearConnectionDetail: View {
                     .disabled(vm.isBusy || reloginBlocked(account.id) != nil)
             }
             Button("Remove") { pendingRemoval = account }
-                .buttonStyle(.kitQuiet)
-                .foregroundStyle(Tone.error)
+                .buttonStyle(KitQuietButtonStyle(label: Tone.error))
                 .disabled(vm.isBusy)
         }
     }

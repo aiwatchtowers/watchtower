@@ -359,6 +359,17 @@ func TestRelayTransport_ErrorMapping(t *testing.T) {
 			t.Errorf("%s does not read as forbidden", code)
 		}
 	}
+	// Only the zone's FORBIDDEN reads as the zone refused (a closed pairing
+	// slot); the device's own refusals do not.
+	if !errors.Is(MapError(pe(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)), transport.ErrZoneForbidden) {
+		t.Error("FORBIDDEN does not read as the zone refused")
+	}
+	for _, code := range []relayv1.ErrorCode{relayv1.ErrorCode_ERROR_CODE_UNAUTHENTICATED,
+		relayv1.ErrorCode_ERROR_CODE_ATTESTATION_REQUIRED, relayv1.ErrorCode_ERROR_CODE_ATTESTATION_FAILED} {
+		if errors.Is(MapError(pe(code)), transport.ErrZoneForbidden) {
+			t.Errorf("%s reads as the zone refused", code)
+		}
+	}
 	unmapped := MapError(pe(relayv1.ErrorCode_ERROR_CODE_PAIRING_EXPIRED))
 	if client.Code(unmapped) != relayv1.ErrorCode_ERROR_CODE_PAIRING_EXPIRED || errors.Is(unmapped, transport.ErrUnavailable) {
 		t.Errorf("unmapped code: %v", unmapped)

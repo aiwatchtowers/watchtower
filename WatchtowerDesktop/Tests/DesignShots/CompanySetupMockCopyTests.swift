@@ -219,7 +219,6 @@ final class CompanySetupMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.ownGuide, Own.guide.map(\.text))
         XCTAssertTrue(Own.guide.allSatisfy { $0.link?.host == "console.cloud.google.com" }, "every line opens the console")
         XCTAssertEqual(Copy.ownUnverifiedNote, Own.unverifiedNote)
-        XCTAssertEqual(Copy.checkingGoogle, Own.checkingLine)
         XCTAssertEqual(Copy.connect, Own.connectTitle)
         XCTAssertEqual(Copy.tryAgain, Own.tryAgainTitle)
         XCTAssertEqual(Copy.done, Own.doneTitle)

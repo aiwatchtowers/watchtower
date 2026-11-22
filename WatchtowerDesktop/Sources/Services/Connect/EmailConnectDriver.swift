@@ -13,7 +13,7 @@ protocol EmailConnectModel: AnyObject {
     func addImapAccount(
         host: String, port: Int, username: String, password: String, folder: String, security: String
     ) async -> Bool
-    func connectOutlook()
+    @discardableResult func connectOutlook() -> Task<Void, Never>?
     func cancelConnect()
     func refreshAsync() async
 }

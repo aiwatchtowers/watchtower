@@ -89,6 +89,22 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 	if err != nil {
 		return wire.LinkPayload{}, "", fmt.Errorf("link: storing the code: %w", err)
 	}
+	c.ck.mu.Lock()
+	c.ck.codeGen++
+	if !c.ck.startClosed {
+		if c.ck.ownCodes == nil {
+			c.ck.ownCodes = map[string]bool{}
+		}
+		c.ck.ownCodes[p.Nonce] = true
+	}
+	if ck == nil && c.ck.open != nil {
+		// A relay code replaces the CloudKit code on screen: off screen
+		// now (a close of it refuses nobody waiting on the relay code), its
+		// public link closed at the next share sweep.
+		c.ck.open = nil
+		c.ck.linkCloseAt, c.ck.linkCloseTries = now, 0
+	}
+	c.ck.mu.Unlock()
 	c.emit(PairEvent{Kind: EventQR, URL: url, ExpiresAt: time.Unix(p.Exp, 0).UTC()})
 	c.emit(PairEvent{Kind: EventWaiting})
 	return p, url, nil

@@ -315,6 +315,11 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   `get_account_state` the hub is `paused`/`needs_relay` — `Publisher.Pause`, `Processor.SetPaused(true)`, state kept,
   no handler run, sessions untouched; re-read every 5 min (`NeedsRelayPoll`) and at once on `ENTITLEMENT_EXPIRED`,
   `SLOT_REMOVED` or `ENTITLEMENT_INACTIVE`; pairing is never paused. Resume publishes one full diff.
+- **A closed pairing slot is dropped** (#1127): the hub answers in a `pair/<slot>` zone for `pairSlotLifetime` (600 s)
+  after it heard of it, rewriting the slot's keyboxes on every link upkeep. Once the relay refuses the slot
+  `FORBIDDEN` (the phone promoted it, or it expired there), the first refused read or write marks the slot closed
+  (`link.Center.pairClosed`, one log line): it is not written or read again, a resync marker or zone event does not
+  open it again, and the refusal is no error. Only the zone's `FORBIDDEN` code (`transport.ErrZoneForbidden`) closes a slot; a refusal of the hub itself (`UNAUTHENTICATED`, attestation: `transport.ErrForbidden` alone) is returned and logged as before and keeps every slot.
 - **Vouched admission** (spec §7, §12a; relay `bcca870` "Vouched hubs"; `internal/hub/admission.go`): the hub registers
   as `DEVICE_KIND_HUB` with an empty attestation in test and live mode alike (the relay treats `DEVICE_KIND_MAC` as the
   same hub kind, so a sidecar an older build registered as a Mac keeps its device) and logs in by Ed25519 only. Until
@@ -471,6 +476,19 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   toward the relay waits at least 5 minutes after the previous one; a switch toward CloudKit is immediate. Every
   accepted switch rotates the keyring. A notice is left in the transport being left (decision 1), and old keys are
   kept for 7 days (decision 2). `hub_meta.transport` is `cloudkit|relay`.
+- **The code `hub pair` issues follows the active transport** (#1127). On a host whose active transport is CloudKit
+  (`hubRuntime.cloudKitCodes`: the switch on CloudKit and the bridge's `transport.Shares`) `OpPair` issues a CloudKit
+  code (`link.Center.IssueCloudKit`: v4, `transport: cloudkit`, `transports: ["cloudkit","relay"]`, the container,
+  the Mac's iCloud user, the share URLs, the relay identity kept), so the phone links where the hub publishes; on
+  the relay, and on a headless host, it issues a relay code (`Issue`). Until #1127 every code was a relay code, and
+  a paying phone that scanned one on a CloudKit Mac linked through a pairing slot onto the relay, where the hub
+  wrote no heartbeat, so the phone showed the Mac offline. The share calls run outside the supervisor's `hubMu`,
+  the hub held by its wait group (stop cancels and waits for them); the `qr` and `waiting` events reach the pair
+  stream as with `Issue`. A refusal answers `no_icloud` (no iCloud account, restricted, or no entitlement),
+  `icloud_unreachable` (the account or the Mac's iCloud user could not be read just now: the bridge failed or timed
+  out, iCloud temporarily unavailable; try again), `icloud_changed` (the account changed while the code was made),
+  `hub_off` (the hub stopped meanwhile) or `failed` (the code could not be stored), worded by the CLI
+  (`hubAnswerError`), whose last stderr line Settings → Mobile shows; nothing is issued. A hub stopped with such a code on screen (Mobile off, the daemon stopping) closes its public link first, while the bridge still runs (`link.Center.CloseOnStop`, bounded 10 s, best effort); the participants' sweep is the next start's close. That start's close (`link.Center.CloseOnStart`, `CloseRestart`) runs one at a time with code issues and never touches a code the new run already issued (a pairing answered before the worker reached it): it refuses (`not_confirmed`, in the keybox only: no pair event, since a `hub pair` stream with no phone bound ends at any refusal) only the requests waiting under the earlier run's codes, and closes the public link and sweeps unless the new run opened that link itself (a code issued without share URLs leaves the inherited link to it). Cut short (the run stopping while an issue holds it, or a failed sweep), it leaves a deferred sweep due. A pairing stream that ends with its code still on screen (the sheet closed, `hub pair` stopped) closes that code's link in the background (`link.Center.CloseCode`, `CloseSheetClosed`: waiting phones read `not_confirmed`); a newer stream's code stays open, and a stream that confirmed leaves the close to `CloseUsed`.
 - **A phone's relay id from its `device` record** (relay client Phase 3b Task 23, R22). An iCloud-linked phone that
   upgrades names its `relay_device_id` in its own `device` record with the `relay_auth` key's proof; the hub stores it
   only when the proof holds, moves the id off any other row that holds it (ask #1005), then counts the phone as paying

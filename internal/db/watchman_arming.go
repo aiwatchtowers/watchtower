@@ -44,7 +44,17 @@ func (db *DB) UpsertWatchmanArming(a WatchmanArming) error {
 // ArmWatchman inserts the row unless (scope, ref_id) is already armed, which
 // keeps its armed_at and armed_by; inserted reports a new row.
 func (db *DB) ArmWatchman(a WatchmanArming) (inserted bool, err error) {
-	res, err := db.Exec(`INSERT INTO watchman_arming (scope, ref_id, armed_at, armed_by) VALUES (?, ?, ?, ?)
+	return armWatchman(db, a)
+}
+
+// sqlExecer is a *DB or a *sql.Tx.
+type sqlExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// armWatchman is ArmWatchman's statement on ex (the handle or a tx).
+func armWatchman(ex sqlExecer, a WatchmanArming) (inserted bool, err error) {
+	res, err := ex.Exec(`INSERT INTO watchman_arming (scope, ref_id, armed_at, armed_by) VALUES (?, ?, ?, ?)
 		ON CONFLICT(scope, ref_id) DO NOTHING`, a.Scope, a.RefID, wmArmTime(a.ArmedAt), a.ArmedBy)
 	if err != nil {
 		return false, fmt.Errorf("arming watchman %s %d: %w", a.Scope, a.RefID, err)

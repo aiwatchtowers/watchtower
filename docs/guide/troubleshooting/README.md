@@ -9,6 +9,7 @@ Find what you see on the screen in the first column; the second column opens the
 | Briefings or Day Plan has nothing for today | [No briefing or day plan today](no-briefing-or-day-plan.md) |
 | "The AI provider isn't signed in", "Claude Code was not found", **Not installed** under the provider in **Settings → System → AI** | [The Claude or Codex tool is not found or not signed in](ai-tool-not-found-or-not-signed-in.md) |
 | A red dot on a service in **Connections**, **Re-login**, "Stopped syncing" | [An account needs attention](account-needs-attention.md) |
+| "Waiting for the … sign-in in your browser…" that never ends, or the browser shows "Access blocked" | [A sign-in waits in the browser](account-needs-attention.md#a-sign-in-waits-in-the-browser) |
 | The **Calendar** tab is hidden, or a meeting you expect is not in the list | [Calendar events are missing](calendar-events-missing.md) |
 | **Record** does nothing, "Microphone access was denied", "No speech recognized", a failed pill | [Recording or transcript problems](recording-or-transcript-problems.md) |
 | An answer to an ask does not reach the agent, or a session shows only a green dot | [A Workbench session or ask is stuck](workbench-session-or-ask-stuck.md) |

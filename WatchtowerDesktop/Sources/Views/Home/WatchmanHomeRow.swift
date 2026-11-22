@@ -10,7 +10,7 @@ struct WatchmanHomeRow: View {
     var body: some View {
         Button(action: onOpen) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                Image(systemName: "moon.stars")
+                Image(systemName: WatchmanStyle.icon)
                     .foregroundStyle(WatchmanJournalStyle.tone)
                     .accessibilityHidden(true)
                 Text(WatchmanJournalCopy.homeRow(counts))

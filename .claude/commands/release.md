@@ -2,6 +2,10 @@
 
 You are creating a new GitHub Release for Watchtower. Follow these steps precisely.
 
+A release ships two things: the public Mac app (GitHub release, which also bumps the Homebrew cask) and the iPhone app (TestFlight). There is **no corp build any more** (company setup D3, ask #1442): 0.29.0 is the bridge release and 0.29.1 the last corp build published — a corp install whose bridge ran takes the public feed, and one whose bridge has not run yet keeps retrying it on its current build. Do not build or publish a corp flavor unless the user asks for it explicitly.
+
+Before Step 1, check that `main`'s latest CI run is green (`gh run list --branch main --workflow ci.yml --limit 1`); a red `main` is fixed first, never tagged.
+
 ## Step 1: Determine Version
 
 1. Get the current version from `cmd/version.go` (the `Version` variable)
@@ -86,7 +90,7 @@ with `make periphery-baseline` and explain in the release notes why.
 
 ## Step 6: Build
 
-First check the build profile: a public release must not set `WATCHTOWER_JIRA_CLIENT_ID/SECRET` (our shared Atlassian app is retired, company setup D4, D15 amended, ask #1600). `scripts/build-app.sh` refuses such a release (`shared-jira-check`); remove the two values from `.env` (keep them only for `--dev` and flavored corp builds, whose bridge still needs the corp Jira client). A corp-flavored build needs `BUILD_COMPANY_NAME` in `.env.corp` for its company bridge.
+First check the build profile: a public release must not set `WATCHTOWER_JIRA_CLIENT_ID/SECRET` (our shared Atlassian app is retired, company setup D4, D15 amended, ask #1600). `scripts/build-app.sh` refuses such a release (`shared-jira-check`); remove the two values from `.env` (keep them only for `--dev` builds).
 
 Run the build via Makefile (this ensures `.env` is loaded and OAuth credentials are injected via ldflags):
 ```bash
@@ -147,11 +151,11 @@ never by default. Builds before the one that shipped this feature ignore it.
   `<!-- min_version: X.Y.Z -->`. GitHub hides it; the app strips it from the
   notes it shows. Running builds older than `X.Y.Z` get the **Software
   Update** window with no Later at their next check (within 6 h, or at launch).
-- **Corp (gated) channel:** `lending/scripts/publish-build.sh` copies the
-  GitHub release body into the manifest's `notes`, so the marker above
-  reaches corp builds with no extra step. To set a different minimum for corp
-  only, add `"min_version": "X.Y.Z"` to `manifest/<flavor>.json` (the manifest
-  key wins over the marker).
+- **Corp (gated) channel:** no corp build is published any more (see the
+  top). A corp install that has not bridged yet reads only
+  `manifest/corp.json` in the gated feed; to require a minimum there, add
+  `"min_version": "X.Y.Z"` to that manifest by hand (the key wins over the
+  marker) — only when the user asks.
 - Format: `X`, `X.Y` or `X.Y.Z`, digits only, optional leading `v`; it must
   not be newer than the release being published. Anything else is ignored
   (the app logs it and requires nothing).

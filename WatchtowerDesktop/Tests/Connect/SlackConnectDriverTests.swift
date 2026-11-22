@@ -26,10 +26,11 @@ private final class FakeSlackAccounts: SlackAccountsConnecting {
     @ObservationIgnored var stored: [SlackAccount]?
     @ObservationIgnored private var addWaiter: CheckedContinuation<Void, Never>?
 
-    func addAccount(daemonPolicy _: DaemonRestartPolicy) async {
+    func addAccount(daemonPolicy _: DaemonRestartPolicy) async -> SlackAccountsViewModel.SignInOutcome {
         addCalls += 1
         beginForeignSignIn()
         await withCheckedContinuation { addWaiter = $0 }
+        return .signedIn
     }
 
     /// A sign-in run begins (as `runAuthFlow` does).

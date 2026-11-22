@@ -169,12 +169,14 @@
     {
       "id": 1,
       "target": 0,
-      "armed_at": "2026-11-02T12:00:00Z"
+      "armed_at": "2026-11-02T12:00:00Z",
+      "instructions": "ship task 3 only"
     },
     {
       "id": 2,
       "target": 4,
-      "armed_at": "2026-11-02T13:00:00Z"
+      "armed_at": "2026-11-02T13:00:00Z",
+      "instructions": ""
     }
   ],
   "daemon_running": true

@@ -172,6 +172,31 @@ func WipeSliceHashes(tx *sql.Tx) error {
 	return nil
 }
 
+// RelinkKey is the agreement key of a re-link of device (#1127): a phone the
+// hub still lists as linked that links again reads its waiting request, then
+// the refusal of it, sealed to the key its hello sent, not its link's. It is
+// the pending request's key, else the key of a refusal of a linked phone
+// (linking deletes a phone's refusal, so such a row is a re-link's); nil when
+// device has neither.
+func (s *Store) RelinkKey(device string) ([]byte, error) {
+	for _, q := range []string{
+		`SELECT agreement_key FROM pending_devices WHERE device_id = ? COLLATE NOCASE AND agreement_key IS NOT NULL`,
+		`SELECT agreement_key FROM link_refusals WHERE device_id = ? COLLATE NOCASE AND agreement_key IS NOT NULL
+			AND EXISTS (SELECT 1 FROM devices WHERE devices.device_id = link_refusals.device_id COLLATE NOCASE)`,
+	} {
+		var key []byte
+		err := s.db.QueryRow(q, device).Scan(&key)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading a re-link key: %w", err)
+		}
+		return key, nil
+	}
+	return nil, nil
+}
+
 // KeyboxRecipientKey is the agreement key a keybox for device is sealed to:
 // a linked phone's, else a pending, a revoked or a refused one's (the Swift
 // hub's order). nil when none of them holds a key for it.

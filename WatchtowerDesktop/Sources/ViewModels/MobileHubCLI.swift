@@ -333,7 +333,9 @@ struct MobileHubCLI {
         var text = line.trimmingCharacters(in: .whitespaces)
         if text.hasPrefix("Error: ") { text.removeFirst("Error: ".count) }
         guard let first = text.first else { return error.localizedDescription }
-        text = first.uppercased() + text.dropFirst()
+        // A mixed-case first word ("iCloud", "iPhone") keeps its own spelling.
+        let firstWord = text.prefix { !$0.isWhitespace }
+        if firstWord == firstWord.lowercased() { text = first.uppercased() + text.dropFirst() }
         return text.hasSuffix(".") ? text : text + "."
     }
 

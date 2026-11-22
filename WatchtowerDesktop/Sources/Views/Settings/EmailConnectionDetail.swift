@@ -138,8 +138,7 @@ struct EmailConnectionDetail: View {
             Button("Remove") {
                 accountPendingRemoval = account
             }
-            .buttonStyle(.kitQuiet)
-            .foregroundStyle(Tone.error)
+            .buttonStyle(KitQuietButtonStyle(label: Tone.error))
         }
     }
 

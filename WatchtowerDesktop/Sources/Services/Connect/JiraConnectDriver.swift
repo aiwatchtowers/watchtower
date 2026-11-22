@@ -26,7 +26,9 @@ protocol JiraConnectModel: AnyObject {
     func refreshAsync() async
 }
 
-extension JiraAccountsViewModel: JiraConnectModel {}
+extension JiraAccountsViewModel: JiraConnectModel {
+    func refreshAsync() async { await refreshAsync(quiet: false) }
+}
 
 /// The add sheet's steps after the sign-in: the Confluence selection line,
 /// the board step and the Confluence spaces, on the same CLI verbs.

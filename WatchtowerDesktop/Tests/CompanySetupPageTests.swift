@@ -86,4 +86,30 @@ final class CompanySetupPageTests: XCTestCase {
         await untilObserved { model.load == .ready }
         XCTAssertEqual(model.current, .services)
     }
+
+    /// A sign-in check shows the waiting line (#2132 C2); its Cancel puts the
+    /// check back to not-run, and the step shows no line of its own.
+    func testSignInCheckShowsTheWaitingLine() async throws {
+        let cli = CompanyScriptedCLI()
+        let draft = #"{"company":"Acme","services":["google"],"step":"google","slack":{},"#
+            + #""google":{"client_id":"1234-abcd.apps.googleusercontent.com","client_secret":"sample-secret"}}"#
+        cli.on(["company", "draft", "show"], [#"{"state":"ok","draft":"# + draft + #","bad_file":"","checked_vendors":[]}"#])
+        let model = Model(streamer: cli, slack: SlackAppSetupModel(streamer: cli, mode: .wizard))
+        await model.open()
+        cli.hold(["company", "check", "google"])
+        let run = Task { await model.check(.google) }
+        await cli.waitFor(["company", "check", "google"])
+
+        let step = CompanySetupVendorStep(model: model, vendor: .google, selection: .constant(0))
+        let wait = SignInWaitCopy.google
+        XCTAssertNoThrow(try step.inspect().find(text: wait.line))
+        XCTAssertNoThrow(try step.inspect().find(text: wait.hint))
+        XCTAssertThrowsError(try step.inspect().find(text: Model.checkingGoogle), "the waiting line replaces the busy line")
+        try step.inspect().find(button: wait.cancelTitle).tap()
+        XCTAssertNil(model.checks[.google])
+        XCTAssertThrowsError(try step.inspect().find(text: wait.line))
+        await run.value
+        XCTAssertNil(model.checkLine(.google))
+        cli.release(["company", "check", "google"], [])
+    }
 }

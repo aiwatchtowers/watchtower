@@ -1071,6 +1071,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	messagePort := sessionstart.NewPort(sessionStartDeps(cfg, database), nil)
 	defer func() { _ = messagePort.Close() }()
 	d.SetMessageDeliverer(&delivery.Deliverer{DB: database, Port: messagePort, Log: logger.Printf})
+	// Ended sessions' worktrees, branches and build output (#2131): the
+	// same port lists the host's live runs.
+	d.SetSessionCleanup(sessionCleanupPass(cfg, database, messagePort, logger))
 	// The sweep's relaunch is background work: the reviewer carries its
 	// origin (D20 of #1886).
 	d.SetSpecReviewLaunch(func(ctx context.Context, askID int64) error {
@@ -1358,7 +1361,7 @@ func wireWatchmanTwin(d *daemon.Daemon, cfg *config.Config, database *db.DB) (cl
 		DB: database, Sessions: port,
 		Held: watchmanact.FileHeldStore{Dir: cfg.WorkspaceDir()}, HeldKey: watchmanHeldKey,
 	})
-	d.SetWatchmanTwin(answerer, func(ctx context.Context, workbenchID, targetID int64, brief string) error {
+	d.SetWatchmanTwin(answerer, port.Live, func(ctx context.Context, workbenchID, targetID int64, brief string) error {
 		_, err := port.Start(ctx, handlers.StartRequest{Workbench: workbenchID, Target: &targetID, Brief: brief})
 		return err
 	})

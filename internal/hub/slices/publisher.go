@@ -2,6 +2,7 @@ package slices
 
 import (
 	"context"
+	"crypto/ecdh"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -76,8 +77,10 @@ var errGrantID = errors.New("slices: device_grant id is not an uppercase device 
 // asset file and its descriptor, or nil and "". The publisher owns Payload
 // once Items returned it.
 type Item struct {
-	ID        string
-	Payload   []byte
+	ID      string
+	Payload []byte
+	// KeyboxTo: a device_grant's recipient, read with it (wire.Keybox.To).
+	KeyboxTo  *ecdh.PublicKey
 	Notify    string
 	Asset     *secure.AssetDescriptor
 	AssetPath string
@@ -1438,7 +1441,7 @@ func (p *Publisher) seal(k Kind, name string, it Item) (secure.Record, error) {
 		if err != nil || id.String() != it.ID {
 			return secure.Record{}, errGrantID
 		}
-		return p.c.Sealer.Keybox(p.c.DataZone, id, it.Payload)
+		return p.c.Sealer.KeyboxTo(p.c.DataZone, id, it.Payload, it.KeyboxTo)
 	case KindAskAlert:
 		return p.c.Sealer.Alert(p.c.DataZone, name, it.Payload)
 	default:

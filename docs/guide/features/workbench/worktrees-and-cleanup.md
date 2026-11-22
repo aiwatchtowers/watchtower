@@ -50,7 +50,7 @@ A file named `.worktreeinclude` at the repository root lists ignored files, such
 
 In the title row's **…** menu, **Worktree Setup Command…** sets one shell command that runs in each new worktree before the agent starts, for example a dependency install. A failure prints a line and the agent starts anyway. It does not run on resume.
 
-A session row shows where the agent works, and **Show Worktree in Finder** opens it. Resuming a session whose worktree was deleted re-creates it from its branch. If the branch is gone too, the row says to start a new session. A session resumes in its worktree on a branch its own agent switched to there, including a detached HEAD, once Watchtower has seen the agent on it. If the worktree is on a branch the session never used, for example after you switched it by hand, the row says to start a new session.
+**Show Worktree in Finder** opens a session's worktree. Resuming a session whose worktree was deleted re-creates it from its branch; with the branch gone too, the row says to start a new session. A session resumes only on a branch its own agent used there (a detached HEAD included); on any other branch, such as one you switched to by hand, the row says to start a new session.
 
 ### What the session line shows
 <!-- learn
@@ -72,7 +72,7 @@ A helper the agent starts in its own git worktree is a lane, counted at the end:
 
 ### What cleanup removes
 
-Cleanup is Watchtower's own command, because an agent in auto mode is blocked from `git worktree remove` and `git branch -D`. It removes only what the session created, never a worktree or branch that holds work:
+Cleanup is Watchtower's own command (auto mode blocks an agent's `git worktree remove` and `git branch -D`). It removes only what the session created, never a worktree or branch that holds work:
 
 - A worktree is kept when it has uncommitted or untracked changes, holds ignored files that are not build caches, is locked, is in use by a process or another session, or its HEAD is in neither the default branch nor any remote ref.
 - A branch is kept when it is the default branch, is checked out anywhere, or has commits not pushed.
@@ -84,12 +84,26 @@ Each item is either ticked for removal or greyed out with the reason it is kept.
 Every session delete cleans up once its **Undo** bar goes away: the worktrees and branches the session and its agents created that are merged or pushed are removed, with no question. The sessions panel reads **Cleaning up 2 sessions…** meanwhile, then a notice such as **Cleaned up “Fix login flow”: removed 3 worktrees and 12 branches (~2.1 GB).** shows for six seconds.
 
 - Kept on purpose, and named in the notice: uncommitted changes, unsaved ignored files, unpushed commits, a locked worktree, a git operation in progress, and branches while git cannot tell the default branch ("default branch unknown"). The session still goes.
-- Never touched and not mentioned: what the session did not create, such as the main folder, the default branch or a worktree that is older than the session. Nor is a worktree an agent made in a folder of its own, or a branch made in the main folder: remove those on the Clean Up screen.
+- Never touched and not mentioned: what the session did not create (the main folder, the default branch, an older worktree), a worktree an agent made in a folder of its own, or a branch made in the main folder. Remove those on the Clean Up screen.
 - If Claude Code's subagent records could not be read, the notice adds **Could not read the subagent records of “T” — check the Clean Up screen.**
 - If something could not be removed (a process runs in a worktree, git refused, the cleanup failed), the session comes back in **▸ N finished** with an orange line such as **Not fully cleaned: 1 worktree — a process is running in it.** Click it for its report and **Cleanup** section. Hover it, or use its **⋯** menu in a narrow panel:
   - **Clean Up Again** runs the cleanup again; the row reads **Cleaning up…** and goes once nothing is left.
   - **Delete Anyway** deletes the session now. What was not removed stays on disk, and the Clean Up screen still lists it.
   - **Show in Clean Up** opens the Clean Up screen for this session.
+
+### What a finished session cleans up on its own
+<!-- learn
+id: worktrees-auto-cleanup
+title: Finished sessions clean up by themselves
+text: Once a session finishes, its merged or pushed worktrees go, and kept ones lose their build folders.
+area: development
+level: next
+kind: feature
+since: 0.29.1
+action: nav:projects
+-->
+
+Within an hour after a session finishes, the daemon removes its merged or pushed worktrees and branches; it stops no process. A kept worktree loses only its build folders (`.build`, `DerivedData`). It retries hourly for 14 days.
 
 ## Using it
 <!-- learn
@@ -107,10 +121,10 @@ action: nav:projects
 - Deleting a session (**Delete…**, the ✕ or ⌘⌫) cleans it up in the background once its **Undo** bar goes away. See [What a delete cleans up](#what-a-delete-cleans-up).
 - **Clean Up…** in the row menu, or **Clean Up Old Worktrees…** in the title row's **…** menu, opens the **Clean Up** screen. It covers the workspace and is not a dialog: you can leave it, and a cleanup keeps working. From a row it shows that session's worktrees and branches, with a "Session: …" chip; click the ✕ on the chip to see the whole repository. From the menu it lists every worktree and branch of the repository, with an owner hint.
 - Nothing is ticked at first. Tick rows, **⇧-click** for a range, or choose **Select All That Can Go** (⌘A, except while the search box is focused); Esc clears the ticks. Narrow the list with search, **All / Worktrees / Branches**, an age (7, 30 or 90 days), an owner (a session, Subagent, Session deleted, Made by hand) and **Merged only**. A worktree's row includes its branch when that can go too.
-- Rows appear while Watchtower is still checking and measuring a big repository. **Clean Up…** waits until every row is checked (sizes may still be coming in), asks once, then removes in the background; rows leave the list as they are removed, and a bar reports "Freed ~X · removed …". Anything kept is folded away with its reason.
+- Rows appear while Watchtower still checks a big repository. **Clean Up…** waits until every row is checked (sizes may still come in), asks once, then removes in the background: rows leave as they go, a bar reports "Freed ~X · removed …", and kept rows fold away with their reason.
 - Close the screen with **Clean Up ✕** in the title row, or by picking a session. Switching to another workbench and back keeps it. One cleanup runs per workbench at a time.
-- A banner "Old worktrees use ~N GB." appears when removable worktrees exceed 1 GB. It appears once, after the page has been open for 30 seconds, and never again for that workbench after you open the sweep. Its **Clean Up…** opens the Clean Up screen.
-- When a session that Watchtower put in a worktree exits on its own, the same cleanup runs automatically for that worktree.
+- A banner "Old worktrees use ~N GB." appears once, after the page has been open 30 seconds, when removable worktrees exceed 1 GB, and never again for that workbench after you open the sweep. Its **Clean Up…** opens the Clean Up screen.
+- A session Watchtower put in a worktree that exits on its own cleans up that worktree at once.
 
 ## When it's empty or wrong
 

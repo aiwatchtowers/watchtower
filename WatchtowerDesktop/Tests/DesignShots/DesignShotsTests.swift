@@ -121,6 +121,18 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(ConnectAssistantShotFixtures.shots)
     }
 
+    /// The waiting browser sign-in's mockups alone (#2132).
+    func testSignInWaitShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter {
+            $0.name.hasPrefix("sign-in-wait-") && !$0.name.hasPrefix("sign-in-wait-built-")
+        })
+    }
+
+    /// The same states as built (#2132 T8): the production views with a sign-in held.
+    func testSignInWaitBuiltShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("sign-in-wait-built-") })
+    }
+
     func testChatMarkdownShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("chat-markdown-") })
     }
@@ -259,6 +271,11 @@ final class DesignShotsTests: XCTestCase {
     /// The Slack Developer Policy hygiene spec's mockups (#1769).
     func testSlackPolicyShotsRender() throws {
         try renderShots(SlackPolicyShotFixtures.shots)
+    }
+
+    /// The Watchman tuning spec's mockups (#2134).
+    func testWatchmanTuningShotsRender() throws {
+        try renderShots(WatchmanTuningShotFixtures.shots)
     }
 
     /// The company setup screens spec's mockups (#1887).
