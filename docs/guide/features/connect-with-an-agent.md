@@ -3,6 +3,8 @@
 **Connect with Claude** (or **Connect with Codex**) lets your own Claude or Codex set up a connection for you: Slack, Google, mail, a calendar, Jira, Confluence, Linear, a Quick Connection, or your company's apps. It is for anyone who would rather talk than read setup screens. Today's forms stay where they were; this is a second way in.
 
 ## Why use it
+<!-- learn: none -->
+
 
 Some setups are long: your company's Slack app, a Google Cloud project, an Atlassian developer app. The assistant knows each vendor's pages and walks through them with you, or clicks through them itself.
 
@@ -37,6 +39,8 @@ action: nav:connections
 **Who gets the button.** The button appears when Claude or Codex is installed on your Mac and your organization allows that provider and that source. Ollama does not get it. A source your organization blocks shows its lock and no agent button.
 
 ## Using it
+<!-- learn: none -->
+
 
 1. Open **Connections**. A card with no account shows **Connect with Claude** next to **Connect**. You also find it in a source's add-account row, in the **Connect…** menu, beside **Set up for my company**, on the **Use my own Google project** page, and on the setup Connect step.
 2. The assistant opens on the right. To switch between Claude and Codex, use the menu in its header.
@@ -47,6 +51,8 @@ action: nav:connections
 **Set up by hand** opens today's screen for that connector. It shows before you press **Start** and after a failure; while the assistant works, press **Cancel** first. Closing the panel stops the assistant but not a sign-in already running: finish it in the browser, and a Slack sign-in carries on under **Connections → Slack**. Open the panel again and the assistant picks up from what is already done.
 
 ## When it's empty or wrong
+<!-- learn: none -->
+
 
 **No Connect with Claude button.** Claude and Codex are not installed or not found, only Ollama is set up, or your organization blocks the source or the provider. See [The Claude or Codex tool is not found or not signed in](../troubleshooting/ai-tool-not-found-or-not-signed-in.md) and [Managed by your organization](../concepts/managed-by-your-organization.md).
 
@@ -58,13 +64,15 @@ action: nav:connections
 
 **"I stopped waiting after 15 minutes."** A step waited too long for you, so the sign-in was cancelled. Press **Retry** when you're ready.
 
-**"Slack is already connecting in another window."** Another connect is running. Press **Open it** to finish or cancel that one first.
+**"Slack is already connecting in another window"**. Another connect is running. Press **Open it** to finish or cancel that one first.
 
 **It stays on Working on it… and nothing happens.** Claude may be stuck checking for your browser. Press **Cancel**, check that the Claude in Chrome extension is connected, then press **Start** again, or choose **Guide me in words**.
 
 **An account needs attention.** The assistant doesn't reconnect existing accounts; use **Reconnect** or **Re-login** as in [An account needs attention](../troubleshooting/account-needs-attention.md).
 
 ## Related
+<!-- learn: none -->
+
 
 - [Set up Watchtower](../start/setup.md)
 - [Set up Watchtower for your company](../start/company-setup.md)

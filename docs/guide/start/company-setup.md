@@ -31,7 +31,7 @@ since: 0.29.0
 action: nav:connections
 -->
 
-1. Open **Connections** and press **Set up for my company** under **Companies**, or pick it at the end of the **Connect…** menu. Connections → Slack, the Atlassian banner and the empty Jira page have the same button.
+1. Open **Connections** and press **Set up for my company** under **Companies**, or pick it at the end of the **Connect…** menu. Connections → Slack, the Atlassian banner and the empty Jira page have the same button. With Claude or Codex installed, **Connect with Claude** under **Companies** (**Set up for my company with Claude** in the menu and on a service's page) lets [the assistant](../features/connect-with-an-agent.md) walk these steps with you.
 2. On **Services**, tick what your company uses. Only those become steps; anything else connects through [Quick Connections](../features/quick-connections.md).
 3. Each service step first lists the apps this Mac already knows under **Found on this Mac**. Pick one to reuse it, or choose **Create new** (Watchtower walks you through the vendor's console) or **We already have one** (paste what identifies it). Watchtower never creates a second app by accident.
 4. Google and Atlassian are checked by your own sign-in, which also connects your own account and stores the company setup. Linear and Microsoft 365 are checked without a sign-in. For Atlassian, tick the three settings under **Confirm the app's settings**; Atlassian gives no way to read them.
@@ -87,5 +87,6 @@ The top of **Connections** lists each stored company as a card: how many of its 
 - [Sources and accounts](../concepts/sources-and-accounts.md): Watchtower's shared apps and what they still connect.
 - [Slack Full](../features/slack-full.md): the Slack app the link lives on.
 - [Organization policy for admins](../reference/organization-policy.md): `CompanyBundle` and the profile.
+- [Connect with an agent](../features/connect-with-an-agent.md): let Claude or Codex walk the setup with you.
 
 For developers: [docs/features/company-setup.md](../../features/company-setup.md)
