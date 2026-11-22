@@ -90,6 +90,7 @@ This keeps an agent that was talked into running such a command from going ahead
 | `watchtower workbench` | [Workbenches](../features/workbench/README.md): board, comments, sessions, asks, review, cleanup |
 | `watchtower integrate claude-code\|codex\|status\|remove` | Wire Watchtower into [Claude Code or Codex](../features/claude-code-integration.md) |
 | `watchtower mcp` | Run the MCP server over stdio |
+| `watchtower mcp --connect <service>` | The [connect assistant](../features/connect-with-an-agent.md)'s tools for one service; runs only inside a connect run the app started, and alone (no other `mcp` flag) |
 | `watchtower tools` | Call the read-only data tools from the console |
 | `watchtower agents enable\|disable\|scan\|stats\|report` | [Agent analytics](../features/agent-analytics.md) |
 | `watchtower coach status\|proposals\|accept\|decline\|rollback\|run` | [Agent coach](../features/agent-coach.md) |
@@ -126,7 +127,8 @@ Commands for a [headless host](../features/headless-host.md): a Linux box or a M
 | `watchtower ai background status [--json]` | Whether [background AI](../concepts/features-on-and-off.md#paused-is-not-off-background-ai) may run and who decided: you, nobody yet, or your organization (`effective`, `reason`, `answer`, `policy`) |
 | `watchtower ai background allow [--yes]` | Let Watchtower run AI on its own. On a terminal it shows what runs and asks **Allow background AI? [y/N]**; without a terminal it needs `--yes`. Refused when your organization turned background AI off. Wakes the running daemon |
 | `watchtower ai background pause` | Pause it; sync and everything you start yourself keep running |
-| `watchtower ai which --provider claude\|codex --json` | The claude or codex executable Watchtower would run (`provider`, `path`, `found`); the Desktop app asks it |
+| `watchtower ai which --provider claude\|codex --json` | The claude or codex executable Watchtower would run (`provider`, `path`, `found`); the Desktop app asks it, and offers **Connect with Claude** or **Codex** only for one it finds |
+| `watchtower ai query --tools connect --connect-service <service> --connect-mode browser\|words\|probe` | One turn of the [connect assistant](../features/connect-with-an-agent.md), run by the app: only that service's connect tools (and Claude in Chrome in `browser` mode, limited to the playbook's sites); refused for a provider that can't guide a connection or that your organization blocks |
 | `watchtower usage plan` | Claude plan limits (5-hour, weekly) |
 | `watchtower usage plans --json [--now] [--provider all\|claude\|codex]` | Separate subscription snapshots; `--now` refreshes selected sources, with partial results on failure |
 | `watchtower usage llm [--since today\|7d\|30d] [--json]` | AI calls, tokens and cost: Watchtower, your automations, chats, workbenches ([AI providers, models and cost](../concepts/ai-providers-and-cost.md)) |

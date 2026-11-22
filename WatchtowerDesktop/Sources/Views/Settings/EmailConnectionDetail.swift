@@ -40,6 +40,7 @@ struct EmailConnectionDetail: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .detailBackground()
+        .opensAddSheet(.email) { showAddEmailAccountSheet = true }
         .sheet(isPresented: $showAddEmailAccountSheet) {
             AddEmailAccountView()
                 .environment(appState)
@@ -98,11 +99,14 @@ struct EmailConnectionDetail: View {
                     .font(.caption)
                     .foregroundStyle(Tone.error)
             }
-            Button("Add Account") {
-                showAddEmailAccountSheet = true
+            HStack(spacing: Spacing.regular) {
+                ConnectAgentDetailButton(service: .email)
+                Button("Add Account") {
+                    showAddEmailAccountSheet = true
+                }
+                .buttonStyle(.kitSecondary)
+                .managedByOrganization(sourceBlocked)
             }
-            .buttonStyle(.kitSecondary)
-            .managedByOrganization(sourceBlocked)
         }
     }
 

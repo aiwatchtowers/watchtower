@@ -37,6 +37,23 @@ type Options struct {
 	// MCPArgs are the extra flags of the watchtower MCP server child
 	// (chat mode).
 	MCPArgs []string
+	// MCPEnvVars name environment variables of this process handed to the
+	// watchtower MCP server child (a connect run's socket and token).
+	MCPEnvVars []string
+	// Browser turns on the provider's browser for this run (the connect
+	// surface only); the caller sets it only when the row's Caps.Connect is
+	// browser, and a transport with no browser ignores it. BrowserHosts are
+	// the hosts the browser may navigate to.
+	Browser      bool
+	BrowserHosts []string
+	// BrowserProbe is the connect assistant's S1 probe turn: the browser
+	// with its list_connected_browsers tool only and no MCP server of ours.
+	// Set only for a provider whose Caps.Connect is browser.
+	BrowserProbe bool
+	// ChildEnv replaces the environment the provider child inherits (nil =
+	// this process's): the probe's child goes without the connect socket
+	// and token. A transport that cannot set it ignores it.
+	ChildEnv []string
 	// ExternalMCP are the owner's Quick Connections mounted beside the
 	// watchtower server; nil = none.
 	ExternalMCP []ai.ExternalMCPServer
@@ -134,6 +151,13 @@ func newOllamaGenerator(o Options) digest.Generator {
 func newClaudeQuerier(o Options) ai.Provider {
 	c := ai.NewClient(o.model("claude"), o.DBPath, o.Config.ClaudePath)
 	c.SetMCPArgs(o.MCPArgs)
+	c.SetMCPEnvVars(o.MCPEnvVars)
+	c.SetBrowser(o.Browser)
+	c.SetBrowserHosts(o.BrowserHosts)
+	c.SetBrowserProbe(o.BrowserProbe)
+	if o.ChildEnv != nil {
+		c.SetChildEnv(o.ChildEnv)
+	}
 	if o.ExternalMCP != nil {
 		c.SetExternalMCPServers(o.ExternalMCP)
 	}
@@ -149,6 +173,11 @@ func newClaudeQuerier(o Options) ai.Provider {
 func newCodexQuerier(o Options) ai.Provider {
 	c := codex.NewClient(o.model("codex"), o.DBPath, o.Config.CodexPath)
 	c.SetMCPArgs(o.MCPArgs)
+	c.SetMCPEnvVars(o.MCPEnvVars)
+	// No Browser: the codex CLI has no browser that drives the customer's
+	// Chrome (agent connect spec §10 S3.verdict), so its row's Connect is
+	// words and its browser features stay forced off (disabledFeatures);
+	// a BrowserProbe never reaches it (cmd refuses a probe without a browser).
 	if o.ExternalMCP != nil {
 		c.SetExternalMCPServers(o.ExternalMCP)
 	}

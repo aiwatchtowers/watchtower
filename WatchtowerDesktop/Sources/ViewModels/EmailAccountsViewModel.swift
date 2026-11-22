@@ -25,6 +25,9 @@ final class EmailAccountsViewModel {
     private let cliPath: () -> String?
     private let daemon: any DaemonRestarting
     private var authProcess: Process?
+    /// The in-flight Outlook sign-in, held so the connect assistant's driver
+    /// can await the fire-and-forget flow.
+    @ObservationIgnored private(set) var outlookTask: Task<Void, Never>?
 
     init(
         dbPool: DatabasePool,
@@ -143,7 +146,7 @@ final class EmailAccountsViewModel {
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
 
-        return Task.detached {
+        let task = Task.detached {
             // The login environment is awaited here, off the main actor; a
             // Cancel (or a newer attempt) while it resolves drops this launch.
             process.environment = await Constants.resolvedEnvironmentAsync()
@@ -183,6 +186,8 @@ final class EmailAccountsViewModel {
             await self.rereadQuietly()
             if result.exitCode == 0 { await self.daemon.restartLogging() }
         }
+        outlookTask = task
+        return task
     }
 
     /// The re-read after a Cancel: the owner asked for nothing, so a failed

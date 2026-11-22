@@ -76,16 +76,20 @@ struct CalendarConnectionDetail: View {
                         .foregroundStyle(.red)
                 }
 
-                Button("Add Calendar") {
-                    showAddCalendarAccountSheet = true
+                HStack(spacing: Spacing.regular) {
+                    ConnectAgentDetailButton(service: .calendar)
+                    Button("Add Calendar") {
+                        showAddCalendarAccountSheet = true
+                    }
+                    .managedByOrganization(sourceBlocked)
                 }
-                .managedByOrganization(sourceBlocked)
             } else {
                 Text("Loading...")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
+        .opensAddSheet(.calendar) { showAddCalendarAccountSheet = true }
         .sheet(isPresented: $showAddCalendarAccountSheet) {
             AddCalendarAccountView()
                 .environment(appState)

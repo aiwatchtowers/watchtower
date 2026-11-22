@@ -25,6 +25,9 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
         package let readFolderAskID: Int64?
         package let readFolderRoundID: Int64?
         package var persist: ChatQueryPersist?
+        /// A connect turn's `--tools connect` flags and its own environment.
+        package var connectArgs: [String]?
+        package var extraEnvironment: [String: String] = [:]
     }
 
     private let lock = NSLock()
@@ -77,13 +80,17 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
         readFolderAskID: Int64?,
         readFolderRoundID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
+        record(Call(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID,
+                    dbPath: dbPath, toolMode: toolMode, model: model, provider: provider,
+                    readFolder: readFolder, ownerInstructions: ownerInstructions,
+                    purpose: purpose, readFolderAskID: readFolderAskID,
+                    readFolderRoundID: readFolderRoundID))
+    }
+
+    private func record(_ call: Call) -> AsyncThrowingStream<StreamEvent, Error> {
         let (stream, continuation) = AsyncThrowingStream<StreamEvent, Error>.makeStream()
         let index: Int = lock.withLock {
-            _calls.append(Call(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID,
-                               dbPath: dbPath, toolMode: toolMode, model: model, provider: provider,
-                               readFolder: readFolder, ownerInstructions: ownerInstructions,
-                               purpose: purpose, readFolderAskID: readFolderAskID,
-                               readFolderRoundID: readFolderRoundID))
+            _calls.append(call)
             _continuations.append(continuation)
             _terminated.append(false)
             return _continuations.count - 1
@@ -139,6 +146,21 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
             }
         }
         return stream
+    }
+
+    package func stream(
+        prompt: String,
+        systemPrompt: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        connectArgs: [String],
+        extraEnvironment: [String: String]
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        record(Call(prompt: prompt, systemPrompt: systemPrompt, sessionID: nil, dbPath: dbPath, toolMode: nil,
+                    model: model, provider: provider, readFolder: nil, ownerInstructions: false, purpose: nil,
+                    readFolderAskID: nil, readFolderRoundID: nil, connectArgs: connectArgs,
+                    extraEnvironment: extraEnvironment))
     }
 
     package func emit(_ events: StreamEvent..., call: Int? = nil) {

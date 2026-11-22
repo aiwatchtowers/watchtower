@@ -91,6 +91,7 @@ struct QuickConnectionsDetail: View {
                 }
 
                 HStack {
+                    ConnectAgentDetailButton(service: .quickConnections)
                     Button("Add Connection") {
                         showAddConnectionSheet = true
                     }
@@ -112,6 +113,8 @@ struct QuickConnectionsDetail: View {
                     .foregroundStyle(.secondary)
             }
         }
+        // The manual Add button's gates: not while busy, not when the policy allows none.
+        .opensAddSheet(.quickConnections) { if appState.canAddQuickConnection { showAddConnectionSheet = true } }
         .sheet(isPresented: $showAddConnectionSheet) {
             AddExternalConnectionView()
                 .environment(appState)

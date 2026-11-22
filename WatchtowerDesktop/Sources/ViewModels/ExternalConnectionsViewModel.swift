@@ -220,10 +220,16 @@ final class ExternalConnectionsViewModel {
         if let process = authProcess, process.isRunning {
             process.terminate()
         }
+        if authProcess != nil { lastSignInCancelled = true }
         authProcess = nil
         signInConnectionID = nil
         isBusy = false
     }
+
+    /// The last sign-in ended in a Cancel (here or a SIGTERM/SIGKILL): the
+    /// connection was added but holds no grant. Read by the connect
+    /// assistant's driver, which must not call that connected.
+    @ObservationIgnored private(set) var lastSignInCancelled = false
 
     // MARK: - Enable / Disable
 
@@ -462,6 +468,9 @@ final class ExternalConnectionsViewModel {
     /// True when a Cancel ended the run before it had signed in.
     @discardableResult
     private func runAuthFlow(args: [String], rowID: Int?, failurePrefix: String) async -> Bool {
+        // Reset before the guards: a sign-in that never starts was not
+        // cancelled, and an earlier one's Cancel must not hide its error.
+        lastSignInCancelled = false
         guard !isBusy else {
             error = "Another operation is already in progress."
             return false
@@ -499,12 +508,15 @@ final class ExternalConnectionsViewModel {
         // saved (all of it when it had exited 0 before the Cancel came, a
         // part when the Cancel killed it while saving).
         guard authProcess === process else {
+            // A run that had exited 0 before the Cancel came signed in.
+            if authProcess == nil, result.exitCode == 0 { lastSignInCancelled = false }
             await rereadQuietly()
             return result.exitCode != 0
         }
         authProcess = nil
         signInConnectionID = nil
         isBusy = false
+        if result.exitCode == 15 || result.exitCode == 9 { lastSignInCancelled = true }
         applyResult(result, failurePrefix: failurePrefix)
         return false
     }

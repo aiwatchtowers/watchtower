@@ -116,6 +116,11 @@ final class DesignShotsTests: XCTestCase {
         })
     }
 
+    /// The connect assistant spec's mockups (#2133).
+    func testConnectAssistantShotsRender() throws {
+        try renderShots(ConnectAssistantShotFixtures.shots)
+    }
+
     /// The waiting browser sign-in's mockups alone (#2132).
     func testSignInWaitShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter {

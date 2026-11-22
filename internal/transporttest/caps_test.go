@@ -8,7 +8,8 @@ import (
 
 // llmRow is the production-shaped part of a suite Caps row: the fields of
 // the spec's §3.3 table that providers.Capabilities also holds.
-// ClaudeAITools and ReservePeer are not transport behaviour the suite
+// ClaudeAITools, ReservePeer and Connect (how the provider's agent guides
+// a connection, agent connect #2133) are not transport behaviour the suite
 // drives, so they are left zero on both sides.
 func llmRow(c Caps) providers.Capabilities {
 	return providers.Capabilities{Tools: c.Tools, ToolEvents: c.ToolEvents, TextStream: c.TextStream,
@@ -30,7 +31,7 @@ func TestTransportSuite_LLMCapsMatchProviders(t *testing.T) {
 			t.Errorf("%s: provider %q has no production capability row", a.Name, a.Provider)
 			continue
 		}
-		prod.ClaudeAITools, prod.ReservePeer = false, ""
+		prod.ClaudeAITools, prod.ReservePeer, prod.Connect = false, "", ""
 		if a.Name == "ollama" {
 			prod.Tools, prod.ToolEvents, prod.TurnCap = "none", false, "none"
 		}

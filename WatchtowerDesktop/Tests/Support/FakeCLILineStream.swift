@@ -33,8 +33,16 @@ package final class FakeCLILineStream: CLILineStreaming, @unchecked Sendable {
     /// Fires after every recorded call and every session change.
     package let signal = StateSignal()
 
-    package init(replies: [Reply] = []) {
+    /// Strict: an unscripted one-shot call never opens a session (which a
+    /// test would have to end, or it waits forever). It ends at once with
+    /// `nonZeroExit(127)` and reports itself through `onUnscripted`, which a
+    /// test sets to `XCTFail`. Sessions (`session(args:)`) are unaffected.
+    private let strict: Bool
+    package var onUnscripted: (@Sendable ([String]) -> Void)?
+
+    package init(replies: [Reply] = [], strict: Bool = false) {
         queued = replies
+        self.strict = strict
     }
 
     package func enqueue(_ reply: Reply) {
@@ -64,6 +72,13 @@ package final class FakeCLILineStream: CLILineStreaming, @unchecked Sendable {
         recorded.append(Invocation(args: args, stdin: stdin))
         let reply = queued.isEmpty ? nil : queued.removeFirst()
         lock.unlock()
+        if reply == nil, strict {
+            onUnscripted?(args)
+            signal.changed()
+            let (stream, sink) = AsyncThrowingStream.makeStream(of: String.self)
+            sink.finish(throwing: CLIRunnerError.nonZeroExit(code: 127, stderr: "unscripted call: \(args.joined(separator: " "))"))
+            return stream
+        }
         guard let reply else {
             let session = open(args: args, record: false)
             if let stdin { session.write(stdin) }

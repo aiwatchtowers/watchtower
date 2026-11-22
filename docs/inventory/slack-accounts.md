@@ -62,7 +62,7 @@
 
 **Status:** Enforced
 
-**Observable:** Opening the connect link `http://127.0.0.1:18551/slack/connect?team=…&client=…` — from Slack's About page or from any web page — only brings Watchtower forward with "Connect a Slack workspace?". Nothing reaches Slack, no browser tab opens and nothing is stored until the owner presses **Connect**. A link that arrives while a flow runs starts nothing. A pasted link or code, an MDM **Connect**, Reconnect and the setup's admin connect are the owner's own press and skip the question.
+**Observable:** Opening the connect link `http://127.0.0.1:18551/slack/connect?team=…&client=…` — from Slack's About page or from any web page — only brings Watchtower forward with "Connect a Slack workspace?". Nothing reaches Slack, no browser tab opens and nothing is stored until the owner presses **Connect**. A link that arrives while a flow runs starts nothing. A pasted link or code, an MDM **Connect**, Reconnect and the setup's admin connect are the owner's own press and skip the question. So is a Slack connect the connect assistant starts (`SlackConnectDriver`, agent connect spec §5.3): the owner's **Start** in the assistant panel counts as the press for that run's ordinary steps; a PKCE adopt still needs the panel's confirm card, which no tool call can answer.
 
 **Mechanism:** The loopback listener (`internal/slackconnect` `Handler`, held by the Desktop's `slack connect serve` child or the one-shot `slack connect`) answers `/slack/connect` with the "Switch to Watchtower" page and a `link` event; `Registry.Begin(t, needsConfirm: true)` creates the flow without an authorize URL, and `Confirm` is the only way a link flow gets one (`ErrNotConfirmed` otherwise). Only `GET` on `/slack/connect` and `/callback`, `Host` exactly `127.0.0.1:18551`, no files. One flow at a time in the child (`ErrFlowRunning`) and in the Desktop (`SlackConnectFlowModel` refuses a start while anything runs and cancels an unshown link). A callback with no live flow stores nothing.
 
@@ -75,6 +75,9 @@
 - `WatchtowerDesktop/Tests/Core/SlackConnectFlowModelTests.swift`: `testLinkStartsAtConfirm`, `testSecondLinkWhileRunningIsRefused`.
 
 **Locked since:** 2026-11-18 (approved in ask #1414, plan B A16)
+
+**Changelog:**
+- 2026-11-21 (agent connect, board #2133, **owner approved in ask #1721 Q1**): the connect assistant panel's **Start** is added to the owner's presses that skip "Connect a Slack workspace?" (it runs at most 5 starts and one flow per run, on the same `SlackConnectFlowModel`). A link that arrives from a web page still waits for **Connect**. Note only, no guard changed.
 
 ## SLACKFULL-02 — No Slack client secret or configuration token is kept
 

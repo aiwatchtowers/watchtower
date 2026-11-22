@@ -4,7 +4,10 @@ import WatchtowerCore
 /// Onboarding step 2: one card per source the saved goals need, each opening
 /// the Settings Add sheet. Everything is skippable. A newly connected Slack
 /// account starts the background people load (`AppState.peopleRoster`,
-/// started by `AppState.slackAccountsDidChange`).
+/// started by `AppState.slackAccountsDidChange`). With a harness offered,
+/// each card offers **Connect with <harness>** first (agent connect spec
+/// §7): the assistant's panel opens beside the step (`OnboardingV2View`),
+/// and its **Set up by hand** comes back here as the source's sheet.
 struct OnboardingConnectStepView: View {
     /// Every sheet and remove on this step: the daemon starts at completion,
     /// not mid-setup.
@@ -57,6 +60,29 @@ struct OnboardingConnectStepView: View {
         AddLinearAccountView(daemonPolicy: daemonPolicy)
     }
 
+    /// The connect service a source's agent button opens.
+    static func connectService(_ source: OnboardingConnectSource) -> ConnectionService {
+        switch source {
+        case .slack: .slack
+        case .google: .google
+        case .jira: .jira
+        case .linear: .linear
+        }
+    }
+
+    /// The step's sheet for the assistant's **Set up by hand** (or **Open
+    /// it**) on `service`; nil for a service the step has no sheet for.
+    /// Slack picks its sheet after the flags read (`openSlackSheet`).
+    static func addRequestSheet(_ service: ConnectionService) -> Sheet? {
+        switch service {
+        case .slack: .slack
+        case .google: .google
+        case .jira: .jira
+        case .linear: .linear
+        case .email, .calendar, .quickConnections, .companySetup: nil
+        }
+    }
+
     let onBack: () -> Void
     let onContinue: () async -> Void
 
@@ -100,16 +126,13 @@ struct OnboardingConnectStepView: View {
                     .foregroundStyle(.secondary)
             }
 
-            VStack(spacing: 0) {
-                ForEach(Array(sources.enumerated()), id: \.offset) { index, source in
-                    if index > 0 { Divider() }
+            VStack(spacing: Spacing.small) {
+                ForEach(Array(sources.enumerated()), id: \.offset) { _, source in
                     row(source)
                 }
             }
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.25)))
 
-            Label("Everything stays on your Mac. Connect opens the same sheet as in Settings.", systemImage: "lock")
+            Label(ConnectAssistantPresentation.onboardingFootnote(offeredHarness), systemImage: "lock")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -160,7 +183,12 @@ struct OnboardingConnectStepView: View {
             await openDatabase()
             appState.resumePeopleRosterIfNeeded()
             showFlowSheetIfNeeded() // a link that arrived on an earlier step
+            consumeAddRequest()
         }
+        // The agent buttons wait for the harness CLIs Go finds; onboarding
+        // never shows the Connections tab, which reads them otherwise.
+        .task(id: appState.connectProviders().map(\.id)) { await appState.refreshConnectReadyProviders() }
+        .onChange(of: appState.connectionAddRequest) { consumeAddRequest() }
         .onChange(of: appState.slackConnectFlow?.showsSheet) { _, _ in showFlowSheetIfNeeded() }
         .onChange(of: sheet) { old, new in
             if Self.closingDismissesFlow(from: old, to: new) {
@@ -178,6 +206,31 @@ struct OnboardingConnectStepView: View {
             flags: appState.slackAccountsViewModel?.accountFlags,
             hasConnectFlow: appState.slackConnectFlow != nil) ? .slackConnect : .slack
         sheet = Self.sheet(sheet, afterFlagsRead: chosen)
+    }
+
+    /// The assistant's **Set up by hand**: its source's sheet, once no
+    /// sheet is up (a sheet already up stays; the request is spent).
+    private func consumeAddRequest() {
+        guard let request = appState.connectionAddRequest else { return }
+        appState.connectionAddRequest = nil
+        guard sheet == nil, let chosen = Self.addRequestSheet(request) else { return }
+        if chosen == .slack {
+            Task { await openSlackSheet() }
+        } else {
+            sheet = chosen
+        }
+    }
+
+    /// The harness the agent buttons name, when any source offers one.
+    private var offeredHarness: ConnectHarness? {
+        sources.lazy.compactMap { appState.connectAssistantButton(for: Self.connectService($0).rawValue) }.first
+    }
+
+    private func agent(_ source: OnboardingConnectSource) -> (harness: ConnectHarness, open: () -> Void)? {
+        let service = Self.connectService(source).rawValue
+        return appState.connectAssistantButton(for: service).map { harness in
+            (harness, { appState.openConnectAssistant(service: service) })
+        }
     }
 
     private func showFlowSheetIfNeeded() {
@@ -221,7 +274,7 @@ struct OnboardingConnectStepView: View {
     private func row(_ source: OnboardingConnectSource) -> some View {
         switch source {
         case .slack:
-            sourceRow(
+            OnboardingConnectSourceRow(
                 letter: "S", title: "Slack",
                 subtitle: "Messages, mentions, threads · for work communication",
                 // v1: the first active account, whatever its status.
@@ -232,12 +285,13 @@ struct OnboardingConnectStepView: View {
                 remove: activeSlackAccounts.first.map { account in
                     { await appState.slackAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
                 },
-                showsRoster: true
+                agent: agent(source),
+                roster: AnyView(rosterLine)
             )
         case .google:
             // v1: the first account, whatever its status or scopes.
             let account = appState.googleAccountsViewModel?.accounts.first
-            sourceRow(
+            OnboardingConnectSourceRow(
                 letter: "G", title: "Google",
                 subtitle: CompanyConnectionsPresentation.onboardingGoogleSubtitle(
                     offersGmail: appState.sharedGoogleOffersGmail),
@@ -247,12 +301,13 @@ struct OnboardingConnectStepView: View {
                 connect: { sheet = .google },
                 remove: account.map { account in
                     { await appState.googleAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
-                }
+                },
+                agent: agent(source)
             )
         case .jira:
             // v1: the first active account, whatever its status.
             let account = appState.jiraAccountsViewModel?.accounts.first { !$0.isGone }
-            sourceRow(
+            OnboardingConnectSourceRow(
                 letter: "J", title: "Jira",
                 subtitle: "Issues and boards · for tasks",
                 connected: account?.displayName,
@@ -261,12 +316,13 @@ struct OnboardingConnectStepView: View {
                 connect: { sheet = .jira },
                 remove: account.map { account in
                     { await appState.jiraAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
-                }
+                },
+                agent: agent(source)
             )
         case .linear:
             // v1: the first workspace, whatever its status.
             let account = appState.linearAccountsViewModel?.accounts.first
-            sourceRow(
+            OnboardingConnectSourceRow(
                 letter: "L", title: "Linear",
                 subtitle: "Issues, cycles and projects · for tasks",
                 connected: account?.displayName,
@@ -275,61 +331,10 @@ struct OnboardingConnectStepView: View {
                 connect: { sheet = .linear },
                 remove: account.map { account in
                     { await appState.linearAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
-                }
+                },
+                agent: agent(source)
             )
         }
-    }
-
-    private func sourceRow(
-        letter: String,
-        title: String,
-        subtitle: String,
-        connected: String?,
-        available: Bool,
-        error: String?,
-        connect: @escaping () -> Void,
-        remove: (() async -> Void)?,
-        showsRoster: Bool = false
-    ) -> some View {
-        HStack(spacing: 14) {
-            Text(letter)
-                .fontWeight(.bold)
-                .frame(width: 34, height: 34)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.2)))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).fontWeight(.semibold)
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
-                if showsRoster { rosterLine }
-                if let error {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(3)
-                        .textSelection(.enabled)
-                }
-            }
-            Spacer()
-            if let connected {
-                Label(connected, systemImage: "checkmark")
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.green)
-                if let remove {
-                    Menu {
-                        Button("Remove") { Task { await remove() } }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .accessibilityLabel("More for \(title)")
-                }
-            } else {
-                Button("Connect", action: connect)
-                    .disabled(!available)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
     }
 
     @ViewBuilder
@@ -350,5 +355,81 @@ struct OnboardingConnectStepView: View {
             }
             .font(.caption)
         }
+    }
+}
+
+/// One source on the onboarding Connect step: its letter, name and line,
+/// then the account once connected (with Remove), else the way in. With
+/// `agent`, **Connect with <harness>** comes first and today's **Connect**
+/// (the same sheet as in Settings) is the quiet link beside it (agent
+/// connect spec §7); without one, today's button.
+struct OnboardingConnectSourceRow: View {
+    let letter: String
+    let title: String
+    let subtitle: String
+    var connected: String?
+    var available = true
+    var error: String?
+    let connect: () -> Void
+    var remove: (() async -> Void)?
+    var agent: (harness: ConnectHarness, open: () -> Void)?
+    /// The people load's line under a Slack row.
+    var roster: AnyView?
+
+    var body: some View {
+        HStack(spacing: Spacing.medium) {
+            Text(letter)
+                .fontWeight(.bold)
+                .frame(width: 34, height: 34)
+                .background(RoundedRectangle(cornerRadius: Radius.control).fill(Fill.hover))
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(title).fontWeight(.semibold)
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                if let roster { roster }
+                if let error {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(Tone.error)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer()
+            if let connected {
+                Label(connected, systemImage: "checkmark")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Tone.success)
+                if let remove {
+                    Menu {
+                        Button("Remove") { Task { await remove() } }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .accessibilityLabel("More for \(title)")
+                }
+            } else if let agent {
+                // Side by side, else stacked: the panel beside the step narrows it.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Spacing.regular) { agentPair(agent) }
+                    VStack(alignment: .trailing, spacing: Spacing.small) { agentPair(agent) }
+                }
+            } else {
+                Button(ConnectAssistantPresentation.connectByHand, action: connect)
+                    .disabled(!available)
+            }
+        }
+        .padding(.horizontal, Spacing.medium)
+        .padding(.vertical, Spacing.regular)
+        .card()
+    }
+
+    @ViewBuilder
+    private func agentPair(_ agent: (harness: ConnectHarness, open: () -> Void)) -> some View {
+        ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(agent.harness), action: agent.open)
+        Button(ConnectAssistantPresentation.connectByHand, action: connect)
+            .buttonStyle(.kitQuiet)
+            .disabled(!available)
     }
 }

@@ -96,7 +96,7 @@ func TestCatalogueListsEveryPageOnce(t *testing.T) {
 
 func TestFeaturePagesUnder8KB(t *testing.T) {
 	for _, p := range paths() {
-		if !strings.HasPrefix(p, "features/") {
+		if !strings.HasPrefix(p, "features/") && !strings.HasPrefix(p, "connect/") {
 			continue
 		}
 		// Learn cards are metadata, not text a reader or the model reads.

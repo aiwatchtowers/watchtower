@@ -16,12 +16,13 @@ func TestCapabilities_TableMatchesSpec(t *testing.T) {
 	want := map[string]Capabilities{
 		"claude": {Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "token", Usage: "split",
 			CostReported: true, Images: true, PDFs: true, WebSearch: true, ReadFolder: "tools", TurnCap: "native",
-			Interrupt: "in_turn", WarmSession: true, ClaudeAITools: true, ReservePeer: "codex", Quota: true},
+			Interrupt: "in_turn", WarmSession: true, ClaudeAITools: true, ReservePeer: "codex", Quota: true,
+			Connect: "browser"},
 		"codex": {Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "message", Usage: "split",
 			Images: true, WebSearch: true, ReadFolder: "shell_sandbox", TurnCap: "counted", Interrupt: "kill_turn",
-			ReservePeer: "claude", Quota: true},
+			ReservePeer: "claude", Quota: true, Connect: "words"},
 		"ollama": {Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "token", Usage: "totals",
-			ReadFolder: "none", TurnCap: "native", Interrupt: "kill_turn"},
+			ReadFolder: "none", TurnCap: "native", Interrupt: "kill_turn", Connect: "none"},
 	}
 	for _, p := range All() {
 		got, ok := CapsFor(p.ID)
@@ -68,7 +69,20 @@ func TestCapabilities_JSONKeysPinned(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"tools", "tool_events", "text_stream", "usage", "cost_reported", "images",
 		"pdfs", "web_search", "read_folder", "turn_cap", "interrupt", "warm_session", "claude_ai_tools",
-		"reserve_peer", "quota"}, keys)
+		"reserve_peer", "quota", "connect"}, keys)
+}
+
+// How each provider's agent can guide a connection (agent connect, #2133):
+// codex stays words until its browser path passes (S3); every registry
+// provider names a value, so the Desktop never guesses one.
+func TestCaps_ConnectColumn(t *testing.T) {
+	want := map[string]string{"claude": "browser", "codex": "words", "ollama": "none"}
+	for _, p := range All() {
+		got, ok := CapsFor(p.ID)
+		require.True(t, ok, p.ID)
+		assert.NotEmpty(t, got.Connect, "%s: no connect value", p.ID)
+		assert.Equal(t, want[p.ID], got.Connect, p.ID)
+	}
 }
 
 // A profile is satisfied by what it needs: a batch call by any transport,

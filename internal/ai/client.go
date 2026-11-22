@@ -215,6 +215,15 @@ type Client struct {
 	// streamHooks drive it (SetStreamJSONHooks).
 	streamJSON  bool
 	streamHooks StreamJSONHooks
+	// mcpEnvVars name process environment variables copied into the
+	// watchtower server's env in the mcp-config (SetMCPEnvVars).
+	mcpEnvVars []string
+	// browser turns on Claude in Chrome (SetBrowser); browserHosts are the
+	// hosts its navigate tool may open (SetBrowserHosts).
+	browser      bool
+	browserHosts []string
+	// browserProbe is the connect assistant's S1 probe (SetBrowserProbe).
+	browserProbe bool
 }
 
 // EmitToolEvents switches Query onto the chat events `ai query --events v2`
@@ -303,6 +312,31 @@ func ConfigureChild(cmd *exec.Cmd) (reap func()) {
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
 func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 
+// SetMCPEnvVars names environment variables of this process to copy into
+// the watchtower MCP server's env (the connect run's socket and token,
+// connectwire.SocketEnv/TokenEnv); an unset or empty one is left out. A
+// config carrying any of them holds a secret, so it reaches the child over
+// an inherited pipe, never inline on argv.
+func (c *Client) SetMCPEnvVars(names []string) { c.mcpEnvVars = names }
+
+// SetBrowser turns on Claude in Chrome for this run (the connect surface
+// only, agent connect spec §5.2): --chrome, no built-in tool (--tools ""),
+// the browser tools allowed, the
+// tools that could slip past the host guard denied (spec §10 S2), and a
+// PreToolUse hook that refuses navigate to a host outside SetBrowserHosts.
+// Off by default; every other run keeps the browser off.
+func (c *Client) SetBrowser(on bool) { c.browser = on }
+
+// SetBrowserHosts are the hosts the browser's navigate tool may open with
+// SetBrowser on; none means every navigation is refused.
+func (c *Client) SetBrowserHosts(hosts []string) { c.browserHosts = hosts }
+
+// SetBrowserProbe makes the run spike S1's probe turn (agent connect spec
+// §10 "Task 0 outcome"): --chrome with BrowserProbeTool as the only allowed
+// tool, no built-in, and no --mcp-config at all (no watchtower server, no
+// Quick Connections), under --strict-mcp-config.
+func (c *Client) SetBrowserProbe(on bool) { c.browserProbe = on }
+
 // SetExternalMCPServers registers owner-added external MCP servers to merge
 // into the chat's mcp-config and tool allowlist alongside the built-in
 // watchtower server.
@@ -380,7 +414,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 		// must not be able to run shell commands. The task-chat agent still
 		// changes targets ONLY via watchtower-action approval cards, never by
 		// writing to the DB directly.
-		"--allowedTools", c.withStreamTools(c.allowedToolsFlag(), c.streamHooks.ExtraAllowed),
+		"--allowedTools", c.allowedToolsArg(),
 		// Built-in allowlist: the model sees exactly the Claude Code built-ins
 		// named here (MCP tools are unaffected), so a built-in a future CLI
 		// release adds stays hidden by default instead of slipping past the
@@ -403,7 +437,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 		// The deny list is defence in depth behind --tools: it keeps every
 		// known built-in hidden even if a CLI release stopped honouring the
 		// allowlist. A read-folder run unhides only the file reads.
-		"--disallowedTools", c.withStreamTools(WithExternalDisallowed(c.disallowedTools(), c.externalServers), c.streamHooks.ExtraDisallowed),
+		"--disallowedTools", c.withStreamTools(c.withBrowserTools(WithExternalDisallowed(c.disallowedTools(), c.externalServers), c.browserDeniedTools()), c.streamHooks.ExtraDisallowed),
 		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
 		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
 		// those probes trigger macOS TCC prompts attributed to Watchtower.app.
@@ -418,6 +452,12 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 	if c.streamJSON {
 		args, stdin = c.streamJSONArgs(args), "" // the message goes as a stream-json line
 	}
+	switch {
+	case c.browserProbe:
+		args = append(args, "--chrome") // no navigate allowed: no host guard
+	case c.browser:
+		args = append(args, "--chrome", "--settings", browserSettings(c.browserHosts))
+	}
 	if c.maxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(c.maxTurns))
 	}
@@ -425,9 +465,10 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 	if outputFormat == "stream-json" {
 		args = append(args, "--verbose")
 	}
-	if c.dbPath != "" {
-		mcpConfig := c.buildMCPConfig()
-		if c.hasSecret() {
+	if c.dbPath != "" && !c.browserProbe {
+		env := c.mcpEnv()
+		mcpConfig := chatMCPConfig(c.dbPath, c.mcpArgs, env, c.externalServers)
+		if c.hasSecret() || len(env) > 0 {
 			// A secret (Env/Headers) must never sit in argv — it's visible to
 			// every other process on the box via `ps` — nor in a temp file:
 			// the config reaches the child over an inherited pipe.
@@ -460,6 +501,11 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 func (c *Client) builtinTools() string {
 	if c.readFolder != "" {
 		return ReadFolderBuiltinTools
+	}
+	if c.browser || c.browserProbe {
+		// No built-in at all, as the live-checked S3.argv (agent connect
+		// spec §10): the MCP tools are listed without ToolSearch.
+		return ""
 	}
 	return ChatBuiltinTools
 }
@@ -650,13 +696,21 @@ var nonToolNameChars = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 // (this binary as `mcp --db-path <db>` plus mcpArgs) and every external
 // server. Shared by the one-shot client and the warm `ai session` backend.
 func ChatMCPConfig(dbPath string, mcpArgs []string, ext []ExternalMCPServer) string {
+	return chatMCPConfig(dbPath, mcpArgs, nil, ext)
+}
+
+// chatMCPConfig is ChatMCPConfig with env set on the watchtower server
+// (omitted when empty).
+func chatMCPConfig(dbPath string, mcpArgs []string, env map[string]string, ext []ExternalMCPServer) string {
 	args := append([]string{"mcp", "--db-path", dbPath}, mcpArgs...)
-	servers := map[string]any{
-		"watchtower": map[string]any{
-			"command": watchtowerBinary(),
-			"args":    args,
-		},
+	watchtower := map[string]any{
+		"command": watchtowerBinary(),
+		"args":    args,
 	}
+	if len(env) > 0 {
+		watchtower["env"] = env
+	}
+	servers := map[string]any{"watchtower": watchtower}
 	for _, s := range ext {
 		servers[s.Name] = externalServerConfig(s)
 	}
@@ -688,7 +742,22 @@ func (c *Client) allowedToolsFlag() string {
 // servers (Quick Connections) are merged in alongside it, one entry per
 // server: stdio servers run a local command, http servers point at a URL.
 func (c *Client) buildMCPConfig() string {
-	return ChatMCPConfig(c.dbPath, c.mcpArgs, c.externalServers)
+	return chatMCPConfig(c.dbPath, c.mcpArgs, c.mcpEnv(), c.externalServers)
+}
+
+// mcpEnv is the SetMCPEnvVars variables read from this process's
+// environment, each set and non-empty one; nil when there is none.
+func (c *Client) mcpEnv() map[string]string {
+	var env map[string]string
+	for _, name := range c.mcpEnvVars {
+		if v := os.Getenv(name); v != "" {
+			if env == nil {
+				env = map[string]string{}
+			}
+			env[name] = v
+		}
+	}
+	return env
 }
 
 // externalServerConfig renders one owner-added external MCP server into its

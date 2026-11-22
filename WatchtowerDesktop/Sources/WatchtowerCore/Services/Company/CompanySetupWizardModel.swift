@@ -194,6 +194,9 @@ package final class CompanySetupWizardModel {
     @ObservationIgnored private let now: () -> Date
     /// A draft file exists on disk (read or saved by this run).
     private var hasDraft = false
+    /// A readable draft is on disk (read or saved by this run): an unreadable
+    /// one set aside earlier no longer stands for the setup.
+    package var hasActiveDraft: Bool { hasDraft }
     /// The person changed something this session (discovery's pre-ticks alone make no draft).
     private var touched = false
     /// Bumped by Discard: a check of the discarded setup lands nowhere.
@@ -557,6 +560,14 @@ package final class CompanySetupWizardModel {
         return false
     }
 
+    /// Publish went through from the connect assistant: the page shows
+    /// Publish's result (link, code, **Connect this Mac**) whatever step it was on.
+    package func showPublished() {
+        guard isPublished else { return }
+        reached.formUnion(steps)
+        move(to: .publish)
+    }
+
     /// **Done** after Publish: the page starts fresh next time.
     package func finish() {
         guard isPublished else { return }
@@ -576,6 +587,17 @@ package final class CompanySetupWizardModel {
         }
         saving = next
         return await next.value
+    }
+
+    /// The connect assistant's save (agent connect spec §5.4): `company
+    /// draft save` of the state in memory now, queued behind any save in
+    /// flight like the page's own. The wizard sheet and the assistant panel
+    /// share this model, so the last save of either writes the whole draft
+    /// and wins. True when it went through (else `storageProblem` says why).
+    @discardableResult
+    package func saveNow() async -> Bool {
+        touched = true
+        return await saveDraft()
     }
 
     private func writeDraft() async -> Bool {
@@ -807,6 +829,14 @@ package final class CompanySetupWizardModel {
     package func setAtlassianSite(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         edit(\.atlassian, .init()) { $0.site = trimmed.isEmpty || trimmed.contains("://") ? trimmed : "https://\(trimmed)" }
+        if checks[.atlassian] != .running { checks[.atlassian] = nil }
+    }
+
+    /// Confluence on or off for the company's Atlassian app (the connect
+    /// assistant's `company_draft` save; the page keeps the default, on).
+    package func setAtlassianConfluence(_ on: Bool) {
+        touched = true
+        edit(\.atlassian, .init()) { $0.confluence = on }
         if checks[.atlassian] != .running { checks[.atlassian] = nil }
     }
 
@@ -1103,6 +1133,52 @@ package final class CompanySetupWizardModel {
         return String(id)
     }
 
+    // MARK: The connect assistant's Slack step (agent connect spec §5.4, F3 relaxed)
+
+    /// The Slack step's first run with the token in `slackToken`: a create,
+    /// or the read of the app the settings link named. Only on the Slack
+    /// step's token form; false when nothing started.
+    package func startSlackStep() -> Bool {
+        guard current == .vendor(.slack), phase(.slack) == .create, slackDiff == nil, slackProblem == nil,
+              !slack.isRunning else { return false }
+        startSlackRun()
+        return slack.isRunning
+    }
+
+    /// **Update the app** for exactly the app and changes the customer
+    /// confirmed in the panel; false (nothing runs) when the Slack step no
+    /// longer shows that diff (the page moved on, or another run replaced it).
+    package func updateSlackApp(appID: String, lines: [String]) -> Bool {
+        guard current == .vendor(.slack), let diff = slackDiff, diff.appID == appID, diff.lines == lines,
+              !slack.isRunning else { return false }
+        startSlackRun()
+        return slack.isRunning
+    }
+
+    /// The assistant's Slack step ended without an update (declined, or the
+    /// card dropped): the token goes, and a shown diff with it; the step
+    /// opens at its choice again. A running Slack run keeps its own copy.
+    package func abandonSlackStep() {
+        slackToken = ""
+        guard slackAttempt, !slack.isRunning else { return }
+        slackAttempt = false
+        slackConfirming = false
+        slack.resetForm()
+        phases[.slack] = nil
+        if current == .vendor(.slack) { enter(current) }
+    }
+
+    /// The company name from the connect assistant, kept in the draft like
+    /// a check's: before any check stored the company (no slug) it becomes
+    /// the draft's name; once stored, the name is fixed and the new one is
+    /// only Publish's display name (as the page's Company name field).
+    package func setCompanyName(_ name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        touched = true
+        publishName = name
+        if draft.slug.isEmpty { draft.company = name }
+    }
+
     private func startSlackRun() {
         let token = slackToken.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty, !slack.isRunning else { return }
@@ -1388,7 +1464,10 @@ package final class CompanySetupWizardModel {
     /// Packs the bundle and writes the link to the Slack app's About page.
     /// The token goes on stdin only. Failures keep the setup (Go keeps the
     /// draft and the stored bundle).
-    package func publish(token: String?) async {
+    /// `approved` (the connect assistant's Publish card): checked right
+    /// after the draft is saved, with no suspension before the verb starts;
+    /// false publishes nothing and leaves `publishRefusal` set.
+    package func publish(token: String?, approved: (@MainActor () -> Bool)? = nil) async {
         guard publishBlockedReason == nil, publishState != .running, !discarding else { return }
         let token = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if isActive(.slack), token.isEmpty { return }
@@ -1397,6 +1476,12 @@ package final class CompanySetupWizardModel {
         publishSteps = Self.publishStepLines(slack: isActive(.slack))
         guard await saveDraft() else {
             publishState = .failed(Self.draftSaveFailed)
+            return
+        }
+        // The saved draft is what Go publishes: it must be the approved one.
+        if let approved, !approved() {
+            publishState = .ready
+            publishRefusal = Self.publishChangedLine
             return
         }
         struct Input: Encodable {

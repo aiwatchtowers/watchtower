@@ -156,6 +156,7 @@ final class JiraAccountsViewModelTests: XCTestCase {
         XCTAssertNil(vm.error, "a Cancel at the list is not an error")
         XCTAssertFalse(vm.isConnecting)
         XCTAssertEqual(try String(contentsOf: stub.answer, encoding: .utf8), "<eof>\n", "the CLI read end-of-file")
+        XCTAssertFalse(vm.lastAuthFlowWroteAccount, "a declined site list saved nothing")
         await vm.refreshAsync()
         XCTAssertTrue(vm.accounts.isEmpty)
         vm.finishBoardStep()
@@ -390,6 +391,51 @@ extension JiraAccountsViewModelTests {
         XCTAssertTrue(result.timedOut)
         XCTAssertFalse(result.cancelled)
         XCTAssertNil(vm.connectStatus)
+    }
+
+    /// `lastAuthFlowWroteAccount` (the connect driver's "the add saved a
+    /// site"): true only for the CLI's success, never for an interrupted
+    /// or failed flow, which also end `.finished` with no account.
+    func testLastAuthFlowWroteAccountFollowsTheCLIsSuccess() async throws {
+        let (saved, _, _) = try makeVM(cli: "/usr/bin/true")
+        await saved.addAccount(daemonPolicy: .deferred)
+        XCTAssertTrue(saved.lastAuthFlowWroteAccount)
+
+        let (failed, _, _) = try makeVM(cli: "/usr/bin/false")
+        await failed.addAccount(daemonPolicy: .deferred)
+        XCTAssertFalse(failed.lastAuthFlowWroteAccount)
+
+        let stub = try argvRecordingCLI()
+        try "#!/bin/sh\nexit 15\n".write(toFile: stub.cli, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.cli)
+        let (interrupted, _, _) = try makeVM(cli: stub.cli)
+        let end = await interrupted.addAccount(daemonPolicy: .deferred)
+        XCTAssertEqual(end, .finished)
+        XCTAssertNil(interrupted.error, "an interrupted flow is no error")
+        XCTAssertFalse(interrupted.lastAuthFlowWroteAccount)
+    }
+
+    /// The early returns ("already in progress", "CLI not found") start no
+    /// flow: an earlier flow's success does not stand for them.
+    func testEarlyReturnsLeaveNoEarlierSuccessBehind() async throws {
+        let pool = try makePool()
+        var path: String? = "/usr/bin/true"
+        let vm = JiraAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter()) { path }
+        await vm.addAccount(daemonPolicy: .deferred)
+        XCTAssertTrue(vm.lastAuthFlowWroteAccount)
+
+        vm.isConnecting = true
+        await vm.addAccount(daemonPolicy: .deferred)
+        XCTAssertEqual(vm.error, "Another connection is already in progress.")
+        XCTAssertFalse(vm.lastAuthFlowWroteAccount)
+        vm.isConnecting = false
+
+        await vm.addAccount(daemonPolicy: .deferred)
+        XCTAssertTrue(vm.lastAuthFlowWroteAccount)
+        path = nil
+        await vm.addAccount(daemonPolicy: .deferred)
+        XCTAssertEqual(vm.error, "Watchtower CLI not found")
+        XCTAssertFalse(vm.lastAuthFlowWroteAccount)
     }
 
     // MARK: - Board step (#572)

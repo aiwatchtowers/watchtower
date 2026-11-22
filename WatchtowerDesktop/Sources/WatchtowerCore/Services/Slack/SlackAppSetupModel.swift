@@ -267,6 +267,9 @@ package final class SlackAppSetupModel {
     /// ends on a form leaves `phase == .editing` with the new `form`, which the
     /// wizard observes.
     @ObservationIgnored package var onFinished: ((SlackSetupOutcome) -> Void)?
+    /// The last create or adopt run, done once its records are re-read and
+    /// `onFinished` was called (the connect assistant awaits it).
+    @ObservationIgnored package private(set) var runTask: Task<Void, Never>?
     /// A status read has succeeded: `records` (and `record(appID:)`) say what
     /// this Mac has, not merely that nothing was read yet.
     package private(set) var recordsRead = false
@@ -394,6 +397,17 @@ package final class SlackAppSetupModel {
         startRun(token: token, steps: fromField ? Self.adoptFieldSteps : Self.adoptSteps, reports: true) { [self] token in
             await runAdopt(token: token, appID: appID, clientID: clientID, dryRun: dryRun)
         }
+    }
+
+    /// The connect assistant's update of the workspace's existing app
+    /// (agent connect, `docs/guide/connect/slack.md` steps 10–14): the adopt
+    /// form for the token's workspace (no `--team`), so the next
+    /// `startAdopt(token:appID:)` runs. Only after the customer pressed the
+    /// PKCE confirm card in the assistant's panel, since every adopt passes
+    /// `--enable-pkce`. Opens no sheet; nothing while a run is running.
+    package func prepareUpdate() {
+        guard !isRunning else { return }
+        reset(.adopt(Adopt(target: SlackSetupTarget(teamID: "", teamName: ""))))
     }
 
     /// **Add the link** (§3.3).
@@ -524,7 +538,7 @@ package final class SlackAppSetupModel {
         phase = .running
         adminNoteCopied = false
         createdApp = false
-        Task { [self] in
+        runTask = Task { [self] in
             await body(token)
             heldToken = nil
             // Taken before the read: a new run may start while it is pending.

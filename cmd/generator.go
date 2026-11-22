@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"watchtower/internal/aiconsent"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
+	"watchtower/internal/connectplay"
+	"watchtower/internal/connectwire"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/externalmcp"
@@ -22,6 +25,7 @@ import (
 	"watchtower/internal/netsec"
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
+	"watchtower/internal/providers/caps"
 	"watchtower/internal/providers/transport"
 	"watchtower/internal/sessions"
 	"watchtower/internal/tools"
@@ -186,7 +190,10 @@ func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (
 	if err := aiconsent.Check(context.Background()); err != nil {
 		return nil, func() {}, err // BGAI-01, as newAIClientWithModel
 	}
-	if toolRoutingEnabled(cfg, aiFlagModel) {
+	// A connect run is never routed: no automatic fallback mid-setup (agent
+	// connect spec §8); a quota or provider failure surfaces as the turn's
+	// error, which the Desktop offers to retry.
+	if aiFlagTools != toolsConnect && toolRoutingEnabled(cfg, aiFlagModel) {
 		routed := newToolRouteProvider(cfg, func(actual *config.Config) (ai.Provider, func(), error) { return newQueryClient(actual, dbPath, opts) })
 		routed.readFolder = opts.ReadFolder
 		routed.capable = queryReserveCapable(cfg, dbPath, aiFlagTools, aiFlagSurface)
@@ -197,6 +204,33 @@ func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (
 		return nil, noop, err
 	}
 	model := aiFlagModel
+	if aiFlagTools == toolsConnect && connectProbing() {
+		// The S1 probe: Claude in Chrome's list_connected_browsers only, and
+		// no MCP server of ours — no connect tool, no socket, no token.
+		if err := connectProbeCheck(cfg.AI.Provider); err != nil {
+			return nil, noop, err
+		}
+		opts.DBPath, opts.Model = dbPath, model
+		opts.BrowserProbe = true
+		// Nor does the probe's child inherit them from this process.
+		opts.ChildEnv = connectProbeEnv(os.Environ())
+		return buildQuerier(cfg, opts), noop, nil
+	}
+	if aiFlagTools == toolsConnect {
+		// A connect run: only `mcp --connect <service>`, never the Quick
+		// Connections nor runtime B; the browser comes from the row's
+		// Connect capability, never a provider name (LLMTRANSPORT-01).
+		c := providers.CapsOf(cfg.AI.Provider)
+		if !connectGuides(c) {
+			return nil, noop, providers.CapabilityError(cfg.AI.Provider, providers.ToolPreflight,
+				errors.New("this provider cannot guide a connection"))
+		}
+		opts.DBPath, opts.Model = dbPath, model
+		opts.MCPArgs = []string{"--connect", aiFlagConnectService}
+		opts.MCPEnvVars = []string{connectwire.SocketEnv, connectwire.TokenEnv}
+		opts.Browser = connectplay.Mode(aiFlagConnectMode) == connectplay.ModeBrowser && c.Connect == caps.ConnectBrowser
+		return buildQuerier(cfg, opts), noop, nil
+	}
 	// Runtime B: a provider with no MCP child on a tool-bearing chat surface
 	// gets the in-process loop. Handled first so we never build (and
 	// discard) a plain client, nor resolve the model twice.

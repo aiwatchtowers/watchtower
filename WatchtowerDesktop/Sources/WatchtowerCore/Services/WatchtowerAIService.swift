@@ -101,6 +101,35 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         }
     }
 
+    package func stream(
+        prompt: String,
+        systemPrompt: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        connectArgs: [String],
+        extraEnvironment: [String: String]
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        let processHandle = WatchtowerProcessHandle()
+        return AsyncThrowingStream { continuation in
+            continuation.onTermination = { @Sendable _ in
+                processHandle.terminate()
+            }
+            Task {
+                do {
+                    try await self.run(
+                        prompt: prompt, systemPrompt: systemPrompt, dbPath: dbPath, model: model, provider: provider,
+                        toolMode: nil, readFolder: nil, ownerInstructions: false, purpose: nil, readFolderAskID: nil,
+                        readFolderRoundID: nil, connectArgs: connectArgs, extraEnvironment: extraEnvironment,
+                        processHandle: processHandle, continuation: continuation
+                    )
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Run a quick connectivity check via `watchtower ai test`.
     /// Returns (ok, provider, model, error).
     /// `provider` (nil: the configured one) is passed as `--provider`.
@@ -251,9 +280,13 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         ownerInstructions: Bool = false,
         purpose: String? = nil,
         readFolderAskID: Int64? = nil,
-        readFolderRoundID: Int64? = nil
+        readFolderRoundID: Int64? = nil,
+        connectArgs: [String]? = nil
     ) -> [String] {
         var args = ["ai", "query", "--prompt-stdin", "--events", "v2"]
+        if let connectArgs {
+            args += connectArgs
+        }
 
         if let dbPath, !dbPath.isEmpty {
             args += ["--db-path", dbPath]
@@ -341,6 +374,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         readFolderAskID: Int64?,
         readFolderRoundID: Int64?,
         persist: ChatQueryPersist? = nil,
+        connectArgs: [String]? = nil,
+        extraEnvironment: [String: String] = [:],
         processHandle: WatchtowerProcessHandle,
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
     ) async throws {
@@ -355,7 +390,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             ownerInstructions: ownerInstructions,
             purpose: purpose,
             readFolderAskID: readFolderAskID,
-            readFolderRoundID: readFolderRoundID
+            readFolderRoundID: readFolderRoundID,
+            connectArgs: connectArgs
         )
         if let persist { args += Self.persistArgs(persist) }
 
@@ -363,7 +399,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         process.arguments = args
-        process.environment = Self.ownerEnvironment
+        process.environment = Self.environment(merging: extraEnvironment)
 
         let stdout = Pipe()
         let stderr = Pipe()
@@ -455,6 +491,12 @@ extension WatchtowerAIService {
     /// inherited background marker never reaches them.
     static var ownerEnvironment: [String: String] {
         CLIOrigin.owner.environment(ProcessInfo.processInfo.environment)
+    }
+
+    /// `ownerEnvironment` with `extra` over it: one child's own entries
+    /// (a connect run's socket and token).
+    static func environment(merging extra: [String: String]) -> [String: String] {
+        ownerEnvironment.merging(extra) { _, run in run }
     }
 }
 

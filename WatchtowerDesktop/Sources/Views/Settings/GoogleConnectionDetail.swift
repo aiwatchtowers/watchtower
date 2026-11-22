@@ -26,7 +26,7 @@ struct GoogleConnectionDetail: View {
         VStack(spacing: 0) { // one view: its onDisappear is the detail's, not a branch's
             // §5.2: Use my own Google project is a page in this detail.
             if ownProject.isOpen && !ownProjectLocked {
-                OwnGoogleProjectPage(model: ownProject)
+                OwnGoogleProjectPage(model: ownProject, agent: ownProjectAgent)
             } else {
                 detail
             }
@@ -110,6 +110,7 @@ struct GoogleConnectionDetail: View {
             signInWait: sectionSignInWaits(vm) ? SignInWait(copy: .google) { vm?.cancelConnect() } : nil,
             signInRunning: vm?.signIn != nil,
             locks: appState.companyLocks,
+            agent: appState.connectAgentEntry,
             perform: perform,
             bannerAction: { action in
                 if action == .useOwnGoogle { perform(.useOwnGoogle) } else { appState.performCompanyBannerAction(action) }
@@ -121,6 +122,15 @@ struct GoogleConnectionDetail: View {
                 }
             }
         )
+    }
+
+    /// The own project page's **Connect with <harness>**: the assistant's
+    /// own-Google-project run (preflight F5); nil when none is offered.
+    private var ownProjectAgent: (harness: ConnectHarness, open: () -> Void)? {
+        let service = AppState.ownGoogleProjectConnectService
+        return appState.connectAssistantButton(for: service).map { harness in
+            (harness, { appState.openConnectAssistant(service: service) })
+        }
     }
 
     /// A waiting sign-in the section shows: a new account's (or the legacy

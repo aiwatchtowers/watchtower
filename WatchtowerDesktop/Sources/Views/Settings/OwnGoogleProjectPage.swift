@@ -7,9 +7,12 @@ private typealias Model = OwnGoogleProjectModel
 /// **Use my own Google project** (#1887 C4, company screens spec §5.2): a
 /// page in the Google detail with **‹ Google** as the way back — the guide
 /// to a Google Cloud project of the person's own, the client JSON's drop
-/// zone, and Connect. Every word is `OwnGoogleProjectModel`'s.
+/// zone, and Connect. Every word is `OwnGoogleProjectModel`'s. With
+/// `agent`, **Connect with <harness>** (agent connect spec §7) beside
+/// Connect until the page is done: the assistant guides the same steps.
 struct OwnGoogleProjectPage: View {
     let model: OwnGoogleProjectModel
+    var agent: (harness: ConnectHarness, open: () -> Void)?
 
     var body: some View {
         ScrollView {
@@ -37,7 +40,11 @@ struct OwnGoogleProjectPage: View {
                     case .problem(let text): WizardProblem(text: text)
                     }
                 }
-                HStack {
+                HStack(spacing: Spacing.regular) {
+                    if model.doneLines == nil, let agent {
+                        ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(agent.harness), action: agent.open)
+                            .disabled(model.isRunning)
+                    }
                     Spacer(minLength: 0)
                     Button(model.primaryTitle, action: primary)
                         .buttonStyle(.kitPrimary)

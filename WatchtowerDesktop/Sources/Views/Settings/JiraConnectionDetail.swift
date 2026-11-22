@@ -135,6 +135,7 @@ struct JiraConnectionDetail: View {
             busy: appState.companyDetailBusy(.atlassian),
             error: vm?.error,
             locks: appState.companyLocks,
+            agent: appState.connectAgentEntry,
             perform: { appState.performCompanyDetailAction($0, vendor: .atlassian) },
             bannerAction: { appState.performCompanyBannerAction($0) },
             tryAgain: { vm?.refresh() },

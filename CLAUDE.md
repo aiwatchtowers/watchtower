@@ -67,6 +67,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - Slack adaptive sync and Stop syncing — `slack-adaptive-sync.md`
 - Slack Full — entry into Full and the retired shared app — `slack-full.md`
 - Company setup — one link connects Slack, Google, Atlassian, Linear and Microsoft 365 — `company-setup.md`
+- Connect with an agent — `agent-connect.md`
 - Jira Multi-Account — `jira-multi-account.md`
 - Jira status history + time in status — `jira-changelog.md`
 - Jira custom fields discovery & mapping — `jira-custom-fields.md`

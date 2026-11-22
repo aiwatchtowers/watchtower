@@ -21,6 +21,13 @@ const (
 	ReadFolderNone         = "none"
 	ReadFolderTools        = "tools"
 	ReadFolderShellSandbox = "shell_sandbox"
+
+	// Connect: how the provider's agent can guide a connection (spec
+	// 2026-11-21 agent connect). Browser drives the owner's browser, words
+	// tells each step in text, none offers no guide.
+	ConnectBrowser = "browser"
+	ConnectWords   = "words"
+	ConnectNone    = "none"
 )
 
 // Capabilities is one transport's row. JSON keys are the Swift
@@ -51,6 +58,9 @@ type Capabilities struct {
 	ReservePeer string `json:"reserve_peer"`
 	// Quota: the provider reports a subscription quota with its reset.
 	Quota bool `json:"quota"`
+	// Connect: browser | words | none — how the provider's agent can guide
+	// the owner through connecting a source.
+	Connect string `json:"connect"`
 }
 
 // table is every provider's row, by provider id.
@@ -58,16 +68,16 @@ var table = map[string]Capabilities{
 	"claude": {Tools: ToolsWithConnections, ToolEvents: true, TextStream: "token", Usage: "split",
 		CostReported: true, Images: true, PDFs: true, WebSearch: true, ReadFolder: ReadFolderTools,
 		TurnCap: "native", Interrupt: "in_turn", WarmSession: true, ClaudeAITools: true,
-		ReservePeer: "codex", Quota: true},
+		ReservePeer: "codex", Quota: true, Connect: ConnectBrowser},
 	// WebSearch: the chat session's codex runs search the cached index
 	// (codex.Client.SetWebSearch, ask #533); every other codex run has it off.
 	"codex": {Tools: ToolsWithConnections, ToolEvents: true, TextStream: "message", Usage: "split",
 		Images: true, WebSearch: true, ReadFolder: ReadFolderShellSandbox, TurnCap: "counted", Interrupt: "kill_turn",
-		ReservePeer: "claude", Quota: true},
+		ReservePeer: "claude", Quota: true, Connect: ConnectWords},
 	// The chat and `ai query --tools chat` run runtime B (agentloop) with
 	// the watchtower tools and the Quick Connections.
 	"ollama": {Tools: ToolsWithConnections, ToolEvents: true, TextStream: "token", Usage: "totals",
-		ReadFolder: ReadFolderNone, TurnCap: "native", Interrupt: "kill_turn"},
+		ReadFolder: ReadFolderNone, TurnCap: "native", Interrupt: "kill_turn", Connect: ConnectNone},
 }
 
 // For is id's row; false for an unknown id.

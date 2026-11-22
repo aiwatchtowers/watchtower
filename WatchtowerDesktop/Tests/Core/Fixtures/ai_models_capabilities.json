@@ -19,7 +19,8 @@
         "warm_session": true,
         "claude_ai_tools": true,
         "reserve_peer": "codex",
-        "quota": true
+        "quota": true,
+        "connect": "browser"
       },
       "subscription": {
         "agent_name": "Claude Code",
@@ -47,7 +48,8 @@
         "warm_session": false,
         "claude_ai_tools": false,
         "reserve_peer": "claude",
-        "quota": true
+        "quota": true,
+        "connect": "words"
       },
       "subscription": {
         "agent_name": "Codex",
@@ -75,7 +77,8 @@
         "warm_session": false,
         "claude_ai_tools": false,
         "reserve_peer": "",
-        "quota": false
+        "quota": false,
+        "connect": "none"
       }
     }
   ]

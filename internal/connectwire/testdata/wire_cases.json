@@ -1,0 +1,62 @@
+{
+  "about": "Every line of the connect wire (internal/connectwire). Each case's line is the exact bytes on the socket, without the newline. kind is hello, hello_reply, request or response; a response's shape names its result type (status, started, waited, secret, pending, choices, company_draft, company_checked, company_published, done) and is empty for an error. Go round-trips each line byte-identically; the Swift ConnectWire decodes the same file.",
+  "cases": [
+    {"name": "hello", "kind": "hello", "line": "{\"v\":1,\"token\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"service\":\"slack\"}"},
+    {"name": "hello_ok", "kind": "hello_reply", "line": "{\"ok\":true}"},
+    {"name": "hello_busy", "kind": "hello_reply", "line": "{\"ok\":false,\"error\":{\"code\":\"busy\",\"message\":\"another assistant turn is still connected to this run\"}}"},
+
+    {"name": "request_status", "kind": "request", "tool": "connect_status", "line": "{\"id\":1,\"tool\":\"connect_status\",\"args\":{}}"},
+    {"name": "request_start_code", "kind": "request", "tool": "connect_start", "line": "{\"id\":2,\"tool\":\"connect_start\",\"args\":{\"code\":\"https://acme.example.com/connect\"}}"},
+    {"name": "request_start_pkce", "kind": "request", "tool": "connect_start", "line": "{\"id\":3,\"tool\":\"connect_start\",\"args\":{\"pkce\":true}}"},
+    {"name": "request_secret", "kind": "request", "tool": "request_secret", "line": "{\"id\":4,\"tool\":\"request_secret\",\"args\":{\"kind\":\"slack_config_token\",\"label\":\"Configuration access token\"}}"},
+    {"name": "request_set_fields", "kind": "request", "tool": "set_fields", "line": "{\"id\":5,\"tool\":\"set_fields\",\"args\":{\"host\":\"imap.example.com\",\"port\":\"993\"}}"},
+    {"name": "request_choose", "kind": "request", "tool": "choose", "line": "{\"id\":6,\"tool\":\"choose\",\"args\":{\"what\":\"jira_boards\",\"select\":[\"10\"]}}"},
+
+    {"name": "status_connected", "kind": "response", "tool": "connect_status", "shape": "status", "line": "{\"id\":1,\"result\":{\"service\":\"slack\",\"accounts\":[{\"name\":\"acme\",\"status\":\"connected\"}],\"policy_locked\":false,\"flow\":null,\"setup\":null}}"},
+    {"name": "status_flow_and_setup", "kind": "response", "tool": "connect_status", "shape": "status", "line": "{\"id\":1,\"result\":{\"service\":\"slack\",\"accounts\":[],\"policy_locked\":false,\"flow\":{\"id\":\"flow-1\",\"state\":\"waiting_callback\"},\"setup\":{\"stage\":\"pending_create\"}}}"},
+    {"name": "status_policy_locked", "kind": "response", "tool": "connect_status", "shape": "status", "line": "{\"id\":1,\"result\":{\"service\":\"slack\",\"accounts\":[],\"policy_locked\":true,\"flow\":null,\"setup\":null}}"},
+
+    {"name": "start_started", "kind": "response", "tool": "connect_start", "shape": "started", "line": "{\"id\":2,\"result\":{\"flow_id\":\"flow-1\"}}"},
+    {"name": "start_confirm_waiting", "kind": "response", "tool": "connect_start", "shape": "pending", "line": "{\"id\":3,\"result\":{\"state\":\"waiting\"}}"},
+    {"name": "start_confirm_declined", "kind": "response", "tool": "connect_start", "shape": "pending", "line": "{\"id\":3,\"result\":{\"state\":\"declined\"}}"},
+    {"name": "start_confirm_timeout", "kind": "response", "tool": "connect_start", "shape": "pending", "line": "{\"id\":3,\"result\":{\"state\":\"timeout\"}}"},
+
+    {"name": "wait_connected", "kind": "response", "tool": "connect_wait", "shape": "waited", "line": "{\"id\":7,\"result\":{\"state\":\"connected\",\"account\":\"acme\"}}"},
+    {"name": "wait_failed", "kind": "response", "tool": "connect_wait", "shape": "waited", "line": "{\"id\":7,\"result\":{\"state\":\"failed\",\"reason\":\"Slack denied the sign-in\"}}"},
+    {"name": "wait_waiting", "kind": "response", "tool": "connect_wait", "shape": "waited", "line": "{\"id\":7,\"result\":{\"state\":\"waiting\"}}"},
+    {"name": "wait_timeout", "kind": "response", "tool": "connect_wait", "shape": "waited", "line": "{\"id\":7,\"result\":{\"state\":\"timeout\"}}"},
+
+    {"name": "secret_sent", "kind": "response", "tool": "request_secret", "shape": "secret", "line": "{\"id\":4,\"result\":{\"state\":\"sent\",\"result\":{\"stage\":\"install\"}}}"},
+    {"name": "secret_waiting", "kind": "response", "tool": "request_secret", "shape": "secret", "line": "{\"id\":4,\"result\":{\"state\":\"waiting\"}}"},
+    {"name": "secret_cancelled", "kind": "response", "tool": "request_secret", "shape": "secret", "line": "{\"id\":4,\"result\":{\"state\":\"cancelled\"}}"},
+    {"name": "secret_timeout", "kind": "response", "tool": "request_secret", "shape": "secret", "line": "{\"id\":4,\"result\":{\"state\":\"timeout\"}}"},
+
+    {"name": "publish_waiting", "kind": "response", "tool": "company_publish", "shape": "pending", "line": "{\"id\":8,\"result\":{\"state\":\"waiting\"}}"},
+    {"name": "publish_declined", "kind": "response", "tool": "company_publish", "shape": "pending", "line": "{\"id\":8,\"result\":{\"state\":\"declined\"}}"},
+    {"name": "publish_cancelled", "kind": "response", "tool": "company_publish", "shape": "pending", "line": "{\"id\":8,\"result\":{\"state\":\"cancelled\"}}"},
+    {"name": "publish_timeout", "kind": "response", "tool": "company_publish", "shape": "pending", "line": "{\"id\":8,\"result\":{\"state\":\"timeout\"}}"},
+    {"name": "check_waiting", "kind": "response", "tool": "company_check", "shape": "pending", "line": "{\"id\":9,\"result\":{\"state\":\"waiting\"}}"},
+    {"name": "check_timeout", "kind": "response", "tool": "company_check", "shape": "pending", "line": "{\"id\":9,\"result\":{\"state\":\"timeout\"}}"},
+    {"name": "probe_waiting", "kind": "response", "tool": "slack_live_probe", "shape": "pending", "line": "{\"id\":10,\"result\":{\"state\":\"waiting\"}}"},
+    {"name": "check_ok", "kind": "response", "tool": "company_check", "shape": "company_checked", "line": "{\"id\":9,\"result\":{\"result\":\"ok\",\"account\":\"alice@example.com\"}}"},
+    {"name": "check_dry_ok", "kind": "response", "tool": "company_check", "shape": "company_checked", "line": "{\"id\":9,\"result\":{\"result\":\"ok\"}}"},
+    {"name": "check_admin_consent", "kind": "response", "tool": "company_check", "shape": "company_checked", "line": "{\"id\":9,\"result\":{\"result\":\"admin_consent\",\"admin_consent_url\":\"https://login.microsoftonline.com/acme-tenant/adminconsent?client_id=acme-client\"}}"},
+    {"name": "check_replace_needed", "kind": "response", "tool": "company_check", "shape": "company_checked", "line": "{\"id\":9,\"result\":{\"result\":\"replace_needed\"}}"},
+    {"name": "publish_ok", "kind": "response", "tool": "company_publish", "shape": "company_published", "line": "{\"id\":8,\"result\":{\"result\":\"ok\",\"slug\":\"acme\"}}"},
+    {"name": "publish_no_slack", "kind": "response", "tool": "company_publish", "shape": "company_published", "line": "{\"id\":8,\"result\":{\"result\":\"no_slack\",\"slug\":\"acme\"}}"},
+
+    {"name": "choose_items", "kind": "response", "tool": "choose", "shape": "choices", "line": "{\"id\":6,\"result\":{\"items\":[{\"id\":\"10\",\"name\":\"Acme board\",\"selected\":true},{\"id\":\"11\",\"name\":\"Acme support\",\"selected\":false}]}}"},
+    {"name": "company_draft", "kind": "response", "tool": "company_draft", "shape": "company_draft", "line": "{\"id\":10,\"result\":{\"company\":\"Acme\",\"vendors\":{\"atlassian\":{\"client_id\":\"acme-client\",\"site\":\"acme.atlassian.net\",\"client_secret_set\":false,\"checked\":false,\"skipped\":false},\"google\":{\"client_id\":\"acme.apps.googleusercontent.com\",\"client_secret_set\":true,\"checked\":true,\"skipped\":false},\"linear\":{\"client_secret_set\":false,\"checked\":false,\"skipped\":true},\"microsoft\":{\"client_id\":\"acme-ms-client\",\"tenant_id\":\"acme-tenant\",\"client_secret_set\":false,\"checked\":false,\"skipped\":false},\"slack\":{\"client_id\":\"1111.2222\",\"client_secret_set\":false,\"checked\":false,\"skipped\":false,\"ready\":true}}}}"},
+    {"name": "set_fields_done", "kind": "response", "tool": "set_fields", "shape": "done", "line": "{\"id\":5,\"result\":{}}"},
+    {"name": "cancel_done", "kind": "response", "tool": "connect_cancel", "shape": "done", "line": "{\"id\":11,\"result\":{}}"},
+
+    {"name": "error_busy", "kind": "response", "tool": "connect_start", "line": "{\"id\":2,\"error\":{\"code\":\"busy\",\"message\":\"a Slack sign-in is already running\"}}"},
+    {"name": "error_policy", "kind": "response", "tool": "connect_start", "line": "{\"id\":2,\"error\":{\"code\":\"policy\",\"message\":\"your organization blocks Slack\"}}"},
+    {"name": "error_limit", "kind": "response", "tool": "connect_start", "line": "{\"id\":2,\"error\":{\"code\":\"limit\",\"message\":\"this run has used its 5 sign-ins\"}}"},
+    {"name": "error_unknown_tool", "kind": "response", "tool": "company_publish", "line": "{\"id\":8,\"error\":{\"code\":\"unknown_tool\",\"message\":\"company_publish is not a Slack tool\"}}"},
+    {"name": "error_bad_args", "kind": "response", "tool": "request_secret", "line": "{\"id\":4,\"error\":{\"code\":\"bad_args\",\"message\":\"kind imap_password is not a Slack secret\"}}"},
+    {"name": "error_declined", "kind": "response", "tool": "connect_start", "line": "{\"id\":3,\"error\":{\"code\":\"declined\",\"message\":\"the customer declined\"}}"},
+    {"name": "error_closed", "kind": "response", "tool": "connect_wait", "line": "{\"id\":7,\"error\":{\"code\":\"closed\",\"message\":\"the connect run has ended\"}}"},
+    {"name": "error_failed", "kind": "response", "tool": "connect_wait", "line": "{\"id\":7,\"error\":{\"code\":\"failed\",\"message\":\"the sign-in could not start\"}}"}
+  ]
+}

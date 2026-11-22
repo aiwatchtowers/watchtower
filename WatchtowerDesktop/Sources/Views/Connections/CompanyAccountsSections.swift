@@ -29,6 +29,10 @@ struct CompanyAccountsSections<Row: View>: View {
     var signInRunning = false
     /// The policy locks in force: their groups end with the lock card.
     var locks: Set<LockKey> = []
+    /// The connect assistant's entries (agent connect spec §7): **Connect
+    /// with <harness>** first in the add and empty rows, and **Set up for my
+    /// company with <harness>** beside **Set up for my company**.
+    var agent: ConnectAgentEntry?
     let perform: (DetailAction.Kind) -> Void
     let bannerAction: (CompanyBanner.Action) -> Void
     let tryAgain: () -> Void
@@ -95,10 +99,32 @@ struct CompanyAccountsSections<Row: View>: View {
 
     @ViewBuilder
     private func buttonRow(_ actions: [DetailAction]) -> some View {
+        // A source the organization blocks offers no agent button (spec §6).
+        if !blocked, let agent, let service = vendorService, let harness = agent.harness(service) {
+            ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(harness)) { agent.open(service) }
+                .disabled(busy)
+        }
         ForEach(actions) { action in
             DetailActionButton(action: action, disabled: busy, blocked: blocked) { perform(action.kind) }
+            if action.kind == .setUpForCompany, !blocked, let agent,
+               let harness = agent.harness(AppState.companyConnectService) {
+                ConnectAgentButton(title: ConnectAssistantPresentation.setUpCompanyWith(harness)) {
+                    agent.open(AppState.companyConnectService)
+                }
+                .disabled(busy)
+            }
         }
         if busy && signInWait == nil && !signInRunning { ProgressView().controlSize(.small) }
+    }
+
+    /// The connect service of this detail's vendor; nil for a vendor these
+    /// sections draw no agent button for.
+    private var vendorService: String? {
+        switch vendor {
+        case .google: ConnectionService.google.rawValue
+        case .atlassian: ConnectionService.jira.rawValue
+        case .slack, .linear, .microsoft: nil
+        }
     }
 }
 

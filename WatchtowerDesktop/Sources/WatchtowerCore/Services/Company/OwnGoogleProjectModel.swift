@@ -135,6 +135,41 @@ package final class OwnGoogleProjectModel {
         notGranted = []
         file = nil
         fileProblem = false
+        typedSecret = nil
+    }
+
+    // MARK: The connect assistant's client form (agent connect spec §5.4)
+
+    /// The client secret the customer pasted into the assistant's card;
+    /// memory only, like a dropped JSON's. The Client ID comes with the start.
+    @ObservationIgnored private var typedSecret: String?
+
+    /// The assistant's card holds a client secret for the next start.
+    package var hasTypedSecret: Bool { typedSecret != nil }
+
+    /// The pasted secret replaces a dropped JSON: the assistant's client is the one to connect.
+    @discardableResult
+    package func enterClientSecret(_ secret: String) -> Bool {
+        let secret = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isRunning, !secret.isEmpty else { return false }
+        typedSecret = secret
+        file = nil
+        fileProblem = false
+        phase = .idle
+        formGeneration += 1
+        return true
+    }
+
+    /// The Client ID the assistant read on **Credentials**, with the pasted
+    /// secret, becomes the client **Connect** uses.
+    @discardableResult
+    package func enterClientID(_ clientID: String) -> Bool {
+        let clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isRunning, !clientID.isEmpty, let typedSecret else { return false }
+        file = DroppedFile(name: Self.assistantClientName, client: GoogleClientFile(clientID: clientID, clientSecret: typedSecret))
+        phase = .idle
+        formGeneration += 1
+        return true
     }
 
     // MARK: The client JSON
@@ -149,6 +184,7 @@ package final class OwnGoogleProjectModel {
             return false
         }
         fileProblem = false
+        typedSecret = nil  // a dropped JSON replaces the assistant's pasted secret
         file = DroppedFile(name: fileName, client: client)
         phase = .idle
         formGeneration += 1
@@ -323,6 +359,8 @@ extension OwnGoogleProjectModel {
     ]
     package static let unverifiedNote = "The first sign-in shows “Google hasn't verified this app”. Choose Advanced → "
         + "Go to your project: it is your own."
+    /// The dropped line's name for the client the assistant entered.
+    package static let assistantClientName = "Client entered with the assistant"
     package static let connectTitle = "Connect"
     package static let tryAgainTitle = "Try again"
     package static let doneTitle = "Done"
