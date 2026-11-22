@@ -18,7 +18,7 @@ text: Press **Connect with Claude** on a Connections card and the assistant sets
 area: setup
 level: basics
 kind: feature
-since: next
+since: 0.29.2
 action: nav:connections
 -->
 
