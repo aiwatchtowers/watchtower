@@ -799,7 +799,8 @@ package final class CompanySetupWizardModel {
     /// **Create new**.
     package func createNew() {
         guard case let .vendor(v) = current else { return }
-        if v == .slack { slackReuse = nil; slackAttempt = false }
+        // Create new drops every App ID the step held, typed or from a picked app.
+        if v == .slack { slackReuse = nil; slackAttempt = false; slackAppIDInput = "" }
         phases[v] = .create
     }
 

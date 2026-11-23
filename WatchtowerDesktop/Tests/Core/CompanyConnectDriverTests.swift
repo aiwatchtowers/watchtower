@@ -463,6 +463,15 @@ final class CompanyConnectDriverTests: XCTestCase {
         XCTAssertTrue(cli.calls(["slack", "app", "create"]).isEmpty, "a picked app is never replaced by a new one")
         XCTAssertFalse(cli.calls(["slack", "app", "adopt"]).isEmpty)
         XCTAssertEqual(wizard.slackReuse?.appID, "A0ACME")
+
+        // Back, then Create new: the next token creates an app, never updates the old pick.
+        wizard.back()
+        wizard.createNew()
+        XCTAssertEqual(wizard.slackAppIDInput, "", "Create new drops the App ID")
+        cli.on(["slack", "app", "create"], [#"{"result":"ok","team_id":"T0ACME","team_name":"acme","app_id":"A0NEW","#
+            + #""client_id":"3333.4444","link_written":false}"#])
+        _ = await driver.submitSecret(kind: "slack_config_token", value: token)
+        XCTAssertFalse(cli.calls(["slack", "app", "create"]).isEmpty, "Create new after a pick creates the app")
     }
 
     /// Discovery pre-ticks the vendors it found; the read says none until
