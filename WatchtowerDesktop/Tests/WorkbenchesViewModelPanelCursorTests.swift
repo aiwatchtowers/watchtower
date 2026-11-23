@@ -193,6 +193,20 @@ final class WorkbenchesViewModelPanelCursorTests: XCTestCase {
         XCTAssertNotNil(center.keyboardFocusSerial(for: a.id), "the terminal on screen takes the keyboard")
     }
 
+    /// A covered terminal (a page screen, an expanded ask drawer) takes no
+    /// keyboard, so handing it back reports false and requests no focus —
+    /// the host would drop the request and nothing would retry (#1150).
+    func testHandingTheKeyboardToACoveredTerminalReportsFalse() async throws {
+        let vm = makeVM()
+        let (a, _, _) = try await threeRows(vm)
+        await vm.showSession(id: a.id)
+        vm.openAgentSettingsScreen(projectID: projectID)
+        XCTAssertTrue(vm.isObscured(sessionID: a.id, projectID: projectID))
+
+        XCTAssertFalse(vm.returnKeyboardToTerminal(projectID: projectID))
+        XCTAssertNil(center.keyboardFocusSerial(for: a.id), "no focus request for a covered terminal")
+    }
+
     /// A session on screen whose terminal is not running has nothing to
     /// take the keyboard: Esc reports so and requests no focus, so the
     /// panel's key view resigns the normal way.
