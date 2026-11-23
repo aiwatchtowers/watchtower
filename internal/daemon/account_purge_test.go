@@ -163,6 +163,10 @@ func TestPurge01_UnsetSwitchCancelsAndKeepsData(t *testing.T) {
 	id := seedRevokedLinear(t, database, 10*24*time.Hour)
 	_, err := database.ScheduleAccountPurge("linear", id, "revoked", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
 	require.NoError(t, err)
+	// Scheduled the 72 h notice ago: with the switch on, this pass would run it.
+	_, err = database.Exec(`UPDATE account_purges SET scheduled_at = ?`,
+		time.Now().Add(-purge.Grace-time.Minute).UTC().Format(time.RFC3339))
+	require.NoError(t, err)
 
 	d.phaseAccountPurge(context.Background())
 
