@@ -690,8 +690,10 @@ package final class CompanySetupWizardModel {
             // From the Slack step's diff or problem, or its App ID field: back
             // to its choice (a step left on the field would open on it again,
             // with no way to Create new). The confirmed App ID goes too: only
-            // Update the app may confirm it.
+            // Update the app may confirm it, and the app chosen goes with
+            // it (the choice is made again on the first screen).
             slackAttempt = false
+            slackReuse = nil
             slack.resetForm()
             phases[.slack] = nil
             enter(current)

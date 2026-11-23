@@ -423,6 +423,36 @@ final class CompanyConnectDriverTests: XCTestCase {
         wizard.alreadyHaveOne()
         draft = try await read()
         XCTAssertEqual(draft.vendors["slack"]?.app, "existing")
+
+        // An App ID entered, then Back from the run's problem: the choice is open again.
+        wizard.setField(.slack, .slackAppID, "A0ACME")
+        await wizard.next()
+        draft = try await read()
+        XCTAssertEqual(draft.vendors["slack"]?.app, "existing")
+        wizard.slackToken = token
+        cli.on(["slack", "app", "adopt"], [#"{"result":"not_collaborator","team_id":"T0ACME","team_name":"acme"}"#])
+        await wizard.next()
+        await untilObserved { wizard.slackProblem != nil }
+        wizard.back()
+        XCTAssertEqual(wizard.current, .vendor(.slack), "back to the step's first screen")
+        draft = try await read()
+        XCTAssertNil(draft.vendors["slack"]?.app, "Back leaves no choice behind")
+    }
+
+    /// A found app picked on the Slack step is an existing app.
+    func testPickedFoundSlackAppIsExisting() async throws {
+        let cli = CompanyScriptedCLI()
+        cli.on(["company", "discover"], [#"{"candidates":[{"vendor":"slack","client_id":"1111.2222","app_id":"A0ACME","#
+            + #""label":"Watchtower · A0ACME","source":"account","source_label":"Slack app — your connected account acme"}]}"#])
+        let (driver, wizard) = make(cli)
+        await wizard.open()
+        await wizard.next()
+        XCTAssertEqual(wizard.phase(.slack), .found)
+        var draft = try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
+        XCTAssertNil(draft.vendors["slack"]?.app, "Found is the step's first screen")
+        await wizard.next()  // Use Watchtower
+        draft = try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
+        XCTAssertEqual(draft.vendors["slack"]?.app, "existing")
     }
 
     /// Discovery pre-ticks the vendors it found; the read says none until
