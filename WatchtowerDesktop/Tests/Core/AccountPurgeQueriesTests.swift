@@ -153,6 +153,16 @@ final class AccountPurgeStatusDecodingTests: XCTestCase {
         )
     }
 
+    /// The notice outside the footnote: the policy's, else the CLI's, else 72.
+    func testGraceHoursPrefersThePolicy() {
+        var policy = ManagedPolicy()
+        let status = AccountPurgeStatus(enabled: true, enabledBy: "setting", graceHours: 48)
+        XCTAssertEqual(AccountPurgeStatus.graceHours(nil, policy: policy), 72)
+        XCTAssertEqual(AccountPurgeStatus.graceHours(status, policy: policy), 48)
+        policy.purgeGraceHours = 0
+        XCTAssertEqual(AccountPurgeStatus.graceHours(status, policy: policy), 0)
+    }
+
     /// Fix round 1: an organization's PurgeGraceHours sets the dialogs'
     /// notice even before (or against a stale) CLI status.
     func testRemoveDialogGraceFromPolicy() {

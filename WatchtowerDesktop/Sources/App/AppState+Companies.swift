@@ -78,7 +78,8 @@ extension AppState {
     /// names PURGE-01's lease day while it counts (Go's `purge_lease_at`) and
     /// no purge is scheduled yet — then the purge line takes over (§6.3, A17).
     func companyRowStatus(_ account: AccountRef) -> RowStatus? {
-        CompanyConnectionsPresentation.rowStatus(account, purgeLease: companyPurgeLease(account), companies: companyRefs,
+        CompanyConnectionsPresentation.rowStatus(account, purgeLease: companyPurgeLease(account),
+                                                 graceHours: accountPurgeGraceHours, companies: companyRefs,
                                                  stoppedByPolicy: companyRowStoppedByPolicy(account))
     }
 

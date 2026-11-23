@@ -380,9 +380,15 @@ package enum CompanyConnectionsPresentation {
             + "Sign \(list(sites)) in again through your company's app\(token ? " or with an API token" : "")."
     }
 
-    package static func tokenLease(_ due: Date, zone: TimeZone) -> String {
-        "Its data stays. If no new token comes, the 30-day rule deletes it on \(shortDay(due, zone: zone)), "
-            + "with a notice 72 hours before."
+    /// A dead token's lease note; `graceHours` is the purge notice
+    /// (`AccountPurgeStatus.graceHours`, an organization's PurgeGraceHours),
+    /// 0 deleting at the next sync.
+    package static func tokenLease(_ due: Date, graceHours: Int, zone: TimeZone) -> String {
+        let day = shortDay(due, zone: zone)
+        let when = graceHours == 0
+            ? "at the next sync after \(day)"
+            : "on \(day), with a notice \(graceHours) hours before"
+        return "Its data stays. If no new token comes, the 30-day rule deletes it \(when)."
     }
 
     package static let notConnectedStatus = RowStatus(text: rowNotConnected, tone: .gray, action: .connect)
@@ -594,11 +600,13 @@ package enum CompanyConnectionsPresentation {
 
     /// The row's §4.3 status, or nil for today's line. `purgeLease` is the
     /// day PURGE-01's lease would delete the account, set only while it
-    /// counts (purge on, nothing scheduled yet); `stoppedByPolicy` is the
-    /// row of a locked group (`AccountGroup.Kind.lockKey`).
+    /// counts (purge on, nothing scheduled yet), and `graceHours` its notice;
+    /// `stoppedByPolicy` is the row of a locked group
+    /// (`AccountGroup.Kind.lockKey`).
     package static func rowStatus(
         _ a: AccountRef,
         purgeLease: Date?,
+        graceHours: Int = 72,
         companies: [CompanyRef],
         stoppedByPolicy: Bool = false,
         zone: TimeZone = .current
@@ -625,7 +633,7 @@ package enum CompanyConnectionsPresentation {
             return RowStatus(text: reloginUntied, tone: .error, action: .pasteCode)
         case codeAPITokenDead:
             return RowStatus(text: tokenDead, tone: .error, action: .pasteNewToken,
-                             note: purgeLease.map { tokenLease($0, zone: zone) })
+                             note: purgeLease.map { tokenLease($0, graceHours: graceHours, zone: zone) })
         default:
             return nil
         }

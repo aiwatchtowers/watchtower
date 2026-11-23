@@ -160,6 +160,12 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
         policyGrace ?? status?.graceHours ?? 72
     }
 
+    /// The notice in hours as the app states it outside the Privacy footnote
+    /// (the Remove dialogs, a dead token's lease note).
+    package static func graceHours(_ status: Self?, policy: ManagedPolicy) -> Int {
+        notice(status, policyGrace: policy.purgeGraceHours)
+    }
+
     /// The Privacy switch's footnote for the shown value. The switch is on
     /// only by a setting, a policy or the build, so on gives every rule.
     package static func footnote(_ status: Self?, shown: Bool) -> String {

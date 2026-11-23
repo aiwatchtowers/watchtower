@@ -360,6 +360,13 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
         XCTAssertEqual(Pres.rowStatus(a, purgeLease: due, companies: [], zone: utc)?.note,
                        "Its data stays. If no new token comes, the 30-day rule deletes it on Dec 18, "
                            + "with a notice 72 hours before.")
+        // The notice follows the purge's grace hours; 0 deletes at the next sync.
+        XCTAssertEqual(Pres.rowStatus(a, purgeLease: due, graceHours: 24, companies: [], zone: utc)?.note,
+                       "Its data stays. If no new token comes, the 30-day rule deletes it on Dec 18, "
+                           + "with a notice 24 hours before.")
+        XCTAssertEqual(Pres.rowStatus(a, purgeLease: due, graceHours: 0, companies: [], zone: utc)?.note,
+                       "Its data stays. If no new token comes, the 30-day rule deletes it at the next sync "
+                           + "after Dec 18.")
         // The note belongs to the dead token only.
         let other = account(.atlassian, 3, "x", slug: "acme", status: "error", error: "invalid_client")
         XCTAssertNil(Pres.rowStatus(other, purgeLease: due, companies: [acme])?.note)

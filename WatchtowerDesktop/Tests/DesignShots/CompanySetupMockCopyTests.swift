@@ -149,7 +149,7 @@ final class CompanySetupMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.sharedTag, Pres.sharedTag)
         let utc = TimeZone(identifier: "UTC") ?? .current
         let due = ISO8601DateFormatter().date(from: "2026-12-18T10:00:00Z") ?? Date()
-        XCTAssertEqual(Copy.tokenLease, Pres.tokenLease(due, zone: utc))
+        XCTAssertEqual(Copy.tokenLease, Pres.tokenLease(due, graceHours: 72, zone: utc))
     }
 
     func testConnectionsGroupsAndBannersLiveInThePresentation() {
