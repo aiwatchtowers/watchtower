@@ -216,10 +216,11 @@ struct ConnectionCard: View {
             .buttonStyle(.plain)
             .accessibilityLabel("\(summary.service.label): \(summary.countLine), \(summary.statusLine)")
             if let harness = agentPair {
-                HStack(spacing: Spacing.regular) {
-                    ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(harness), action: onAgent)
-                    Button(ConnectAssistantPresentation.connectByHand, action: onOpen)
-                        .buttonStyle(.kitQuiet)
+                // The pair is wider than a narrow grid column (`gridCardMin`, e.g. with the
+                // inspector open): stacked then, so the card never outgrows its cell.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Spacing.regular) { agentButtons(harness) }
+                    VStack(alignment: .leading, spacing: Spacing.regular) { agentButtons(harness) }
                 }
                 .padding([.horizontal, .bottom], Spacing.medium)
                 .padding(.top, Spacing.small)
@@ -227,6 +228,13 @@ struct ConnectionCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
+    }
+
+    @ViewBuilder
+    private func agentButtons(_ harness: ConnectHarness) -> some View {
+        ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(harness), action: onAgent)
+        Button(ConnectAssistantPresentation.connectByHand, action: onOpen)
+            .buttonStyle(.kitQuiet)
     }
 }
 

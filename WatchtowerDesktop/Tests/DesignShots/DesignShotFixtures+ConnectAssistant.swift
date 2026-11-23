@@ -21,6 +21,11 @@ enum ConnectAssistantShotFixtures {
         panelShots + [
             DesignShot(name: "connect-overview-agent", size: NSSize(width: 1120, height: 720)) {
                 AnyView(overview())
+            },
+            // Regular controls in columns narrower than the card's button pair:
+            // the pair stacks inside the card instead of overflowing its cell.
+            DesignShot(name: "connect-overview-agent-narrow", size: NSSize(width: 920, height: 900)) {
+                AnyView(overview(controlSize: .regular))
             }
         ] + ConnectAssistantScreenFixtures.shots
     }
@@ -113,7 +118,7 @@ enum ConnectAssistantShotFixtures {
     ]
 
     /// The overview with the assistant open on Google, in the panel slot on the right.
-    private static func overview() -> some View {
+    private static func overview(controlSize: ControlSize = .small) -> some View {
         let claude = ConnectHarness.fixture("claude")
         let agent = ConnectAgentEntry(harness: { _ in claude }, open: { _ in })
         let zone = CompanyConnectionsPresentation.zone(
@@ -130,6 +135,6 @@ enum ConnectAssistantShotFixtures {
                 presentation: Pres(service: "Google", harness: claude, mode: .browser, state: .empty),
                 harnesses: harnesses)
         }
-        .controlSize(.small)
+        .controlSize(controlSize)
     }
 }

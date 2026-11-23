@@ -132,6 +132,7 @@ final class ConnectEntryPointsTests: XCTestCase {
 
         let banner = try view.inspect().find(ConnectionAttentionBanner.self)
         XCTAssertThrowsError(try banner.find(button: "Reconnect with Claude"))
+        XCTAssertThrowsError(try banner.find(button: "Connect with Claude"))
         try banner.find(button: "Reconnect").tap()
         XCTAssertEqual(opened, [])
         XCTAssertEqual(detail, [.jira])
@@ -143,9 +144,9 @@ final class ConnectEntryPointsTests: XCTestCase {
         try view.inspect().find(button: "Connect").tap()
         XCTAssertEqual(opened, ["google"])
         XCTAssertEqual(detail, [.jira, .google])
-        XCTAssertEqual(try view.inspect().findAll(ViewType.Button.self) { button in
-            (try? button.labelView().find(text: "Connect with Claude")) != nil
-        }.count, 1, "only the card with no account")
+        // Counted per card: the card lays the pair out twice (row and stacked) under ViewThatFits.
+        XCTAssertEqual(cards.filter { (try? $0.find(button: "Connect with Claude")) != nil }
+            .map { try? $0.actualView().summary.service }, [.google], "only the card with no account")
 
         // The Connect… menu (preflight F22): a submenu per service and the company entry.
         let menu = try view.inspect().find(ViewType.Menu.self)
@@ -196,6 +197,27 @@ final class ConnectEntryPointsTests: XCTestCase {
         XCTAssertEqual(pressed, 1)
         let plain = CompanySetupPage(model: model, actions: CompanySetupActions(), layout: .wide)
         XCTAssertThrowsError(try plain.inspect().find(button: "Set up with Claude"))
+    }
+
+    /// With the inspector open the overview's grid narrows to
+    /// `PaneWidth.gridCardMin`: an empty card's Connect pair and the Companies
+    /// row stack instead of widening their view past it (they overlapped
+    /// the neighbouring cards when laid out in one row).
+    func testButtonRowsFitTheNarrowestGridColumn() {
+        let width = PaneWidth.gridCardMin
+        let card = ConnectionCard(summary: ConnectionSummary(service: .google, accounts: [], blocked: false),
+                                  agentHarness: .fixture("claude")) {}
+        let zone = CompaniesZone(
+            state: CompanyConnectionsPresentation.zone(
+                companies: [], errors: [], draft: nil, accounts: [], portBusy: false, loading: false),
+            model: CompaniesZoneModel { nil }, actions: CompaniesZoneActions(), agent: (.fixture("claude"), {}))
+        XCTAssertLessThanOrEqual(Self.laidOutWidth(card, proposed: width), width, "the card's Connect pair")
+        XCTAssertLessThanOrEqual(Self.laidOutWidth(zone, proposed: width), width, "the Companies row")
+    }
+
+    private static func laidOutWidth(_ view: some View, proposed width: CGFloat) -> CGFloat {
+        NSHostingController(rootView: view)
+            .sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).width
     }
 
     // MARK: - Panel
