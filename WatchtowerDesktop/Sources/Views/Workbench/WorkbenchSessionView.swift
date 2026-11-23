@@ -219,6 +219,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
     private func host(_ center: TerminalCenter) -> some View {
         if let session, let process = center.process(for: session.id) {
             TerminalHost(session: process, focusSerial: center.keyboardFocusSerial(for: session.id),
+                         focusSince: center.keyboardFocusSince(for: session.id),
                          obscured: obscured || drawerCovers) { [id = session.id] in center.takeKeepKeyboard(id) }
         }
     }
@@ -354,6 +355,8 @@ private struct TerminalHost: NSViewRepresentable {
     let session: any TerminalSessionProcess
     /// `TerminalCenter.keyboardFocusSerial(for:)` of this session.
     let focusSerial: Int?
+    /// `TerminalCenter.keyboardFocusSince(for:)`: that request's gesture.
+    let focusSince: Int?
     /// Under an expanded ask drawer: no attach or request moves focus here.
     let obscured: Bool
     /// Asked on an attach: true leaves the keyboard where it is
@@ -392,7 +395,7 @@ private struct TerminalHost: NSViewRepresentable {
         let explicit = focusSerial != nil && focusSerial != coordinator.honouredSerial
         coordinator.honouredSerial = focusSerial
         TerminalHostAttachment.settleFocus(
-            terminal, in: container, focus: focus, explicit: explicit,
+            terminal, in: container, focus: focus, explicit: explicit, since: explicit ? focusSince : nil,
             keptOff: TerminalHostAttachment.keptOff(obscured: obscured, attached: attached, keepsKeyboard: keeps)
         )
     }
@@ -459,10 +462,11 @@ enum TerminalHostAttachment {
     /// update — waiting for the window, or for its turn.
     @MainActor
     static func settleFocus(
-        _ terminal: NSView, in container: TerminalContainerView, focus: Bool, explicit: Bool = false, keptOff: Bool
+        _ terminal: NSView, in container: TerminalContainerView, focus: Bool, explicit: Bool = false,
+        since: Int? = nil, keptOff: Bool
     ) {
         if focus {
-            container.focusTerminal(terminal, explicit: explicit)
+            container.focusTerminal(terminal, explicit: explicit, since: since)
         } else if keptOff {
             container.cancelFocus()
         }
@@ -525,6 +529,10 @@ final class TerminalContainerView: NSView {
         WindowKeyboardState.of(window).latestClaim = keyboardEvents
     }
 
+    /// The keyboard event number now: a gesture takes it, and a focus it
+    /// asks for is weighed from there (`since`).
+    static var keyboardEventCount: Int { keyboardEvents }
+
     static func keyboardMoved(in window: NSWindow) {
         keyboardEvents += 1
         WindowKeyboardState.of(window).latestMove = keyboardEvents
@@ -549,11 +557,13 @@ final class TerminalContainerView: NSView {
     /// the window by then (#1150) gives it once it is in one — unless the
     /// owner is typing elsewhere (`yields`). Only while `terminal` is still
     /// the one shown: a reused host may have swapped in a terminal that
-    /// asked for nothing. `explicit`: from a keyboard request (a row click).
-    func focusTerminal(_ terminal: NSView, explicit: Bool = false) {
+    /// asked for nothing. `explicit`: from a keyboard request (a row click);
+    /// `since`: the keyboard event number of its gesture — a panel claim or
+    /// typing after the click wins, also here in the window already.
+    func focusTerminal(_ terminal: NSView, explicit: Bool = false, since: Int? = nil) {
         focusRequests += 1
         let request = focusRequests
-        let focus = PendingFocus(terminal: terminal, asked: Self.keyboardEvents, explicit: explicit)
+        let focus = PendingFocus(terminal: terminal, asked: since ?? Self.keyboardEvents, explicit: explicit)
         DispatchQueue.main.async { [weak self] in
             guard let self, request == focusRequests, let terminal = focus.terminal,
                   subviews.first === terminal else { return }
@@ -561,7 +571,9 @@ final class TerminalContainerView: NSView {
                 waitingForWindow = focus
                 return
             }
-            guard WindowKeyboardState.of(window).latestClaim <= focus.asked else { return }
+            // A keyboard request is weighed from its gesture here too.
+            guard focus.explicit ? !Self.yields(focus, in: window)
+                : WindowKeyboardState.of(window).latestClaim <= focus.asked else { return }
             window.makeFirstResponder(terminal)
         }
     }

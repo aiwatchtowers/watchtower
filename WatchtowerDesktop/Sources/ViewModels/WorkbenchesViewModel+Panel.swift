@@ -200,14 +200,14 @@ extension WorkbenchesViewModel {
     /// focus by itself. Only for the latest switch and a terminal on
     /// screen (a Workchat pane needs nothing); a covered terminal's host
     /// drops the request like any other.
-    func openSessionRow(id: Int64) async {
+    func openSessionRow(id: Int64, since: Int? = nil) async {
         guard let projectID = selectedWorkbenchID else { return }
         let ticket = beginSwitch(projectID: projectID)
         await showSession(id: id, ticket: ticket)
         guard isLatestSwitch(ticket, projectID: projectID), selectedWorkbenchID == projectID,
               layout(projectID: projectID).visiblePanes.contains(.session(id)),
               terminalCenter?.liveIDs.contains(id) == true else { return }
-        terminalCenter?.requestKeyboardFocus(id)
+        terminalCenter?.requestKeyboardFocus(id, since: since)
     }
 
     // MARK: - Main area (single / split / expand)

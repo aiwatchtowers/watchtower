@@ -385,6 +385,50 @@ final class TerminalHostAttachmentTests: XCTestCase {
         XCTAssertTrue(host.firstResponder === terminal)
     }
 
+    /// A row click's request is weighed from the click (`asked`), not from
+    /// when it arrives after the open's awaits: the panel taking the
+    /// keyboard, or the owner typing in a field, after the click wins — on
+    /// a host in the window already and on a fresh one.
+    func testARowClicksFocusGivesWayToWhatCameAfterTheClick() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let panel = SessionsPanelKeyView.KeyView(frame: NSRect(x: 0, y: 0, width: 50, height: 50))
+        content.addSubview(panel)
+        let field = NSTextField(frame: NSRect(x: 0, y: 60, width: 50, height: 22))
+        content.addSubview(field)
+        let container = TerminalContainerView(frame: NSRect(x: 100, y: 0, width: 300, height: 300))
+        let terminal = FocusableView()
+        TerminalHostAttachment.attach(terminal, to: container)
+        content.addSubview(container)
+
+        var click = TerminalContainerView.keyboardEventCount
+        panel.takePanelKeyboard()
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: true, explicit: true, since: click, keptOff: false)
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === panel, "the panel claimed it after the click")
+
+        click = TerminalContainerView.keyboardEventCount
+        XCTAssertTrue(host.makeFirstResponder(field))
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: true, explicit: true, since: click, keptOff: false)
+        drainMainQueue()
+        XCTAssertFalse(host.firstResponder === terminal, "the owner typed in a field after the click")
+
+        container.removeFromSuperview()
+        click = TerminalContainerView.keyboardEventCount
+        XCTAssertTrue(host.makeFirstResponder(panel))
+        panel.takePanelKeyboard()
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: true, explicit: true, since: click, keptOff: false)
+        drainMainQueue()
+        content.addSubview(container)
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === panel, "a fresh host too")
+
+        click = TerminalContainerView.keyboardEventCount
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: true, explicit: true, since: click, keptOff: false)
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === terminal, "nothing since the click: the terminal takes it")
+    }
+
     // MARK: - The focus contract (#1150)
 
     private enum Holder: CaseIterable {

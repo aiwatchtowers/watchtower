@@ -206,6 +206,9 @@ final class WorkbenchesViewModelPanelCursorTests: XCTestCase {
         XCTAssertNotNil(center.keyboardFocusSerial(for: a.id), "the shown row's terminal")
         await vm.openSessionRow(id: b.id)
         XCTAssertNotNil(center.keyboardFocusSerial(for: b.id), "another row's terminal")
+
+        await vm.openSessionRow(id: a.id, since: 7)
+        XCTAssertEqual(center.keyboardFocusSince(for: a.id), 7, "weighed from the click")
     }
 
     /// A covered terminal (a page screen, an expanded ask drawer) takes no
