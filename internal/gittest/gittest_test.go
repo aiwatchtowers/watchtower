@@ -131,26 +131,45 @@ func TestDisableBackgroundGit_ReachesAPushedToBareRepository(t *testing.T) {
 
 // TestQuietTemplateDir_StaleDirectory: the OS temp cleaner can delete the
 // template's old files and keep its directories (seen on the CI Macs). The
-// next test binary must get a complete template of its own instead of
-// panicking on the rename, and must leave the shared directory alone.
+// next test binary reinstalls the shared template instead of panicking on
+// the rename; a stale directory holding anything else is left alone and the
+// binary gets a complete copy of its own.
 func TestQuietTemplateDir_StaleDirectory(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	shared := quietTemplateDir()
-	for _, f := range []string{"config", filepath.Join("info", "exclude")} {
-		if err := os.Remove(filepath.Join(shared, f)); err != nil {
-			t.Fatal(err)
+	files := []string{"config", filepath.Join("info", "exclude")}
+	emptyIt := func() {
+		for _, f := range files {
+			if err := os.Remove(filepath.Join(shared, f)); err != nil {
+				t.Fatal(err)
+			}
 		}
+	}
+	complete := func(dir string) {
+		for _, f := range files {
+			if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+				t.Errorf("%s lacks %s: %v", dir, f, err)
+			}
+		}
+	}
+
+	emptyIt()
+	if got := quietTemplateDir(); got != shared {
+		t.Fatalf("emptied: template dir = %q, want the shared %q reinstalled", got, shared)
+	}
+	complete(shared)
+
+	emptyIt()
+	foreign := filepath.Join(shared, "hooks", "foreign")
+	if err := os.WriteFile(foreign, nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	got := quietTemplateDir()
 	if got == shared {
-		t.Fatalf("template dir = the stale shared %q", got)
+		t.Fatalf("not empty: template dir = the stale shared %q", got)
 	}
-	for _, f := range []string{"config", filepath.Join("info", "exclude")} {
-		if _, err := os.Stat(filepath.Join(got, f)); err != nil {
-			t.Errorf("own template lacks %s: %v", f, err)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(shared, "info")); err != nil {
-		t.Errorf("shared stale directory was touched: %v", err)
+	complete(got)
+	if _, err := os.Stat(foreign); err != nil {
+		t.Errorf("the stale directory's own file was touched: %v", err)
 	}
 }
