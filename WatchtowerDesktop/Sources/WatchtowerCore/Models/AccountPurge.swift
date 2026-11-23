@@ -154,7 +154,7 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
 
     /// The notice before a deletion, in hours: an organization's
     /// PurgeGraceHours, else Go's `grace_hours` (72 unless the organization
-    /// sets another; 0 deletes after the next sync), else 72 while the CLI has
+    /// sets another; 0 deletes after a later sync), else 72 while the CLI has
     /// not answered.
     private static func notice(_ status: Self?, policyGrace: Int? = nil) -> Int {
         policyGrace ?? status?.graceHours ?? 72
