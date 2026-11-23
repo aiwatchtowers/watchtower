@@ -141,7 +141,7 @@ func TestJiraAccountsJSON_PurgeLease(t *testing.T) {
 		return rows[0].PurgeLeaseAt
 	}
 
-	assert.Empty(t, lease(), "the default rule gives a live account no lease")
+	assert.Empty(t, lease(), "purge off by default: no lease")
 	policytest.Set(t, map[string]any{"PurgeRevokedData": true})
 	assert.Equal(t, access.Add(purge.Lease).Format(time.RFC3339), lease())
 	setAccess(time.Now().UTC().Add(-purge.Lease + purge.Grace - time.Hour))
@@ -149,6 +149,29 @@ func TestJiraAccountsJSON_PurgeLease(t *testing.T) {
 	setAccess(access)
 	policytest.Set(t, map[string]any{"PurgeRevokedData": true, "AllowAtlassianAPIToken": false})
 	assert.Empty(t, lease(), "POLICY-03 holds a stopped token site's lease")
+
+	// The cut-off is the fixed schedule-ahead window (purge.Grace), whatever
+	// the managed notice: the pass schedules the lease then. The date is the
+	// real due date: the 30-day mark, or the notice after the 72 h warning
+	// when that is later.
+	soon := time.Now().UTC().Add(-purge.Lease + time.Hour).Truncate(time.Second)
+	mark := access.Add(purge.Lease)
+	for _, c := range []struct {
+		hours int64
+		due   time.Time
+	}{{0, mark}, {24, mark}, {720, mark.Add(-purge.Grace + 720*time.Hour)}} {
+		policytest.Set(t, map[string]any{"PurgeRevokedData": true, "PurgeGraceHours": c.hours})
+		setAccess(soon)
+		assert.Empty(t, lease(), "grace %d: an hour away, the purge line takes over", c.hours)
+		setAccess(access)
+		assert.Equal(t, c.due.Format(time.RFC3339), lease(), "grace %d: 29 days away shows the due date", c.hours)
+	}
+
+	// A removed site is scheduled at its own 30-day mark, due the notice after it.
+	_, err := h.database.Exec(`UPDATE jira_accounts SET status = 'removed' WHERE id = ?`, a.ID)
+	require.NoError(t, err)
+	policytest.Set(t, map[string]any{"PurgeRevokedData": true, "PurgeGraceHours": int64(24)})
+	assert.Equal(t, mark.Add(24*time.Hour).Format(time.RFC3339), lease(), "removed: the mark plus the notice")
 }
 
 // TestJiraAPIToken_ConfluenceProbed (#1887 C5, closes Task 17's "scopes

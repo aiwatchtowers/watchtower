@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/policy/policytest"
 )
 
 func runAccountsPurgesCmd(t *testing.T, args ...string) string {
@@ -69,13 +71,30 @@ func TestAccountsPurgesJSONKeys(t *testing.T) {
 func TestAccountsPurgesTextEmpty(t *testing.T) {
 	writeActionsConfig(t)
 	out := runAccountsPurgesCmd(t)
-	assert.Equal(t, "Purge on revoked access: on (default)\nNo purges.\n", out)
+	assert.Equal(t, "Purge on revoked access: off (default)\nNo purges.\n", out)
 
 	var top map[string]any
 	require.NoError(t, json.Unmarshal([]byte(runAccountsPurgesCmd(t, "--json")), &top))
-	assert.Equal(t, true, top["enabled"], "on by default (#1769, A1)")
+	assert.Equal(t, false, top["enabled"], "off by default (owner decision 2026-11-23)")
 	assert.Equal(t, "default", top["enabled_by"])
 	assert.Equal(t, []any{}, top["purges"], "an empty ledger is an empty array, not null")
+}
+
+// grace_hours reports the notice a purge scheduled now gets: the
+// organization's PurgeGraceHours when it sets a valid one, else 72.
+func TestAccountsPurgesGraceFromPolicy(t *testing.T) {
+	writeActionsConfig(t)
+	grace := func() any {
+		var top map[string]any
+		require.NoError(t, json.Unmarshal([]byte(runAccountsPurgesCmd(t, "--json")), &top))
+		return top["grace_hours"]
+	}
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(0)})
+	assert.EqualValues(t, 0, grace())
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(24)})
+	assert.EqualValues(t, 24, grace())
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(-5)})
+	assert.EqualValues(t, 72, grace(), "a refused value keeps the standard notice")
 }
 
 // A failed purge is finished: its line shows when it stopped and why, not a

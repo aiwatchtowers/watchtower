@@ -105,17 +105,72 @@ final class AccountPurgeStatusDecodingTests: XCTestCase {
 
     func testRemoveDialogMessageAddsTheLeaseOnlyWhenOn() {
         let kept = "Already-synced issues stay in Watchtower."
-        XCTAssertEqual(AccountPurgeStatus.removeDialogMessage(kept, status: nil), kept)
+        func message(_ status: AccountPurgeStatus?) -> String {
+            AccountPurgeStatus.removeDialogMessage(kept, status: status, policy: .none, setting: nil)
+        }
+        XCTAssertEqual(message(AccountPurgeStatus(enabled: false, enabledBy: "default")), kept)
         XCTAssertEqual(
-            AccountPurgeStatus.removeDialogMessage(kept, status: AccountPurgeStatus(enabled: false, enabledBy: "default")),
-            kept
-        )
-        XCTAssertEqual(
-            AccountPurgeStatus.removeDialogMessage(
-                kept, status: AccountPurgeStatus(enabled: true, enabledBy: "build", leaseDays: 14)
-            ),
+            message(AccountPurgeStatus(enabled: true, enabledBy: "build", leaseDays: 14)),
             kept + " Because deleting data on revoked access is on, it is deleted about 14 days after the account "
                 + "was last reached, plus 72 hours' notice."
         )
+    }
+
+    /// Fix round 1: with the CLI status unknown, the dialogs follow a forced
+    /// policy or the owner's saved setting, never the "off" default.
+    func testRemoveDialogUnknownStatusFollowsPolicyAndSetting() {
+        var forced = ManagedPolicy()
+        forced.purgeRevokedData = true
+        let slackOn = "Its synced data stays for now and is deleted in 72 hours unless you add the workspace again."
+        let slackOff = "deleting data when access ends is off."
+        XCTAssertTrue(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: nil, policy: forced, setting: nil)
+            .contains(slackOn))
+        XCTAssertTrue(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: nil, policy: .none, setting: true)
+            .contains(slackOn))
+        XCTAssertTrue(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: nil, policy: .none, setting: false)
+            .hasSuffix(slackOff))
+
+        let kept = "Kept."
+        let jiraOn = kept + " Because deleting data on revoked access is on, it is deleted about 30 days after the "
+            + "account was last reached, plus 72 hours' notice."
+        XCTAssertEqual(AccountPurgeStatus.removeDialogMessage(kept, status: nil, policy: forced, setting: nil), jiraOn)
+        XCTAssertEqual(AccountPurgeStatus.removeDialogMessage(kept, status: nil, policy: .none, setting: true), jiraOn)
+        XCTAssertEqual(AccountPurgeStatus.removeDialogMessage(kept, status: nil, policy: .none, setting: false), kept)
+    }
+
+    /// Fix round 1: nothing known (the CLI has not answered or failed, and a
+    /// build may turn the purge on): the dialogs assert neither way.
+    func testRemoveDialogAllUnknownIsNeutral() {
+        let slack = AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: nil, policy: .none, setting: nil)
+        XCTAssertEqual(slack, "Watchtower stops syncing acme and signs out of it at Slack, so this sign-in stops "
+            + "working on every Mac that uses it. If deleting data when access ends is on, its synced data is deleted "
+            + "in 72 hours unless you add the workspace again; otherwise it stays on this Mac until you delete it. "
+            + "Check Settings → System → Privacy.")
+        XCTAssertEqual(
+            AccountPurgeStatus.removeDialogMessage("Kept.", status: nil, policy: .none, setting: nil),
+            "Kept. If deleting data on revoked access is on, it is deleted about 30 days after the account was last "
+                + "reached, plus 72 hours' notice; check Settings → System → Privacy."
+        )
+    }
+
+    /// Fix round 1: an organization's PurgeGraceHours sets the dialogs'
+    /// notice even before (or against a stale) CLI status.
+    func testRemoveDialogGraceFromPolicy() {
+        var policy = ManagedPolicy()
+        policy.purgeRevokedData = true
+        policy.purgeGraceHours = 24
+        let stale = AccountPurgeStatus(enabled: true, enabledBy: "policy", graceHours: 72)
+        for status in [nil, stale] {
+            let slack = AccountPurgeStatus.removeDialogMessage(
+                slackAccount: "acme", status: status, policy: policy, setting: nil)
+            XCTAssertTrue(slack.contains("deleted in 24 hours"), slack)
+            let jira = AccountPurgeStatus.removeDialogMessage("Kept.", status: status, policy: policy, setting: nil)
+            XCTAssertTrue(jira.hasSuffix(", plus 24 hours' notice."), jira)
+        }
+        policy.purgeGraceHours = 0
+        let slack = AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: nil, policy: policy, setting: nil)
+        XCTAssertTrue(slack.contains("deleted after a later sync unless"), slack)
+        let jira = AccountPurgeStatus.removeDialogMessage("Kept.", status: nil, policy: policy, setting: nil)
+        XCTAssertTrue(jira.hasSuffix("days after the account was last reached, after a later sync."), jira)
     }
 }

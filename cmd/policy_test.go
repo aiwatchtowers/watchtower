@@ -41,7 +41,7 @@ func TestPolicyShow_JSONKeys(t *testing.T) {
 	keys, ok := m["keys"].(map[string]any)
 	require.True(t, ok)
 	wantKeys(t, keys, "AllowedSources", "MobileSync", "AllowedQuickConnections", "AllowAutomationShell",
-		"AllowedAIProviders", "AllowClaudeAITools", "PurgeRevokedData", "AllowBackgroundAI", "SlackApps",
+		"AllowedAIProviders", "AllowClaudeAITools", "PurgeRevokedData", "PurgeGraceHours", "AllowBackgroundAI", "SlackApps",
 		"CompanyBundle", "AllowAtlassianAPIToken", "AllowOwnGoogleProject")
 	assert.Equal(t, true, m["managed"])
 	assert.Equal(t, "com.watchtower.desktop", m["domain"])
@@ -88,6 +88,7 @@ func TestPolicyShow_PlainNoProfile(t *testing.T) {
 	out := runPolicyShow(t)
 	assert.Contains(t, out, "Managed by your organization: no (domain com.watchtower.desktop)\n")
 	assert.Contains(t, out, "PurgeRevokedData: not set\n")
+	assert.Contains(t, out, "PurgeGraceHours: not set\n")
 	assert.Contains(t, out, "AllowBackgroundAI: not set\n")
 	assert.Contains(t, out, "SlackApps: not set\n")
 	assert.NotContains(t, out, "Not enforced")
@@ -99,4 +100,17 @@ func TestPolicyShow_PlainBackgroundAI(t *testing.T) {
 	assert.Contains(t, runPolicyShow(t), "AllowBackgroundAI: not allowed\n")
 	policytest.Set(t, map[string]any{"AllowBackgroundAI": true})
 	assert.Contains(t, runPolicyShow(t), "AllowBackgroundAI: allowed\n")
+}
+
+func TestPolicyShow_PlainPurgeGraceHours(t *testing.T) {
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(0)})
+	assert.Contains(t, runPolicyShow(t), "PurgeGraceHours: none (after a later sync)\n")
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(24)})
+	assert.Contains(t, runPolicyShow(t), "PurgeGraceHours: 24 hours\n")
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(1000)})
+	out := runPolicyShow(t)
+	assert.Contains(t, out, "PurgeGraceHours: 72 hours (profile value ignored)\n")
+	assert.Contains(t, out, "Profile problems: PurgeGraceHours (unknown_value)\n")
+	policytest.Set(t, map[string]any{"PurgeGraceHours": "24"})
+	assert.Contains(t, runPolicyShow(t), "PurgeGraceHours: 72 hours (profile value ignored)\n")
 }

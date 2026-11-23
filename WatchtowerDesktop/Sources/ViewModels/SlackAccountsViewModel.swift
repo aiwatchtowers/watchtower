@@ -352,7 +352,8 @@ final class SlackAccountsViewModel {
     /// Removes `account` via `watchtower slack remove <id>`: the CLI revokes
     /// the token at Slack, deletes the token file and marks the row
     /// removed/disabled. The synced data stays for now; with account data
-    /// deletion on it is deleted 72 hours after Watchtower's next pass.
+    /// deletion on it is deleted after the notice (72 hours unless the
+    /// organization sets another) from Watchtower's next pass.
     func remove(_ account: SlackAccount, daemonPolicy: DaemonRestartPolicy = .restart) async {
         await runManagementCommand(
             args: Self.removeArgs(for: account),

@@ -17,6 +17,7 @@ package struct ManagedPolicy: Equatable, Sendable {
         case allowedAIProviders = "AllowedAIProviders"
         case allowClaudeAITools = "AllowClaudeAITools"
         case purgeRevokedData = "PurgeRevokedData"
+        case purgeGraceHours = "PurgeGraceHours"
         case allowBackgroundAI = "AllowBackgroundAI"
         case slackApps = "SlackApps"
         case companyBundle = "CompanyBundle"
@@ -50,6 +51,7 @@ package struct ManagedPolicy: Equatable, Sendable {
     package static let knownSources = ["slack", "google", "imap", "caldav", "jira", "linear"]
     package static let knownProviders = ["claude", "codex", "ollama"]
     package static let mobileModes = ["allowed", "workbench_only", "off"]
+    package static let maxPurgeGraceHours = 720
 
     package var managed = false
     /// nil = the key is absent (no restriction); [] is a real, most
@@ -61,6 +63,9 @@ package struct ManagedPolicy: Equatable, Sendable {
     package var allowedAIProviders: [String]?
     package var allowClaudeAITools: Bool? // swiftlint:disable:this discouraged_optional_boolean
     package var purgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// The notice before a purge, in hours; kept only as an integer in
+    /// 0…`maxPurgeGraceHours`, else absent (the standard 72 h).
+    package var purgeGraceHours: Int?
     package var allowBackgroundAI: Bool? // swiftlint:disable:this discouraged_optional_boolean
     /// nil = the key is absent; entries are valid and unique by team id.
     package var slackApps: [SlackApp]?
@@ -109,7 +114,7 @@ package struct ManagedPolicy: Equatable, Sendable {
         if let v = raw[Key.allowedAIProviders.rawValue] {
             p.allowedAIProviders = p.list(.allowedAIProviders, v) { byteIn($0, knownProviders) ? nil : "unknown_value" }
         }
-        p.normalizeTrailingBooleans(raw)
+        p.normalizeTrailingKeys(raw)
         if let v = raw[Key.slackApps.rawValue] {
             p.slackApps = p.slackApps(v)
         }
@@ -195,13 +200,17 @@ package struct ManagedPolicy: Equatable, Sendable {
         return out
     }
 
-    /// The boolean keys after AllowedAIProviders, in Go's validation order.
-    private mutating func normalizeTrailingBooleans(_ raw: [String: Any]) {
+    /// The keys after AllowedAIProviders (booleans and PurgeGraceHours), in Go's
+    /// validation order.
+    private mutating func normalizeTrailingKeys(_ raw: [String: Any]) {
         if let v = raw[Key.allowClaudeAITools.rawValue] {
             allowClaudeAITools = boolean(.allowClaudeAITools, v, restrictive: false)
         }
         if let v = raw[Key.purgeRevokedData.rawValue] {
             purgeRevokedData = boolean(.purgeRevokedData, v, restrictive: true)
+        }
+        if let v = raw[Key.purgeGraceHours.rawValue] {
+            purgeGraceHours = graceHours(v)
         }
         if let v = raw[Key.allowBackgroundAI.rawValue] {
             allowBackgroundAI = boolean(.allowBackgroundAI, v, restrictive: false)
@@ -216,6 +225,22 @@ package struct ManagedPolicy: Equatable, Sendable {
             return restrictive
         }
         return b
+    }
+
+    /// An integer in 0…`maxPurgeGraceHours`; a non-integer is a wrong type and
+    /// one out of range an unknown value, both absent (the standard notice),
+    /// as in Go.
+    private mutating func graceHours(_ v: Any) -> Int? {
+        guard Self.isIntegral(v), let n = v as? NSNumber else {
+            report(.purgeGraceHours, "wrong_type")
+            return nil
+        }
+        let d = n.doubleValue
+        guard d >= 0, d <= Double(Self.maxPurgeGraceHours) else {
+            report(.purgeGraceHours, "unknown_value")
+            return nil
+        }
+        return Int(d)
     }
 
     /// The company setup keys (#1887): the forced bundle and the two
@@ -300,6 +325,7 @@ package struct ManagedPolicy: Equatable, Sendable {
         case .allowedAIProviders: allowedAIProviders != nil
         case .allowClaudeAITools: allowClaudeAITools != nil
         case .purgeRevokedData: purgeRevokedData != nil
+        case .purgeGraceHours: purgeGraceHours != nil
         case .allowBackgroundAI: allowBackgroundAI != nil
         case .slackApps: slackApps != nil
         case .companyBundle: companyBundle != nil

@@ -765,7 +765,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.markFetchProgress()
 	// Lease purges are scheduled only now, after every source sync had its
 	// chance to prove access this cycle (#601).
-	d.phaseAccountPurgeLeases(fetchCtx)
+	d.phaseAccountPurgeLeases(fetchCtx, syncStart)
 	// Once per cycle, also on a cancelled ctx: it only queues rows.
 	d.flushAutomationEvents(syncStart)
 	d.phaseAgentAnalytics(fetchCtx)

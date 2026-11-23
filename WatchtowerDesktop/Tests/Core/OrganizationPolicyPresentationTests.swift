@@ -34,6 +34,21 @@ struct OrganizationPolicyPresentationTests {
         ])
     }
 
+    @Test("PurgeGraceHours: hours, none for 0, the standard notice for a refused value")
+    func graceLine() {
+        let label = "Notice before a revoked or removed account's data is deleted"
+        #expect(text(["PurgeGraceHours": 24]) == ["\(label): 24 hours"])
+        #expect(text(["PurgeGraceHours": 0]) == ["\(label): none (after a later sync)"])
+        #expect(text(["PurgeGraceHours": 1000]) == [
+            "\(label): 72 hours (profile value ignored)",
+            "Profile problems: PurgeGraceHours (unknown value)"
+        ])
+        #expect(text(["PurgeGraceHours": "24"]) == [
+            "\(label): 72 hours (profile value ignored)",
+            "Profile problems: PurgeGraceHours (wrong type)"
+        ])
+    }
+
     @Test("the company keys: the company's name only, never the bundle; tokens and own projects")
     func newKeyLines() {
         let base64 = Data(#"{"v":1,"company":"Acme","linear":{"client_id":"lin-acme-1"}}"#.utf8).base64EncodedString()

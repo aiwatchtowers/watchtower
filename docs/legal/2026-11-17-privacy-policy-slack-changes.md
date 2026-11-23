@@ -30,11 +30,11 @@ Old sentence (replace the sentence about deletion or retention, if there is one;
 
 New text:
 
-> Watchtower has a setting, **Delete an account's data when its access ends**, on by default. While it is on, a workspace's synced Slack data is deleted 72 hours after Watchtower notices that its Slack app was removed, your access was revoked, or you removed the workspace in Watchtower, and you get a notice first; Watchtower notices on its next sync, so a Mac that is off or offline deletes after it is back. If you turn the setting off, or your organization's policy turns it off, the data stays on your Mac until you delete it yourself (Settings → System → **Reset All Data…**, or uninstalling with its data).
+> Watchtower has a setting, **Delete an account's data when its access ends**, off by default. You can turn it on, and your organization can turn it on through its configuration profile. While it is on, a workspace's synced Slack data is deleted after a notice once Watchtower notices that its Slack app was removed, your access was revoked, or you removed the workspace in Watchtower; the notice is 72 hours unless your organization sets another, which may be none. Watchtower notices on its next sync, so a Mac that is off or offline deletes after it is back. While the setting is off, the data stays on your Mac until you delete it yourself (Settings → System → **Reset All Data…**, or uninstalling with its data).
 
-Optional sentence right after it, true only when the setting was turned on explicitly (by you or your organization), not by the default:
+Optional sentence right after it:
 
-> When it is turned on explicitly, it also covers a workspace Watchtower has not been able to reach for 30 days.
+> While it is on, it also covers a workspace Watchtower has not been able to reach for 30 days.
 
 ## 3. "AI providers" section
 

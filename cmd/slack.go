@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/purge"
 	"watchtower/internal/slackauth"
 	"watchtower/internal/slackmode"
 
@@ -71,8 +72,9 @@ var slackRemoveCmd = &cobra.Command{
 	Long: "Revokes the account's token at Slack, deletes its stored OAuth token and\n" +
 		"marks it removed so it stops syncing. Its synced messages, channels, digests,\n" +
 		"tracks, situations, and memory are kept by the remove itself; with account\n" +
-		"data deletion on (the default) they are deleted 72 hours after Watchtower's\n" +
-		"next pass, unless the workspace is added again.",
+		"data deletion on they are deleted after its notice (72 hours unless your\n" +
+		"organization sets another) from Watchtower's next pass, unless the workspace\n" +
+		"is added again.",
 	Args: cobra.ExactArgs(1),
 	RunE: runSlackRemove,
 }
@@ -704,7 +706,7 @@ func runSlackRemove(cmd *cobra.Command, args []string) error {
 	if err := removeSlackAccount(cmd.Context(), cfg, database, id, out, cmd.ErrOrStderr()); err != nil {
 		return fmt.Errorf("removing account: %w", err)
 	}
-	fmt.Fprintf(out, "Removed account %d. Its synced data was kept. %s\n", id, slackRemovedDataDeletion)
+	fmt.Fprintf(out, "Removed account %d. Its synced data was kept. %s\n", id, slackRemovedDataDeletion())
 	return nil
 }
 
@@ -721,12 +723,20 @@ const slackRevokeTimeout = 10 * time.Second
 const slackRevokeWarning = "Slack did not confirm the token was revoked; it may stay valid until a workspace admin removes the app"
 
 // slackRemovedDataDeletion says when a removed workspace's kept data goes
-// with the purge on (A2: zero lease, 72 h after the next pass).
-const slackRemovedDataDeletion = "With account data deletion on, it is deleted 72 hours after Watchtower's next pass."
+// with the purge on (A2: zero lease, the notice after the next pass). A
+// zero notice: the row is scheduled by the pass after a cycle's syncs and
+// runs only after a later cycle's syncs (purge.NoNotice).
+func slackRemovedDataDeletion() string {
+	hours := int(purge.EffectiveGrace().Hours())
+	if hours == 0 {
+		return "With account data deletion on, it is deleted after a later Watchtower sync."
+	}
+	return fmt.Sprintf("With account data deletion on, it is deleted %d hours after Watchtower's next pass.", hours)
+}
 
 // removeSlackAccount disconnects account id: cancels the account's
 // scheduled purge rows when it was not removed yet (a lease row scheduled
-// while it was live would keep its old due date and cut the 72 h notice; the
+// while it was live would keep its old due date and cut the notice; the
 // next pass schedules a fresh one; a retry keeps the removed account's row),
 // then, under the account's token lock, revokes its OAuth token at Slack
 // (auth.revoke; a failure prints slackRevokeWarning to warnOut, logs the

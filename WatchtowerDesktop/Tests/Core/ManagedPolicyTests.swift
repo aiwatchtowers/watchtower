@@ -28,6 +28,7 @@ struct ManagedPolicyTests {
             "AllowedAIProviders": opt(p.allowedAIProviders),
             "AllowClaudeAITools": opt(p.allowClaudeAITools),
             "PurgeRevokedData": opt(p.purgeRevokedData),
+            "PurgeGraceHours": opt(p.purgeGraceHours),
             "AllowBackgroundAI": opt(p.allowBackgroundAI),
             "SlackApps": opt(p.slackApps.map { $0.map { ["team_id": $0.teamID, "client_id": $0.clientID] } }),
             "CompanyBundle": opt(p.companyBundle),

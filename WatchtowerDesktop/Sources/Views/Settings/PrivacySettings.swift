@@ -3,8 +3,8 @@ import WatchtowerCore
 
 /// Settings → System → Privacy (board #601): the purge on revoked access
 /// switch. The shown value is the owner's unsaved or saved choice, else the
-/// effective one Go reports (`accounts purges --json`), else on
-/// (`AccountPurgeStatus.shownValue`, #1769); Save writes `privacy.purge_revoked_data` through
+/// effective one Go reports (`accounts purges --json`), else off
+/// (`AccountPurgeStatus.shownValue`); Save writes `privacy.purge_revoked_data` through
 /// `ConfigSaveBar`.
 struct PrivacySettings: View {
     @Environment(AppState.self) private var appState
@@ -25,6 +25,7 @@ struct PrivacySettings: View {
             lockedByPolicy: appState.managedPolicy.policy.isLocked(.purgeRevokedData),
             status: status,
             statusError: appState.accountPurgeCenter?.statusError,
+            policy: appState.managedPolicy.policy,
             origin: AccountPurgeStatus.shownOrigin(policy: policy, setting: config.purgeRevokedData, status: status)
         )
         .task { await appState.accountPurgeCenter?.reloadStatus() }
@@ -39,6 +40,8 @@ struct PrivacySettingsContent: View {
     var lockedByPolicy = false
     let status: AccountPurgeStatus?
     let statusError: String?
+    /// The organization's policy: its PurgeGraceHours sets the footnote's notice.
+    var policy: ManagedPolicy = .none
     /// Where the shown value comes from (`AccountPurgeStatus.shownOrigin`);
     /// nil: the CLI status's origin.
     var origin: String?
@@ -50,7 +53,7 @@ struct PrivacySettingsContent: View {
                     .labelsHidden()
                     .managedByOrganization(lockedByPolicy || (status?.isSetByPolicy ?? false))
             }
-            Text(AccountPurgeStatus.footnote(status, shown: isOn, origin: origin))
+            Text(AccountPurgeStatus.footnote(status, policy: policy, shown: isOn))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -59,8 +62,8 @@ struct PrivacySettingsContent: View {
         }
     }
 
-    /// A failed status read wins (the owner should see it); else "On by
-    /// default" while on by its default origin.
+    /// A failed status read wins (the owner should see it); else "Off by
+    /// default" while off by its default origin.
     private var caption: String? {
         statusError ?? AccountPurgeStatus.caption(status, shown: isOn, origin: origin)
     }

@@ -231,6 +231,7 @@ struct SlackConnectionDetail: View {
 
                 if slackAuth.disconnectTarget != nil {
                     Button(role: .destructive) {
+                        appState.refreshAccountPurgeStatus()
                         showSlackDisconnectConfirm = true
                     } label: {
                         HStack(spacing: Spacing.small) {
@@ -284,10 +285,7 @@ struct SlackConnectionDetail: View {
         } message: {
             // `auth logout` is `slack remove` of account #1 (revoke, token
             // delete, row removed), so it says what the Remove dialog says.
-            Text(AccountPurgeStatus.removeDialogMessage(
-                slackAccount: disconnectName,
-                status: appState.accountPurgeCenter?.status
-            ))
+            Text(appState.slackRemoveDialogMessage(disconnectName))
         }
     }
 
@@ -302,7 +300,7 @@ struct SlackConnectionDetail: View {
             // Stop the daemon first so it isn't mid-sync when the token is
             // removed, then restart it — without a token it skips the Slack
             // phase. Same semantics as `slack remove` (revoke at Slack, data
-            // kept for now, deleted 72 h later with the purge on).
+            // kept for now, deleted after the notice with the purge on).
             // Stop, disconnect and start as one item on the app's start queue.
             let daemon = flow.daemonManager
             let disconnected = await appState.disconnectSlackOnQueue(
@@ -326,8 +324,8 @@ struct SlackConnectionDetail: View {
     ///
     /// The removal confirmation says what `slack remove` does: it revokes the
     /// token at Slack, drops the token file and marks the row removed/disabled;
-    /// the synced data stays for now and, with the purge on, is deleted 72 h
-    /// later (`AccountPurgeStatus.removeDialogMessage`). The legacy
+    /// the synced data stays for now and, with the purge on, is deleted after
+    /// the notice (`AccountPurgeStatus.removeDialogMessage`). The legacy
     /// single-account Slack "Disconnect" in `workspaceSection` runs the same
     /// remove (`auth logout` → `removeSlackAccount`) and shows the same text.
     private var slackAccountsSection: some View {
@@ -385,10 +383,7 @@ struct SlackConnectionDetail: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(AccountPurgeStatus.removeDialogMessage(
-                slackAccount: slackAccountPendingRemoval?.displayName ?? "this workspace",
-                status: appState.accountPurgeCenter?.status
-            ))
+            Text(appState.slackRemoveDialogMessage(slackAccountPendingRemoval?.displayName ?? "this workspace"))
         }
     }
 
@@ -475,6 +470,7 @@ struct SlackConnectionDetail: View {
                 .buttonStyle(.kitQuiet)
                 .disabled(vm.isConnecting)
                 Button("Remove") {
+                    appState.refreshAccountPurgeStatus()
                     slackAccountPendingRemoval = account
                 }
                 .buttonStyle(KitQuietButtonStyle(label: Tone.error))

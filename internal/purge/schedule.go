@@ -37,14 +37,15 @@ type accountKey struct {
 }
 
 // Plan decides, from the account rows and the open ledger rows only, which
-// purges to schedule, cancel and run (PURGE-01). It reads nothing else; rules
-// (Rules) says per account what the purge may do.
+// purges to schedule, cancel and run (PURGE-01). It reads nothing else but
+// the notice (EffectiveGrace, "the grace" below); rules (Rules) says per
+// account what the purge may do.
 //
 //   - RuleNone (the switch off, or a removed account of a source the policy
 //     forbids): every scheduled row of the account is cancelled; nothing is
 //     scheduled or run but a running row, which always finishes.
-//   - Revoked (any other rule): a revoked account is scheduled Grace after
-//     the pass that first sees it. It is cancelled once the account is no
+//   - Revoked (any other rule): a revoked account is scheduled the grace
+//     after the pass that first sees it. It is cancelled once the account is no
 //     longer revoked or in error (a reconnect writes ok; a removed account
 //     falls under the removed lease), or once its access_ok_at is newer than
 //     its revoked_at (a clean Jira/Linear pass, which never writes ok —
@@ -53,12 +54,13 @@ type accountKey struct {
 //     access: still revoked.
 //   - Lease (live accounts under RuleFull, status not removed/purged,
 //     disabled included): when every live account of a source has an
-//     access_ok_at and the newest is older than Lease − Grace, each live
-//     account is scheduled, due Grace later — newest + Lease on a daemon
-//     that runs every cycle. Under RuleRevokedAndRemoved a live account has
-//     no lease.
+//     access_ok_at and the newest is older than Lease − Grace (the fixed 72 h
+//     schedule-ahead window, whatever the managed notice), each live account
+//     is scheduled, due at its deadline (newest + Lease) or the grace after
+//     the pass, whichever is later. Under RuleRevokedAndRemoved a live
+//     account has no lease.
 //   - Lease (removed accounts, ask #477): a removed account whose own
-//     access_ok_at is older than Lease is scheduled Grace after now; a
+//     access_ok_at is older than Lease is scheduled the grace after now; a
 //     removed Slack account has a zero lease (#1769, A2): it is scheduled by
 //     the first pass after the remove.
 //   - A lease row is cancelled when its account's lease deadline moves past
@@ -66,8 +68,10 @@ type accountKey struct {
 //     that no longer gives it a lease), and runs only once that deadline has
 //     passed.
 //
-// Every due date is at least Grace after the pass that schedules it, so the
-// notice always shows for the full grace period — also when the purge is
+// Every due date is at least the grace after the pass that schedules it, so
+// the notice always shows for the full grace period (a grace of 0 makes the
+// row due at once; the daemon still runs it only after the next cycle's
+// syncs, NoNotice) — also when the purge is
 // turned on for an account revoked long ago, or the daemon did not run for
 // longer than the lease.
 // An empty or unreadable time is no evidence: it never schedules an
@@ -130,7 +134,8 @@ func Plan(accounts []db.PurgeAccount, open []db.AccountPurge, rules func(db.Purg
 			out.Cancel = append(out.Cancel, p.ID)
 		}
 	}
-	floor := now.Add(Grace)
+	grace := EffectiveGrace()
+	floor := now.Add(grace)
 	for _, a := range accounts {
 		k := accountKey{a.Source, a.ID}
 		if openFor[k] || a.Status == "purged" || rules(a) == RuleNone {
@@ -152,10 +157,18 @@ func Plan(accounts []db.PurgeAccount, open []db.AccountPurge, rules func(db.Purg
 			}
 			continue
 		}
-		// Scheduled once the deadline is within Grace; due Grace from now,
-		// which on a daemon that runs is the deadline itself (one cycle).
+		// Scheduled once the deadline is within the fixed schedule-ahead
+		// window (Grace, never the managed notice: a long PurgeGraceHours must
+		// not put a notice on an account that syncs every day); due at the
+		// deadline, or the grace after now when that is later. Due is never
+		// before the deadline, so the cancel rule above (deadline moved past
+		// due) fires only on fresh access.
 		if !now.Before(deadline.Add(-Grace)) {
-			out.Schedule = append(out.Schedule, ScheduleItem{a.Source, a.ID, ReasonLease, floor})
+			due := floor
+			if deadline.After(due) {
+				due = deadline
+			}
+			out.Schedule = append(out.Schedule, ScheduleItem{a.Source, a.ID, ReasonLease, due})
 		}
 	}
 	sort.Slice(out.Due, func(i, j int) bool { return out.Due[i].ID < out.Due[j].ID })
@@ -240,7 +253,7 @@ func accessSinceScheduled(a db.PurgeAccount, p db.AccountPurge) bool {
 // left (verifyLeftPrefix) and which has confirmed no access since that row
 // finished (a same-second tie releases). Such an account is not scheduled
 // again on its own — a leftover the steps cannot delete would otherwise give
-// a new notice every 72 h forever — and the sync phases skip it; the failed
+// a new notice every grace period forever — and the sync phases skip it; the failed
 // row stays visible. A Re-login or adding a removed account back confirms
 // access and releases it. A live account is never held: a verify failure of
 // its lease purge releases it like a chunk failure (MaxChunkFailures) does,
@@ -361,6 +374,42 @@ func Apply(d *db.DB, rules func(db.PurgeAccount) Rule, leases bool, now time.Tim
 	return done, errors.Join(errs...)
 }
 
+// LeaseDue is when a live lease with this deadline would be deleted: it is
+// scheduled Grace (72 h) before the deadline and due at the deadline or the
+// effective grace after that scheduling, whichever is later (Plan).
+func LeaseDue(deadline time.Time) time.Time {
+	due := deadline.Add(-Grace).Add(EffectiveGrace())
+	if deadline.After(due) {
+		return deadline
+	}
+	return due
+}
+
+// LeaseDues returns when each of source's accounts whose lease counts would
+// be deleted, as Plan will schedule it: a live account's LeaseDue, a removed
+// account's deadline + EffectiveGrace (scheduled at its deadline, due the
+// grace later). An account the next pass would schedule — a live lease
+// within Grace of its deadline, a removed one at or past it — is left out:
+// its purge line then says when.
+func LeaseDues(accounts []db.PurgeAccount, rules func(db.PurgeAccount) Rule, source string, now time.Time) map[int64]time.Time {
+	removed := map[int64]bool{}
+	for _, a := range accounts {
+		if a.Source == source && a.Status == "removed" {
+			removed[a.ID] = true
+		}
+	}
+	out := map[int64]time.Time{}
+	for id, deadline := range LeaseDeadlines(accounts, rules, source) {
+		switch {
+		case removed[id] && now.Before(deadline):
+			out[id] = deadline.Add(EffectiveGrace())
+		case !removed[id] && now.Before(deadline.Add(-Grace)):
+			out[id] = LeaseDue(deadline)
+		}
+	}
+	return out
+}
+
 // LeaseDeadlines returns the lease deadline of each of source's accounts that
 // has one under rules (leaseDeadlines): the day PURGE-01 would delete it when
 // nothing confirms access before. The Desktop's dead-token note (#1887 §6.3)
@@ -373,4 +422,37 @@ func LeaseDeadlines(accounts []db.PurgeAccount, rules func(db.PurgeAccount) Rule
 		}
 	}
 	return out
+}
+
+// noNoticeBelow is where NoNotice draws the line: half the smallest non-zero
+// notice (one hour). due_at comes from Go's clock and scheduled_at from
+// SQLite's a moment later, each truncated to the second, so a one-hour row
+// can read as due a second short of an hour after scheduling; the margin
+// keeps it a row with a notice.
+const noNoticeBelow = 30 * time.Minute
+
+// NoNotice reports whether a scheduled row was given no notice: due less than
+// 30 minutes after it was scheduled (a PurgeGraceHours of 0, or under it a
+// lease already past its deadline). Such a row is deleted only after the next sync
+// cycle (owner decision 2026-11-23, ask #862): the daemon's start-of-cycle
+// pass never runs it, and the pass after a cycle's syncs runs it only when
+// those syncs started after it was scheduled (SyncedSince), so a sync that
+// proves access cancels it first. A running row, or one with a notice, is
+// not held. An unreadable time counts as no notice (it waits).
+func NoNotice(p db.AccountPurge) bool {
+	if p.State != "scheduled" {
+		return false
+	}
+	due, okDue := parseTime(p.DueAt)
+	scheduled, okScheduled := parseTime(p.ScheduledAt)
+	return !okDue || !okScheduled || due.Before(scheduled.Add(noNoticeBelow))
+}
+
+// SyncedSince reports whether a cycle's syncs that started at syncStart began
+// after the row was scheduled. The ledger clock has second precision, so a
+// sync started in the row's own second does not count; the zero syncStart (no
+// sync started in this process yet) never does.
+func SyncedSince(p db.AccountPurge, syncStart time.Time) bool {
+	scheduled, ok := parseTime(p.ScheduledAt)
+	return ok && !syncStart.IsZero() && scheduled.Before(syncStart.Truncate(time.Second))
 }

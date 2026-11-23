@@ -86,10 +86,9 @@ struct JiraConnectionDetail: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(AccountPurgeStatus.removeDialogMessage(
+            Text(appState.removeDialogMessage(
                 "Disconnects the site. Already-synced issues, boards, and "
-                    + "releases stay in Watchtower.",
-                status: appState.accountPurgeCenter?.status
+                    + "releases stay in Watchtower."
             ))
         }
     }
@@ -211,9 +210,12 @@ struct JiraConnectionDetail: View {
         .buttonStyle(.kitQuiet)
         .disabled(vm.isConnecting)
         // A token check still running (its sheet may be closed) could write the row back after a remove.
-        Button("Remove") { jiraAccountPendingRemoval = account }
-            .buttonStyle(KitQuietButtonStyle(label: Tone.error))
-            .disabled(vm.isConnecting || appState.atlassianToken.isChecking)
+        Button("Remove") {
+            appState.refreshAccountPurgeStatus()
+            jiraAccountPendingRemoval = account
+        }
+        .buttonStyle(KitQuietButtonStyle(label: Tone.error))
+        .disabled(vm.isConnecting || appState.atlassianToken.isChecking)
     }
 
     /// The row's own lines under its status: the site's error (when no §4.3

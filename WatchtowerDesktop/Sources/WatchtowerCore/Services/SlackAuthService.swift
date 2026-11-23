@@ -34,8 +34,9 @@ package final class SlackAuthService {
     /// Runs `auth logout`: the `slack remove` of account #1
     /// (`removeSlackAccount`) — revokes the token at Slack, removes it (config
     /// + token file) and marks the account removed/disabled so syncing stops.
-    /// Its synced data is kept for now; with the purge on it is deleted 72 h
-    /// after the next purge pass (PURGE-01, A2).
+    /// Its synced data is kept for now; with the purge on it is deleted the
+    /// notice (72 h unless the organization sets another) after the next
+    /// purge pass (PURGE-01, A2).
     /// Returns whether the logout itself succeeded — the CLI result, never the
     /// combined `error`, which also carries status-read failures.
     @discardableResult

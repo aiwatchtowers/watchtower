@@ -423,29 +423,25 @@ func TestRun_AccessBetweenReplanAndStart(t *testing.T) {
 // the scheduler's rules, so a removed Slack account's zero-lease row is still
 // due there (the old 30-day re-plan refused it forever) and the purge runs.
 func TestRun_ZeroLeaseRowStartsAfterReplan(t *testing.T) {
-	for _, origin := range []Origin{OriginDefault, OriginSetting} {
-		t.Run(string(origin), func(t *testing.T) {
-			d := openPurgeDB(t)
-			execAll(t, d,
-				`INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'removed', '`+ts(time.Now().Add(-time.Hour))+`')`,
-				`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1.0', '1:U1', 'hi')`,
-			)
-			if _, err := d.ScheduleAccountPurge("slack", 1, ReasonLease, ts(time.Now().Add(-time.Minute))); err != nil {
-				t.Fatal(err)
-			}
-			rows, err := d.ListAccountPurges(true)
-			if err != nil || len(rows) != 1 {
-				t.Fatalf("open rows: %+v %v", rows, err)
-			}
-			done, err := Run(context.Background(), d, t.TempDir(), rows[0], Rules(true, origin, nil), time.Minute)
-			if err != nil || !done {
-				t.Fatalf("Run = %v, %v; want done", done, err)
-			}
-			var n int
-			if err := d.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&n); err != nil || n != 0 {
-				t.Fatalf("messages left: %d %v", n, err)
-			}
-		})
+	d := openPurgeDB(t)
+	execAll(t, d,
+		`INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'removed', '`+ts(time.Now().Add(-time.Hour))+`')`,
+		`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1.0', '1:U1', 'hi')`,
+	)
+	if _, err := d.ScheduleAccountPurge("slack", 1, ReasonLease, ts(time.Now().Add(-time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := d.ListAccountPurges(true)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("open rows: %+v %v", rows, err)
+	}
+	done, err := Run(context.Background(), d, t.TempDir(), rows[0], Rules(true, nil), time.Minute)
+	if err != nil || !done {
+		t.Fatalf("Run = %v, %v; want done", done, err)
+	}
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("messages left: %d %v", n, err)
 	}
 }
 
@@ -596,7 +592,7 @@ func TestPolicy_DeletionWithinFourteenBusinessDays(t *testing.T) {
 	clock = func() time.Time { fake = fake.Add(time.Second); return fake }
 	t.Cleanup(func() { clock = time.Now })
 
-	rules := Rules(true, OriginDefault, nil)
+	rules := Rules(true, nil)
 	pass := revokedAt.Add(59 * time.Minute) // the worst case of the cadence
 	var finished time.Time
 	for i := 0; i < 24*30 && finished.IsZero(); i++ {

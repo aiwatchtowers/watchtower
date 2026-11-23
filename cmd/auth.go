@@ -40,8 +40,9 @@ var authLogoutCmd = &cobra.Command{
 	Long: `Legacy alias for "slack remove" on account #1: revokes the account's token at
 Slack, deletes its stored OAuth token and marks it removed so it stops syncing.
 Its synced messages, channels, digests, tracks, situations, and memory are kept
-by the remove itself; with account data deletion on (the default) they are
-deleted 72 hours after Watchtower's next pass. Use "slack accounts"/"slack
+by the remove itself; with account data deletion on they are deleted after its
+notice (72 hours unless your organization sets another) from Watchtower's next
+pass. Use "slack accounts"/"slack
 remove <id>" for multi-account control.`,
 	RunE: runAuthLogout,
 }
@@ -170,7 +171,7 @@ func runAuthLogout(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("removing account: %w", err)
 	}
 
-	fmt.Fprintf(out, "Slack disconnected: account %d token removed (synced data kept). %s\n", id, slackRemovedDataDeletion)
+	fmt.Fprintf(out, "Slack disconnected: account %d token removed (synced data kept). %s\n", id, slackRemovedDataDeletion())
 	fmt.Fprintln(out, "Restart the sync daemon if it is running so it stops syncing Slack.")
 	return nil
 }

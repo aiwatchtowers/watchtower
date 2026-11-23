@@ -380,9 +380,13 @@ package enum CompanyConnectionsPresentation {
             + "Sign \(list(sites)) in again through your company's app\(token ? " or with an API token" : "")."
     }
 
+    /// A dead token's lease note. `due` is Go's `purge_lease_at`
+    /// (`purge.LeaseDues`; a live site: the 30-day mark, or the organization's notice after
+    /// the warning when that is later, the warning always coming 72 hours
+    /// before the mark; a removed site: the mark plus the notice).
     package static func tokenLease(_ due: Date, zone: TimeZone) -> String {
         "Its data stays. If no new token comes, the 30-day rule deletes it on \(shortDay(due, zone: zone)), "
-            + "with a notice 72 hours before."
+            + "with a notice 72 hours before the 30-day mark."
     }
 
     package static let notConnectedStatus = RowStatus(text: rowNotConnected, tone: .gray, action: .connect)

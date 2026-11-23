@@ -121,10 +121,10 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
     /// An organisation policy sets it; the owner cannot change it.
     package var isSetByPolicy: Bool { enabledBy == "policy" }
 
-    /// Go's last fallback (`purge.Enabled`, origin `default`, #1769 P7): on
-    /// in every build. The shared fixture `internal/purge/testdata/default_cases.json`
-    /// pins both sides.
-    package static let buildDefault = true
+    /// Go's last fallback (`purge.Enabled`, origin `default`): off in every
+    /// build (owner decision 2026-11-23). The shared fixture
+    /// `internal/purge/testdata/default_cases.json` pins both sides.
+    package static let buildDefault = false
 
     /// The Privacy switch's title (spec §8).
     package static let switchTitle = "Delete an account's data when its access ends"
@@ -134,7 +134,7 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
     /// The value the Privacy switch shows: an organisation's forced value,
     /// else the owner's (unsaved or saved) setting, else what the CLI
     /// reported, else the build default — so a switch opened before the CLI
-    /// answered (or after it failed) shows on, as the daemon acts.
+    /// answered (or after it failed) shows off, as the daemon acts.
     package static func shownValue(
         policy: Bool?, setting: Bool?, status: Self? // swiftlint:disable:this discouraged_optional_boolean
     ) -> Bool {
@@ -152,63 +152,121 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
         return status?.enabledBy ?? "default"
     }
 
-    /// `origin` (from `shownOrigin`) when given, else the CLI's; an unknown
-    /// status counts as the default.
-    private static func isDefaultOrigin(_ status: Self?, origin: String?) -> Bool {
-        (origin ?? status?.enabledBy ?? "default") == "default"
+    /// The notice before a deletion, in hours: an organization's
+    /// PurgeGraceHours, else Go's `grace_hours` (72 unless the organization
+    /// sets another; 0 deletes after a later sync), else 72 while the CLI has
+    /// not answered.
+    private static func notice(_ status: Self?, policyGrace: Int? = nil) -> Int {
+        policyGrace ?? status?.graceHours ?? 72
     }
 
-    /// The Privacy switch's footnote for the shown value. On by default holds
-    /// a live account's 30-day lease, so its text leaves that rule out.
-    package static func footnote(_ status: Self?, shown: Bool, origin: String? = nil) -> String {
+    /// What follows "… days after it was last reached" for a removed
+    /// account's lease: scheduled at that mark, due the notice later; with a
+    /// notice of 0 it runs after a later cycle's syncs (`purge.NoNotice`).
+    private static func removedLeaseTail(_ grace: Int) -> String {
+        grace == 0 ? ", after a later sync" : ", plus \(grace) hours' notice"
+    }
+
+    /// The Privacy switch's footnote for the shown value. The switch is on
+    /// only by a setting, a policy or the build, so on gives every rule. The
+    /// notice is the organization's PurgeGraceHours first (as in the Remove
+    /// dialogs), else the CLI's. The 30-day rule warns 72 hours before the
+    /// mark whatever the notice, and deletes at the mark or the notice after
+    /// the warning, whichever is later (`purge.LeaseDue`). With a notice of
+    /// 0 a removed Slack workspace's row runs only after a later cycle's
+    /// syncs (`purge.NoNotice`), so it says "a later sync".
+    package static func footnote(_ status: Self?, policy: ManagedPolicy, shown: Bool) -> String {
         guard shown else {
             return "Off: synced data stays on this Mac after access ends, until you delete it with "
                 + "Reset All Data… in Settings → System. Slack expects a workspace's data to be gone within "
                 + "14 business days after its app is removed."
         }
-        let grace = status?.graceHours ?? 72
+        let grace = notice(status, policyGrace: policy.purgeGraceHours)
         let lease = status?.leaseDays ?? 30
-        let removed = "A removed Slack workspace's data goes \(grace) hours after the remove, another removed "
-            + "account's \(lease) days after it was last reached."
-        let kept = "Briefings, recaps, ideas, memory, chats and meeting transcripts are kept."
-        if isDefaultOrigin(status, origin: origin) {
-            return "On: when an account's access is revoked, its synced data is deleted \(grace) hours later "
-                + "unless you reconnect. \(removed) An account you only turned off keeps its data. \(kept)"
-        }
-        return "On: when an account's access is revoked, or Watchtower has not reached its source for "
-            + "\(lease) days, its synced data is deleted \(grace) hours later unless you reconnect. \(removed) \(kept)"
+        let revoked = grace == 0 ? "after the next sync" : "\(grace) hours later"
+        let leaseWhen = grace > 72 ? "\(grace) hours after that notice" : "at the mark"
+        let afterRemove = grace == 0 ? "after a later sync" : "\(grace) hours after the remove"
+        return "On: when an account's access is revoked, its synced data is deleted \(revoked) unless you "
+            + "reconnect. When Watchtower has not reached a source for \(lease) days, a notice comes 72 hours "
+            + "before that \(lease)-day mark and the data is deleted \(leaseWhen) unless it syncs again. A removed "
+            + "Slack workspace's data goes \(afterRemove), another removed account's \(lease) days after it was "
+            + "last reached\(removedLeaseTail(grace)). Briefings, recaps, ideas, memory, chats and meeting "
+            + "transcripts are kept."
     }
 
-    /// "On by default" while the switch is on by its default origin (or the
-    /// CLI has not answered); nil otherwise.
+    /// "Off by default" while the switch is off by its default origin; nil
+    /// otherwise, and nil while the CLI has not answered and nothing else
+    /// decides (a build may turn the purge on, which Swift cannot see).
+    /// `origin` (from `shownOrigin`) when given, else the CLI's.
     package static func caption(_ status: Self?, shown: Bool, origin: String? = nil) -> String? {
-        shown && isDefaultOrigin(status, origin: origin) ? "On by default" : nil
+        guard status != nil else { return nil }
+        let isDefault = (origin ?? status?.enabledBy ?? "default") == "default"
+        return !shown && isDefault ? "Off by default" : nil
+    }
+
+    /// The switch as a Remove dialog states it: `shownValue` of the forced
+    /// value, the owner's saved setting and the CLI's status; nil when none of
+    /// them is known (the CLI has not answered or failed, so the build's own
+    /// default decides, which Swift cannot see).
+    private static func dialogEnabled(
+        _ status: Self?, policy: ManagedPolicy, setting: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    ) -> Bool? { // swiftlint:disable:this discouraged_optional_boolean
+        if status == nil, policy.purgeRevokedData == nil, setting == nil { return nil }
+        return shownValue(policy: policy.purgeRevokedData, setting: setting, status: status)
     }
 
     /// The Slack Remove dialog's message (#1769, A2/A3): the remove signs out
-    /// at Slack, and with the purge on (or not known yet: the default is on)
-    /// the workspace's data goes 72 hours later.
-    package static func removeDialogMessage(slackAccount label: String, status: Self?) -> String {
+    /// at Slack, and with the purge on the workspace's data goes after the
+    /// notice. The switch is the organization's forced value, else the
+    /// owner's saved `setting`, else the CLI's status; with none of them
+    /// known, the message says what happens either way.
+    package static func removeDialogMessage(
+        slackAccount label: String,
+        status: Self?,
+        policy: ManagedPolicy,
+        setting: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    ) -> String {
         let signOut = "Watchtower stops syncing \(label) and signs out of it at Slack, so this sign-in stops "
             + "working on every Mac that uses it."
-        guard status?.enabled ?? buildDefault else {
+        let grace = notice(status, policyGrace: policy.purgeGraceHours)
+        // A removed workspace's zero-notice row runs only after a later
+        // cycle's syncs (`purge.NoNotice`), not the next one.
+        let when = grace == 0 ? "after a later sync" : "in \(grace) hours"
+        guard let enabled = dialogEnabled(status, policy: policy, setting: setting) else {
+            return signOut + " If deleting data when access ends is on, its synced data is deleted \(when) unless "
+                + "you add the workspace again; otherwise it stays on this Mac until you delete it. Check "
+                + "Settings → System → Privacy."
+        }
+        guard enabled else {
             return signOut + " Its synced data stays on this Mac until you delete it, because "
                 + "deleting data when access ends is off."
         }
-        let grace = status?.graceHours ?? 72
-        return signOut + " Its synced data stays for now and is deleted in \(grace) hours unless "
+        return signOut + " Its synced data stays for now and is deleted \(when) unless "
             + "you add the workspace again. Briefings, recaps, ideas, memory, chats and meeting transcripts are kept."
     }
 
     /// A Jira or Linear Remove dialog's message: `kept` says the
-    /// synced data stays; with the purge effectively on, one sentence adds
-    /// the removed account's own lease (scheduled once the account was not
-    /// reached for the lease, deleted after the notice). An unknown status
-    /// (the CLI has not answered) adds nothing.
-    package static func removeDialogMessage(_ kept: String, status: Self?) -> String {
-        guard let status, status.enabled else { return kept }
+    /// synced data stays; with the purge on, one sentence adds the removed
+    /// account's own lease (scheduled once the account was not reached for
+    /// the lease, deleted after the notice). The switch is resolved as in the
+    /// Slack variant; with none of its inputs known, the sentence is
+    /// conditional.
+    package static func removeDialogMessage(
+        _ kept: String,
+        status: Self?,
+        policy: ManagedPolicy,
+        setting: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    ) -> String {
+        let grace = notice(status, policyGrace: policy.purgeGraceHours)
+        let lease = status?.leaseDays ?? 30
+        let notice = removedLeaseTail(grace)
+        guard let enabled = dialogEnabled(status, policy: policy, setting: setting) else {
+            return kept + " If deleting data on revoked access is on, it is deleted about \(lease) days after the "
+                + "account was last reached\(notice); check Settings → System → Privacy."
+        }
+        guard enabled else { return kept }
         return kept + " Because deleting data on revoked access is on, it is deleted about "
-            + "\(status.leaseDays) days after the account was last reached, plus \(status.graceHours) hours' notice."
+            + "\(lease) days after the account was last reached\(notice)."
     }
 
     package static func decode(_ data: Data) throws -> Self {

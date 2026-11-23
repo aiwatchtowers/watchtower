@@ -1,17 +1,19 @@
 # Revoked access deletes an account's data
 
-When a company revokes your Slack, Google, Jira or Linear access, Watchtower deletes what it synced from that account, so a Mac you no longer work on for them stops holding their messages and mail. It is on by default. This page explains when it deletes, what it keeps and how to turn it off.
+When a company revokes your Slack, Google, Jira or Linear access, Watchtower deletes what it synced from that account, so a Mac you no longer work on for them stops holding their messages and mail. It is off by default: you, your company's configuration profile or the corporate build turn it on. This page explains when it deletes, what it keeps and how to turn it on or off.
 
-## Why it is on
+## Why turn it on
 
 Synced data would otherwise stay in the database on your Mac for good. When you leave a company, they revoke your access, but the copy here keeps their correspondence. With this setting on, that copy deletes itself after a notice, and a removed Slack workspace's data is gone well within the 14 business days Slack expects.
 
+It is off by default because a revocation is not always a goodbye. Unlinking an old company Slack app while you switch to a new one looks the same as losing access, and with the setting on it would schedule the whole workspace's history for deletion.
+
 ## How it works
 
-Nothing is deleted without a notice of at least 72 hours, and reconnecting stops it.
+Nothing is deleted without a notice, and reconnecting stops it. The notice is 72 hours unless your company's configuration profile sets another, from 0 to 720 hours; with 0 the data goes after the next sync cycle (for a removed Slack workspace, a later one), unless that sync shows the account works again. The times for revoked and removed accounts below assume 72 hours; the 30-day rule has its own warning time.
 
 - **Revoked access:** when a source rejects an account's sign-in, its data is scheduled for deletion 72 hours after Watchtower first sees the revocation. A sync that fails for another reason, such as no network, is not a revocation, and a sync that works again afterwards cancels it.
-- **Not reached for 30 days:** only when you, your company's profile or the corporate build turned the setting on (not by default): when no account of a source (Slack, Google, Jira or Linear) has synced for 30 days, the data of each is scheduled, due 72 hours later (on a Mac that stays on, at the 30-day mark). Days offline count, but a Mac back after a long time away first tries to sync. A disabled account still counts, and one account syncing keeps all of them safe; for Jira, a Confluence sync counts too. A source your company's profile does not allow is never scheduled this way while the rule holds.
+- **Not reached for 30 days:** when no account of a source (Slack, Google, Jira or Linear) has synced for 30 days, you get a notice 72 hours before the 30-day mark, whatever your company's profile sets, and the data of each is deleted at the mark, or, if the profile sets a longer notice, that many hours after the warning. Days offline count, but a Mac back after a long time away first tries to sync. A disabled account still counts, and one account syncing keeps all of them safe; for Jira, a Confluence sync counts too. A source your company's profile does not allow is never scheduled this way while the rule holds.
 - **Removed accounts:** removing a Slack workspace also asks Slack to sign Watchtower out of it, so that sign-in stops working on every Mac that uses it. If Slack does not confirm, the remove still goes through and **Slack did not confirm the token was revoked; it may stay valid until a workspace admin removes the app** is printed and shown in **Connections → Slack**. Its data is scheduled on Watchtower's next pass after the remove, due 72 hours from then, unless your company's configuration profile does not allow Slack: then a removed workspace's data is kept while that rule holds. **Remove** keeps a Jira or Linear account's data until it has not been reached for 30 days, then schedules it the same way, 72 hours out. Adding it back stops it. (Removing a Google account already deletes its mail and events.)
 
 From the moment it is scheduled you see a red line under the account in **Connections**, a banner on [Home](../features/home.md) with **Reconnect** until the deletion starts, and a macOS notification. A second notification says when the data is gone.
@@ -22,20 +24,20 @@ If the account is in error rather than revoked when the time comes, the deletion
 <!-- learn
 id: revoked-delete-data
 title: Delete a revoked account's data
-text: **Delete an account's data when its access ends** is on by default; it sits in **Settings → System**, under **Privacy**.
+text: **Delete an account's data when its access ends** is off by default; turn it on in **Settings → System** → **Privacy**.
 area: setup
 level: power
 kind: feature
 since: 0.24.0
 -->
 
-The switch is on by default and says **On by default** until you change it.
+The switch is off by default and says **Off by default** until you change it.
 
 1. Open **Settings → System**.
 2. Under **Privacy**, turn **Delete an account's data when its access ends** on or off.
 3. Press **Save**. The background sync restarts once to pick it up.
 
-Turning it on yourself adds the 30-day rule for accounts that are not reached. Turning it off cancels every scheduled deletion; one already running finishes. With it off, synced data stays on this Mac after access ends, until you delete it with **Reset All Data…** in **Settings → System**. In `config.yaml` the key is `privacy.purge_revoked_data`.
+Turning it off cancels every scheduled deletion; one already running finishes. With it off, synced data stays on this Mac after access ends, until you delete it with **Reset All Data…** in **Settings → System**. In `config.yaml` the key is `privacy.purge_revoked_data`.
 
 If your company's configuration profile sets it, the switch shows **Managed by your organization** and cannot be changed; see [Managed by your organization](managed-by-your-organization.md).
 

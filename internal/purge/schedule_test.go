@@ -21,9 +21,9 @@ func acct(source string, id int64, status string, okAt time.Time) db.PurgeAccoun
 	return a
 }
 
-// setting is the rules of a switch the owner set (origin setting) with every
-// source allowed: when on, every rule of the purge (RuleFull).
-func setting(on bool) func(db.PurgeAccount) Rule { return Rules(on, OriginSetting, nil) }
+// setting is the rules of a switch the owner set with every source allowed:
+// when on, every rule of the purge (RuleFull).
+func setting(on bool) func(db.PurgeAccount) Rule { return Rules(on, nil) }
 
 func row(id int64, source string, accountID int64, reason, state string, due time.Time) db.AccountPurge {
 	return db.AccountPurge{ID: id, Source: source, AccountID: accountID, Reason: reason, State: state, DueAt: ts(due)}
@@ -377,7 +377,7 @@ func TestApply_LeasesOnlyWhenAsked(t *testing.T) {
 func TestPurge01_PolicyForbiddenSourceHoldsLease(t *testing.T) {
 	stale := t0.Add(-Lease + Grace - time.Minute)
 	accounts := []db.PurgeAccount{acct("slack", 1, "ok", stale), acct("slack", 2, "removed", stale.Add(-Lease))}
-	held := Rules(true, OriginSetting, func(source string) bool { return source != "slack" })
+	held := Rules(true, func(source string) bool { return source != "slack" })
 	if got := Plan(accounts, nil, held, t0); len(got.Schedule) != 0 {
 		t.Fatalf("a held source schedules no lease, got %+v", got.Schedule)
 	}
@@ -408,7 +408,7 @@ func TestPurge01_ApplyLeaseHoldFollowsLivePolicy(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'ok', ?)`, ts(stale)); err != nil {
 		t.Fatal(err)
 	}
-	livePolicy := Rules(true, OriginSetting, policy.SourceAllowed)
+	livePolicy := Rules(true, policy.SourceAllowed)
 	policytest.Set(t, map[string]any{"AllowedSources": []any{"google"}})
 	got, err := Apply(d, livePolicy, true, t0)
 	if err != nil || len(got.Schedule) != 0 {
@@ -422,15 +422,13 @@ func TestPurge01_ApplyLeaseHoldFollowsLivePolicy(t *testing.T) {
 }
 
 // TestPurgePolicy_RemovedSlackZeroLease (#1769, A2): a removed Slack account
-// is scheduled by the first pass after the remove, due Grace later, under any
-// rule that is not RuleNone; adding it back before then cancels the row.
+// is scheduled by the first pass after the remove, due Grace later; adding it
+// back before then cancels the row.
 func TestPurgePolicy_RemovedSlackZeroLease(t *testing.T) {
 	removed := []db.PurgeAccount{acct("slack", 1, "removed", t0.Add(-time.Minute))}
-	for _, rules := range []func(db.PurgeAccount) Rule{setting(true), Rules(true, OriginDefault, nil)} {
-		got := Plan(removed, nil, rules, t0)
-		if len(got.Schedule) != 1 || got.Schedule[0].Reason != ReasonLease || !got.Schedule[0].DueAt.Equal(t0.Add(Grace)) {
-			t.Fatalf("a removed slack account is due Grace after the pass, got %+v", got.Schedule)
-		}
+	got := Plan(removed, nil, setting(true), t0)
+	if len(got.Schedule) != 1 || got.Schedule[0].Reason != ReasonLease || !got.Schedule[0].DueAt.Equal(t0.Add(Grace)) {
+		t.Fatalf("a removed slack account is due Grace after the pass, got %+v", got.Schedule)
 	}
 	// No access time at all: the remove itself is the evidence.
 	unknown := []db.PurgeAccount{acct("slack", 1, "removed", time.Time{})}
@@ -454,43 +452,15 @@ func TestPurgePolicy_RemovedSlackZeroLease(t *testing.T) {
 	}
 }
 
-// TestPlan_DefaultOriginHoldsLiveLeaseButSchedulesRemovedSlack (#1769, A1,
-// A21): with origin default a live account is never deleted for inactivity,
-// a removed Slack account is due Grace after the pass, and a removed account
-// of another source keeps its 30-day lease.
-func TestPlan_DefaultOriginHoldsLiveLeaseButSchedulesRemovedSlack(t *testing.T) {
-	allowAll := func(string) bool { return true }
-	accounts := []db.PurgeAccount{
-		acct("slack", 1, "ok", t0.Add(-40*24*time.Hour)),
-		acct("slack", 2, "removed", t0.Add(-time.Hour)),
-		acct("jira", 1, "removed", t0.Add(-time.Hour)),
-	}
-	got := Plan(accounts, nil, Rules(true, OriginDefault, allowAll), t0)
-	if len(got.Schedule) != 1 {
-		t.Fatalf("only the removed slack account is scheduled, got %+v", got.Schedule)
-	}
-	if s := got.Schedule[0]; s.Source != "slack" || s.AccountID != 2 || s.Reason != ReasonLease || !s.DueAt.Equal(t0.Add(Grace)) {
-		t.Fatalf("schedule = %+v, want slack 2 lease due now + 72h", s)
-	}
-	// An open live lease row (scheduled under another origin) is cancelled.
-	open := []db.AccountPurge{row(8, "slack", 1, ReasonLease, "scheduled", t0.Add(Grace))}
-	got = Plan(accounts, open, Rules(true, OriginDefault, allowAll), t0)
-	if len(got.Cancel) != 1 || got.Cancel[0] != 8 {
-		t.Fatalf("a live lease row under origin default is cancelled, got %+v", got)
-	}
-}
-
 // TestPlan_LongOfflineRevokedGetsFullNotice (#1769 review focus): a Mac off
 // for a week that comes back to a revoked token gives the full 72 h notice
 // from its first pass, never deletes at once.
 func TestPlan_LongOfflineRevokedGetsFullNotice(t *testing.T) {
 	a := acct("slack", 1, "revoked", t0.Add(-9*24*time.Hour))
 	a.RevokedAt = ts(t0.Add(-8 * 24 * time.Hour))
-	for _, rules := range []func(db.PurgeAccount) Rule{setting(true), Rules(true, OriginDefault, nil)} {
-		got := Plan([]db.PurgeAccount{a}, nil, rules, t0)
-		if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(t0.Add(Grace)) || len(got.Due) != 0 {
-			t.Fatalf("want one revoked row due now + 72h and nothing due, got %+v", got)
-		}
+	got := Plan([]db.PurgeAccount{a}, nil, setting(true), t0)
+	if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(t0.Add(Grace)) || len(got.Due) != 0 {
+		t.Fatalf("want one revoked row due now + 72h and nothing due, got %+v", got)
 	}
 }
 
@@ -648,13 +618,10 @@ func TestLeaseDeadlines_OneSourceUnderTheRule(t *testing.T) {
 	if len(got) != 2 || !got[1].Equal(want) || !got[2].Equal(want) {
 		t.Fatalf("jira deadlines = %v, want both at %v", got, want)
 	}
-	if got := LeaseDeadlines(accounts, Rules(true, OriginDefault, nil), "jira"); len(got) != 0 {
-		t.Fatalf("the default rule gives a live account no lease, got %v", got)
-	}
 	if got := LeaseDeadlines(accounts, setting(false), "jira"); len(got) != 0 {
 		t.Fatalf("purge off: no lease, got %v", got)
 	}
-	held := AccountRules(true, OriginSetting, func(a db.PurgeAccount) bool { return a.ID != 1 })
+	held := AccountRules(true, func(a db.PurgeAccount) bool { return a.ID != 1 })
 	got = LeaseDeadlines(accounts, held, "jira")
 	if _, ok := got[1]; ok || !got[2].Equal(want) {
 		t.Fatalf("a stopped account's lease is held, got %v", got)

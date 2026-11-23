@@ -86,6 +86,7 @@ func TestPolicy01_WrongTypesFailClosed(t *testing.T) {
 		{KeyCompanyBundle, []any{"x"}, func(p Policy) bool { return p.CompanyBundle() == "" }},
 		{KeyAllowAtlassianAPIToken, 1, func(p Policy) bool { return !p.AtlassianAPITokenAllowed() }},
 		{KeyAllowOwnGoogleProject, "true", func(p Policy) bool { return !p.OwnGoogleProjectAllowed() }},
+		{KeyPurgeGraceHours, "24", func(p Policy) bool { _, set := p.PurgeGraceHours(); return !set }},
 	}
 	for _, c := range cases {
 		t.Run(c.key, func(t *testing.T) {
@@ -110,9 +111,43 @@ func TestPolicy_AbsentKeysRestrictNothing(t *testing.T) {
 	on, set := p.PurgeRevokedData()
 	assert.False(t, on)
 	assert.False(t, set)
+	_, set = p.PurgeGraceHours()
+	assert.False(t, set)
 	assert.Empty(t, p.CompanyBundle())
 	assert.True(t, p.AtlassianAPITokenAllowed())
 	assert.True(t, p.OwnGoogleProjectAllowed())
+}
+
+// TestPolicy_PurgeGraceHoursRange pins that PurgeGraceHours is kept only as
+// an integer in 0…MaxPurgeGraceHours (a plist <integer> arrives as int64, a
+// whole <real> as float64); anything else is absent: the standard notice.
+func TestPolicy_PurgeGraceHoursRange(t *testing.T) {
+	for _, c := range []struct {
+		value   any
+		want    int
+		set     bool
+		problem string
+	}{
+		{int64(0), 0, true, ""},
+		{int64(24), 24, true, ""},
+		{float64(48), 48, true, ""},
+		{int64(MaxPurgeGraceHours), MaxPurgeGraceHours, true, ""},
+		{int64(-1), 0, false, ProblemUnknownValue},
+		{int64(MaxPurgeGraceHours + 1), 0, false, ProblemUnknownValue},
+		{int64(1) << 40, 0, false, ProblemUnknownValue},
+		{12.5, 0, false, ProblemWrongType},
+		{true, 0, false, ProblemWrongType},
+	} {
+		p := Normalize(map[string]any{KeyPurgeGraceHours: c.value})
+		h, set := p.PurgeGraceHours()
+		assert.Equal(t, c.set, set, "%v", c.value)
+		assert.Equal(t, c.want, h, "%v", c.value)
+		if c.problem == "" {
+			assert.Empty(t, p.Errors, "%v", c.value)
+		} else {
+			assert.Equal(t, []Problem{{Key: KeyPurgeGraceHours, Problem: c.problem}}, p.Errors, "%v", c.value)
+		}
+	}
 }
 
 // TestPolicy01_RefusedCompanyBundleIsAbsent pins that a forced bundle

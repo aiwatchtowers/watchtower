@@ -31,6 +31,7 @@ const (
 	KeyAllowedAIProviders      = "AllowedAIProviders"
 	KeyAllowClaudeAITools      = "AllowClaudeAITools"
 	KeyPurgeRevokedData        = "PurgeRevokedData"
+	KeyPurgeGraceHours         = "PurgeGraceHours"
 	KeyAllowBackgroundAI       = "AllowBackgroundAI"
 	KeySlackApps               = "SlackApps"
 	// Company setup (#1887, spec 2026-11-17-company-setup-design.md D9, D24).
@@ -49,7 +50,7 @@ const (
 // Keys are the v1 keys, in display order.
 var Keys = []string{
 	KeyAllowedSources, KeyMobileSync, KeyAllowedQuickConnections, KeyAllowAutomationShell,
-	KeyAllowedAIProviders, KeyAllowClaudeAITools, KeyPurgeRevokedData, KeyAllowBackgroundAI,
+	KeyAllowedAIProviders, KeyAllowClaudeAITools, KeyPurgeRevokedData, KeyPurgeGraceHours, KeyAllowBackgroundAI,
 	KeySlackApps, KeyCompanyBundle, KeyAllowAtlassianAPIToken, KeyAllowOwnGoogleProject,
 }
 
@@ -86,15 +87,18 @@ type Problem struct {
 // Keyset holds the effective v1 values. nil = the key is absent (no
 // restriction); an empty slice is a real, most restrictive value.
 type Keyset struct {
-	AllowedSources          []string   `json:"AllowedSources"`
-	MobileSync              *string    `json:"MobileSync"`
-	AllowedQuickConnections []string   `json:"AllowedQuickConnections"`
-	AllowAutomationShell    *bool      `json:"AllowAutomationShell"`
-	AllowedAIProviders      []string   `json:"AllowedAIProviders"`
-	AllowClaudeAITools      *bool      `json:"AllowClaudeAITools"`
-	PurgeRevokedData        *bool      `json:"PurgeRevokedData"`
-	AllowBackgroundAI       *bool      `json:"AllowBackgroundAI"`
-	SlackApps               []SlackApp `json:"SlackApps"`
+	AllowedSources          []string `json:"AllowedSources"`
+	MobileSync              *string  `json:"MobileSync"`
+	AllowedQuickConnections []string `json:"AllowedQuickConnections"`
+	AllowAutomationShell    *bool    `json:"AllowAutomationShell"`
+	AllowedAIProviders      []string `json:"AllowedAIProviders"`
+	AllowClaudeAITools      *bool    `json:"AllowClaudeAITools"`
+	PurgeRevokedData        *bool    `json:"PurgeRevokedData"`
+	// PurgeGraceHours is kept only when it is an integer in
+	// 0…MaxPurgeGraceHours; anything else is absent (the standard notice).
+	PurgeGraceHours   *int       `json:"PurgeGraceHours"`
+	AllowBackgroundAI *bool      `json:"AllowBackgroundAI"`
+	SlackApps         []SlackApp `json:"SlackApps"`
 	// CompanyBundle is the forced bundle's wire form as delivered, kept only
 	// when companybundle.Parse accepts it for MDM.
 	CompanyBundle          *string `json:"CompanyBundle"`
@@ -153,6 +157,9 @@ func Normalize(raw map[string]any) Policy {
 	}
 	if v, ok := raw[KeyPurgeRevokedData]; ok {
 		ks.PurgeRevokedData = n.boolean(KeyPurgeRevokedData, v, true)
+	}
+	if v, ok := raw[KeyPurgeGraceHours]; ok {
+		ks.PurgeGraceHours = n.graceHours(v)
 	}
 	if v, ok := raw[KeyAllowBackgroundAI]; ok {
 		ks.AllowBackgroundAI = n.boolean(KeyAllowBackgroundAI, v, false)
@@ -279,6 +286,34 @@ func (n *normalizer) boolean(key string, v any, restrictive bool) *bool {
 		return &restrictive
 	}
 	return &b
+}
+
+// MaxPurgeGraceHours is the longest notice PurgeGraceHours may set (30 days).
+const MaxPurgeGraceHours = 720
+
+// graceHours keeps an integer in 0…MaxPurgeGraceHours. Anything else is
+// absent — the standard notice, the safest value: a wrong type for a
+// non-integer, an unknown value for one out of range.
+func (n *normalizer) graceHours(v any) *int {
+	if !isIntegral(v) {
+		n.report(KeyPurgeGraceHours, ProblemWrongType)
+		return nil
+	}
+	var f float64
+	switch x := v.(type) {
+	case int:
+		f = float64(x)
+	case int64:
+		f = float64(x)
+	case float64:
+		f = x
+	}
+	if f < 0 || f > MaxPurgeGraceHours {
+		n.report(KeyPurgeGraceHours, ProblemUnknownValue)
+		return nil
+	}
+	h := int(f)
+	return &h
 }
 
 // companyBundle keeps the forced bundle only when it is a string that
@@ -475,6 +510,15 @@ func (p Policy) PurgeRevokedData() (on, set bool) {
 		return false, false
 	}
 	return *p.Keys.PurgeRevokedData, true
+}
+
+// PurgeGraceHours returns the forced notice before a purge, in hours; set is
+// false when the key is absent or its value was refused.
+func (p Policy) PurgeGraceHours() (hours int, set bool) {
+	if p.Keys.PurgeGraceHours == nil {
+		return 0, false
+	}
+	return *p.Keys.PurgeGraceHours, true
 }
 
 // CompanyBundle returns the forced company bundle's wire form; "" when the
