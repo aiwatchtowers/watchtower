@@ -220,7 +220,7 @@ struct ConnectionCard: View {
                 // inspector open): stacked then, so the card never outgrows its cell.
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: Spacing.regular) { agentButtons(harness) }
-                    VStack(alignment: .leading, spacing: Spacing.small) { agentButtons(harness) }
+                    VStack(alignment: .leading, spacing: Spacing.regular) { agentButtons(harness) }
                 }
                 .padding([.horizontal, .bottom], Spacing.medium)
                 .padding(.top, Spacing.small)

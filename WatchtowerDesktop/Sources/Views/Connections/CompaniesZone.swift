@@ -145,7 +145,7 @@ struct CompaniesZone: View {
     private func zoneButtons(only shown: [CompaniesZoneState.Action]) -> some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: Spacing.regular) { zoneButtonList(shown) }
-            VStack(alignment: .leading, spacing: Spacing.small) { zoneButtonList(shown) }
+            VStack(alignment: .leading, spacing: Spacing.regular) { zoneButtonList(shown) }
         }
     }
 

@@ -132,6 +132,7 @@ final class ConnectEntryPointsTests: XCTestCase {
 
         let banner = try view.inspect().find(ConnectionAttentionBanner.self)
         XCTAssertThrowsError(try banner.find(button: "Reconnect with Claude"))
+        XCTAssertThrowsError(try banner.find(button: "Connect with Claude"))
         try banner.find(button: "Reconnect").tap()
         XCTAssertEqual(opened, [])
         XCTAssertEqual(detail, [.jira])
@@ -196,6 +197,27 @@ final class ConnectEntryPointsTests: XCTestCase {
         XCTAssertEqual(pressed, 1)
         let plain = CompanySetupPage(model: model, actions: CompanySetupActions(), layout: .wide)
         XCTAssertThrowsError(try plain.inspect().find(button: "Set up with Claude"))
+    }
+
+    /// With the inspector open the overview's grid narrows to
+    /// `PaneWidth.gridCardMin`: an empty card's Connect pair and the Companies
+    /// row stack instead of widening their view past it (they overlapped
+    /// the neighbouring cards when laid out in one row).
+    func testButtonRowsFitTheNarrowestGridColumn() {
+        let width = PaneWidth.gridCardMin
+        let card = ConnectionCard(summary: ConnectionSummary(service: .google, accounts: [], blocked: false),
+                                  agentHarness: .fixture("claude"), onOpen: {})
+        let zone = CompaniesZone(
+            state: CompanyConnectionsPresentation.zone(
+                companies: [], errors: [], draft: nil, accounts: [], portBusy: false, loading: false),
+            model: CompaniesZoneModel { nil }, actions: CompaniesZoneActions(), agent: (.fixture("claude"), {}))
+        XCTAssertLessThanOrEqual(Self.laidOutWidth(card, proposed: width), width, "the card's Connect pair")
+        XCTAssertLessThanOrEqual(Self.laidOutWidth(zone, proposed: width), width, "the Companies row")
+    }
+
+    private static func laidOutWidth(_ view: some View, proposed width: CGFloat) -> CGFloat {
+        NSHostingController(rootView: view)
+            .sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).width
     }
 
     // MARK: - Panel
