@@ -206,7 +206,7 @@ final class ConnectEntryPointsTests: XCTestCase {
     func testButtonRowsFitTheNarrowestGridColumn() {
         let width = PaneWidth.gridCardMin
         let card = ConnectionCard(summary: ConnectionSummary(service: .google, accounts: [], blocked: false),
-                                  agentHarness: .fixture("claude"), onOpen: {})
+                                  agentHarness: .fixture("claude")) {}
         let zone = CompaniesZone(
             state: CompanyConnectionsPresentation.zone(
                 companies: [], errors: [], draft: nil, accounts: [], portBusy: false, loading: false),
