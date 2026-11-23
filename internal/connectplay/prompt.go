@@ -21,10 +21,17 @@ const (
 // this package free of their imports.
 const defaultLanguage = "English"
 
+// languageName is a reply language the prompt takes as written: one line of
+// letters, spaces and hyphens, at most 40 characters ("Russian",
+// "Brazilian Portuguese"). Anything else in digest.language (a sentence,
+// a newline, punctuation) would be text the config writes into the safety
+// prompt, so it falls back to English.
+var languageName = regexp.MustCompile(`^\p{L}[\p{L} -]{0,39}$`)
+
 // SystemPrompt is the connect assistant's system prompt over pbs (one
 // service's playbooks, ForService order) in mode: the role, the language
 // rule (language is the owner's assistant language, `digest.language`;
-// empty means English), the link rule, the safety rules of spec §6, the
+// empty, or not a plain language name, means English), the link rule, the safety rules of spec §6, the
 // waiting rule and the playbook texts. The caller appends the Desktop's
 // current state after it.
 //
@@ -33,7 +40,7 @@ const defaultLanguage = "English"
 // contract, which a tuned prompt must not be able to drop.
 func SystemPrompt(pbs []Playbook, mode Mode, language string) string {
 	language = strings.TrimSpace(language)
-	if language == "" {
+	if !languageName.MatchString(language) {
 		language = defaultLanguage
 	}
 	var b strings.Builder

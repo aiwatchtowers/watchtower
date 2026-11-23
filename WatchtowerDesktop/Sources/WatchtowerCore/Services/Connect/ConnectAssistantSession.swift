@@ -188,9 +188,12 @@ package final class ConnectAssistantSession {
     /// **Check again** (#1144): the probe once more, never a new run. Before
     /// the first turn a browser found starts the run in browser mode; mid-run
     /// it switches the run back to the browser with a hidden turn. No
-    /// browser keeps the guide, saying it is still not connected.
+    /// browser keeps the guide, saying it is still not connected. A run that
+    /// failed or is done offers no Check again (the panel hides it) and
+    /// ignores one.
     package func checkBrowser() {
-        guard offersBrowserGuide, browserCheck != .checking else { return }
+        guard offersBrowserGuide, browserCheck != .checking, runFailure == nil else { return }
+        if case .done = controller?.state { return }
         let run = run
         switch phase {
         case .browserMissing:

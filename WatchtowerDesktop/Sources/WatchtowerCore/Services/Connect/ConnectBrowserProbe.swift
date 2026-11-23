@@ -60,10 +60,11 @@ package struct ConnectBrowserProbe: Sendable {
         self.dbPath = dbPath
     }
 
-    /// What the probe finds on `harness`: `missing` for a harness that
-    /// cannot drive a browser (no probe turn), else the probe's answer.
+    /// What the probe finds on `harness`: `unknown` for a harness that
+    /// cannot drive a browser (no probe turn: nothing is known of a browser),
+    /// else the probe's answer.
     package func answer(for harness: ConnectHarness, service: String) async -> Answer {
-        guard harness.capability == .browser else { return .missing }
+        guard harness.capability == .browser else { return .unknown }
         let connectArgs = Self.connectArgs(service: service)
         let (answers, answer) = AsyncStream<Answer>.makeStream()
         let (aiService, dbPath, provider) = (aiService, dbPath, harness.id)

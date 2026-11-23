@@ -300,6 +300,25 @@ final class ConnectAssistantSessionTests: XCTestCase {
         XCTAssertEqual(session.presentation.actions, [.cancel, .checkBrowser])
     }
 
+    /// Once the run failed, Check again is neither offered nor run.
+    func testCheckAgainIgnoredAfterTheRunFailed() async {
+        let session = make(browserHarness)
+        let turn = await startRun(session, probe: #"[{"id":"b1"}]"#)
+        ai.emit(.toolStart(ChatToolStart(turnID: "t", id: "n1", name: "claude-in-chrome:navigate", argsJSON: "{}")),
+                .toolEnd(ChatToolEnd(turnID: "t", id: "n1", ok: true, summary: ConnectBrowserProbe.lostMarker,
+                                     sources: [])),
+                .failure(ChatSessionError(turnID: "t", code: .rateLimit, message: "You've hit your usage limit",
+                                          retryable: false, reason: "quota_exhausted")),
+                call: turn)
+        ai.finish(call: turn)
+        await untilObserved { session.state == .failed(.quota) }
+        XCTAssertFalse(session.presentation.actions.contains(.checkBrowser))
+        let calls = ai.calls.count
+        session.checkBrowser()
+        XCTAssertEqual(session.browserCheck, .notChecked, "ignored")
+        XCTAssertEqual(ai.calls.count, calls, "no probe")
+    }
+
     /// A list tool step that ends with an error is an answer: no browser.
     func testProbeListToolErrorIsMissing() async {
         let session = make(browserHarness)
