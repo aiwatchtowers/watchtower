@@ -393,6 +393,25 @@ final class TerminalCenterReattachTests: XCTestCase {
         hosted.detachFromHost()
     }
 
+    /// An adopted run replacing an earlier process gets a new view: the
+    /// session's keyboard request of the earlier view is dropped, so the new
+    /// one attaches plainly (#1150).
+    func testAdoptionReplacingAProcessDropsItsKeyboardRequest() async throws {
+        let row = try await sessionRow()
+        center.start(row, fresh: false)
+        let local = try XCTUnwrap(center.process(for: row.id) as? FakeTerminalSession)
+        local.exit(0)
+        center.requestKeyboardFocus(row.id, since: 2)
+        control.listed = [SessionHostSessionInfo(row: row.id, run: "run-k", pid: 7301, startedAtMs: 1, exited: false, code: nil)]
+
+        await vm.reattachHostedSessions()
+
+        XCTAssertNil(center.keyboardFocusSerial(for: row.id))
+        let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
+        await hosted.connecting?.value
+        hosted.detachFromHost()
+    }
+
     /// A run that ended while the app was away is attached, so the pane
     /// shows its last output; its exit is reported once, as a natural one,
     /// and forgotten by its session.

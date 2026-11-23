@@ -387,9 +387,8 @@ private struct TerminalHost: NSViewRepresentable {
 
 /// The keyboard request serial a host of a terminal honoured last, kept on
 /// the terminal view (which outlives its hosts), for `TerminalHostAttachment.show`.
-/// A session's later view (a relaunch, an adopted process) is no target of
-/// an earlier click: `TerminalCenter` drops the click's mark (`since`) when
-/// it replaces the view.
+/// A session's later view (a relaunch, an adopted process) gets no request
+/// of the earlier one: `TerminalCenter` drops it when it replaces the view.
 @MainActor
 enum HonouredFocus {
     private final class Box {

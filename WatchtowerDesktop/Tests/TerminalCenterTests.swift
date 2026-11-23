@@ -841,15 +841,16 @@ final class TerminalCenterTests: XCTestCase {
     }
 
     /// A session closed (its process gone: a relaunch after a host restart
-    /// replaces it) keeps its keyboard request but not the click's mark: a
-    /// later view is no target of an earlier click (#1150).
-    func testClosingASessionDropsItsRequestsClickMark() async {
+    /// replaces it) drops its keyboard request: a later view attaches
+    /// plainly, as before #1150. The serial is kept, so none repeats.
+    func testClosingASessionDropsItsKeyboardRequest() async throws {
         let center = makeCenter()
         center.requestKeyboardFocus(1, since: 5)
-        let serial = center.keyboardFocusSerial(for: 1)
+        let serial = try XCTUnwrap(center.keyboardFocusSerial(for: 1))
         await center.close(sessionID: 1)
-        XCTAssertEqual(center.keyboardFocusSerial(for: 1), serial)
-        XCTAssertNil(center.keyboardFocusRequest?.since)
+        XCTAssertNil(center.keyboardFocusSerial(for: 1))
+        center.requestKeyboardFocus(1)
+        XCTAssertEqual(center.keyboardFocusSerial(for: 1), serial + 1, "a new request's serial never repeats")
     }
 
     /// The active session is the most recently focused live claude session

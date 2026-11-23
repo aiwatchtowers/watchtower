@@ -470,26 +470,33 @@ final class TerminalHostAttachmentTests: XCTestCase {
     }
 
     /// A session's new terminal view (a relaunch after a host restart, an
-    /// adopted process) sees the center's old request without its click's
-    /// mark (the center drops it when it replaces the view,
-    /// `TerminalCenterTests.testClosingASessionDropsItsRequestsClickMark`):
-    /// its attach focuses it, not yielding to a panel claim made since.
-    func testAnOldClickIsNoClickForANewTerminalView() throws {
+    /// adopted process) gets no request of the earlier view — the center
+    /// drops it when it replaces the view
+    /// (`TerminalCenterTests.testClosingASessionDropsItsKeyboardRequest`):
+    /// it attaches plainly, as before #1150 — focused once in the window,
+    /// yielding to a field that had the keyboard before the attach.
+    func testANewTerminalViewAttachesPlainly() throws {
         let host = window()
         let content = try XCTUnwrap(host.contentView)
-        let panel = SessionsPanelKeyView.KeyView(frame: NSRect(x: 0, y: 0, width: 50, height: 50))
-        content.addSubview(panel)
-        let first = TerminalContainerView(frame: NSRect(x: 100, y: 0, width: 300, height: 300))
-        content.addSubview(first)
-        let click = TerminalContainerView.keyboardEventCount
-        TerminalHostAttachment.show(FocusableView(), in: first, focusSerial: 1, focusSince: click, obscured: false) { false }
-        drainMainQueue()
-        panel.takePanelKeyboard()
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 50, height: 22))
+        content.addSubview(field)
+        XCTAssertTrue(host.makeFirstResponder(field))
+        let container = TerminalContainerView(frame: NSRect(x: 100, y: 0, width: 300, height: 300))
 
         let relaunched = PalettedTerminalView(frame: .zero)
-        TerminalHostAttachment.show(relaunched, in: first, focusSerial: 1, focusSince: nil, obscured: false) { false }
+        TerminalHostAttachment.show(relaunched, in: container, focusSerial: nil, focusSince: nil, obscured: false) { false }
         drainMainQueue()
-        XCTAssertTrue(host.firstResponder === relaunched)
+        content.addSubview(container)
+        drainMainQueue()
+        XCTAssertFalse(host.firstResponder === relaunched, "the field had it before the attach")
+
+        container.removeFromSuperview()
+        XCTAssertTrue(host.makeFirstResponder(nil))
+        let again = TerminalContainerView(frame: NSRect(x: 100, y: 0, width: 300, height: 300))
+        content.addSubview(again)
+        TerminalHostAttachment.show(relaunched, in: again, focusSerial: nil, focusSince: nil, obscured: false) { false }
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === relaunched, "nothing typed: the attach focuses it")
     }
 
     /// A row click that launches a session not running: its view is made
