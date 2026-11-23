@@ -193,6 +193,21 @@ final class WorkbenchesViewModelPanelCursorTests: XCTestCase {
         XCTAssertNotNil(center.keyboardFocusSerial(for: a.id), "the terminal on screen takes the keyboard")
     }
 
+    /// A row click puts the keyboard into the session's terminal (ask #195)
+    /// — also the session already on screen (its row, or a split's other
+    /// pane), whose host attaches nothing and so moves no focus itself.
+    func testARowClickPutsTheKeyboardInItsTerminal() async throws {
+        let vm = makeVM()
+        let (a, b, _) = try await threeRows(vm)
+        await vm.showSession(id: a.id)
+        XCTAssertNil(center.keyboardFocusSerial(for: a.id), "a programmatic show requests nothing")
+
+        await vm.openSessionRow(id: a.id)
+        XCTAssertNotNil(center.keyboardFocusSerial(for: a.id), "the shown row's terminal")
+        await vm.openSessionRow(id: b.id)
+        XCTAssertNotNil(center.keyboardFocusSerial(for: b.id), "another row's terminal")
+    }
+
     /// A covered terminal (a page screen, an expanded ask drawer) takes no
     /// keyboard, so handing it back reports false and requests no focus —
     /// the host would drop the request and nothing would retry (#1150).

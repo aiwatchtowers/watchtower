@@ -193,6 +193,23 @@ extension WorkbenchesViewModel {
         await open(session, ticket: ticket)
     }
 
+    /// A session row's click in the panel: the session opens like any
+    /// panel click, and the keyboard goes into its terminal (ask #195,
+    /// #1150) by an explicit request — a host already showing it (the row
+    /// on screen, a split's other pane) attaches nothing and so moves no
+    /// focus by itself. Only for the latest switch and a terminal on
+    /// screen (a Workchat pane needs nothing); a covered terminal's host
+    /// drops the request like any other.
+    func openSessionRow(id: Int64) async {
+        guard let projectID = selectedWorkbenchID else { return }
+        let ticket = beginSwitch(projectID: projectID)
+        await showSession(id: id, ticket: ticket)
+        guard isLatestSwitch(ticket, projectID: projectID), selectedWorkbenchID == projectID,
+              layout(projectID: projectID).visiblePanes.contains(.session(id)),
+              terminalCenter?.liveIDs.contains(id) == true else { return }
+        terminalCenter?.requestKeyboardFocus(id)
+    }
+
     // MARK: - Main area (single / split / expand)
 
     /// The page's Split toggle. A split's second pane is Board when the

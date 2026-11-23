@@ -140,7 +140,7 @@ struct WorkbenchesView: View {
                     if session.projectID == nil {
                         await vm.selectStandalone(session)
                     } else {
-                        await vm.showSession(id: session.id)
+                        await vm.openSessionRow(id: session.id)
                     }
                 }
             },
