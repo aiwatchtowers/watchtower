@@ -6,9 +6,12 @@ import Foundation
 /// `https://`. A bare host needs a top-level domain from `topLevelDomains`,
 /// a short list of common ones that leaves out those that read as file
 /// extensions (`notes.md`, `run.sh`, `app.py`, `Watchtower.app`), so file
-/// names, version numbers (`1.2.3`) and mail addresses stay text. Trailing
-/// sentence punctuation and an unbalanced closing bracket stay outside the
-/// link. Inline code, code blocks and existing links are never touched:
+/// names, version numbers (`1.2.3`) and mail addresses stay text. A bare
+/// host of two labels with no port or path reads like code as often as like
+/// a site (`logger.info`, `java.io`, `System.Net`, `self.page`): it links
+/// only with a domain from `twoLabelDomains`. Trailing sentence punctuation,
+/// closing quotes (`»`, `”`) and an unbalanced closing bracket stay outside
+/// the link. Inline code, code blocks and existing links are never touched:
 /// `MarkdownDocument` applies this to the text of headings, paragraphs and
 /// table cells only.
 public enum WebAddressLinks {
@@ -19,6 +22,10 @@ public enum WebAddressLinks {
         "ch", "at", "be", "jp", "cn", "kr", "br", "ua", "cz", "ie", "nz", "il", "sg", "hk", "tw", "za", "mx", "ar",
         "tr", "gr", "pt", "ro", "hu", "sk", "lt", "lv", "ee"
     ]
+
+    /// The top-level domains a bare host of two labels alone (no port, no
+    /// path) may end in: those no code identifier ends in.
+    static let twoLabelDomains: Set<String> = ["com", "org", "edu", "gov", "mil"]
 
     // swiftlint:disable force_try
     /// A full URL, or a bare host (group 1: its last label) with an optional
@@ -40,12 +47,22 @@ public enum WebAddressLinks {
             range = range.lowerBound..<trimmedEnd(text[range])
             let address = text[range]
             guard let scheme = ["https://", "http://"].first(where: address.lowercased().hasPrefix) else {
+                guard linksBare(address) else { return nil }
                 return (range, "https://" + address)
             }
             // A scheme with no host after it is no address.
             guard address.dropFirst(scheme.count).contains(where: { $0.isLetter || $0.isNumber }) else { return nil }
             return (range, String(address))
         }
+    }
+
+    /// A bare host links with a port or path, with three labels or more, or
+    /// with two and a domain from `twoLabelDomains`.
+    private static func linksBare(_ address: Substring) -> Bool {
+        let host = address.prefix { $0 != ":" && $0 != "/" }
+        guard host.endIndex == address.endIndex else { return true }
+        let labels = host.split(separator: ".")
+        return labels.count > 2 || twoLabelDomains.contains(labels.last?.lowercased() ?? "")
     }
 
     /// `inlines` with the addresses in their text as links, through
@@ -89,8 +106,9 @@ public enum WebAddressLinks {
         return out
     }
 
-    /// The end of `address` without trailing sentence punctuation or a
-    /// closing bracket it does not open.
+    /// The end of `address` without trailing sentence punctuation, closing
+    /// quotes or a closing bracket it does not open. `_` and `~` are URL
+    /// characters and stay (Markdown emphasis never reaches here as text).
     private static func trimmedEnd(_ address: Substring) -> String.Index {
         var end = address.endIndex
         while end > address.startIndex {
@@ -101,7 +119,7 @@ public enum WebAddressLinks {
             case "]": body.filter { $0 == "[" }.count < body.filter { $0 == "]" }.count + 1
             default: false
             }
-            guard ".,;:!?*_~".contains(last) || unbalanced else { break }
+            guard ".,;:!?*»”’›\"'".contains(last) || unbalanced else { break }
             end = address.index(before: end)
         }
         return end

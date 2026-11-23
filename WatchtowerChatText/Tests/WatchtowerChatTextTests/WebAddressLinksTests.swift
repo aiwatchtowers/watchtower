@@ -46,6 +46,44 @@ final class WebAddressLinksTests: XCTestCase {
         }
     }
 
+    /// Two labels with no port or path read like code as often as a site:
+    /// only a domain no identifier ends in links.
+    func testCodeIdentifiersStayText() {
+        for text in [
+            "logger.info(x)", "java.io", "System.Net", "item.info", "self.page", "user.me", "model.pt", "os.at",
+            "the site.dev value", "an api.ai call", "use foo.co", "show.tv", "us.us", "x.site"
+        ] {
+            XCTAssertEqual(links(text), [], text)
+        }
+    }
+
+    func testHostsThatLinkWithoutAScheme() {
+        XCTAssertEqual(links("api.slack.com/apps"), ["api.slack.com/apps → https://api.slack.com/apps"])
+        XCTAssertEqual(links("console.cloud.google.com"), ["console.cloud.google.com → https://console.cloud.google.com"])
+        XCTAssertEqual(links("example.com"), ["example.com → https://example.com"])
+        XCTAssertEqual(links("admin.atlassian.com/x"), ["admin.atlassian.com/x → https://admin.atlassian.com/x"])
+        XCTAssertEqual(links("acme.org"), ["acme.org → https://acme.org"])
+        XCTAssertEqual(links("docs.example.io"), ["docs.example.io → https://docs.example.io"], "three labels")
+        XCTAssertEqual(links("example.io/start"), ["example.io/start → https://example.io/start"], "a path")
+        XCTAssertEqual(links("example.dev:8080"), ["example.dev:8080 → https://example.dev:8080"], "a port")
+        XCTAssertEqual(links("https://java.io"), ["https://java.io → https://java.io"], "a full URL always links")
+    }
+
+    func testClosingQuotesStayOut() {
+        XCTAssertEqual(links("Откройте «api.slack.com/apps»."), ["api.slack.com/apps → https://api.slack.com/apps"])
+        XCTAssertEqual(links("«example.com»"), ["example.com → https://example.com"])
+        XCTAssertEqual(links("“https://example.com”"), ["https://example.com → https://example.com"])
+        XCTAssertEqual(links("‘https://example.com/a’"), ["https://example.com/a → https://example.com/a"])
+        XCTAssertEqual(links("‹https://example.com/a›"), ["https://example.com/a → https://example.com/a"])
+    }
+
+    /// `_` and `~` are URL characters: a link ending in one keeps it.
+    func testUnderscoreAndTildeStayInTheLink() {
+        XCTAssertEqual(links("https://example.com/~user"), ["https://example.com/~user → https://example.com/~user"])
+        XCTAssertEqual(links("https://example.com/a_"), ["https://example.com/a_ → https://example.com/a_"])
+        XCTAssertEqual(links("example.com/path_"), ["example.com/path_ → https://example.com/path_"])
+    }
+
     func testInlineCodeAndLinksAreLeftAlone() {
         XCTAssertEqual(MarkdownDocument.parse("Run `curl api.slack.com/apps` or [the page](https://example.com/x)"), [
             .paragraph([.text("Run "), .code("curl api.slack.com/apps"), .text(" or "),
