@@ -3,8 +3,8 @@ import WatchtowerCore
 
 /// Settings → System → Privacy (board #601): the purge on revoked access
 /// switch. The shown value is the owner's unsaved or saved choice, else the
-/// effective one Go reports (`accounts purges --json`), else on
-/// (`AccountPurgeStatus.shownValue`, #1769); Save writes `privacy.purge_revoked_data` through
+/// effective one Go reports (`accounts purges --json`), else off
+/// (`AccountPurgeStatus.shownValue`); Save writes `privacy.purge_revoked_data` through
 /// `ConfigSaveBar`.
 struct PrivacySettings: View {
     @Environment(AppState.self) private var appState
@@ -50,7 +50,7 @@ struct PrivacySettingsContent: View {
                     .labelsHidden()
                     .managedByOrganization(lockedByPolicy || (status?.isSetByPolicy ?? false))
             }
-            Text(AccountPurgeStatus.footnote(status, shown: isOn, origin: origin))
+            Text(AccountPurgeStatus.footnote(status, shown: isOn))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -59,8 +59,8 @@ struct PrivacySettingsContent: View {
         }
     }
 
-    /// A failed status read wins (the owner should see it); else "On by
-    /// default" while on by its default origin.
+    /// A failed status read wins (the owner should see it); else "Off by
+    /// default" while off by its default origin.
     private var caption: String? {
         statusError ?? AccountPurgeStatus.caption(status, shown: isOn, origin: origin)
     }

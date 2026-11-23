@@ -34,6 +34,9 @@ package enum OrganizationPolicyPresentation {
         if let b = p.purgeRevokedData {
             out.append(Line(label: "Delete a revoked account's data", value: b ? "on" : "off"))
         }
+        if let h = p.purgeGraceHours {
+            out.append(Line(label: "Notice before data is deleted", value: h == 0 ? "none" : "\(h) hours"))
+        }
         // The company's name only: the bundle carries client ids and secrets.
         if let wire = p.companyBundle, case .success(let bundle) = CompanyBundle.parse(wire, origin: .mdm) {
             out.append(Line(label: "Company", value: bundle.company))

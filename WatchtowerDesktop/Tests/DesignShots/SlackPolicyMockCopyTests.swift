@@ -9,15 +9,12 @@ final class SlackPolicyMockCopyTests: XCTestCase {
     typealias Copy = SlackPolicyMockCopy
 
     func testPrivacyFootnotesTellTheTruthInEveryState() {
-        XCTAssertTrue(Copy.footDefault.contains("72 hours"))
-        XCTAssertTrue(Copy.footDefault.contains("only turned off keeps its data"))
-        XCTAssertFalse(Copy.footDefault.contains("has not reached"))
+        XCTAssertTrue(Copy.footOnAll.contains("72 hours"))
         XCTAssertTrue(Copy.footOnAll.contains("has not reached its source for 30 days"))
+        XCTAssertTrue(Copy.footOnAll.hasSuffix("meeting transcripts are kept."))
         XCTAssertTrue(Copy.footOff.contains("Reset All Data…"))
         XCTAssertTrue(Copy.footOff.contains("14 business days"))
-        for foot in [Copy.footDefault, Copy.footOnAll] {
-            XCTAssertTrue(foot.hasSuffix("meeting transcripts are kept."), foot)
-        }
+        XCTAssertEqual(Copy.captionDefault, "Off by default")
     }
 
     func testRemoveDialogSaysTheSignOutReachesEveryMac() {

@@ -5,7 +5,8 @@ import XCTest
 /// PURGE-01 (#1769, P7): the Privacy switch shows the same value as Go's
 /// `purge.Enabled` over one shared fixture, `internal/purge/testdata/default_cases.json`
 /// (Go: `TestPurge01_DefaultSharedFixture`). With nothing known yet — the
-/// CLI has not answered, or failed — it shows on, never off.
+/// CLI has not answered, or failed — it shows off, the default (owner
+/// decision 2026-11-23).
 final class AccountPurgeDefaultFixtureTests: XCTestCase {
     private struct Case: Decodable {
         let name: String
@@ -45,8 +46,8 @@ final class AccountPurgeDefaultFixtureTests: XCTestCase {
         }
     }
 
-    func testUnknownStatusShowsOn() {
-        XCTAssertTrue(AccountPurgeStatus.buildDefault)
-        XCTAssertTrue(AccountPurgeStatus.shownValue(policy: nil, setting: nil, status: nil))
+    func testUnknownStatusShowsOff() {
+        XCTAssertFalse(AccountPurgeStatus.buildDefault)
+        XCTAssertFalse(AccountPurgeStatus.shownValue(policy: nil, setting: nil, status: nil))
     }
 }

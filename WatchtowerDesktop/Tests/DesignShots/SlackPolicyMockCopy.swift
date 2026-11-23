@@ -12,11 +12,8 @@ enum SlackPolicyMockCopy {
 
     static let privacyTitle = "Privacy"
     static let purgeTitle = "Delete an account's data when its access ends"
-    static let captionDefault = "On by default"
-    static let footDefault = "On: when an account's access is revoked, its synced data is deleted 72 hours later "
-        + "unless you reconnect. A removed Slack workspace's data goes 72 hours after the remove, another removed "
-        + "account's 30 days after it was last reached. An account you only turned off keeps its data. "
-        + "Briefings, recaps, ideas, memory, chats and meeting transcripts are kept."
+    /// Off by default since the owner's 2026-11-23 decision.
+    static let captionDefault = "Off by default"
     static let footOnAll = "On: when an account's access is revoked, or Watchtower has not reached its source for "
         + "30 days, its synced data is deleted 72 hours later unless you reconnect. A removed Slack workspace's "
         + "data goes 72 hours after the remove, another removed account's 30 days after it was last reached. "

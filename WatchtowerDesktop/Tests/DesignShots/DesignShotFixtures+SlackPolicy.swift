@@ -87,15 +87,10 @@ private typealias FileVaultLine = FileVaultLineContent
 private struct PrivacyMock: View {
     let frame: SlackPolicyShotFixtures.Frame
 
-    private var isOn: Bool { frame != .privacyOff }
+    /// The default (and the FileVault frame, shown at the default) is off.
+    private var isOn: Bool { [.privacyOnAll, .privacyPolicy].contains(frame) }
 
-    private var foot: String {
-        switch frame {
-        case .privacyOff: Copy.footOff
-        case .privacyOnAll, .privacyPolicy: Copy.footOnAll
-        default: Copy.footDefault
-        }
-    }
+    private var foot: String { isOn ? Copy.footOnAll : Copy.footOff }
 
     var body: some View {
         Page {
