@@ -125,8 +125,9 @@ enum CompanySetupMockCopy {
         "Add redirect URL: http://127.0.0.1:18551/slack/callback"
     ]
     static let updateApp = "Update the app"
-    static let notCollaborator = "You are not a collaborator on app A0ACME, so Slack does not let you change it. "
-        + "Ask the app's owner to add you as a collaborator, then try again."
+    static let notCollaborator = "Slack would not let this token change app A0ACME (no_permission). The token has to "
+        + "come from the workspace the app was made in, from one of its collaborators: make a new token there and try "
+        + "again, or create a new app instead."
     static let wrongWorkspace = "App A0ACME belongs to another workspace (T0OTHER), not acme. "
         + "Check the link and paste it again."
     static let slackSettingsLink = "App settings link"

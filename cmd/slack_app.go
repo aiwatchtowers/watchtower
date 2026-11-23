@@ -85,6 +85,7 @@ func init() {
 		c.Flags().Bool("json", false, "print one JSON line per step and a final result line")
 		slackAppCmd.AddCommand(c)
 	}
+	slackAppCreateCmd.Flags().Bool("new-app", false, "create a second Watchtower app even though the workspace already has one this token cannot change")
 	slackAppAdoptCmd.Flags().String("app-id", "", "the app's App ID (Basic Information page) or its https://api.slack.com/apps/… URL, when Watchtower does not know it")
 	slackAppAdoptCmd.Flags().String("confirm-app-id", "", "repeat --app-id after checking the app's name (confirm_app)")
 	slackAppAdoptCmd.Flags().String("client-id", "", "the app's Client ID (Basic Information page), when no account on this Mac is on the app yet")
@@ -143,7 +144,8 @@ type slackAppResultJSON struct {
 
 func runSlackAppCreate(cmd *cobra.Command, _ []string) error {
 	return runSlackAppSetup(cmd, func(ctx context.Context, r *slackapp.Runner, tok string) (slackapp.Result, error) {
-		return r.Create(ctx, tok)
+		newApp, _ := cmd.Flags().GetBool("new-app")
+		return r.CreateWith(ctx, tok, slackapp.CreateOptions{NewApp: newApp})
 	})
 }
 

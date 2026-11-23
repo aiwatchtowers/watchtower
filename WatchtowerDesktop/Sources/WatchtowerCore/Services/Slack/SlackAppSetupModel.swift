@@ -30,6 +30,9 @@ package enum SlackSetupOutcome: Equatable, Sendable {
     /// The app already existed (adopted, or a setup record from an earlier
     /// run): nothing was created.
     case reused(appID: String)
+    /// The wizard's create found the workspace's company app (`existing_app`):
+    /// nothing was created; `appID` is "" when this Mac does not know it.
+    case existingApp(appID: String, clientID: String)
     case failed(SlackSetupFailure)
 }
 
@@ -276,6 +279,8 @@ package final class SlackAppSetupModel {
     /// The running create made the app (`ok`, `link_failed`), as opposed to
     /// finding a setup record (`exists`).
     @ObservationIgnored private var createdApp = false
+    /// The running wizard create answered `existing_app` (its team's company app).
+    @ObservationIgnored private var existingApp: SlackSetupTarget?
 
     package convenience init(
         streamer: (any CLILineStreaming)?,
@@ -380,10 +385,12 @@ package final class SlackAppSetupModel {
 
     /// **Create the app** (A4): create → the admin's connect → the link
     /// again if it was not written → the token dropped.
-    package func startCreate(token: String) {
+    /// `newApp` (the company wizard's **Create a new app instead**) creates a
+    /// second app where the workspace's company app cannot be changed.
+    package func startCreate(token: String, newApp: Bool = false) {
         let lines = mode == .wizard ? Self.wizardCreateSteps : Self.createSteps
         startRun(token: token, steps: lines, reports: true) { [self] token in
-            await runCreate(token: token)
+            await runCreate(token: token, newApp: newApp)
         }
     }
 
@@ -538,6 +545,7 @@ package final class SlackAppSetupModel {
         phase = .running
         adminNoteCopied = false
         createdApp = false
+        existingApp = nil
         runTask = Task { [self] in
             await body(token)
             heldToken = nil
@@ -550,6 +558,9 @@ package final class SlackAppSetupModel {
 
     /// What a create or adopt run reports for the phase it ended in.
     private var finishedOutcome: SlackSetupOutcome? {
+        if let app = existingApp, case .editing = phase {
+            return .existingApp(appID: app.appID, clientID: app.clientID)
+        }
         guard case let .finished(outcome) = phase else { return nil }
         switch outcome {
         case let .success(target), let .notConnected(target), let .approval(target), let .linkFailed(target):
@@ -589,8 +600,9 @@ package final class SlackAppSetupModel {
         }
     }
 
-    private func runCreate(token: String) async {
-        guard let result = await stream(["slack", "app", "create", "--json"], token: token) else { return }
+    private func runCreate(token: String, newApp: Bool) async {
+        let args = ["slack", "app", "create", "--json"] + (newApp ? ["--new-app"] : [])
+        guard let result = await stream(args, token: token) else { return }
         var target = result.target(fallback: nil)
         switch result.result {
         case "ok", "link_failed":
@@ -621,6 +633,9 @@ package final class SlackAppSetupModel {
             await finishSetup(target)
         case "existing_app":
             reset(.adopt(Adopt(target: target)))
+            // The wizard has no adopt form of its own: it turns this into a
+            // reuse of the app (or asks for its settings link).
+            if mode == .wizard { existingApp = target }
         case "builtin_app_pkce_deferred":
             phase = .finished(.builtinAppDeferred(workspace: target.workspace))
         case "pending_create":
