@@ -564,8 +564,14 @@ final class TerminalContainerView: NSView {
         waitingForWindow = nil
         let request = focusRequests
         DispatchQueue.main.async { [weak self] in
-            guard let self, request == focusRequests, let terminal = focus.terminal, subviews.first === terminal,
-                  let window, !Self.yields(focus, in: window) else { return }
+            guard let self, request == focusRequests, let terminal = focus.terminal,
+                  subviews.first === terminal else { return }
+            // Out of the window again before this turn: it waits on.
+            guard let window else {
+                waitingForWindow = focus
+                return
+            }
+            guard !Self.yields(focus, in: window) else { return }
             window.makeFirstResponder(terminal)
         }
     }

@@ -305,6 +305,25 @@ final class TerminalHostAttachmentTests: XCTestCase {
         XCTAssertFalse(host.firstResponder === asking, "a swap drops the wait")
     }
 
+    /// A container that enters the window and leaves it again before the
+    /// focus's turn keeps waiting: the next entry gives the focus.
+    func testAWaitSurvivesAQuickInAndOut() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let container = TerminalContainerView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let terminal = FocusableView()
+        TerminalHostAttachment.attach(terminal, to: container)
+        container.focusTerminal(terminal)
+        drainMainQueue()
+
+        content.addSubview(container)
+        container.removeFromSuperview()
+        drainMainQueue()
+        content.addSubview(container)
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === terminal)
+    }
+
     // MARK: - The focus contract (#1150)
 
     private enum Holder: CaseIterable {
