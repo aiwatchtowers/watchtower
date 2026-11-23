@@ -141,7 +141,7 @@ func TestJiraAccountsJSON_PurgeLease(t *testing.T) {
 		return rows[0].PurgeLeaseAt
 	}
 
-	assert.Empty(t, lease(), "the default rule gives a live account no lease")
+	assert.Empty(t, lease(), "purge off by default: no lease")
 	policytest.Set(t, map[string]any{"PurgeRevokedData": true})
 	assert.Equal(t, access.Add(purge.Lease).Format(time.RFC3339), lease())
 	setAccess(time.Now().UTC().Add(-purge.Lease + purge.Grace - time.Hour))

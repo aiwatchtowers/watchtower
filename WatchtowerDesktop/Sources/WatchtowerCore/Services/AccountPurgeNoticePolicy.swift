@@ -24,7 +24,7 @@ package enum AccountPurgeNoticePolicy {
         let due = p.dueAt.map { date($0, zone: zone) } ?? "soon"
         if p.reason == "lease" {
             if p.isRemovedAccount, p.source == "slack" {
-                // Zero lease (#1769, A2): due 72 h after the remove, so no "since".
+                // Zero lease (#1769, A2): due the notice after the remove, so no "since".
                 return "\(label) was removed. Its data will be deleted on \(shortDate(p.dueAt, zone: zone)) "
                     + "unless you add it again."
             }

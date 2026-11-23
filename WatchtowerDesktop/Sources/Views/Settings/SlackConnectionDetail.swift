@@ -300,7 +300,7 @@ struct SlackConnectionDetail: View {
             // Stop the daemon first so it isn't mid-sync when the token is
             // removed, then restart it — without a token it skips the Slack
             // phase. Same semantics as `slack remove` (revoke at Slack, data
-            // kept for now, deleted 72 h later with the purge on).
+            // kept for now, deleted after the notice with the purge on).
             // Stop, disconnect and start as one item on the app's start queue.
             let daemon = flow.daemonManager
             let disconnected = await appState.disconnectSlackOnQueue(
@@ -324,8 +324,8 @@ struct SlackConnectionDetail: View {
     ///
     /// The removal confirmation says what `slack remove` does: it revokes the
     /// token at Slack, drops the token file and marks the row removed/disabled;
-    /// the synced data stays for now and, with the purge on, is deleted 72 h
-    /// later (`AccountPurgeStatus.removeDialogMessage`). The legacy
+    /// the synced data stays for now and, with the purge on, is deleted after
+    /// the notice (`AccountPurgeStatus.removeDialogMessage`). The legacy
     /// single-account Slack "Disconnect" in `workspaceSection` runs the same
     /// remove (`auth logout` → `removeSlackAccount`) and shows the same text.
     private var slackAccountsSection: some View {

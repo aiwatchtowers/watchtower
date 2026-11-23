@@ -47,11 +47,7 @@ func TestPurge01_ManagedGraceSetsTheNotice(t *testing.T) {
 // live account's lease is still scheduled only once its deadline has passed.
 func TestPurge01_ZeroGraceRunsOnTheNextPass(t *testing.T) {
 	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(0)})
-	d, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
+	d := openPurgeDB(t)
 	if _, err := d.Exec(`INSERT INTO slack_accounts (id, team_id, status, revoked_at, access_ok_at) VALUES (1, 'T1', 'revoked', ?, ?)`,
 		ts(t0), ts(t0.Add(-time.Hour))); err != nil {
 		t.Fatal(err)
