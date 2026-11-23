@@ -280,6 +280,7 @@ final class FakeLinkHost: LinkHost {
             try Task.checkCancellation()
         }
         if let prepareError { throw prepareError }
+        if case .cloudKit = route { serverReadHubs.insert(hubID) } else { serverReadHubs.remove(hubID) }
         let transport = transport(for: route)
         if let keys {
             let provider = try PhoneKeyProvider(store: keys, hubID: hubID, seq: SeqAllocator(load: { 1 }, store: { _ in }))
@@ -288,7 +289,7 @@ final class FakeLinkHost: LinkHost {
         return transport
     }
 
-    /// When true, `fetchKeybox` waits until it is set false again or its task
+    /// When true, `fetchKeybox` and `serverKeybox` wait until it is set false again or their task
     /// is cancelled (a link flow held mid-check).
     var parksFetchGrant = false {
         didSet { unpark() }
@@ -296,10 +297,42 @@ final class FakeLinkHost: LinkHost {
     /// The hub of each `fetchKeybox`, in call order.
     private(set) var grantHubIDs: [String] = []
 
+    /// One keybox read of the link flow: a zone fetch (`fetchKeybox`, the full download on a fresh replica) or a
+    /// server read by record name (`serverKeybox`), with how many device records had been written when it began.
+    struct KeyboxRead: Equatable {
+        enum Kind: Equatable { case fetch, server }
+        let kind: Kind
+        let writesBefore: Int
+    }
+
+    /// Every keybox read, in call order.
+    private(set) var keyboxReads: [KeyboxRead] = []
+    /// The hubs whose session reads keyboxes off the server: the ones last prepared on CloudKit (`prepare`), not
+    /// the relay's pairing ones (`preparePairing`), as `HubSession.serverKeybox` on each transport.
+    private var serverReadHubs: Set<String> = []
+    /// When true, every server read fails (`.unavailable`): the flow falls back to `fetchKeybox`.
+    var serverReadFails = false
+    /// When true, a keybox read begun after a device record was written waits as `parksFetchGrant` does (the app
+    /// killed between the hello and the first answer).
+    var parksReadsAfterWrite = false {
+        didSet { unpark() }
+    }
+
     func fetchKeybox(hubID: String, deviceID: String) async -> Keybox? {
         grantHubIDs.append(hubID)
-        await park { self.parksFetchGrant }
+        let writes = (try? await deviceWrites().count) ?? 0
+        keyboxReads.append(KeyboxRead(kind: .fetch, writesBefore: writes))
+        await park { self.parksFetchGrant || (self.parksReadsAfterWrite && writes > 0) }
         return await storedKeybox(hubID: hubID, deviceID: deviceID)
+    }
+
+    func serverKeybox(hubID: String, deviceID: String) async -> ServerKeybox {
+        guard serverReadHubs.contains(hubID) else { return .unavailable }
+        let writes = (try? await deviceWrites().count) ?? 0
+        keyboxReads.append(KeyboxRead(kind: .server, writesBefore: writes))
+        await park { self.parksFetchGrant || (self.parksReadsAfterWrite && writes > 0) }
+        if serverReadFails || Task.isCancelled { return .unavailable }
+        return .read(await storedKeybox(hubID: hubID, deviceID: deviceID))
     }
 
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox? {
@@ -471,6 +504,7 @@ final class FakeLinkHost: LinkHost {
     func preparePairing(macDeviceID: String, slot: String, hubID: String) async throws -> any CloudSyncTransport {
         log.append("pair \(slot)")
         pairings.append((macDeviceID, slot, hubID))
+        serverReadHubs.remove(hubID)
         if let pairingError { throw pairingError }
         let transport = pairZones[slot] ?? SaveLogTransport()
         pairZones[slot] = transport

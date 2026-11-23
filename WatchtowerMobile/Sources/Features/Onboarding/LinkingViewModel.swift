@@ -399,7 +399,10 @@ final class LinkingViewModel {
         )
         // Step 4: the hello with the code's nonce, sealed to the hub's key, in
         // the scope's database, on a fresh replica (a re-pair must not keep the
-        // old link's rollback marks: a reset hub's seqs start again).
+        // old link's rollback marks: a reset hub's seqs start again). The
+        // baseline before it is one read of the keybox record (#2189), never
+        // the fresh replica's full download, so the hello reaches the Mac
+        // while its code is still open.
         let transport: any CloudSyncTransport
         do {
             transport = try await host.prepare(route: route, hubID: record.hubID, fresh: true)
@@ -410,7 +413,9 @@ final class LinkingViewModel {
             await fail(.local(error.localizedDescription), hubID: record.hubID)
             return
         }
-        let baseline = await host.fetchKeybox(hubID: record.hubID, deviceID: device.deviceID)?.grant
+        let baseline = await readKeybox(hubID: record.hubID, deviceID: device.deviceID)?.grant
+        // Killed mid-read: what came back is no baseline, and nothing was written yet.
+        guard !Task.isCancelled else { return }
         let pending = PendingLink(
             link: record, deadline: deadline, baseline: baseline, baselineCaptured: true, issuedAt: issuedAt
         )
@@ -586,7 +591,7 @@ final class LinkingViewModel {
         await waitForGrant(pending, code: PairingCode(hubKeys: hubKeys, deviceKeys: deviceKeys))
     }
 
-    /// Fetches the keybox every 2 s until the deadline. A keybox for this
+    /// Reads the keybox every 2 s until the deadline (`readKeybox`). A keybox for this
     /// hub whose grant differs from the baseline is the Mac's answer:
     /// `link_refused` (any code, `not_confirmed` included, even one this
     /// build does not know) refuses; `awaiting_confirmation` shows that the
@@ -602,7 +607,7 @@ final class LinkingViewModel {
         phase = .waiting(macName: pending.link.macName)
         while true {
             if let deviceID = identity.deviceID,
-               let keybox = await host?.fetchKeybox(hubID: hubID, deviceID: deviceID),
+               let keybox = await readKeybox(hubID: hubID, deviceID: deviceID),
                keybox.grant.hubID == hubID {
                 let grant = keybox.grant
                 // A refusal or a link answers this scan only when it differs from the baseline. A waiting keybox
@@ -639,6 +644,16 @@ final class LinkingViewModel {
             return
         }
         await fail(.noAnswer, hubID: hubID)
+    }
+
+    /// The link flow's keybox read (the baseline, each poll): the server's copy by its record name where the hub's
+    /// session reads one (CloudKit, #2189: no wait on a fresh replica's full download), else one fetch of the
+    /// session (the relay's pairing slot, a failed read) and the replica's copy.
+    private func readKeybox(hubID: String, deviceID: String) async -> Keybox? {
+        guard let host else { return nil }
+        if case .read(let keybox) = await host.serverKeybox(hubID: hubID, deviceID: deviceID) { return keybox }
+        guard !Task.isCancelled else { return nil }
+        return await host.fetchKeybox(hubID: hubID, deviceID: deviceID)
     }
 
     /// A link decided at `decidedAt` (the Mac's clock) answers a code issued
@@ -1394,7 +1409,8 @@ extension LinkingViewModel {
             await fail(.local(error.localizedDescription), hubID: record.hubID)
             return
         }
-        let baseline = await host.fetchKeybox(hubID: record.hubID, deviceID: device.deviceID)?.grant
+        let baseline = await readKeybox(hubID: record.hubID, deviceID: device.deviceID)?.grant
+        guard !Task.isCancelled else { return }
         let pending = PendingLink(
             link: record, deadline: deadline, baseline: baseline, baselineCaptured: true, issuedAt: issuedAt,
             relaySlot: slot.slot, relaySlotExpiresAt: slot.expiresAt

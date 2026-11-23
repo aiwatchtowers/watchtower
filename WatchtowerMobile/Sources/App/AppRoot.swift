@@ -998,6 +998,11 @@ extension AppRoot: LinkHost {
         return await storedKeybox(hubID: hubID, deviceID: deviceID)
     }
 
+    func serverKeybox(hubID: String, deviceID: String) async -> ServerKeybox {
+        guard let session = env.session(hubID), let id = UUID(uuidString: deviceID) else { return .unavailable }
+        return await session.serverKeybox(deviceID: id)
+    }
+
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox? {
         guard let session = env.session(hubID) else { return nil }
         guard let id = UUID(uuidString: deviceID) else {

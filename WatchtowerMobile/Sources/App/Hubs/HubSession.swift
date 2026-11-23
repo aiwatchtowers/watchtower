@@ -1825,6 +1825,23 @@ final class HubSession {
         return try store.reader.read { db in try store.keybox(deviceID: deviceID, from: db) }
     }
 
+    /// This phone's keybox as the server holds it now (#2189): one read of `keybox-<DEVICE_ID>` by its fixed name in
+    /// the data zone, opened as the replica opens it, with nothing stored. The link flow's baseline and grant reads
+    /// take it, so the Mac's answer is read without the zones' full download a fresh replica starts with.
+    /// `.unavailable` off CloudKit (the relay, the demo) or when the read or the opening failed (logged).
+    func serverKeybox(deviceID: UUID) async -> ServerKeybox {
+        guard let cloud = transport as? CloudKitTransport else { return .unavailable }
+        energy?.record(.fetchLink)
+        do {
+            guard let record = try await cloud.serverRecord(named: Keybox.recordName(deviceID: deviceID.uuidString), in: .data)
+            else { return .read(nil) }
+            return .read(try await secure.openKeybox(sealed: record.payload, deviceID: deviceID))
+        } catch {
+            Self.logger.error("keybox server read failed: \(String(describing: error), privacy: .public)")
+            return .unavailable
+        }
+    }
+
     /// The phone's seq ceiling (F29), carried over a wipe.
     func envelopeSeqCeiling() throws -> UInt64 {
         try store.envelopeSeqCeiling()

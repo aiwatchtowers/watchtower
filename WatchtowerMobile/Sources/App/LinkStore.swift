@@ -269,9 +269,10 @@ struct PendingLink: Codable, Equatable, Sendable {
     let link: LinkRecord
     /// The end of the 60 s grant wait, on the phone's clock.
     let deadline: Date
-    /// This phone's grant as the replica held it just before the device
-    /// record was written: an earlier answer (a refusal of another code) is
-    /// not this scan's.
+    /// This phone's grant as the server held it just before the device
+    /// record was written (one read of its keybox record; the replica's after
+    /// a fetch where that read is unavailable): an earlier answer (a refusal
+    /// of another code) is not this scan's.
     let baseline: DeviceGrant?
     /// `baseline` was read (nil then means no grant). false while the sync
     /// stack restarts, before the device record is written; a value saved

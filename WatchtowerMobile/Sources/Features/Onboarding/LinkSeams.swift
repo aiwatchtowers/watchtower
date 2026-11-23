@@ -123,6 +123,10 @@ protocol LinkHost: AnyObject {
     func fetchKeybox(hubID: String, deviceID: String) async -> Keybox?
     /// `hubID`'s keybox as its replica holds it, without a fetch.
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox?
+    /// `hubID`'s keybox as the server holds it now (#2189): one read of `keybox-<DEVICE_ID>` by its fixed name,
+    /// outside the replica and its zone fetch (`HubSession.serverKeybox`). `.unavailable` for a hub without a
+    /// session or off CloudKit (the relay, the demo), or when the read or the opening failed.
+    func serverKeybox(hubID: String, deviceID: String) async -> ServerKeybox
     /// Merges a keybox's `keys` into `hubID`'s stored link through its session (`HubSession.mergeKeybox`: one
     /// `updateHubLink`, and on a link that reseals across epochs the outbox's merge, which keeps this phone's own rows
     /// readable). nil when no link is stored or no session runs: nothing written. Throws as the merge does (a locked
@@ -183,6 +187,14 @@ protocol LinkHost: AnyObject {
     func requestNotificationPermission() async
     /// Selects the Now tab.
     func openNow()
+}
+
+/// One read of a keybox off the server (`LinkHost.serverKeybox`).
+enum ServerKeybox: Equatable {
+    /// The server's copy; nil when it holds none.
+    case read(Keybox?)
+    /// No such read here, or it failed: the caller fetches the zones instead (`LinkHost.fetchKeybox`).
+    case unavailable
 }
 
 /// What a wipe reports to the link flow.
