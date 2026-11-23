@@ -23,7 +23,7 @@ Pick one path after step 1: sign in (steps 2–4) or an API key (steps 5–7). T
 2. **Agent:** Call `connect_start` with `oauth`. Watchtower opens Linear's authorization page in the default browser.
 3. **You:** Sign in to Linear if it asks, pick the workspace and approve Watchtower's access.
 4. **Check:** Call `connect_wait`; while it says `waiting`, call it again. On `connected`, go to step 8; on `failed` or `timeout`, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong).
-5. **Agent:** On linear.app, open the account's security page (Linear's account menu, then **Security & access**) and stop there, before any key is made. Call `request_secret` with kind `linear_api_key`.
+5. **Agent:** On [linear.app](https://linear.app), open the account's security page (Linear's account menu, then **Security & access**) and stop there, before any key is made. Call `request_secret` with kind `linear_api_key`.
 6. **You only:** Create a personal API key, copy it into the card, leave Linear's page, then press **Send**.
 7. **Check:** While `request_secret` says `waiting`, call it again; on `cancelled` or `timeout`, tell the customer and stop at [If something goes wrong](#if-something-goes-wrong). It returns the result once Watchtower has checked the key. On success, go on; on a failure, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong).
 8. **Agent:** Call `choose` with kind `linear_teams` to list the workspace's teams. Ask the customer which ones to sync. An empty list means the first sync has not finished: tell the customer to pick teams under **Teams** in **Connections → Linear** after it, and stop.

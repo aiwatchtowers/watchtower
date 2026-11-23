@@ -3,7 +3,7 @@ import Foundation
 /// A field **We already have one** asks for (company screens spec §2.4).
 package struct CompanyFieldSpec: Equatable, Sendable, Identifiable {
     package enum Key: String, Sendable {
-        case slackSettingsLink, clientID, clientSecret, tenantID
+        case slackAppID, clientID, clientSecret, tenantID
     }
 
     package let key: Key
@@ -138,8 +138,9 @@ package enum CompanyVendorGuide {
         switch v {
         case .slack:
             // The Client ID too: Go adopts an app no account here is on only with it.
-            return [CompanyFieldSpec(key: .slackSettingsLink, label: "App settings link", secure: false,
-                                     help: "Open the app on api.slack.com and copy the address of its settings page."),
+            return [CompanyFieldSpec(key: .slackAppID, label: "App ID", secure: false,
+                                     help: "Starts with A, like A0123ABCD: api.slack.com/apps → your app → Basic "
+                                         + "Information. A link to the app works too."),
                     CompanyFieldSpec(key: .clientID, label: "Client ID", secure: false,
                                      help: "Needed when no account on this Mac uses the app yet: Basic Information → App "
                                          + "Credentials on api.slack.com.")]

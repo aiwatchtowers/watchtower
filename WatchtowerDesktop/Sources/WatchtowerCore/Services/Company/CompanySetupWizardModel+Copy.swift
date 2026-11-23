@@ -166,10 +166,10 @@ extension CompanySetupWizardModel {
             + "the app was made in, from one of its collaborators: make a new token there and try again."
     }
     package static let createNewAppInstead = "Create a new app instead"
-    package static let slackFoundExisting = "This workspace already has a Watchtower app. Paste its settings link to update it."
+    package static let slackFoundExisting = "This workspace already has a Watchtower app. Paste its App ID to update it."
 
-    package static let slackSettingsInvalid = "That is not a Slack app settings link. It looks like "
-        + "https://api.slack.com/apps/A0123ABCD."
+    package static let slackAppIDInvalidLine = "That is not a Slack App ID. It starts with A, like A0123ABCD: "
+        + "api.slack.com/apps → your app → Basic Information."
 
     // MARK: Google (§2.6)
 
@@ -295,9 +295,9 @@ extension CompanySetupWizardModel {
 
     static func appIDProblemLine(_ problem: SlackAppSetupModel.AppIDProblem, appID: String) -> String {
         switch problem {
-        case .format: "That is not a Slack app settings link. It looks like https://api.slack.com/apps/A0123ABCD."
-        case .mismatch: "This workspace's Watchtower app is another one than \(appID). Check the link and paste it again."
-        case .notFound: "Slack has no app \(appID) this token can see. Check the link and paste it again."
+        case .format: slackAppIDInvalidLine
+        case .mismatch: "This workspace's Watchtower app is another one than \(appID). Check the App ID and enter it again."
+        case .notFound: "Slack has no app \(appID) this token can see. Check the App ID and enter it again."
         }
     }
 

@@ -48,6 +48,15 @@ enum ConnectAssistantShotFixtures {
         ("busy", slack(.busy), []),
         ("narrow", Pres(service: "Slack", harness: .fixture("codex"), mode: .browser, browserAvailable: false,
                         state: .empty), []),
+        // #1144: Start's probe found no browser — the guide before the first turn.
+        ("browser-missing", Pres(service: "Slack", harness: .fixture("claude"), mode: .words, browserAvailable: false,
+                                 state: .browserMissing, browserCheck: .stillMissing), []),
+        // #1144: the browser lost mid-run — the run goes on in words beside the guide.
+        ("browser-lost", browserLost, [
+            created,
+            Line(.assistant, "Chrome stopped answering me. Open api.slack.com/apps and click Create New App — "
+                + "tell me when you see the dialog.")
+        ]),
         ("secret", slackSecret, [
             created,
             Line(.assistant, "Copy the configuration token shown on the page into the field below. "
@@ -64,6 +73,9 @@ enum ConnectAssistantShotFixtures {
             Line(.assistant, "Done — acme-labs is connected as well.")
         ])
     ]
+
+    private static let browserLost = Pres(service: "Slack", harness: .fixture("claude"), mode: .words,
+                                          browserAvailable: false, state: .listening, browserCheck: .notChecked)
 
     private static let slackSecret = Pres(service: "Slack", harness: .fixture("claude"), mode: .browser,
                                           state: .secret(label: "Slack configuration token"),

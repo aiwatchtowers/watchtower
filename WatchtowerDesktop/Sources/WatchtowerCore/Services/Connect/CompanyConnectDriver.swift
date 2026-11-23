@@ -18,7 +18,7 @@ import Foundation
 /// save, as typed in the page, and never comes back (`draftView()` says only
 /// whether it is set). The Slack configuration token reaches the wizard's
 /// token field for one Slack step (create, or the update of an app whose
-/// settings link was saved) and is cleared when the step ends; Publish gets
+/// App ID was saved) and is cleared when the step ends; Publish gets
 /// its own token from the controller's card. Every failure line that goes
 /// back with a secret's result passes `ConnectSecret.failure` first.
 @MainActor
@@ -64,14 +64,21 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             return .failure(.failed("\(unreadable.title). \(unreadable.body)"))
         }
         let draft = wizard.draft
+        // Discovery pre-ticks the vendors it found: those are not the
+        // customer's choice until they confirm the Services step, so the
+        // read says none and the playbook asks. Values already saved for a
+        // vendor still show.
+        let confirmed = wizard.servicesConfirmed
+        let services = confirmed ? wizard.ticked : []
         var vendors: [String: ConnectCompanyDraft.Vendor] = [:]
-        for v in wizard.ticked {
+        for v in wizard.ticked where confirmed || wizard.hasEntries(v) {
             let checked = wizard.isChecked(v)
             let skipped = wizard.isSkipped(v)
             vendors[v.rawValue] = switch v {
             case .slack:
                 .init(clientID: Self.nonEmpty(wizard.slack.record(appID: draft.slack.appID)?.clientID), clientSecretSet: false,
-                      checked: checked, skipped: skipped, ready: wizard.slackAppReady)
+                      checked: checked, skipped: skipped, ready: wizard.slackAppReady, app: slackAppChoice,
+                      appID: wizard.slackReuse?.appID ?? Self.nonEmpty(draft.slack.appID))
             case .google:
                 .init(clientID: Self.nonEmpty(draft.google?.clientID), clientSecretSet: !(draft.google?.clientSecret ?? "").isEmpty,
                       checked: checked, skipped: skipped)
@@ -86,7 +93,23 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             }
         }
         let company = draft.company.isEmpty ? wizard.publishName.trimmingCharacters(in: .whitespacesAndNewlines) : draft.company
-        return .success(Self.json(ConnectCompanyDraft(company: company, vendors: vendors)))
+        return .success(Self.json(ConnectCompanyDraft(company: company, services: services.map(\.rawValue),
+                                                      vendors: vendors)))
+    }
+
+    /// The customer's choice on the wizard's Slack step, so the agent does
+    /// not ask again: an app picked or an App ID entered → `existing`,
+    /// **We already have one** → `existing`, **Create new** → `new`; nil
+    /// while no choice is made (the step not opened yet, or its first screen,
+    /// Back included: Back clears the chosen app). The wizard keeps it in
+    /// memory only: after a relaunch it is asked again.
+    private var slackAppChoice: String? {
+        if wizard.slackReuse != nil { return "existing" }
+        switch wizard.phase(.slack) {
+        case .existing: return "existing"
+        case .create: return "new"
+        case .looking, .found, .nothingFound, .reuseSecret, .noOrgAccess: return nil
+        }
     }
 
     /// The keys a `company_draft` save takes: any vendor's call carries the
@@ -94,7 +117,8 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
     package static let commonKeys: Set<String> = ["company", "services", "deny_hosts"]
     package static func vendorKeys(_ v: CompanyVendor) -> Set<String> {
         switch v {
-        case .slack: ["settings_link", "client_id"]
+        // `settings_link` is the older name of `app_id`: either takes the id or a link to the app.
+        case .slack: ["app_id", "settings_link", "client_id"]
         case .google, .linear: ["client_id"]
         case .atlassian: ["client_id", "site", "confluence"]
         case .microsoft: ["client_id", "tenant_id"]
@@ -116,7 +140,10 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             // Values for a service mean the company uses it.
             if !wizard.ticked.contains(v) { wizard.toggle(v) }
         }
-        if let services = fields["services"] { applyServices(Self.list(services)) }
+        if let services = fields["services"] {
+            applyServices(Self.list(services))
+            wizard.confirmServices()
+        }
         if let name = fields["company"] { wizard.setCompanyName(name) }
         if let hosts = fields["deny_hosts"] { applyDenyHosts(Self.list(hosts).map { $0.lowercased() }) }
         guard await wizard.saveNow() else { return .failure(.failed(wizard.storageProblem ?? openFailed)) }
@@ -140,15 +167,18 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             return .badArgs(CompanySetupWizardModel.denyInvalid)
         }
         if let on = fields["confluence"], on != "true", on != "false" { return .badArgs("confluence is true or false") }
-        if let link = fields["settings_link"], CompanySetupWizardModel.appID(fromSettingsLink: link) == nil {
-            return .badArgs(CompanySetupWizardModel.slackSettingsInvalid)
+        if fields["app_id"] != nil, fields["settings_link"] != nil {
+            return .badArgs("app_id and settings_link both name the Slack app; give app_id only")
+        }
+        if let entered = slackApp(fields), CompanySetupWizardModel.slackAppID(from: entered) == nil {
+            return .badArgs(CompanySetupWizardModel.slackAppIDInvalidLine)
         }
         return nil
     }
 
     /// What the wizard's state refuses: a running step, dropping a service
-    /// that holds entries (the customer's call on the page), a settings link
-    /// of another app while the setup's Slack app is ready.
+    /// that holds entries (the customer's call on the page), the App ID of
+    /// another app while the setup's Slack app is ready.
     private func stateRefusal(_ v: CompanyVendor, _ fields: [String: String]) -> ConnectDriverError? {
         let own = fields.keys.contains { Self.vendorKeys(v).contains($0) }
         if own, v == .slack ? wizard.slack.isRunning : wizard.isRunning(v) { return .busy }
@@ -159,13 +189,18 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
                     + "setup wizard's Services step")
             }
         }
-        if let link = fields["settings_link"], let appID = CompanySetupWizardModel.appID(fromSettingsLink: link),
+        if let entered = Self.slackApp(fields), let appID = CompanySetupWizardModel.slackAppID(from: entered),
            wizard.slackAppReady, wizard.draft.slack.appID != appID {
             return .failed(Self.otherSlackApp(wizard.draft.slack.appID))
         }
-        if fields["settings_link"] != nil, wizard.publishState == .running { return .failed(Self.publishRunning) }
-        if fields["settings_link"] != nil, wizard.discarding { return .failed(Self.discarding) }
+        if Self.slackApp(fields) != nil, wizard.publishState == .running { return .failed(Self.publishRunning) }
+        if Self.slackApp(fields) != nil, wizard.discarding { return .failed(Self.discarding) }
         return nil
+    }
+
+    /// The Slack app as the save names it (`app_id`, or its older name `settings_link`).
+    private static func slackApp(_ fields: [String: String]) -> String? {
+        fields["app_id"] ?? fields["settings_link"]
     }
 
     private func applyServices(_ names: [String]) {
@@ -195,25 +230,25 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
         return nil
     }
 
-    /// The Slack app's settings link: the wizard's Slack-step handoff
-    /// (`request(.slackStep(appID:))`), then **We already have one** with
-    /// the link. Its Client ID comes from the setup record or what the wizard
+    /// The Slack app's App ID (or a link to it): the wizard's Slack-step
+    /// handoff (`request(.slackStep(appID:))`), then **We already have one**
+    /// with the id. Its Client ID comes from the setup record or what the wizard
     /// found on this Mac; the agent's `client_id` is used when it gave one.
     private func applySlack(_ fields: [String: String]) async -> ConnectDriverError? {
-        guard let link = fields["settings_link"] else {
+        guard let entered = Self.slackApp(fields) else {
             if let id = fields["client_id"] { wizard.setField(.slack, .clientID, id.trimmingCharacters(in: .whitespacesAndNewlines)) }
             return nil
         }
-        let appID = CompanySetupWizardModel.appID(fromSettingsLink: link) ?? ""
+        let appID = CompanySetupWizardModel.slackAppID(from: entered) ?? ""
         // The setup's own app, ready on this Mac: nothing to adopt.
         if wizard.slackAppReady, wizard.draft.slack.appID == appID { return nil }
         guard await openSlackStep(appID: appID) else { return .failed(Self.slackDidNotStart) }
         wizard.abandonSlackStep()  // an earlier attempt starts over for this app
         shownUpdate = nil
         wizard.alreadyHaveOne()
-        wizard.setField(.slack, .slackSettingsLink, link.trimmingCharacters(in: .whitespacesAndNewlines))
+        wizard.setField(.slack, .slackAppID, appID)
         if let id = fields["client_id"] { wizard.setField(.slack, .clientID, id.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        await wizard.next()  // Continue: the link names the app to update
+        await wizard.next()  // Continue: the App ID names the app to update
         return nil
     }
 
@@ -243,7 +278,7 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
     }
 
     /// The wizard's Slack step with the token: an update of the app whose
-    /// settings link was saved (its changes then wait on the confirm card),
+    /// App ID was saved (its changes then wait on the confirm card),
     /// else a new app from Watchtower's manifest.
     private func runSlackStep(token: String) async -> Result<Data, ConnectDriverError> {
         shownUpdate = nil
@@ -251,7 +286,12 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
         guard await ensureOpen() else { return .failure(.failed(openFailed)) }
         if wizard.slack.isRunning { return .failure(.busy) }
         if wizard.publishState == .running { return .failure(.failed(Self.publishRunning)) }
-        let linked = CompanySetupWizardModel.appID(fromSettingsLink: wizard.slackSettingsLink)
+        // An app picked on the Slack step (found on this Mac) has no typed App ID:
+        // it goes into the field, so the token updates that app instead of creating one.
+        if CompanySetupWizardModel.slackAppID(from: wizard.slackAppIDInput) == nil, let picked = wizard.slackReuse?.appID {
+            wizard.slackAppIDInput = picked
+        }
+        let linked = CompanySetupWizardModel.slackAppID(from: wizard.slackAppIDInput)
         guard await openSlackStep(appID: linked ?? "") else { return .failure(.failed(Self.slackDidNotStart)) }
         if wizard.slackAppReady { return .success(Self.json(["result": "exists", "app_id": wizard.draft.slack.appID])) }
         wizard.abandonSlackStep()  // an earlier attempt's problem or diff starts over
@@ -503,8 +543,8 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
     package static let publishStopped = "Publish did not go through."
     package static let checkLeft = "The check's values changed while it ran. Check again."
     package static let slackDidNotStart = "The Slack step did not start. Open the setup wizard's Slack step."
-    package static let slackFoundExisting = "This workspace already has a Watchtower app. Save its settings link "
-        + "(https://api.slack.com/apps/A…), then send the token again to update that app."
+    package static let slackFoundExisting = "This workspace already has a Watchtower app. Save its App ID (`app_id`, "
+        + "like A0123ABCD), then send the token again to update that app."
     package static let slackStopped = "The Slack step stopped before the app was ready. Finish it in the setup wizard."
     package static let updateGone = "The Slack update is no longer waiting. Run the Slack step again."
     package static func otherSlackApp(_ appID: String) -> String {

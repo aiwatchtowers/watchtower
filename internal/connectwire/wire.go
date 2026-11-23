@@ -165,16 +165,24 @@ type Choice struct {
 }
 
 // CompanyDraft is company_draft: the wizard draft without its secrets, only
-// whether each is set.
+// whether each is set. Services is what the customer ticked on the wizard's
+// Services step, in the wizard's order; Vendors holds exactly those. It is
+// empty until the customer confirms that step (continues past it, or the
+// agent saves a list): discovery's pre-ticks are not their choice. Vendors
+// then holds only the ticked vendors that already hold values.
 type CompanyDraft struct {
-	Company string                 `json:"company"`
-	Vendors map[string]VendorDraft `json:"vendors"`
+	Company  string                 `json:"company"`
+	Services []string               `json:"services"`
+	Vendors  map[string]VendorDraft `json:"vendors"`
 }
 
 // VendorDraft is one vendor's part of the draft: its non-secret values,
 // whether its secret is set, whether its check passed for these values
 // (Checked) or the customer skipped it. Slack has no check: Ready says
-// whether its app is set up on this Mac (absent for the other vendors).
+// whether its app is set up on this Mac, App is the customer's choice
+// on the wizard's Slack step, "new" or "existing", and AppID the App ID
+// already entered or picked for the setup's app (all absent for the other
+// vendors; App before a choice, AppID before an app is named).
 type VendorDraft struct {
 	ClientID        string `json:"client_id,omitempty"`
 	TenantID        string `json:"tenant_id,omitempty"`
@@ -183,6 +191,8 @@ type VendorDraft struct {
 	Checked         bool   `json:"checked"`
 	Skipped         bool   `json:"skipped"`
 	Ready           *bool  `json:"ready,omitempty"`
+	App             string `json:"app,omitempty"`
+	AppID           string `json:"app_id,omitempty"`
 }
 
 // CompanyChecked is company_check's own result: ok (Account is the

@@ -170,6 +170,34 @@ final class ConnectEntryPointsTests: XCTestCase {
         XCTAssertEqual(pressed, 1)
     }
 
+    /// The company setup wizard offers the assistant on its own draft
+    /// (#1149), under the same rules as the other entry points.
+    func testCompanySetupWizardOffersSetUpWith() async throws {
+        let state = appState()
+        let agent = try XCTUnwrap(state.companySetupAgent)
+        XCTAssertEqual(agent.harness.name, "Claude")
+        agent.open()
+        XCTAssertEqual(state.connectAssistantService, AppState.companyConnectService)
+        let session = try XCTUnwrap(state.connectAssistants.loaded("company"))
+        XCTAssertEqual(session.displayName, "your company")
+        XCTAssertNil(appState(ready: []).companySetupAgent, "no harness offered")
+        XCTAssertNil(appState(policy: ["AllowedAIProviders": ["ollama"]]).companySetupAgent, "MDM leaves none")
+        XCTAssertEqual(appState(policy: ["AllowedAIProviders": ["codex"]]).companySetupAgent?.harness.name, "Codex")
+
+        // The page's header: on the first step, and gone without an agent.
+        let cli = CompanyScriptedCLI()
+        let model = CompanySetupWizardModel(streamer: cli, slack: SlackAppSetupModel(streamer: cli, mode: .wizard))
+        await model.open()
+        var pressed = 0
+        let page = CompanySetupPage(model: model, actions: CompanySetupActions(agent: (.fixture("claude"), { pressed += 1 })),
+                                    layout: .wide)
+        XCTAssertEqual(model.current, .services)
+        try page.inspect().find(button: "Set up with Claude").tap()
+        XCTAssertEqual(pressed, 1)
+        let plain = CompanySetupPage(model: model, actions: CompanySetupActions(), layout: .wide)
+        XCTAssertThrowsError(try plain.inspect().find(button: "Set up with Claude"))
+    }
+
     // MARK: - Panel
 
     func testSetUpByHandOpensService() throws {
@@ -214,6 +242,7 @@ final class ConnectEntryPointsTests: XCTestCase {
         XCTAssertFalse(ConnectAssistantHost.acceptsQuestions(.empty))
         XCTAssertFalse(ConnectAssistantHost.acceptsQuestions(.failed(.quota)))
         XCTAssertFalse(ConnectAssistantHost.acceptsQuestions(.busy))
+        XCTAssertFalse(ConnectAssistantHost.acceptsQuestions(.browserMissing), "the agent's first turn has not started")
         XCTAssertTrue(ConnectAssistantHost.acceptsQuestions(.listening))
         XCTAssertTrue(ConnectAssistantHost.acceptsQuestions(.secret(label: "Token")))
         XCTAssertTrue(ConnectAssistantHost.acceptsQuestions(.done(accounts: 1, noun: .account)))
@@ -350,6 +379,53 @@ final class ConnectEntryPointsTests: XCTestCase {
         state.openConnectAssistant(service: "company")
         XCTAssertFalse(state.connectAssistants.loaded("company") === session, "an idle done session is made anew")
         XCTAssertTrue(state.connectAssistantPanelSession === state.connectAssistants.loaded("company"))
+    }
+
+    /// The browser-missing pause routes through the app state: Check again
+    /// runs a probe turn on the same session, Continue without the browser
+    /// starts its first turn in words.
+    func testBrowserMissingRoutesCheckAgainAndContinue() async throws {
+        let state = appState(ready: ["claude"])
+        let ai = ScriptedAIService()
+        install(ai: ai, in: state)
+        let session = try await pausedBrowserRun(state, ai: ai)
+
+        state.connectAssistantRun(.checkBrowser, service: "company")
+        XCTAssertEqual(session.browserCheck, .checking)
+        await ai.untilCalls(2)
+        XCTAssertEqual(ai.calls[1].prompt, ConnectBrowserProbe.prompt, "Check again is a probe call")
+        XCTAssertEqual(ai.calls[1].connectArgs, ConnectBrowserProbe.connectArgs(service: "company"))
+        answerProbe(ai, "[]", call: 1)
+        await session.prepared()
+        XCTAssertEqual(session.state, .browserMissing)
+        XCTAssertTrue(state.connectAssistants.loaded("company") === session, "the same session")
+
+        state.connectAssistantRun(.continueWithoutBrowser, service: "company")
+        await session.prepared()
+        await session.engine?.started()
+        XCTAssertEqual(ai.calls.count, 3)
+        XCTAssertEqual(ai.calls[2].prompt, ConnectAssistantSession.startPrompt)
+        XCTAssertEqual(ai.calls[2].connectArgs?.last, "words", "a words run")
+    }
+
+    /// A run paused on the browser is under way: an offer change that keeps
+    /// its harness keeps the session; one that removes the harness drops it.
+    func testBrowserMissingPauseSurvivesAnOfferChange() async throws {
+        XCTAssertTrue(AppState.runUnderWay(.browserMissing))
+        let state = appState(ready: ["claude"])
+        let ai = ScriptedAIService()
+        install(ai: ai, in: state)
+        let session = try await pausedBrowserRun(state, ai: ai)
+
+        state.connectReadyProviders = ["claude", "codex"]
+        XCTAssertTrue(state.currentConnectSession("company") === session, "the paused run is kept")
+        XCTAssertEqual(session.state, .browserMissing)
+
+        state.connectReadyProviders = ["codex"]
+        let fresh = state.currentConnectSession("company")
+        XCTAssertFalse(fresh === session, "its harness is gone: the session is made anew")
+        XCTAssertEqual(fresh?.harness.id, "codex")
+        XCTAssertEqual(session.state, .empty, "the dropped session's run ended")
     }
 
     // MARK: - Details, onboarding, company entries (Task 15)
@@ -571,6 +647,28 @@ final class ConnectEntryPointsTests: XCTestCase {
                 aiService: ai, probe: ConnectBrowserProbe(aiService: ai), gate: EmbeddedStreamGate())
         }
         addTeardownBlock { @MainActor in state.connectAssistant.closeAll() }
+    }
+
+    /// A company run on the browser harness whose probe found no browser:
+    /// paused before its first turn.
+    private func pausedBrowserRun(_ state: AppState, ai: ScriptedAIService) async throws -> ConnectAssistantSession {
+        state.openConnectAssistant(service: "company")
+        let session = try XCTUnwrap(state.connectAssistants.loaded("company"))
+        XCTAssertEqual(session.harness.capability, .browser)
+        session.start()
+        await ai.untilCalls(1)
+        answerProbe(ai, "[]", call: 0)
+        await session.prepared()
+        XCTAssertEqual(session.state, .browserMissing)
+        return session
+    }
+
+    /// Answers the probe turn at `call` with `result` as the list tool's.
+    private func answerProbe(_ ai: ScriptedAIService, _ result: String, call: Int) {
+        ai.emit(.toolStart(ChatToolStart(turnID: "p", id: "probe\(call)",
+                                         name: "claude-in-chrome:list_connected_browsers", argsJSON: "{}")),
+                .toolEnd(ChatToolEnd(turnID: "p", id: "probe\(call)", ok: true, summary: result, sources: [])),
+                call: call)
     }
 
     /// Starts a words-only run. A browser harness would first run a probe

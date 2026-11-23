@@ -102,7 +102,7 @@ final class CompanySetupWizardEntryTests: XCTestCase {
 
         model.back()
         model.alreadyHaveOne()
-        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        model.setField(.slack, .slackAppID, "https://api.slack.com/apps/A0ACME")
         await model.next()
         cli.on(["slack", "app", "adopt"], [#"{"result":"not_collaborator","team_id":"T0ACME","team_name":"acme"}"#])
         await model.next()

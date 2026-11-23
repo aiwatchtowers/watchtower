@@ -634,7 +634,7 @@ package final class SlackAppSetupModel {
         case "existing_app":
             reset(.adopt(Adopt(target: target)))
             // The wizard has no adopt form of its own: it turns this into a
-            // reuse of the app (or asks for its settings link).
+            // reuse of the app (or asks for its App ID).
             if mode == .wizard { existingApp = target }
         case "builtin_app_pkce_deferred":
             phase = .finished(.builtinAppDeferred(workspace: target.workspace))

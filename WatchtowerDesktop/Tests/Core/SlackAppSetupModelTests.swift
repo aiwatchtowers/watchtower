@@ -1107,7 +1107,7 @@ final class SlackAppSetupModelTests: XCTestCase {
         await reported(outcomes)
         XCTAssertEqual(outcomes.outcomes, [.failed(.wrongWorkspace(appID: "A0ACME", appTeam: "T0OTHER", workspace: "acme"))])
         XCTAssertEqual(wizard.notice?.body, "App A0ACME belongs to another workspace (T0OTHER), not acme. "
-            + "Check the link and paste it again.")
+            + "Check the App ID and enter it again.")
     }
 
     /// The wizard's found app: adopt passes its Client ID, and confirm_app
