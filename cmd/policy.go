@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/companybundle"
 	"watchtower/internal/policy"
+	"watchtower/internal/purge"
 )
 
 var policyCmd = &cobra.Command{
@@ -104,7 +105,7 @@ func printPolicy(w io.Writer, p policy.Policy) error {
 		{policy.KeyAllowedAIProviders, plainList(k.AllowedAIProviders)},
 		{policy.KeyAllowClaudeAITools, plainAllowed(k.AllowClaudeAITools)},
 		{policy.KeyPurgeRevokedData, plainOnOff(k.PurgeRevokedData)},
-		{policy.KeyPurgeGraceHours, plainHours(k.PurgeGraceHours)},
+		{policy.KeyPurgeGraceHours, plainGraceHours(k.PurgeGraceHours, hasPolicyProblem(p, policy.KeyPurgeGraceHours))},
 		{policy.KeyAllowBackgroundAI, plainAllowed(k.AllowBackgroundAI)},
 		{policy.KeySlackApps, plainSlackApps(k.SlackApps)},
 		{policy.KeyCompanyBundle, plainCompanyBundle(k.CompanyBundle)},
@@ -155,11 +156,29 @@ func plainSlackApps(v []policy.SlackApp) string {
 	return strings.Join(parts, ", ")
 }
 
-func plainHours(v *int) string {
-	if v == nil {
+// plainGraceHours words PurgeGraceHours as the Desktop's Organization policy
+// line does (OrganizationPolicyPresentation): a refused value leaves the
+// standard notice, 0 deletes at the next sync.
+func plainGraceHours(v *int, problem bool) string {
+	switch {
+	case v == nil && problem:
+		return fmt.Sprintf("%d hours (profile value ignored)", int(purge.Grace.Hours()))
+	case v == nil:
 		return policyNotSet
+	case *v == 0:
+		return "none (deleted at the next sync)"
 	}
 	return fmt.Sprintf("%d hours", *v)
+}
+
+// hasPolicyProblem reports whether the delivered profile's key was refused.
+func hasPolicyProblem(p policy.Policy, key string) bool {
+	for _, e := range p.Errors {
+		if e.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func plainString(v *string) string {

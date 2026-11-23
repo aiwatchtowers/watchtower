@@ -104,9 +104,13 @@ func TestPolicyShow_PlainBackgroundAI(t *testing.T) {
 
 func TestPolicyShow_PlainPurgeGraceHours(t *testing.T) {
 	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(0)})
-	assert.Contains(t, runPolicyShow(t), "PurgeGraceHours: 0 hours\n")
+	assert.Contains(t, runPolicyShow(t), "PurgeGraceHours: none (deleted at the next sync)\n")
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(24)})
+	assert.Contains(t, runPolicyShow(t), "PurgeGraceHours: 24 hours\n")
 	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(1000)})
 	out := runPolicyShow(t)
-	assert.Contains(t, out, "PurgeGraceHours: not set\n")
+	assert.Contains(t, out, "PurgeGraceHours: 72 hours (profile value ignored)\n")
 	assert.Contains(t, out, "Profile problems: PurgeGraceHours (unknown_value)\n")
+	policytest.Set(t, map[string]any{"PurgeGraceHours": "24"})
+	assert.Contains(t, runPolicyShow(t), "PurgeGraceHours: 72 hours (profile value ignored)\n")
 }
