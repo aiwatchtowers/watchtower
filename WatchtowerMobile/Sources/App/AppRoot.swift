@@ -992,28 +992,41 @@ extension AppRoot: LinkHost {
         return adopt(session)
     }
 
-    func fetchKeybox(hubID: String, deviceID: String) async -> Keybox? {
-        guard let session = env.session(hubID) else { return nil }
-        await session.refresh(.link)
-        return await storedKeybox(hubID: hubID, deviceID: deviceID)
+    func fetchKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
+        guard let session = env.session(hubID) else { return .unavailable(reason: "no session") }
+        guard await session.refresh(.link) else { return .unavailable(reason: "the fetch failed") }
+        return replicaKeybox(session, deviceID: deviceID)
     }
 
-    func serverKeybox(hubID: String, deviceID: String) async -> ServerKeybox {
-        guard let session = env.session(hubID), let id = UUID(uuidString: deviceID) else { return .unavailable }
+    func serverKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
+        guard let session = env.session(hubID) else { return .unavailable(reason: "no session") }
+        guard let id = UUID(uuidString: deviceID) else { return .unavailable(reason: "a device id that is not a UUID") }
         return await session.serverKeybox(deviceID: id)
     }
 
+    func sendDirectly(_ record: CloudRecord, hubID: String) async -> Bool {
+        guard let session = env.session(hubID) else { return false }
+        return await session.sendDirectly(record)
+    }
+
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox? {
-        guard let session = env.session(hubID) else { return nil }
-        guard let id = UUID(uuidString: deviceID) else {
-            Self.logger.error("keybox read for a device id that is not a UUID")
+        guard let session = env.session(hubID), case .read(let keybox) = replicaKeybox(session, deviceID: deviceID) else {
             return nil
         }
+        return keybox
+    }
+
+    /// The replica's keybox of this phone: an absence is `.read(nil)`, a copy that does not open `.unavailable`.
+    private func replicaKeybox(_ session: HubSession, deviceID: String) -> KeyboxRead {
+        guard let id = UUID(uuidString: deviceID) else {
+            Self.logger.error("keybox read for a device id that is not a UUID")
+            return .unavailable(reason: "a device id that is not a UUID")
+        }
         do {
-            return try session.keybox(deviceID: id)
+            return .read(try session.keybox(deviceID: id))
         } catch {
             Self.logger.error("keybox read failed: \(String(describing: error), privacy: .public)")
-            return nil
+            return .unavailable(reason: String(describing: error))
         }
     }
 

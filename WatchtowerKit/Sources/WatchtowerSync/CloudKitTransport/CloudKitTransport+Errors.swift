@@ -64,6 +64,19 @@ extension CloudKitTransport {
         return true
     }
 
+    /// A call outside the engine failed (the link flow's direct read or save, #2189): the throttle codes throttle as
+    /// `applyThrottle` does, a `.serviceUnavailable` naming a retry-after waits it out too, and a zone gone unlinks
+    /// the phone role as a fetch does.
+    func applyDirectCallFailure(_ error: CKError) {
+        if !managesZones, Self.zoneGoneCodes.contains(error.code) {
+            emitUnlinked(reason: "zone not found on a direct call")
+            return
+        }
+        if applyThrottle(from: [error]) { return }
+        guard error.code == .serviceUnavailable, let retryAfter = error.retryAfterSeconds else { return }
+        throttle(retryAfter: retryAfter)
+    }
+
     /// Waits `retryAfter` (the server's `CKErrorRetryAfterKey`) or the
     /// default backoff — 5 s, doubling to a 120 s cap — then sends again.
     private func throttle(retryAfter: TimeInterval?) {

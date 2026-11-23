@@ -349,32 +349,4 @@ final class CloudKitConditionalTests: XCTestCase {
         ])
         XCTAssertEqual(database.calls.count, 1, "one call for what goes out")
     }
-
-    /// #2189: the link flow's keybox read — one record by name in the data zone, nothing buffered, nil when absent.
-    func testServerRecordReadsOneRecordByNameWithoutBuffering() async throws {
-        let (transport, database, store) = try make()
-        let keybox = CloudKitTransport.ckRecord(
-            from: record("keybox-DEVICE", zone: .data, payload: "sealed"), in: zones.zoneID(for: .data), systemFields: nil)
-        database.seed(keybox)
-
-        let read = try await transport.serverRecord(named: "keybox-DEVICE", in: .data)
-        let absent = try await transport.serverRecord(named: "keybox-OTHER", in: .data)
-
-        XCTAssertEqual(read?.payload, Data("sealed".utf8))
-        XCTAssertEqual(read?.zone, .data)
-        XCTAssertNil(absent)
-        XCTAssertEqual(database.fetches.map(\.zoneID), [zones.zoneID(for: .data), zones.zoneID(for: .data)])
-        XCTAssertNil(try store.latestEvent(recordName: "keybox-DEVICE", zone: .data), "nothing buffered")
-    }
-
-    func testServerRecordThrowsWhatCloudKitThrew() async throws {
-        let (transport, database, _) = try make()
-        database.fetchFailures = [CKError(.networkUnavailable)]
-        do {
-            _ = try await transport.serverRecord(named: "keybox-DEVICE", in: .data)
-            XCTFail("expected a throw")
-        } catch let error as CKError {
-            XCTAssertEqual(error.code, .networkUnavailable)
-        }
-    }
 }

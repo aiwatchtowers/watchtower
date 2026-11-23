@@ -138,7 +138,8 @@ extension CloudKitTransport {
         store: TransportStore,
         database: FakeConditionalDatabase,
         scope: CloudDatabaseScope = .shared(ownerName: "_owner-acme"),
-        role: TransportRole = .phone
+        role: TransportRole = .phone,
+        sleep: @escaping @Sendable (TimeInterval) async -> Void = { _ in }
     ) -> CloudKitTransport {
         CloudKitTransport(
             store: store,
@@ -149,7 +150,7 @@ extension CloudKitTransport {
             zoneAdmin: FakeZoneAdmin(),
             engineFactory: { _, _ in FakeSyncEngine() },
             now: { Date() },
-            sleep: { _ in },
+            sleep: sleep,
             conditionalDatabase: database
         )
     }

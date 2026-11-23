@@ -103,6 +103,7 @@
 		3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */; };
 		39AEE33DBF4A276999156B19 /* AskFormModel+Status.swift in Sources */ = {isa = PBXBuildFile; fileRef = 297FDFC3CED17D5BE064E1CC /* AskFormModel+Status.swift */; };
 		3B22414D2DC93304FBB9F14A /* SettingsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE2448E3D10E3EFE8D35624C /* SettingsCard.swift */; };
+		3D1F86C483F0FC176AA2AB65 /* HubSession+LinkDirect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC980412754C1BF8DFDE505 /* HubSession+LinkDirect.swift */; };
 		3D557174679E0AFAA39B9A37 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
 		3DCA97C1B1714F027E9818BA /* BoardFilterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */; };
 		3F4CE8C40D6A23A14D2DD4C4 /* ReplicaKindTrackingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49728A0913682F844134761D /* ReplicaKindTrackingTests.swift */; };
@@ -547,6 +548,7 @@
 		4EAF7C6AFEA9CB356F5426FF /* WorkbenchAutomationsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchAutomationsModel.swift; sourceTree = "<group>"; };
 		4EF0E3D3509281E6EB30B918 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4F002CAE331C61F2C2A8FB21 /* AppRoot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRoot.swift; sourceTree = "<group>"; };
+		4FC980412754C1BF8DFDE505 /* HubSession+LinkDirect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HubSession+LinkDirect.swift"; sourceTree = "<group>"; };
 		4FF1DEE60B1E5462B1C74622 /* LinkRoutePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkRoutePolicy.swift; sourceTree = "<group>"; };
 		50C541622A53F69CE0F9053F /* InboxCardDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxCardDetailView.swift; sourceTree = "<group>"; };
 		51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardFilterTests.swift; sourceTree = "<group>"; };
@@ -1102,6 +1104,7 @@
 				8CE5870D1C2DF528494FD4A0 /* HubSession.swift */,
 				14B25D8C909B1B658ECF2B57 /* HubSession+Chats.swift */,
 				27B8A123959C505948B145E6 /* HubSession+Inbox.swift */,
+				4FC980412754C1BF8DFDE505 /* HubSession+LinkDirect.swift */,
 				3F85904478D4CEABAE6CE7DB /* HubSession+Overlays.swift */,
 				4856D6B222E9182B2632BE9B /* HubSession+ReaderStatus.swift */,
 				2C7BE965E32256F4C81D29A0 /* HubSession+RecordingHandover.swift */,
@@ -1715,6 +1718,7 @@
 				B4A66F05DE7C4B0EDB09BC6A /* HubRegistry.swift in Sources */,
 				78BD3CD238277CBF445B2B49 /* HubSession+Chats.swift in Sources */,
 				FA0F29FAB895E8583838ACEA /* HubSession+Inbox.swift in Sources */,
+				3D1F86C483F0FC176AA2AB65 /* HubSession+LinkDirect.swift in Sources */,
 				2566B87550293F9A17166902 /* HubSession+Overlays.swift in Sources */,
 				8FB166E987D0412D7DDBC10E /* HubSession+ReaderStatus.swift in Sources */,
 				ED65ED4CF15623705631BC86 /* HubSession+RecordingHandover.swift in Sources */,

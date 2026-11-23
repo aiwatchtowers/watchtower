@@ -263,21 +263,31 @@ struct RelayRefusedRecord: Codable, Equatable, Sendable {
     }
 }
 
+/// Where the link flow read its keybox (#2189).
+enum KeyboxSource: String, Codable, Sendable {
+    /// The server's copy of the keybox record, by name (`LinkHost.serverKeybox`).
+    case server
+    /// The replica's copy after one fetch (`LinkHost.fetchKeybox`).
+    case replica
+}
+
 /// A link written to the Mac and not answered yet (spec §2.3 step 5). Kept
 /// across a kill, so a relaunch resumes the wait for what is left of it.
 struct PendingLink: Codable, Equatable, Sendable {
     let link: LinkRecord
     /// The end of the 60 s grant wait, on the phone's clock.
     let deadline: Date
-    /// This phone's grant as the server held it just before the device
-    /// record was written (one read of its keybox record; the replica's after
-    /// a fetch where that read is unavailable): an earlier answer (a refusal
-    /// of another code) is not this scan's.
+    /// This phone's grant just before the device record was written, as
+    /// `baselineSource` held it: an earlier answer (a refusal of another
+    /// code) is not this scan's.
     let baseline: DeviceGrant?
     /// `baseline` was read (nil then means no grant). false while the sync
     /// stack restarts, before the device record is written; a value saved
     /// by an older build reads false.
     let baselineCaptured: Bool
+    /// Where `baseline` was read (#2189): every read of the wait, a resumed one included, goes to the same source,
+    /// so the server's copy and the replica's are never compared. nil in a value an older build saved: the replica.
+    let baselineSource: KeyboxSource?
     /// The scanned code's `iat`, on the Mac's clock (mobile E2E review M-3):
     /// a `linked` keybox decided before it is an older link, not this scan's
     /// confirmation. nil in a value an older build saved.
@@ -296,12 +306,14 @@ struct PendingLink: Codable, Equatable, Sendable {
         baselineCaptured: Bool,
         issuedAt: Date? = nil,
         relaySlot: String? = nil,
-        relaySlotExpiresAt: Date? = nil
+        relaySlotExpiresAt: Date? = nil,
+        baselineSource: KeyboxSource? = nil
     ) {
         self.link = link
         self.deadline = deadline
         self.baseline = baseline
         self.baselineCaptured = baselineCaptured
+        self.baselineSource = baselineSource
         self.issuedAt = issuedAt
         self.relaySlot = relaySlot
         self.relaySlotExpiresAt = relaySlotExpiresAt
@@ -313,6 +325,8 @@ struct PendingLink: Codable, Equatable, Sendable {
         deadline = try container.decode(Date.self, forKey: .deadline)
         baseline = try container.decodeIfPresent(DeviceGrant.self, forKey: .baseline)
         baselineCaptured = try container.decodeIfPresent(Bool.self, forKey: .baselineCaptured) ?? false
+        // An unknown value (a newer build's source) reads as the replica, as an older build's absent one.
+        baselineSource = try? container.decodeIfPresent(KeyboxSource.self, forKey: .baselineSource)
         issuedAt = try container.decodeIfPresent(Date.self, forKey: .issuedAt)
         relaySlot = try container.decodeIfPresent(String.self, forKey: .relaySlot)
         relaySlotExpiresAt = try container.decodeIfPresent(Date.self, forKey: .relaySlotExpiresAt)

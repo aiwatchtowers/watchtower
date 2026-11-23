@@ -132,7 +132,8 @@ final class AppRootRelinkTests: XCTestCase {
         let zone = try XCTUnwrap(zones[hubID])
         try await TestPhone.hub(over: zone).save([try TestPhone.grantRecord(grant, keys: TestPhone.keyboxKeys(), modifiedAt: Date())])
         let fetched = await root.fetchKeybox(hubID: hubID, deviceID: deviceID)
-        XCTAssertNotNil(fetched)
+        guard case .read(let keybox?) = fetched else { return XCTFail("\(fetched)") }
+        XCTAssertEqual(keybox.grant.hubID, hubID)
 
         _ = try await root.prepare(route: .hostedRelay(macDeviceID: mac), hubID: hubID, fresh: false)
 

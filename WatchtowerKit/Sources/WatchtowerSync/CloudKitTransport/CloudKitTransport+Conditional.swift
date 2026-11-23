@@ -313,17 +313,8 @@ extension CloudKitTransport: ConditionalTransport {
         }
     }
 
-    /// The server's current copy of one record by its wire name (#2189): one `record(for:)` outside `CKSyncEngine`,
-    /// nothing buffered or stored, so the phone's link flow reads its keybox without the zones' full download a fresh
-    /// replica starts with. nil when the server has no such record, or only one of a type this build ignores. Throws
-    /// what CloudKit threw.
-    public func serverRecord(named recordName: String, in zone: CloudZoneID) async throws -> CloudRecord? {
-        let id = CKRecord.ID(recordName: recordName, zoneID: zones.zoneID(for: zone))
-        guard let server = try await conditionalDatabase().fetchRecord(id) else { return nil }
-        return Self.cloudRecord(from: server, zone: zone)
-    }
-
-    private func conditionalDatabase() -> any ConditionalDatabase {
+    /// The scope's database for calls outside the engine (`ConditionalDatabase`), built once.
+    func conditionalDatabase() -> any ConditionalDatabase {
         if let conditionalDatabaseStorage { return conditionalDatabaseStorage }
         let database = scope.database(in: CKContainer(identifier: containerID))
         conditionalDatabaseStorage = database
