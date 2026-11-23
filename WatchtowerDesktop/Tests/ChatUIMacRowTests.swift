@@ -186,9 +186,14 @@ final class ChatUIMacRowTests: XCTestCase {
     func testACutReplySaysTheMacOnTheMac() throws {
         let cut = ChatFeed.Message(id: 4, role: "assistant", text: "body", textCut: true, status: "complete",
                                    createdAt: .distantPast)
-        let mac = row(cut).environment(\.chatHostText, .mac)
-        XCTAssertNoThrow(try mac.inspect().find(text: "This message is cut here; the whole text is on your Mac."))
+        // The row draws `hostText.messageCut` under a cut reply (the default's line, found without any injection),
+        // and the Mac's chat style hands ChatUI `.mac`. Searching the styled row for the Mac's line instead leaned on
+        // ViewInspector's byte-pattern injection of a custom environment value into the nested part, which it skips
+        // silently on a pattern miss: the search then found the default line and flaked on CI.
         XCTAssertNoThrow(try row(cut).inspect().find(text: ChatHostText.plain.messageCut), "ChatUI's own line names no Mac")
+        let mac = row(cut).macChatStyle(hooks: ChatMacArtifactHooks())
+        XCTAssertEqual(try mac.inspect().environment(\.chatHostText), .mac, "the Mac's chats hand ChatUI the Mac's lines")
+        XCTAssertEqual(ChatHostText.mac.messageCut, "This message is cut here; the whole text is on your Mac.")
         XCTAssertFalse(ChatHostText.plain.messageCut.contains("Mac"))
         XCTAssertEqual(ChatHostText.mac.artifactCut, "This artifact is cut here; the whole text is on your Mac.")
         XCTAssertEqual(ChatHostText.mac.chooseSlackWorkspace, "Choose a workspace in Inbox › Needs approval before approving")
