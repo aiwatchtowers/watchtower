@@ -189,7 +189,8 @@ final class ChatUIMacRowTests: XCTestCase {
         // The row draws `hostText.messageCut` under a cut reply (the default's line, found without any injection),
         // and the Mac's chat style hands ChatUI `.mac`. Searching the styled row for the Mac's line instead leaned on
         // ViewInspector's byte-pattern injection of a custom environment value into the nested part, which it skips
-        // silently on a pattern miss: the search then found the default line and flaked on CI.
+        // silently on a pattern miss: the part then drew the default line and the search flaked on CI. That the part
+        // reads `hostText` rather than a fixed sentence is left to review (no injection-free way to vary it here).
         XCTAssertNoThrow(try row(cut).inspect().find(text: ChatHostText.plain.messageCut), "ChatUI's own line names no Mac")
         let mac = row(cut).macChatStyle(hooks: ChatMacArtifactHooks())
         XCTAssertEqual(try mac.inspect().environment(\.chatHostText), .mac, "the Mac's chats hand ChatUI the Mac's lines")
