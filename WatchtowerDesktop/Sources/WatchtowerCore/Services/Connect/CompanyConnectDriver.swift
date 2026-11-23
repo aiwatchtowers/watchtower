@@ -77,7 +77,8 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             vendors[v.rawValue] = switch v {
             case .slack:
                 .init(clientID: Self.nonEmpty(wizard.slack.record(appID: draft.slack.appID)?.clientID), clientSecretSet: false,
-                      checked: checked, skipped: skipped, ready: wizard.slackAppReady, app: slackAppChoice)
+                      checked: checked, skipped: skipped, ready: wizard.slackAppReady, app: slackAppChoice,
+                      appID: wizard.slackReuse?.appID ?? Self.nonEmpty(draft.slack.appID))
             case .google:
                 .init(clientID: Self.nonEmpty(draft.google?.clientID), clientSecretSet: !(draft.google?.clientSecret ?? "").isEmpty,
                       checked: checked, skipped: skipped)

@@ -251,6 +251,8 @@ package struct ConnectCompanyDraft: Codable, Equatable, Sendable {
     /// `app` the customer's choice on the wizard's Slack step: `new`
     /// (**Create new**) or `existing` (**We already have one**, or a found
     /// app picked); absent before a choice and for every other vendor.
+    /// `app_id` is Slack's App ID already entered or picked for the setup's
+    /// app, so the agent does not ask for it or read it again.
     package struct Vendor: Codable, Equatable, Sendable {
         package var clientID: String?
         package var tenantID: String?
@@ -261,9 +263,11 @@ package struct ConnectCompanyDraft: Codable, Equatable, Sendable {
         /// Absent for every vendor but Slack (Go `*bool`).
         package var ready: Bool? // swiftlint:disable:this discouraged_optional_boolean
         package var app: String?
+        package var appID: String?
 
         private enum CodingKeys: String, CodingKey {
             case site, checked, skipped, ready, app
+            case appID = "app_id"
             case clientID = "client_id"
             case tenantID = "tenant_id"
             case clientSecretSet = "client_secret_set"

@@ -425,10 +425,12 @@ final class CompanyConnectDriverTests: XCTestCase {
         XCTAssertEqual(draft.vendors["slack"]?.app, "existing")
 
         // An App ID entered, then Back from the run's problem: the choice is open again.
+        XCTAssertNil(draft.vendors["slack"]?.appID, "no App ID entered yet")
         wizard.setField(.slack, .slackAppID, "A0ACME")
         await wizard.next()
         draft = try await read()
         XCTAssertEqual(draft.vendors["slack"]?.app, "existing")
+        XCTAssertEqual(draft.vendors["slack"]?.appID, "A0ACME", "the App ID entered: not asked again")
         wizard.slackToken = token
         cli.on(["slack", "app", "adopt"], [#"{"result":"not_collaborator","team_id":"T0ACME","team_name":"acme"}"#])
         await wizard.next()
@@ -453,6 +455,7 @@ final class CompanyConnectDriverTests: XCTestCase {
         await wizard.next()  // Use Watchtower
         draft = try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
         XCTAssertEqual(draft.vendors["slack"]?.app, "existing")
+        XCTAssertEqual(draft.vendors["slack"]?.appID, "A0ACME", "the picked app's App ID")
     }
 
     /// Discovery pre-ticks the vendors it found; the read says none until

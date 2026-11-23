@@ -179,9 +179,10 @@ type CompanyDraft struct {
 // VendorDraft is one vendor's part of the draft: its non-secret values,
 // whether its secret is set, whether its check passed for these values
 // (Checked) or the customer skipped it. Slack has no check: Ready says
-// whether its app is set up on this Mac, and App is the customer's choice
-// on the wizard's Slack step, "new" or "existing" (both absent for the
-// other vendors; App also before a choice).
+// whether its app is set up on this Mac, App is the customer's choice
+// on the wizard's Slack step, "new" or "existing", and AppID the App ID
+// already entered or picked for the setup's app (all absent for the other
+// vendors; App before a choice, AppID before an app is named).
 type VendorDraft struct {
 	ClientID        string `json:"client_id,omitempty"`
 	TenantID        string `json:"tenant_id,omitempty"`
@@ -191,6 +192,7 @@ type VendorDraft struct {
 	Skipped         bool   `json:"skipped"`
 	Ready           *bool  `json:"ready,omitempty"`
 	App             string `json:"app,omitempty"`
+	AppID           string `json:"app_id,omitempty"`
 }
 
 // CompanyChecked is company_check's own result: ok (Account is the
