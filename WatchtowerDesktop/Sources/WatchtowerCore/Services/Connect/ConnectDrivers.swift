@@ -239,10 +239,15 @@ package struct ConnectPending: Codable, Equatable, Sendable {
 }
 
 /// `company_draft`'s read (Go `CompanyDraft`): no secret, only whether each is set.
+/// `services` is what the customer ticked on the wizard's Services step, in
+/// the wizard's order (`vendors` holds exactly those).
 package struct ConnectCompanyDraft: Codable, Equatable, Sendable {
     /// One vendor: its non-secret values, whether its secret is set, whether
     /// its check passed for these values or the customer skipped it; Slack
-    /// (no check) says instead whether its app is `ready` on this Mac.
+    /// (no check) says instead whether its app is `ready` on this Mac, and
+    /// `app` the customer's choice on the wizard's Slack step: `new`
+    /// (**Create new**) or `existing` (**We already have one**, or a found
+    /// app picked); absent before a choice and for every other vendor.
     package struct Vendor: Codable, Equatable, Sendable {
         package var clientID: String?
         package var tenantID: String?
@@ -252,9 +257,10 @@ package struct ConnectCompanyDraft: Codable, Equatable, Sendable {
         package let skipped: Bool
         /// Absent for every vendor but Slack (Go `*bool`).
         package var ready: Bool? // swiftlint:disable:this discouraged_optional_boolean
+        package var app: String?
 
         private enum CodingKeys: String, CodingKey {
-            case site, checked, skipped, ready
+            case site, checked, skipped, ready, app
             case clientID = "client_id"
             case tenantID = "tenant_id"
             case clientSecretSet = "client_secret_set"
@@ -262,6 +268,7 @@ package struct ConnectCompanyDraft: Codable, Equatable, Sendable {
     }
 
     package let company: String
+    package let services: [String]
     package let vendors: [String: Vendor]
 }
 

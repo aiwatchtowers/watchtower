@@ -24,6 +24,8 @@ action: nav:connections
 
 **It presses Watchtower's own buttons.** The assistant starts the same sign-ins the forms start, so nothing new is stored and one connect runs at a time. It follows a written playbook per connector; you can read each one under [Connect with an agent](../README.md#connect-with-an-agent) in this guide.
 
+**It speaks your language and starts from what you chose.** The assistant writes in your **Assistant language** (**Settings → General**), or in the one you write to it in, and names buttons as they read on screen. What you already picked, such as the services and the company name in the company setup wizard, it takes as given and asks only for what is missing. Every page it sends you to is a link you can click.
+
 **You do the parts that are yours.** Passwords, two-step codes and the final **Allow** on a vendor's page are always your clicks. So is any click that shows a secret, such as Slack's **Generate Token** or Google's **Create** on a client form.
 
 **What you paste never reaches the assistant.** When a step needs a token, password, API key or client secret, the panel shows a card. You paste the value there and press **Send**; it goes straight to Watchtower and the assistant only hears whether it worked. In browser mode the assistant could read a vendor page that shows a secret while it is open, so close that page or dialog before you press **Send**; the card reminds you.
