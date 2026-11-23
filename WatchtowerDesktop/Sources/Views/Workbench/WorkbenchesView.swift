@@ -136,11 +136,13 @@ struct WorkbenchesView: View {
     private var sessionActions: SessionRowActions {
         SessionRowActions(
             open: { session in
+                // The click's keyboard mark: what the owner does after it wins.
+                let click = TerminalContainerView.keyboardEventCount
                 Task {
                     if session.projectID == nil {
-                        await vm.selectStandalone(session)
+                        await vm.openStandaloneRow(session, since: click)
                     } else {
-                        await vm.showSession(id: session.id)
+                        await vm.openSessionRow(id: session.id, since: click)
                     }
                 }
             },

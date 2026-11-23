@@ -708,7 +708,7 @@ jobs:
     # The key a main push saves its build under; prune-spm-cache keeps it.
     outputs:
       spm-key: ${{ steps.spm-key.outputs.key }}
-    # The Mac's runners have no window server: the four classes that need
+    # The Mac's runners have no window server: the five classes that need
     # one skip there (WindowServerTestGate) and run in Swift UI Tests.
     env:
       WATCHTOWER_CI_NO_WINDOW_SERVER: ${{ contains(needs.gate.outputs.swifttest, 'self-hosted') && '1' || '' }}
@@ -887,8 +887,8 @@ jobs:
         timeout-minutes: 10
         run: |
           set -o pipefail
-          swift test --skip-build --filter 'OwnerAskKeysTests|SessionsPanelKeyViewTests|WorkbenchBackSwipeTests|ChatSelectionQuoteTrackerTests' 2>&1 | tee "$RUNNER_TEMP/ui-tests.log"
-          for class in OwnerAskKeysTests SessionsPanelKeyViewTests WorkbenchBackSwipeTests ChatSelectionQuoteTrackerTests; do
+          swift test --skip-build --filter 'OwnerAskKeysTests|SessionsPanelKeyViewTests|SessionsPanelListKeyboardTests|WorkbenchBackSwipeTests|ChatSelectionQuoteTrackerTests' 2>&1 | tee "$RUNNER_TEMP/ui-tests.log"
+          for class in OwnerAskKeysTests SessionsPanelKeyViewTests SessionsPanelListKeyboardTests WorkbenchBackSwipeTests ChatSelectionQuoteTrackerTests; do
             grep -q "Test Suite '$class' passed" "$RUNNER_TEMP/ui-tests.log" ||
               { echo "::error::$class did not run"; exit 1; }
           done

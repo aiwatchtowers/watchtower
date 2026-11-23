@@ -56,7 +56,9 @@ extension WorkbenchesViewModel {
         panelCursor = visible[min(max(index + step, 0), visible.count - 1)]
     }
 
-    /// Return: the cursor row opens like a click on it.
+    /// Return: the cursor row's session opens and goes on screen; unlike a
+    /// click on the row, the keyboard stays with the panel (ask #195) — no
+    /// terminal focus is requested.
     func openAtPanelCursor(projectID: Int64) async {
         guard let id = listedPanelCursor(projectID: projectID) else { return }
         await showSession(id: id)
@@ -81,12 +83,14 @@ extension WorkbenchesViewModel {
     }
 
     /// Esc: the keyboard goes back to the terminal on screen. False when no
-    /// session is on screen or its terminal is not running (there is no
-    /// terminal to take it: the panel then just lets the keyboard go).
+    /// session is on screen, its terminal is not running, or something
+    /// covers it (`isObscured`: its host would drop the request) — there is
+    /// no terminal to take it: the panel then just lets the keyboard go.
     func returnKeyboardToTerminal(projectID: Int64) -> Bool {
         // A Workchat on screen is no terminal to take it (#711).
         guard case let .session(id)? = visibleSessionPane(projectID: projectID),
-              terminalCenter?.liveIDs.contains(id) == true else { return false }
+              terminalCenter?.liveIDs.contains(id) == true,
+              !isObscured(sessionID: id, projectID: projectID) else { return false }
         terminalCenter?.requestKeyboardFocus(id)
         return true
     }
