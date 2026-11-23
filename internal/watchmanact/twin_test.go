@@ -1617,7 +1617,19 @@ func TestTwin_FreedSlotWakesTheNextPass(t *testing.T) {
 		_, id := e.question(title)
 		ids = append(ids, id)
 	}
-	if n := e.run(); n != MaxDeciding {
+	// The decisions hold their slots until the pass has returned: a decision
+	// that ended mid-pass would free its slot to the same pass's lease loop
+	// (MaxDeciding caps concurrent decisions, not leases per pass), and the
+	// third item would never wait for the wake under test.
+	gate := make(chan struct{})
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		<-gate
+		return decision("SQLite"), nil
+	}
+	n := e.twin.RunOnce(context.Background())
+	close(gate)
+	e.twin.Wait()
+	if n != MaxDeciding {
 		t.Fatalf("RunOnce = %d, want %d", n, MaxDeciding)
 	}
 	if it := e.item(ids[2]); it.State != "queued" {
