@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -373,6 +374,37 @@ func TestExecOwnerNetwork_CredentialsAndNoPrompt(t *testing.T) {
 	}
 	if got := ownerNetworkArgs("gh", "fetch")[len(readConfig)+3]; got != "credential.helper=!gh auth git-credential" {
 		t.Errorf("a bare gh is not quoted: %q", got)
+	}
+}
+
+// A push names its target a second time as a command-line-only remote, so
+// git (2.56+) finds no unique configured remote of that URL whose
+// remote-tracking refs it would update; other calls gain no remote.
+func TestOwnerNetworkArgs_PushTargetIsNeverAUniqueRemote(t *testing.T) {
+	const guard = "remote." + pushGuardRemote + ".url="
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"push", "--quiet", "--force-with-lease=refs/heads/b:", "https://example.com/r.git", "HEAD:refs/heads/b"}, guard + "https://example.com/r.git"},
+		{[]string{"push", "--quiet", "/srv/r.git", "--delete", "refs/heads/b"}, guard + "/srv/r.git"},
+		{[]string{"fetch", "--quiet", "https://example.com/r.git", "abc"}, ""},
+		{[]string{"ls-remote", "https://example.com/r.git"}, ""},
+		{[]string{"push", "--quiet"}, ""},
+	} {
+		argv := ownerNetworkArgs("gh", c.args...)
+		var got string
+		for _, a := range argv[:len(argv)-len(c.args)] {
+			if strings.HasPrefix(a, "remote.") {
+				got = a
+			}
+		}
+		if got != c.want {
+			t.Errorf("%v: guard %q, want %q", c.args, got, c.want)
+		}
+		if !slices.Equal(argv[len(argv)-len(c.args):], c.args) {
+			t.Errorf("%v: argv %q does not end with the call's own args", c.args, argv)
+		}
 	}
 }
 

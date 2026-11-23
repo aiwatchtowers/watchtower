@@ -574,7 +574,8 @@ func blobAt(ctx context.Context, r *repo, rel string) (content, mode string, exi
 
 // push sends the scratch worktree's HEAD to refs/heads/<branch> on url —
 // the URL, not the remote's name, so no remote-tracking ref of the
-// repository moves — leased on the value the branch has there now (a
+// repository moves (on git 2.56+ also through gitbin's push guard, see
+// ownerNetworkArgs) — leased on the value the branch has there now (a
 // rerun replaces its own earlier push; a concurrent writer's is refused).
 func push(ctx context.Context, o Options, r *repo, dir, url, branch string) error {
 	s := &repo{o: r.o, bin: r.bin}
