@@ -11,7 +11,8 @@ import WatchtowerCore
 /// changes (the SESSIONS label, the group header, a ✕, the toast's Undo).
 /// It loses it the normal AppKit way — a click into the terminal, Monaco,
 /// a field. A row click keeps sending the keyboard into the session's
-/// terminal (owner decision, ask #195).
+/// terminal (owner decision, ask #195), and the list itself never keeps
+/// it (`giveBackFromList`, #1150).
 ///
 /// While it holds the keyboard: ↑ ↓ Return Esc as keys, ⌘⌫ and ⌘Z as key
 /// equivalents — taken only then, so outside it they belong to whoever has
@@ -92,6 +93,8 @@ struct SessionsPanelKeyView: NSViewRepresentable {
         /// Whether a sheet is up; a seam for tests.
         var hasSheet: @MainActor (NSWindow) -> Bool = { $0.attachedSheet != nil }
         private var clickMonitor: Any?
+        private var responderObservation: NSKeyValueObservation?
+        private weak var observedWindow: NSWindow?
 
         override var acceptsFirstResponder: Bool { true }
         override var focusRingType: NSFocusRingType {
@@ -165,6 +168,47 @@ struct SessionsPanelKeyView: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             watchPanelClicks()
+            watchListKeyboard()
+        }
+
+        /// Its window's first responder while it is in one, for
+        /// `giveBackFromList`; a move to another window follows it.
+        private func watchListKeyboard() {
+            guard window !== observedWindow else { return }
+            observedWindow = window
+            responderObservation = window?.observe(\.firstResponder, options: [.old]) { [weak self] window, change in
+                let previous = change.oldValue.flatMap(\.self)
+                MainActor.assumeIsolated { self?.giveBackFromList(in: window, previous: previous) }
+            }
+        }
+
+        /// The list this view lies behind never keeps the keyboard: its
+        /// table makes itself first responder on a row's mouse-down
+        /// (`refusesFirstResponder` does not stop that), and a row click
+        /// whose tap SwiftUI cancels opens nothing, so the keys typed next
+        /// went nowhere (#1150). Unless the keyboard moves on within the
+        /// turn (the panel's own empty-space click, a row that opened), it
+        /// goes back to the view that had it, or to the window when that is
+        /// gone (a text field's editing has ended by then: the window).
+        private func giveBackFromList(in window: NSWindow, previous: NSResponder?) {
+            guard let list = window.firstResponder as? NSTableView, liesOverThisView(list) else { return }
+            weak var holder = previous as? NSView
+            DispatchQueue.main.async {
+                guard window.firstResponder === list else { return }
+                if let holder, holder.window === window, holder !== list {
+                    window.makeFirstResponder(holder)
+                } else {
+                    window.makeFirstResponder(nil)
+                }
+            }
+        }
+
+        /// `table`'s list covers this view's centre.
+        private func liesOverThisView(_ table: NSTableView) -> Bool {
+            guard table.window === window else { return false }
+            let frame = convert(bounds, to: nil)
+            let area = table.enclosingScrollView ?? table
+            return area.convert(area.bounds, to: nil).contains(NSPoint(x: frame.midX, y: frame.midY))
         }
 
         /// Whether the local click monitor is installed; a seam for tests.
@@ -211,6 +255,8 @@ struct SessionsPanelKeyView: NSViewRepresentable {
         func stopWatchingPanelClicks() {
             if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
             clickMonitor = nil
+            responderObservation = nil
+            observedWindow = nil
         }
     }
 }
