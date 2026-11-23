@@ -496,7 +496,8 @@ final class ConnectRunControllerTests: XCTestCase {
         let company = FakeCompanyDriver()
         company.draft = Data("""
         {"company":"Acme","vendors":{
-          "google":{"client_id":"acme.apps.googleusercontent.com","client_secret":"g-secret-sample","client_secret_set":true,"checked":true,"skipped":false},
+          "google":{"client_id":"acme.apps.googleusercontent.com","client_secret":"g-secret-sample",
+            "client_secret_set":true,"checked":true,"skipped":false},
           "atlassian":{"client_id":"acme-client","site":"acme.atlassian.net","client_secret":"a-secret-sample",
             "client_secret_set":true,"checked":false,"skipped":false}}}
         """.utf8)
