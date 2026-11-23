@@ -240,7 +240,10 @@ package struct ConnectPending: Codable, Equatable, Sendable {
 
 /// `company_draft`'s read (Go `CompanyDraft`): no secret, only whether each is set.
 /// `services` is what the customer ticked on the wizard's Services step, in
-/// the wizard's order (`vendors` holds exactly those).
+/// the wizard's order (`vendors` holds exactly those); empty until they
+/// confirm that step (continue past it, or the agent saves a list), since
+/// discovery's pre-ticks are not their choice — `vendors` then holds only
+/// the ticked vendors that already hold values.
 package struct ConnectCompanyDraft: Codable, Equatable, Sendable {
     /// One vendor: its non-secret values, whether its secret is set, whether
     /// its check passed for these values or the customer skipped it; Slack

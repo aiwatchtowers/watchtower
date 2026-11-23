@@ -123,6 +123,10 @@ package final class CompanySetupWizardModel {
     package private(set) var current: Step = .services
     /// The furthest step reached: rail rows up to it are clickable.
     package private(set) var reached: Set<Step> = [.services]
+    /// The customer settled the services: continued past the Services step,
+    /// resumed a draft beyond it, or the connect assistant saved a services
+    /// list. Until then the ticks may be discovery's pre-ticks alone.
+    package private(set) var servicesConfirmed = false
     package private(set) var candidates: [CompanyCandidate] = []
     package private(set) var discovering = false
     /// `company discover` failed: the vendor steps say so (never "nothing found").
@@ -436,6 +440,7 @@ package final class CompanySetupWizardModel {
             current = Step(draftName: read.step).flatMap { steps.contains($0) ? $0 : nil } ?? .services
             let index = steps.firstIndex(of: current) ?? 0
             reached = Set(steps.prefix(index + 1))
+            servicesConfirmed = current != .services
             publishName = read.company
             if read.microsoftWaiting, let m = read.microsoft, !m.clientID.isEmpty, !m.tenantID.isEmpty {
                 // Resumed while IT has not consented: the waiting layout, not a fresh form.
@@ -516,6 +521,7 @@ package final class CompanySetupWizardModel {
         draft = CompanyDraft()
         current = .services
         reached = [.services]
+        servicesConfirmed = false
         phases = [:]
         checks = [:]
         checkedValues = [:]
@@ -673,6 +679,9 @@ package final class CompanySetupWizardModel {
 
     package var canContinueServices: Bool { !ticked.isEmpty }
 
+    /// The connect assistant saved the customer's services list.
+    package func confirmServices() { servicesConfirmed = true }
+
     /// **Back**.
     package func back() {
         // A running Publish keeps its step: its link and code land there.
@@ -711,6 +720,7 @@ package final class CompanySetupWizardModel {
 
     private func advance() async {
         guard let index = steps.firstIndex(of: current), index + 1 < steps.count else { return }
+        if current == .services { servicesConfirmed = true }
         move(to: steps[index + 1])
         await saveDraft()
     }

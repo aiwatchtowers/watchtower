@@ -64,8 +64,14 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             return .failure(.failed("\(unreadable.title). \(unreadable.body)"))
         }
         let draft = wizard.draft
+        // Discovery pre-ticks the vendors it found: those are not the
+        // customer's choice until they confirm the Services step, so the
+        // read says none and the playbook asks. Values already saved for a
+        // vendor still show.
+        let confirmed = wizard.servicesConfirmed
+        let services = confirmed ? wizard.ticked : []
         var vendors: [String: ConnectCompanyDraft.Vendor] = [:]
-        for v in wizard.ticked {
+        for v in wizard.ticked where confirmed || wizard.hasEntries(v) {
             let checked = wizard.isChecked(v)
             let skipped = wizard.isSkipped(v)
             vendors[v.rawValue] = switch v {
@@ -86,7 +92,7 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             }
         }
         let company = draft.company.isEmpty ? wizard.publishName.trimmingCharacters(in: .whitespacesAndNewlines) : draft.company
-        return .success(Self.json(ConnectCompanyDraft(company: company, services: wizard.ticked.map(\.rawValue),
+        return .success(Self.json(ConnectCompanyDraft(company: company, services: services.map(\.rawValue),
                                                       vendors: vendors)))
     }
 
@@ -132,7 +138,10 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             // Values for a service mean the company uses it.
             if !wizard.ticked.contains(v) { wizard.toggle(v) }
         }
-        if let services = fields["services"] { applyServices(Self.list(services)) }
+        if let services = fields["services"] {
+            applyServices(Self.list(services))
+            wizard.confirmServices()
+        }
         if let name = fields["company"] { wizard.setCompanyName(name) }
         if let hosts = fields["deny_hosts"] { applyDenyHosts(Self.list(hosts).map { $0.lowercased() }) }
         guard await wizard.saveNow() else { return .failure(.failed(wizard.storageProblem ?? openFailed)) }

@@ -166,7 +166,10 @@ type Choice struct {
 
 // CompanyDraft is company_draft: the wizard draft without its secrets, only
 // whether each is set. Services is what the customer ticked on the wizard's
-// Services step, in the wizard's order; Vendors holds exactly those.
+// Services step, in the wizard's order; Vendors holds exactly those. It is
+// empty until the customer confirms that step (continues past it, or the
+// agent saves a list): discovery's pre-ticks are not their choice. Vendors
+// then holds only the ticked vendors that already hold values.
 type CompanyDraft struct {
 	Company  string                 `json:"company"`
 	Services []string               `json:"services"`

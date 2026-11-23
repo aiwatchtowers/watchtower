@@ -15,7 +15,7 @@ The Google step of the company setup: the assistant builds your company's Google
 
 ## Steps
 
-1. **Agent:** Call `connect_status` and `company_draft`. If the draft has no company name, ask the customer for it (colleagues see "Connect <name>?") and save it with `company_draft`. If Google is not among the draft's `services` (what the customer ticked in the wizard; never ask again), go on to the next vendor page. If the draft already holds a Google Client ID with `client_secret_set`, go to step 8.
+1. **Agent:** Call `connect_status` and `company_draft`. If the draft has no company name, ask the customer for it (colleagues see "Connect <name>?") and save it with `company_draft`. If `services` is empty (the customer has not confirmed the wizard's Services step), ask which services the company uses (Slack, Google, Atlassian, Linear, Microsoft 365) and save them with `company_draft`. If Google is not among the draft's `services` (what the customer chose; never ask again), go on to the next vendor page. If the draft already holds a Google Client ID with `client_secret_set`, go to step 8.
 2. **Agent:** On [console.cloud.google.com](https://console.cloud.google.com), open the new-project page, put the project inside the company's organization, name it `watchtower`, submit the form and wait until the console selects it. If the organization is not offered, stop at [If something goes wrong](#if-something-goes-wrong).
 3. **Agent:** In the API library, turn on the Gmail API and the Google Calendar API for that project.
 4. **Agent:** Open the OAuth consent screen: user type **Internal**, app name Watchtower, the customer's address as support and contact email.

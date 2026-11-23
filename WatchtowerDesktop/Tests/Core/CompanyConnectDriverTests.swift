@@ -407,13 +407,13 @@ final class CompanyConnectDriverTests: XCTestCase {
             try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
         }
         var draft = try await read()
-        XCTAssertEqual(draft.services, ["slack", "google"])
+        XCTAssertEqual(draft.services, [], "ticks on the Services step are not settled until it is continued")
         XCTAssertEqual(draft.company, "Acme")
-        XCTAssertNil(draft.vendors["slack"]?.app, "no choice before the Slack step")
 
-        await wizard.next()  // the Slack step's first screen: still no choice
+        await wizard.next()  // past Services: the Slack step's first screen, still no choice
         draft = try await read()
-        XCTAssertNil(draft.vendors["slack"]?.app)
+        XCTAssertEqual(draft.services, ["slack", "google"])
+        XCTAssertNil(draft.vendors["slack"]?.app, "no choice on the Slack step's first screen")
 
         wizard.createNew()
         draft = try await read()
@@ -423,6 +423,35 @@ final class CompanyConnectDriverTests: XCTestCase {
         wizard.alreadyHaveOne()
         draft = try await read()
         XCTAssertEqual(draft.vendors["slack"]?.app, "existing")
+    }
+
+    /// Discovery pre-ticks the vendors it found; the read says none until
+    /// the customer confirms the Services step, so the playbook asks.
+    func testDiscoveryPreTicksAreNotTheCustomersServices() async throws {
+        let cli = CompanyScriptedCLI()
+        cli.on(["company", "discover"], [#"{"candidates":[{"vendor":"linear","client_id":"lin","label":"lin","#
+            + #""source":"account","source_label":"Linear"}]}"#])
+        let (driver, wizard) = make(cli)
+        await wizard.open()
+        XCTAssertEqual(wizard.ticked, [.linear], "discovery pre-ticked Linear")
+        func read() async throws -> ConnectCompanyDraft {
+            try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
+        }
+        var draft = try await read()
+        XCTAssertEqual(draft.services, [], "opened on Services, never continued")
+        XCTAssertEqual(draft.vendors, [:])
+
+        await wizard.next()
+        draft = try await read()
+        XCTAssertEqual(draft.services, ["linear"], "continued: the ticks are the customer's")
+        XCTAssertNotNil(draft.vendors["linear"])
+
+        // The agent saving a list settles it too.
+        let (other, otherWizard) = make(cli)
+        await otherWizard.open()
+        _ = try await other.saveDraft(vendor: "google", fields: ["services": "google"]).get()
+        draft = try JSONDecoder().decode(ConnectCompanyDraft.self, from: await other.draftView().get())
+        XCTAssertEqual(draft.services, ["google"])
     }
 
     func testSlackProblemIsTheWizardsLine() async {
