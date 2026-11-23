@@ -160,6 +160,13 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
         policyGrace ?? status?.graceHours ?? 72
     }
 
+    /// What follows "… days after it was last reached" for a removed
+    /// account's lease: scheduled at that mark, due the notice later; with a
+    /// notice of 0 it runs after a later cycle's syncs (`purge.NoNotice`).
+    private static func removedLeaseTail(_ grace: Int) -> String {
+        grace == 0 ? ", after a later sync" : ", plus \(grace) hours' notice"
+    }
+
     /// The Privacy switch's footnote for the shown value. The switch is on
     /// only by a setting, a policy or the build, so on gives every rule. The
     /// notice is the organization's PurgeGraceHours first (as in the Remove
@@ -183,7 +190,8 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
             + "reconnect. When Watchtower has not reached a source for \(lease) days, a notice comes 72 hours "
             + "before that \(lease)-day mark and the data is deleted \(leaseWhen) unless it syncs again. A removed "
             + "Slack workspace's data goes \(afterRemove), another removed account's \(lease) days after it was "
-            + "last reached. Briefings, recaps, ideas, memory, chats and meeting transcripts are kept."
+            + "last reached\(removedLeaseTail(grace)). Briefings, recaps, ideas, memory, chats and meeting "
+            + "transcripts are kept."
     }
 
     /// "Off by default" while the switch is off by its default origin; nil
@@ -251,7 +259,7 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
     ) -> String {
         let grace = notice(status, policyGrace: policy.purgeGraceHours)
         let lease = status?.leaseDays ?? 30
-        let notice = grace == 0 ? "" : ", plus \(grace) hours' notice"
+        let notice = removedLeaseTail(grace)
         guard let enabled = dialogEnabled(status, policy: policy, setting: setting) else {
             return kept + " If deleting data on revoked access is on, it is deleted about \(lease) days after the "
                 + "account was last reached\(notice); check Settings → System → Privacy."

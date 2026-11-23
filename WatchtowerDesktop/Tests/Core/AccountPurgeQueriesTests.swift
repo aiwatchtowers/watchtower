@@ -171,6 +171,6 @@ final class AccountPurgeStatusDecodingTests: XCTestCase {
         let slack = AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: nil, policy: policy, setting: nil)
         XCTAssertTrue(slack.contains("deleted after a later sync unless"), slack)
         let jira = AccountPurgeStatus.removeDialogMessage("Kept.", status: nil, policy: policy, setting: nil)
-        XCTAssertTrue(jira.hasSuffix("days after the account was last reached."), jira)
+        XCTAssertTrue(jira.hasSuffix("days after the account was last reached, after a later sync."), jira)
     }
 }

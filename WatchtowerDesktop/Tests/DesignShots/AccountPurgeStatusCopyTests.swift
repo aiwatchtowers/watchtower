@@ -86,7 +86,9 @@ final class AccountPurgeStatusCopyTests: XCTestCase {
         XCTAssertTrue(dialog.contains("deleted after a later sync unless"), dialog)
         let jira = AccountPurgeStatus.removeDialogMessage("Kept.", status: now, policy: .none, setting: nil)
         XCTAssertEqual(jira, "Kept. Because deleting data on revoked access is on, it is deleted about "
-            + "30 days after the account was last reached.")
+            + "30 days after the account was last reached, after a later sync.")
+        XCTAssertTrue(foot.contains("another removed account's 30 days after it was last reached, after a later sync."),
+                      foot)
     }
 
     /// The organization's PurgeGraceHours sets the footnote's notice before
@@ -101,5 +103,6 @@ final class AccountPurgeStatusCopyTests: XCTestCase {
         XCTAssertTrue(foot.contains("a notice comes 72 hours before that 30-day mark and the data is deleted "
             + "240 hours after that notice"), foot)
         XCTAssertTrue(foot.contains("goes 240 hours after the remove"), foot)
+        XCTAssertTrue(foot.contains("30 days after it was last reached, plus 240 hours' notice."), foot)
     }
 }

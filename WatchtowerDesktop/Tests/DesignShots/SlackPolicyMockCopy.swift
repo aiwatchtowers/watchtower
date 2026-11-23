@@ -18,7 +18,7 @@ enum SlackPolicyMockCopy {
         + "unless you reconnect. When Watchtower has not reached a source for 30 days, a notice comes 72 hours "
         + "before that 30-day mark and the data is deleted at the mark unless it syncs again. A removed Slack "
         + "workspace's data goes 72 hours after the remove, another removed account's 30 days after it was last "
-        + "reached. Briefings, recaps, ideas, memory, chats and meeting transcripts are kept."
+        + "reached, plus 72 hours' notice. Briefings, recaps, ideas, memory, chats and meeting transcripts are kept."
     static let footOff = "Off: synced data stays on this Mac after access ends, until you delete it with "
         + "Reset All Data… in Settings → System. Slack expects a workspace's data to be gone within "
         + "14 business days after its app is removed."
