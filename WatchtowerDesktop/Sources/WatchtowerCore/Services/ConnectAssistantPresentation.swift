@@ -41,10 +41,22 @@ package enum ConnectAssistantServer: Equatable, Sendable {
     case url(String)
 }
 
+/// The browser guide's **Check again** (#1144): not pressed yet, running
+/// (a probe turn), or it found no browser again.
+package enum ConnectBrowserCheck: Equatable, Sendable {
+    case notChecked
+    case checking
+    case stillMissing
+}
+
 /// One state of the connect assistant panel (§7).
 package enum ConnectAssistantState: Equatable, Sendable {
     /// Just opened: the invitation and **Start**.
     case empty
+    /// Start's probe found no connected browser on a browser harness
+    /// (#1144): before the agent's first turn the panel offers to connect
+    /// the browser (**Check again**) or to go on in words.
+    case browserMissing
     /// The agent is working.
     case thinking
     /// The agent's turn ended and it waits on the customer's answer in the
@@ -98,11 +110,17 @@ package struct ConnectAssistantLine: Equatable, Sendable {
 package struct ConnectAssistantPresentation: Equatable, Sendable {
     package enum Action: Equatable, Sendable {
         case start, guideInWords, retry, setUpByHand, openIt, cancel
+        /// The browser guide's: probe again (#1144).
+        case checkBrowser
+        /// The browser-missing state's: the run starts in words.
+        case continueWithoutBrowser
 
         package var title: String {
             switch self {
             case .start: "Start"
             case .guideInWords: "Guide me in words"
+            case .checkBrowser: "Check again"
+            case .continueWithoutBrowser: "Continue without the browser"
             case .retry: "Retry"
             case .setUpByHand: "Set up by hand"
             case .openIt: "Open it"
@@ -152,6 +170,24 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
         case confirm(ConfirmCard)
     }
 
+    /// How to connect the harness's browser (#1144): shown when the probe
+    /// found none before the run, and mid-run once the browser was lost.
+    /// **Check again** is one of the panel's actions.
+    package struct BrowserGuide: Equatable, Sendable {
+        package let title: String
+        /// Mid-run only: why the run went on in words.
+        package var lead: String?
+        package let steps: [String]
+        /// The extension's page, linked under the first step.
+        package var linkTitle = "claude.ai/chrome"
+        package var link = Self.extensionPage
+        /// The last Check again: in progress, or still no browser.
+        package var note: String?
+
+        // A fixed https string always parses.
+        package static let extensionPage = URL(string: "https://claude.ai/chrome")!
+    }
+
     package let title: String
     package let harness: String
     package let modeLine: String
@@ -163,6 +199,7 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
     package let intro: String?
     package let status: Status?
     package let card: Card?
+    package let browserGuide: BrowserGuide?
     /// In order; the first is the panel's one prominent action.
     package let actions: [Action]
     package let composerPlaceholder: String
@@ -182,13 +219,16 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
     ///   - browserAvailable: false when the harness's browser is not detected (no extension, §10 S1);
     ///     the panel then runs in words only. A harness whose capability is not `.browser` never has one.
     ///   - secretKind: the secret card's `request_secret` kind, for its close-first line.
+    ///   - browserCheck: the browser guide's check while the session offers the guide (the probe
+    ///     or a browser tool found the extension not connected); nil when it does not.
     package init(
         service: String,
         harness: ConnectHarness,
         mode: ConnectAssistantMode,
         browserAvailable: Bool = true,
         state: ConnectAssistantState,
-        secretKind: String? = nil
+        secretKind: String? = nil,
+        browserCheck: ConnectBrowserCheck? = nil
     ) {
         let browserAvailable = browserAvailable && harness.capability == .browser
         let words = mode == .words || !browserAvailable
@@ -201,6 +241,7 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
         var intro: String?
         var status: Status?
         var card: Card?
+        var guide: BrowserGuide?
         var actions: [Action] = []
         switch state {
         case .empty:
@@ -212,6 +253,12 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
                     + Self.noBrowser(harness) + " I'll tell you each step and check it. Start?"
                 actions = [.start, .setUpByHand]
             }
+        case .browserMissing:
+            let check = browserCheck ?? .notChecked
+            intro = "I'll connect \(service) with you. " + Self.noBrowser(harness)
+                + " Connect it and press Check again, or continue and I'll tell you each step."
+            guide = Self.browserGuide(harness, check: check)
+            actions = check == .checking ? [.cancel] : [.checkBrowser, .continueWithoutBrowser, .setUpByHand]
         case .thinking:
             status = Status(kind: .progress, text: "Working on it…")
             actions = [.cancel]
@@ -237,10 +284,46 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
         case let .done(accounts, noun):
             status = Status(kind: .success, text: "\(service) is connected — \(noun.counted(accounts))")
         }
+        // Mid-run, the browser lost: the run goes on in words, and the guide
+        // with Check again stays beside it (no dead end, #1144).
+        if let browserCheck, Self.runShowsGuide(state) {
+            guide = Self.browserGuide(harness, check: browserCheck)
+            guide?.lead = "\(harness.name) in Chrome isn't connected any more, so I'm telling you each step."
+            if browserCheck != .checking { actions.append(.checkBrowser) }
+        }
         self.intro = intro
         self.status = status
         self.card = card
+        browserGuide = guide
         self.actions = actions
+    }
+
+    /// The run states that show the mid-run browser guide: the agent works
+    /// or waits, with no card in the way.
+    private static func runShowsGuide(_ state: ConnectAssistantState) -> Bool {
+        switch state {
+        case .thinking, .listening, .waiting: true
+        case .empty, .browserMissing, .failed, .busy, .secret, .confirm, .done: false
+        }
+    }
+
+    /// The steps that connect Claude in Chrome: the extension installed, signed
+    /// in with the harness's own claude.ai account, Chrome restarted.
+    private static func browserGuide(_ harness: ConnectHarness, check: ConnectBrowserCheck) -> BrowserGuide {
+        let name = harness.name
+        let note: String? = switch check {
+        case .notChecked: nil
+        case .checking: "Checking for \(name) in Chrome…"
+        case .stillMissing: "Still not connected."
+        }
+        return BrowserGuide(
+            title: "Connect \(name) in Chrome",
+            steps: [
+                "Install the \(name) extension for Chrome.",
+                "Open it in Chrome and sign in with the same claude.ai account \(name) uses on this Mac.",
+                "If you just installed it, restart Chrome."
+            ],
+            note: note)
     }
 
     package static func modeLine(harness: ConnectHarness, words: Bool) -> String {
@@ -310,6 +393,8 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
     package static func setUpCompanyWith(_ harness: ConnectHarness) -> String {
         "Set up for my company with \(harness.name)"
     }
+    /// The company setup wizard's header (#1149): the assistant on the wizard's draft.
+    package static func setUpWith(_ harness: ConnectHarness) -> String { "Set up with \(harness.name)" }
     /// The onboarding Connect step's footnote: today's line, plus who walks
     /// the customer through the sign-ins when a harness is offered.
     package static func onboardingFootnote(_ harness: ConnectHarness?) -> String {

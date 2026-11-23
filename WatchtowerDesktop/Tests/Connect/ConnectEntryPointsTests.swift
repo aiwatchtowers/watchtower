@@ -170,6 +170,34 @@ final class ConnectEntryPointsTests: XCTestCase {
         XCTAssertEqual(pressed, 1)
     }
 
+    /// The company setup wizard offers the assistant on its own draft
+    /// (#1149), under the same rules as the other entry points.
+    func testCompanySetupWizardOffersSetUpWith() async throws {
+        let state = appState()
+        let agent = try XCTUnwrap(state.companySetupAgent)
+        XCTAssertEqual(agent.harness.name, "Claude")
+        agent.open()
+        XCTAssertEqual(state.connectAssistantService, AppState.companyConnectService)
+        let session = try XCTUnwrap(state.connectAssistants.loaded("company"))
+        XCTAssertEqual(session.displayName, "your company")
+        XCTAssertNil(appState(ready: []).companySetupAgent, "no harness offered")
+        XCTAssertNil(appState(policy: ["AllowedAIProviders": ["ollama"]]).companySetupAgent, "MDM leaves none")
+        XCTAssertEqual(appState(policy: ["AllowedAIProviders": ["codex"]]).companySetupAgent?.harness.name, "Codex")
+
+        // The page's header: on the first step, and gone without an agent.
+        let cli = CompanyScriptedCLI()
+        let model = CompanySetupWizardModel(streamer: cli, slack: SlackAppSetupModel(streamer: cli, mode: .wizard))
+        await model.open()
+        var pressed = 0
+        let page = CompanySetupPage(model: model, actions: CompanySetupActions(agent: (.fixture("claude"), { pressed += 1 })),
+                                    layout: .wide)
+        XCTAssertEqual(model.current, .services)
+        try page.inspect().find(button: "Set up with Claude").tap()
+        XCTAssertEqual(pressed, 1)
+        let plain = CompanySetupPage(model: model, actions: CompanySetupActions(), layout: .wide)
+        XCTAssertThrowsError(try plain.inspect().find(button: "Set up with Claude"))
+    }
+
     // MARK: - Panel
 
     func testSetUpByHandOpensService() throws {

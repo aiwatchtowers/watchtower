@@ -32,7 +32,9 @@ action: nav:connections
 
 **Some steps need your confirm.** Steps that can't be undone or that add trust show a card only you can press: turning on PKCE for a Slack app, updating your company's Slack app, using your own Google project, turning on a Quick Connection, publishing or replacing your company's setup. The card shows exactly what it applies to, such as the command or address a Quick Connection runs, the Client ID or the services you publish, and nothing runs if that changes before your press. It says "Only you can press this — Claude can't."
 
-**Browser or words.** With Claude and the Claude in Chrome extension connected, the panel says **Using Claude in Chrome**: the assistant opens and fills the vendor's pages in your own Chrome. Otherwise it says **I'll tell you each step**: you click, it tells you what to click and checks the result. Codex always works in words today. If the extension drops out mid-setup, the assistant goes on in words.
+**Browser or words.** With Claude and the Claude in Chrome extension connected, the panel says **Using Claude in Chrome**: the assistant opens and fills the vendor's pages in your own Chrome. Otherwise it says **I'll tell you each step**: you click, it tells you what to click and checks the result. Codex always works in words today. If the extension drops out mid-setup, the assistant goes on in words and the panel shows how to connect it again, with **Check again**.
+
+**When Chrome isn't connected.** If you use Claude and the panel can't find Claude in Chrome when you press **Start**, it says so before the assistant begins and shows how to connect it: install the Claude extension for Chrome from [claude.ai/chrome](https://claude.ai/chrome), open it in Chrome and sign in with the same claude.ai account Claude uses on your Mac, and restart Chrome if you just installed it. Then press **Check again**: once Chrome is found, the panel says **Using Claude in Chrome** and the assistant starts. Press **Continue without the browser** to go on in words instead.
 
 **It stays on the vendor's pages.** The assistant may open only the sites its playbook names, and page text is never an instruction to it. A link, a form or a redirect to another site can't be blocked, so the assistant is told to leave such a page and stop.
 
@@ -42,9 +44,9 @@ action: nav:connections
 <!-- learn: none -->
 
 
-1. Open **Connections**. A card with no account shows **Connect with Claude** next to **Connect**. You also find it in a source's add-account row, in the **Connect…** menu, beside **Set up for my company**, on the **Use my own Google project** page, and on the setup Connect step.
+1. Open **Connections**. A card with no account shows **Connect with Claude** next to **Connect**. You also find it in a source's add-account row, in the **Connect…** menu, beside **Set up for my company**, as **Set up with Claude** at the top of every step of **Set up for my company**, on the **Use my own Google project** page, and on the setup Connect step.
 2. The assistant opens on the right. To switch between Claude and Codex, use the menu in its header.
-3. Press **Start**. In browser mode, press **Guide me in words** instead if you would rather click yourself.
+3. Press **Start**. In browser mode, press **Guide me in words** instead if you would rather click yourself. If Chrome isn't connected, the panel asks first: connect it and press **Check again**, or press **Continue without the browser**.
 4. Do what it asks: sign in, press **Allow**, paste a secret into the card and press **Send**, or press **Confirm** on a confirm card. You can type a question at any point.
 5. When it says the source is connected, close the panel. Pick boards, teams or spaces as usual if it hasn't already.
 
@@ -65,6 +67,8 @@ action: nav:connections
 **"I stopped waiting after 15 minutes."** A step waited too long for you, so the sign-in was cancelled. Press **Retry** when you're ready.
 
 **"Slack is already connecting in another window"**. Another connect is running. Press **Open it** to finish or cancel that one first.
+
+**"Still not connected."** after **Check again**. Chrome still has no signed-in Claude extension. Check that the extension is signed in with the same claude.ai account as Claude on your Mac, restart Chrome, and press **Check again**, or press **Continue without the browser**.
 
 **It stays on Working on it… and nothing happens.** Claude may be stuck checking for your browser. Press **Cancel**, check that the Claude in Chrome extension is connected, then press **Start** again, or choose **Guide me in words**.
 

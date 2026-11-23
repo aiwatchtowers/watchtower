@@ -2,9 +2,11 @@ import Foundation
 
 /// Spike S1 (agent connect spec §10 "Task 0 outcome"): whether the
 /// customer's browser extension is connected, asked before a run's first
-/// turn. The CLI's init event cannot tell, so a probe turn asks the browser
-/// MCP server for its connected browsers: `[]` means words mode, a non-empty
-/// list browser mode. Mid-run, a browser tool whose result says the
+/// turn and again on the panel's **Check again** (#1144). The CLI's init
+/// event cannot tell, so a probe turn asks the browser MCP server for its
+/// connected browsers: a non-empty list is `connected`, `[]` is `missing`
+/// (the panel offers to connect the browser), no answer is `unknown`
+/// (words, as before). Mid-run, a browser tool whose result says the
 /// extension is gone moves the run to words (`browserLost`).
 ///
 /// Unverified (no connected extension on the test Mac): the non-empty
@@ -12,6 +14,19 @@ import Foundation
 /// JSON array, or an object holding one, counts as connected, and so does a
 /// summary cut short inside an array. Anything else is words.
 package struct ConnectBrowserProbe: Sendable {
+    /// What one probe found.
+    package enum Answer: Equatable, Sendable {
+        /// The extension lists a browser: the run drives it.
+        case connected
+        /// The list tool answered, with no browser (or an error): the
+        /// extension is installed in no Chrome, or not signed in.
+        case missing
+        /// No answer: the probe failed, was cancelled or called no list
+        /// tool. The run goes on in words; its first turn reports a harness
+        /// failure itself.
+        case unknown
+    }
+
     /// The browser MCP server's name: a v2 `tool_start` shows its tools as
     /// `claude-in-chrome:<tool>`, the raw form is `mcp__claude-in-chrome__<tool>`.
     package static let browserServer = "claude-in-chrome"
@@ -21,6 +36,8 @@ package struct ConnectBrowserProbe: Sendable {
     package static let lostMarker = "Browser extension is not connected."
     /// The hidden turn after the browser was lost mid-run.
     package static let lostFollowUp = "The browser isn't available any more. Continue in words from the current step."
+    /// The hidden turn after **Check again** found the browser mid-run.
+    package static let foundFollowUp = "The browser is connected again. You may use it from the current step on."
     package static let prompt = """
         Call the tool mcp__\(browserServer)__\(listTool) once, with no arguments. \
         Call no other tool. Then reply with the tool's raw result only.
@@ -43,14 +60,12 @@ package struct ConnectBrowserProbe: Sendable {
         self.dbPath = dbPath
     }
 
-    /// The run's mode on `harness`: words for a harness that cannot drive a
-    /// browser (no probe turn), else the probe's answer. A probe that fails,
-    /// is cancelled or calls no browser tool answers words; the run's first
-    /// turn then reports a harness failure itself.
-    package func mode(for harness: ConnectHarness, service: String) async -> ConnectAssistantMode {
-        guard harness.capability == .browser else { return .words }
+    /// What the probe finds on `harness`: `missing` for a harness that
+    /// cannot drive a browser (no probe turn), else the probe's answer.
+    package func answer(for harness: ConnectHarness, service: String) async -> Answer {
+        guard harness.capability == .browser else { return .missing }
         let connectArgs = Self.connectArgs(service: service)
-        let (answers, answer) = AsyncStream<ConnectAssistantMode>.makeStream()
+        let (answers, answer) = AsyncStream<Answer>.makeStream()
         let (aiService, dbPath, provider) = (aiService, dbPath, harness.id)
         return await withTaskGroup(of: Void.self) { group in
             group.addTask {
@@ -60,23 +75,24 @@ package struct ConnectBrowserProbe: Sendable {
                 await Self.read(events, into: answer)
                 answer.finish()
             }
-            var mode = ConnectAssistantMode.words
+            var found = Answer.unknown
             for await first in answers {
-                mode = first
+                found = first
                 break
             }
             // Answered, ended or cancelled: the reader is cancelled while it
             // waits on the stream, which ends the probe's process.
             group.cancelAll()
-            return mode
+            return found
         }
     }
 
-    /// Yields the mode once the list tool's step ends; reads on until the
-    /// stream ends or the reader is cancelled. A failed stream yields nothing.
+    /// Yields the answer once the list tool's step ends (a failed step is
+    /// `missing`); reads on until the stream ends or the reader is
+    /// cancelled. A failed stream yields nothing.
     private static func read(
         _ events: AsyncThrowingStream<StreamEvent, Error>,
-        into answer: AsyncStream<ConnectAssistantMode>.Continuation
+        into answer: AsyncStream<Answer>.Continuation
     ) async {
         var listCalls: Set<String> = []
         do {
@@ -85,13 +101,13 @@ package struct ConnectBrowserProbe: Sendable {
                 case .toolStart(let start) where isBrowserTool(start.name, named: listTool):
                     listCalls.insert(start.id)
                 case .toolEnd(let end) where listCalls.contains(end.id):
-                    answer.yield(end.ok ? mode(fromResult: end.summary) : .words)
+                    answer.yield(end.ok && mode(fromResult: end.summary) == .browser ? .connected : .missing)
                 default:
                     continue
                 }
             }
         } catch {
-            return  // no answer: words
+            return  // no answer: unknown
         }
     }
 

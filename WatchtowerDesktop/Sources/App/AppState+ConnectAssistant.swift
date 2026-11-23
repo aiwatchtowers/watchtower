@@ -101,6 +101,15 @@ extension AppState {
                           open: { [weak self] in self?.openConnectAssistant(service: $0) })
     }
 
+    /// The company setup wizard's **Set up with <harness>** (#1149): the
+    /// company assistant, whose driver reads and writes the wizard's own
+    /// draft; nil under the same rules as every other agent button.
+    var companySetupAgent: (harness: ConnectHarness, open: () -> Void)? {
+        connectAssistantButton(for: Self.companyConnectService).map { harness in
+            (harness, { [weak self] in self?.openConnectAssistant(service: Self.companyConnectService) })
+        }
+    }
+
     /// Whether the organization lets the service be connected at all.
     func connectServiceAllowed(_ service: String) -> Bool {
         let policy = managedPolicy.policy
@@ -148,7 +157,8 @@ extension AppState {
         return connectAssistants.session(for: service)
     }
 
-    /// The panel's Start, Guide me in words and Retry: a run starts only on
+    /// The panel's Start, Guide me in words, Retry, Check again and Continue
+    /// without the browser: a run (or its probe) starts only on
     /// a harness the current offer still holds. A session whose harness was
     /// taken away (the policy, the CLI gone) is made again and shows its
     /// empty state on the current initial harness; with none offered the
@@ -165,7 +175,9 @@ extension AppState {
         case .start: cached.start()
         case .guideInWords: cached.guideInWords()
         case .retry: cached.retry()
-        default: break
+        case .checkBrowser: cached.checkBrowser()
+        case .continueWithoutBrowser: cached.continueWithoutBrowser()
+        case .setUpByHand, .openIt, .cancel: break
         }
     }
 
@@ -217,7 +229,7 @@ extension AppState {
     /// not after it failed, ended in another window's favour or finished.
     static func runUnderWay(_ state: ConnectAssistantState) -> Bool {
         switch state {
-        case .thinking, .listening, .waiting, .secret, .confirm: true
+        case .thinking, .listening, .waiting, .secret, .confirm, .browserMissing: true
         case .empty, .failed, .busy, .done: false
         }
     }

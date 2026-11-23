@@ -56,6 +56,57 @@ struct ConnectAssistantPresentationTests {
             + "I'll tell you each step and check it. Start?")
     }
 
+    @Test("no browser before the run: the guide, Check again, Continue without the browser, by hand")
+    func browserMissing() {
+        let missing = Pres(service: "Slack", harness: claude, mode: .words, browserAvailable: false,
+                           state: .browserMissing, browserCheck: .notChecked)
+        #expect(missing.intro == "I'll connect Slack with you. Claude in Chrome isn't connected, so I can't use "
+            + "your browser. Connect it and press Check again, or continue and I'll tell you each step.")
+        #expect(missing.modeLine == "I'll tell you each step")
+        #expect(missing.actions.map(\.title) == ["Check again", "Continue without the browser", "Set up by hand"])
+        #expect(missing.status == nil && missing.card == nil)
+        let guide = try? #require(missing.browserGuide)
+        #expect(guide?.title == "Connect Claude in Chrome")
+        #expect(guide?.steps == [
+            "Install the Claude extension for Chrome.",
+            "Open it in Chrome and sign in with the same claude.ai account Claude uses on this Mac.",
+            "If you just installed it, restart Chrome."
+        ])
+        #expect(guide?.linkTitle == "claude.ai/chrome")
+        #expect(guide?.link.absoluteString == "https://claude.ai/chrome")
+        #expect(guide?.lead == nil && guide?.note == nil)
+
+        let checking = Pres(service: "Slack", harness: claude, mode: .words, browserAvailable: false,
+                            state: .browserMissing, browserCheck: .checking)
+        #expect(checking.browserGuide?.note == "Checking for Claude in Chrome…")
+        #expect(checking.actions == [.cancel])
+        let still = Pres(service: "Slack", harness: claude, mode: .words, browserAvailable: false,
+                         state: .browserMissing, browserCheck: .stillMissing)
+        #expect(still.browserGuide?.note == "Still not connected.")
+        #expect(still.actions == [.checkBrowser, .continueWithoutBrowser, .setUpByHand])
+    }
+
+    @Test("the browser lost mid-run: the guide and Check again beside the run, never over a card")
+    func browserLost() {
+        func lost(_ state: ConnectAssistantState, _ check: ConnectBrowserCheck? = .notChecked) -> Pres {
+            Pres(service: "Slack", harness: claude, mode: .words, browserAvailable: false, state: state,
+                 browserCheck: check)
+        }
+        #expect(lost(.thinking).browserGuide?.lead
+            == "Claude in Chrome isn't connected any more, so I'm telling you each step.")
+        #expect(lost(.thinking).actions == [.cancel, .checkBrowser])
+        #expect(lost(.listening).actions == [.cancel, .checkBrowser])
+        #expect(lost(.waiting(step: "press Allow")).actions == [.cancel, .checkBrowser])
+        #expect(lost(.thinking, .checking).actions == [.cancel])
+        #expect(lost(.thinking, .stillMissing).browserGuide?.note == "Still not connected.")
+        #expect(lost(.secret(label: "Token")).browserGuide == nil)
+        #expect(lost(.confirm(.slackPKCE)).browserGuide == nil)
+        #expect(lost(.failed(.quota)).browserGuide == nil)
+        #expect(lost(.done(accounts: 1, noun: .workspace)).browserGuide == nil)
+        #expect(lost(.thinking, nil).browserGuide == nil, "declined, or never lost: no guide")
+        #expect(slack(.empty).browserGuide == nil)
+    }
+
     @Test("loading: working, or waiting for the customer in the browser, with Cancel")
     func loading() {
         #expect(slack(.thinking).status == .init(kind: .progress, text: "Working on it…"))
