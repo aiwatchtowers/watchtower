@@ -456,6 +456,13 @@ final class CompanyConnectDriverTests: XCTestCase {
         draft = try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
         XCTAssertEqual(draft.vendors["slack"]?.app, "existing")
         XCTAssertEqual(draft.vendors["slack"]?.appID, "A0ACME", "the picked app's App ID")
+
+        // The token then updates the picked app; it never creates a new one.
+        cli.on(["slack", "app", "adopt"], [confirmApp])
+        _ = await driver.submitSecret(kind: "slack_config_token", value: token)
+        XCTAssertTrue(cli.calls(["slack", "app", "create"]).isEmpty, "a picked app is never replaced by a new one")
+        XCTAssertFalse(cli.calls(["slack", "app", "adopt"]).isEmpty)
+        XCTAssertEqual(wizard.slackReuse?.appID, "A0ACME")
     }
 
     /// Discovery pre-ticks the vendors it found; the read says none until

@@ -286,6 +286,11 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
         guard await ensureOpen() else { return .failure(.failed(openFailed)) }
         if wizard.slack.isRunning { return .failure(.busy) }
         if wizard.publishState == .running { return .failure(.failed(Self.publishRunning)) }
+        // An app picked on the Slack step (found on this Mac) has no typed App ID:
+        // it goes into the field, so the token updates that app instead of creating one.
+        if CompanySetupWizardModel.slackAppID(from: wizard.slackAppIDInput) == nil, let picked = wizard.slackReuse?.appID {
+            wizard.slackAppIDInput = picked
+        }
         let linked = CompanySetupWizardModel.slackAppID(from: wizard.slackAppIDInput)
         guard await openSlackStep(appID: linked ?? "") else { return .failure(.failed(Self.slackDidNotStart)) }
         if wizard.slackAppReady { return .success(Self.json(["result": "exists", "app_id": wizard.draft.slack.appID])) }
