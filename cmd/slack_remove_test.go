@@ -195,7 +195,7 @@ func TestSlackRemove_SaysWhenDataGoesAndLogsRevokeFailure(t *testing.T) {
 // PurgeGraceHours of 0 deletes at the next pass, another value names it.
 func TestSlackRemovedDataDeletion_FollowsTheManagedGrace(t *testing.T) {
 	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(0)})
-	assert.Equal(t, "With account data deletion on, it is deleted at Watchtower's next pass.", slackRemovedDataDeletion())
+	assert.Equal(t, "With account data deletion on, it is deleted after Watchtower's next sync.", slackRemovedDataDeletion())
 	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(24)})
 	assert.Equal(t, "With account data deletion on, it is deleted 24 hours after Watchtower's next pass.",
 		slackRemovedDataDeletion())

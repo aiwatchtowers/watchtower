@@ -67,7 +67,7 @@ final class AccountPurgeStatusCopyTests: XCTestCase {
     }
 
     /// The notice follows Go's grace_hours (an organization's PurgeGraceHours);
-    /// 0 reads as the next sync, never "0 hours".
+    /// 0 reads as after the next sync, never "0 hours".
     func testNoticeFollowsTheGraceHours() {
         let day = AccountPurgeStatus(enabled: true, enabledBy: "policy", graceHours: 24)
         XCTAssertTrue(AccountPurgeStatus.footnote(day, shown: true).contains("deleted 24 hours later"))
@@ -76,11 +76,11 @@ final class AccountPurgeStatusCopyTests: XCTestCase {
 
         let now = AccountPurgeStatus(enabled: true, enabledBy: "policy", graceHours: 0)
         let foot = AccountPurgeStatus.footnote(now, shown: true)
-        XCTAssertTrue(foot.contains("deleted at the next sync unless you reconnect"), foot)
-        XCTAssertTrue(foot.contains("goes at the next sync after the remove"), foot)
+        XCTAssertTrue(foot.contains("deleted after the next sync unless you reconnect"), foot)
+        XCTAssertTrue(foot.contains("goes after the first sync after the remove"), foot)
         XCTAssertFalse(foot.contains("0 hours"), foot)
         let dialog = AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: now, policy: .none, setting: nil)
-        XCTAssertTrue(dialog.contains("deleted at the next sync unless"), dialog)
+        XCTAssertTrue(dialog.contains("deleted after the next sync unless"), dialog)
         let jira = AccountPurgeStatus.removeDialogMessage("Kept.", status: now, policy: .none, setting: nil)
         XCTAssertEqual(jira, "Kept. Because deleting data on revoked access is on, it is deleted about "
             + "30 days after the account was last reached.")

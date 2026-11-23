@@ -158,7 +158,7 @@ func plainSlackApps(v []policy.SlackApp) string {
 
 // plainGraceHours words PurgeGraceHours as the Desktop's Organization policy
 // line does (OrganizationPolicyPresentation): a refused value leaves the
-// standard notice, 0 deletes at the next sync.
+// standard notice, 0 deletes after the next sync (purge.NoNotice).
 func plainGraceHours(v *int, problem bool) string {
 	switch {
 	case v == nil && problem:
@@ -166,7 +166,7 @@ func plainGraceHours(v *int, problem bool) string {
 	case v == nil:
 		return policyNotSet
 	case *v == 0:
-		return "none (deleted at the next sync)"
+		return "none (deleted after the next sync)"
 	}
 	return fmt.Sprintf("%d hours", *v)
 }

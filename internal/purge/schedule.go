@@ -70,7 +70,8 @@ type accountKey struct {
 //
 // Every due date is at least the grace after the pass that schedules it, so
 // the notice always shows for the full grace period (a grace of 0 makes the
-// row due at once: the next run executes it) — also when the purge is
+// row due at once; the daemon still runs it only after the next cycle's
+// syncs, NoNotice) — also when the purge is
 // turned on for an account revoked long ago, or the daemon did not run for
 // longer than the lease.
 // An empty or unreadable time is no evidence: it never schedules an
@@ -385,4 +386,34 @@ func LeaseDeadlines(accounts []db.PurgeAccount, rules func(db.PurgeAccount) Rule
 		}
 	}
 	return out
+}
+
+// minNotice is the smallest notice a non-zero PurgeGraceHours gives; a row
+// due less than this after it was scheduled had no notice (NoNotice).
+const minNotice = time.Hour
+
+// NoNotice reports whether a scheduled row was given no notice: due less than
+// an hour after it was scheduled (a PurgeGraceHours of 0, or under it a lease
+// already past its deadline). Such a row is deleted only after the next sync
+// cycle (owner decision 2026-11-23, ask #862): the daemon's start-of-cycle
+// pass never runs it, and the pass after a cycle's syncs runs it only when
+// those syncs started after it was scheduled (SyncedSince), so a sync that
+// proves access cancels it first. A running row, or one with a notice, is
+// not held. An unreadable time counts as no notice (it waits).
+func NoNotice(p db.AccountPurge) bool {
+	if p.State != "scheduled" {
+		return false
+	}
+	due, okDue := parseTime(p.DueAt)
+	scheduled, okScheduled := parseTime(p.ScheduledAt)
+	return !okDue || !okScheduled || due.Before(scheduled.Add(minNotice))
+}
+
+// SyncedSince reports whether a cycle's syncs that started at syncStart began
+// after the row was scheduled. The ledger clock has second precision, so a
+// sync started in the row's own second does not count; the zero syncStart (no
+// sync started in this process yet) never does.
+func SyncedSince(p db.AccountPurge, syncStart time.Time) bool {
+	scheduled, ok := parseTime(p.ScheduledAt)
+	return ok && !syncStart.IsZero() && scheduled.Before(syncStart.Truncate(time.Second))
 }

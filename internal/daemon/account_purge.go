@@ -31,14 +31,30 @@ type purgeKey struct {
 // otherwise get a false notice). It then refreshes purgeHold, which the sync
 // phases read to skip accounts being or already purged: a syncer wired at
 // daemon start must not re-fill a purged account.
+//
+// A row given no notice (purge.NoNotice: a PurgeGraceHours of 0) is never
+// run here, before this cycle's syncs: phaseAccountPurgeLeases runs it once
+// a cycle's syncs that started after it was scheduled are done.
 func (d *Daemon) phaseAccountPurge(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
 	}
 	rules := d.purgeRules()
 	actions := d.applyPurgeSchedule(rules, false)
-	deadline := time.Now().Add(purgeCycleBudget)
+	var due []db.AccountPurge
 	for _, p := range actions.Due {
+		if !purge.NoNotice(p) {
+			due = append(due, p)
+		}
+	}
+	d.runPurges(ctx, rules, due)
+	d.refreshPurgeHold()
+}
+
+// runPurges runs due rows within purgeCycleBudget and logs each outcome.
+func (d *Daemon) runPurges(ctx context.Context, rules func(db.PurgeAccount) purge.Rule, rows []db.AccountPurge) {
+	deadline := time.Now().Add(purgeCycleBudget)
+	for _, p := range rows {
 		remaining := time.Until(deadline)
 		if remaining <= 0 || ctx.Err() != nil {
 			break
@@ -55,17 +71,30 @@ func (d *Daemon) phaseAccountPurge(ctx context.Context) {
 			d.logger.Printf("account purge: %s account %d paused, resumes next cycle", p.Source, p.AccountID)
 		}
 	}
-	d.refreshPurgeHold()
 }
 
 // phaseAccountPurgeLeases is the scheduling pass after the cycle's sync
-// phases: the same decision as phaseAccountPurge's, lease rows included. Its
-// due rows run next cycle.
-func (d *Daemon) phaseAccountPurgeLeases(ctx context.Context) {
+// phases: the same decision as phaseAccountPurge's, lease rows included. Of
+// its due rows it runs only those given no notice (purge.NoNotice) that were
+// scheduled before this cycle's syncs started at syncStart
+// (purge.SyncedSince): a sync had its chance to prove access, and that
+// proof cancels the row in this very pass. Other due rows run next cycle.
+func (d *Daemon) phaseAccountPurgeLeases(ctx context.Context, syncStart time.Time) {
 	if d.db == nil || ctx.Err() != nil {
 		return
 	}
-	d.applyPurgeSchedule(d.purgeRules(), true)
+	rules := d.purgeRules()
+	actions := d.applyPurgeSchedule(rules, true)
+	var due []db.AccountPurge
+	for _, p := range actions.Due {
+		if purge.NoNotice(p) && purge.SyncedSince(p, syncStart) {
+			due = append(due, p)
+		}
+	}
+	if len(due) > 0 {
+		d.runPurges(ctx, rules, due)
+		d.refreshPurgeHold()
+	}
 }
 
 // purgeRules is the per-account purge rule of this pass (#1769, A21): the

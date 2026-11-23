@@ -178,7 +178,7 @@ final class AccountPurgeStatusDecodingTests: XCTestCase {
         }
         policy.purgeGraceHours = 0
         XCTAssertTrue(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: nil, policy: policy,
-                                                             setting: nil).contains("deleted at the next sync unless"))
+                                                             setting: nil).contains("deleted after the next sync unless"))
         XCTAssertTrue(AccountPurgeStatus.removeDialogMessage("Kept.", status: nil, policy: policy, setting: nil)
             .hasSuffix("days after the account was last reached."))
     }

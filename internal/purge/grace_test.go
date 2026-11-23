@@ -43,7 +43,8 @@ func TestPurge01_ManagedGraceSetsTheNotice(t *testing.T) {
 }
 
 // TestPurge01_ZeroGraceRunsOnTheNextPass pins PurgeGraceHours = 0: the row is
-// due at the pass that schedules it, the next pass hands it to Run, and a
+// due at the pass that schedules it, the next pass hands it to Run (the
+// daemon runs it only after a later cycle's syncs: NoNotice), and a
 // live account's lease is still scheduled only once its deadline has passed.
 func TestPurge01_ZeroGraceRunsOnTheNextPass(t *testing.T) {
 	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(0)})
@@ -160,5 +161,48 @@ func TestPurge01_LiveLeaseWindowIgnoresTheManagedGrace(t *testing.T) {
 	}
 	if got := Plan(idle, nil, setting(true), t0.Add(-time.Minute)); len(got.Schedule) != 0 {
 		t.Fatalf("idle account before the window: got %+v", got.Schedule)
+	}
+}
+
+// TestPurge01_NoNoticeWaitsForASync pins the zero-notice hold (ask #862): a
+// scheduled row due less than an hour after scheduling has no notice and
+// runs only after syncs that started after it was scheduled, in a later
+// second (the ledger clock's precision); a row with a notice, or a running
+// one, is not held.
+func TestPurge01_NoNoticeWaitsForASync(t *testing.T) {
+	at := t0
+	row := func(due time.Time, state string) db.AccountPurge {
+		return db.AccountPurge{State: state, ScheduledAt: ts(at), DueAt: ts(due)}
+	}
+	for _, c := range []struct {
+		name string
+		p    db.AccountPurge
+		want bool
+	}{
+		{"grace 0", row(at, "scheduled"), true},
+		{"a lease past its deadline", row(at.Add(30*time.Minute), "scheduled"), true},
+		{"an hour's notice", row(at.Add(time.Hour), "scheduled"), false},
+		{"72 h", row(at.Add(Grace), "scheduled"), false},
+		{"running", row(at, "running"), false},
+		{"unreadable", db.AccountPurge{State: "scheduled", ScheduledAt: "x", DueAt: ts(at)}, true},
+	} {
+		if got := NoNotice(c.p); got != c.want {
+			t.Errorf("%s: NoNotice = %v, want %v", c.name, got, c.want)
+		}
+	}
+	p := row(at, "scheduled")
+	for _, c := range []struct {
+		name      string
+		syncStart time.Time
+		want      bool
+	}{
+		{"no sync yet", time.Time{}, false},
+		{"before scheduling", at.Add(-time.Minute), false},
+		{"the same second", at.Add(500 * time.Millisecond), false},
+		{"a later second", at.Add(time.Second), true},
+	} {
+		if got := SyncedSince(p, c.syncStart); got != c.want {
+			t.Errorf("%s: SyncedSince = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

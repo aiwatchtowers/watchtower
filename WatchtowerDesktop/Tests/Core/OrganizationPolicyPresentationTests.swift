@@ -37,7 +37,7 @@ struct OrganizationPolicyPresentationTests {
     @Test("PurgeGraceHours: hours, none for 0, the standard notice for a refused value")
     func graceLine() {
         #expect(text(["PurgeGraceHours": 24]) == ["Notice before data is deleted: 24 hours"])
-        #expect(text(["PurgeGraceHours": 0]) == ["Notice before data is deleted: none (deleted at the next sync)"])
+        #expect(text(["PurgeGraceHours": 0]) == ["Notice before data is deleted: none (deleted after the next sync)"])
         #expect(text(["PurgeGraceHours": 1000]) == [
             "Notice before data is deleted: 72 hours (profile value ignored)",
             "Profile problems: PurgeGraceHours (unknown value)"

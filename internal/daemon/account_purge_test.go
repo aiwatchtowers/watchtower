@@ -106,8 +106,11 @@ func TestPhaseAccountPurge_DueRevokedPurgedAndSyncerSkipped(t *testing.T) {
 	id := seedRevokedLinear(t, database, 10*24*time.Hour)
 	other, err := database.CreateLinearAccount("")
 	require.NoError(t, err)
-	// Scheduled earlier and now due.
+	// Scheduled earlier (the 72 h notice ago) and now due.
 	_, err = database.ScheduleAccountPurge("linear", id, "revoked", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE account_purges SET scheduled_at = ?`,
+		time.Now().Add(-purge.Grace-time.Minute).UTC().Format(time.RFC3339))
 	require.NoError(t, err)
 
 	purgedRan, otherRan := 0, 0
@@ -171,6 +174,76 @@ func TestPurge01_UnsetSwitchCancelsAndKeepsData(t *testing.T) {
 	acc, err := database.GetLinearAccount(id)
 	require.NoError(t, err)
 	assert.Equal(t, "revoked", acc.Status)
+}
+
+// zeroGraceRevokedLinear sets PurgeGraceHours 0 with the purge on, seeds a
+// revoked Linear account, runs a start-of-cycle pass (which schedules the
+// row and must not run it) and backdates the row a minute, as if scheduled
+// in an earlier cycle; then a second start-of-cycle pass must not run it
+// either: no sync has happened since.
+func zeroGraceRevokedLinear(t *testing.T) (*Daemon, *db.DB, int64) {
+	t.Helper()
+	d, database := newLinearTestDaemon(t)
+	setPurge(d, true)
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(0)})
+	id := seedRevokedLinear(t, database, time.Hour)
+
+	d.phaseAccountPurge(context.Background())
+	open, err := database.ListAccountPurges(true)
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, "scheduled", open[0].State, "grace 0: not run by the pass that schedules it")
+	earlier := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	_, err = database.Exec(`UPDATE account_purges SET scheduled_at = ?, due_at = ?`, earlier, earlier)
+	require.NoError(t, err)
+
+	d.phaseAccountPurge(context.Background())
+	open, err = database.ListAccountPurges(true)
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, "scheduled", open[0].State, "grace 0: never run before the cycle's syncs")
+	assert.Equal(t, 3, linearRowCount(t, database, id))
+	return d, database, id
+}
+
+// PURGE-01 (ask #862): with a grace of 0, a sync of the next cycle that
+// proves access cancels the row before it runs; the data is kept.
+func TestPurge01_ZeroGraceSyncProvingAccessCancels(t *testing.T) {
+	d, database, id := zeroGraceRevokedLinear(t)
+	syncStart := time.Now().Add(-time.Second) // the scheduled_at above is a minute older
+	ran := 0
+	d.linearSyncers = []linearAccountSyncer{fakeLinearSyncer{id: id, ran: &ran}}
+	d.phaseLinearSync(context.Background())
+	d.phaseAccountPurgeLeases(context.Background(), syncStart)
+
+	all, err := database.ListAccountPurges(false)
+	require.NoError(t, err)
+	require.Len(t, all, 1)
+	assert.Equal(t, "cancelled", all[0].State)
+	assert.Equal(t, 3, linearRowCount(t, database, id), "access proven: data kept")
+}
+
+// PURGE-01 (ask #862): with a grace of 0, a row whose account is still
+// revoked after the next cycle's sync runs in the pass after that sync.
+func TestPurge01_ZeroGraceRunsAfterTheNextSync(t *testing.T) {
+	d, database, id := zeroGraceRevokedLinear(t)
+	syncStart := time.Now().Add(-time.Second)
+	ran := 0
+	d.linearSyncers = []linearAccountSyncer{
+		fakeLinearSyncer{id: id, err: fmt.Errorf("refresh: %w", linear.ErrAuthRevoked), ran: &ran},
+	}
+	d.phaseLinearSync(context.Background())
+	// A pass whose syncs started before the row was scheduled does not run it.
+	d.phaseAccountPurgeLeases(context.Background(), time.Now().Add(-time.Hour))
+	assert.Equal(t, 3, linearRowCount(t, database, id))
+	d.phaseAccountPurgeLeases(context.Background(), syncStart)
+
+	all, err := database.ListAccountPurges(false)
+	require.NoError(t, err)
+	require.Len(t, all, 1)
+	assert.Equal(t, "done", all[0].State)
+	assert.Equal(t, 0, linearRowCount(t, database, id))
+	assert.True(t, d.purgeHeld("linear", id), "the hold is refreshed after the run")
 }
 
 // PURGE-01 (review #601): a revoked Jira or Linear account whose next pass
@@ -246,7 +319,7 @@ func TestPurge01_NoLeaseBeforeTheCyclesSyncs(t *testing.T) {
 	ran := 0
 	d.linearSyncers = []linearAccountSyncer{fakeLinearSyncer{id: reached, ran: &ran}}
 	d.phaseLinearSync(context.Background())
-	d.phaseAccountPurgeLeases(context.Background())
+	d.phaseAccountPurgeLeases(context.Background(), time.Now())
 	open, err = database.ListAccountPurges(true)
 	require.NoError(t, err)
 	assert.Empty(t, open, "the sync proved access: no lease")
@@ -254,7 +327,7 @@ func TestPurge01_NoLeaseBeforeTheCyclesSyncs(t *testing.T) {
 	// Unreached: the later pass schedules it.
 	_, err = database.Exec(`UPDATE linear_accounts SET access_ok_at = ?`, stale)
 	require.NoError(t, err)
-	d.phaseAccountPurgeLeases(context.Background())
+	d.phaseAccountPurgeLeases(context.Background(), time.Now())
 	open, err = database.ListAccountPurges(true)
 	require.NoError(t, err)
 	require.Len(t, open, 1)
@@ -357,7 +430,7 @@ func TestRefreshPurgeHold_VerifyFailureHolds(t *testing.T) {
 	require.NoError(t, err)
 	d.refreshPurgeHold()
 	assert.True(t, d.purgeHeld("linear", id), "a verify failure holds its account")
-	d.phaseAccountPurgeLeases(context.Background())
+	d.phaseAccountPurgeLeases(context.Background(), time.Now())
 	open, err := database.ListAccountPurges(true)
 	require.NoError(t, err)
 	assert.Empty(t, open, "a held account is not scheduled again")

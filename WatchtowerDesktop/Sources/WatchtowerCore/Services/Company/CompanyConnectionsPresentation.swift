@@ -382,11 +382,11 @@ package enum CompanyConnectionsPresentation {
 
     /// A dead token's lease note; `graceHours` is the purge notice
     /// (`AccountPurgeStatus.graceHours`, an organization's PurgeGraceHours),
-    /// 0 deleting at the next sync.
+    /// 0 deleting after the first sync after the day.
     package static func tokenLease(_ due: Date, graceHours: Int, zone: TimeZone) -> String {
         let day = shortDay(due, zone: zone)
         let when = graceHours == 0
-            ? "at the next sync after \(day)"
+            ? "after the first sync after \(day)"
             : "on \(day), with a notice \(graceHours) hours before"
         return "Its data stays. If no new token comes, the 30-day rule deletes it \(when)."
     }

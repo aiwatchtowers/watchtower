@@ -154,7 +154,7 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
 
     /// The notice before a deletion, in hours: an organization's
     /// PurgeGraceHours, else Go's `grace_hours` (72 unless the organization
-    /// sets another; 0 deletes at the next sync), else 72 while the CLI has
+    /// sets another; 0 deletes after the next sync), else 72 while the CLI has
     /// not answered.
     private static func notice(_ status: Self?, policyGrace: Int? = nil) -> Int {
         policyGrace ?? status?.graceHours ?? 72
@@ -176,8 +176,8 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
         }
         let grace = notice(status)
         let lease = status?.leaseDays ?? 30
-        let later = grace == 0 ? "at the next sync" : "\(grace) hours later"
-        let afterRemove = grace == 0 ? "at the next sync after the remove" : "\(grace) hours after the remove"
+        let later = grace == 0 ? "after the next sync" : "\(grace) hours later"
+        let afterRemove = grace == 0 ? "after the first sync after the remove" : "\(grace) hours after the remove"
         return "On: when an account's access is revoked, or Watchtower has not reached its source for "
             + "\(lease) days, its synced data is deleted \(later) unless you reconnect. A removed Slack "
             + "workspace's data goes \(afterRemove), another removed account's \(lease) days after it was last "
@@ -219,7 +219,7 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
         let signOut = "Watchtower stops syncing \(label) and signs out of it at Slack, so this sign-in stops "
             + "working on every Mac that uses it."
         let grace = notice(status, policyGrace: policy.purgeGraceHours)
-        let when = grace == 0 ? "at the next sync" : "in \(grace) hours"
+        let when = grace == 0 ? "after the next sync" : "in \(grace) hours"
         guard let enabled = dialogEnabled(status, policy: policy, setting: setting) else {
             return signOut + " If deleting data when access ends is on, its synced data is deleted \(when) unless "
                 + "you add the workspace again; otherwise it stays on this Mac until you delete it. Check "

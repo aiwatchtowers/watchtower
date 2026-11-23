@@ -35,7 +35,7 @@ package enum OrganizationPolicyPresentation {
             out.append(Line(label: "Delete a revoked account's data", value: b ? "on" : "off"))
         }
         if let h = p.purgeGraceHours {
-            out.append(Line(label: graceLabel, value: h == 0 ? "none (deleted at the next sync)" : "\(h) hours"))
+            out.append(Line(label: graceLabel, value: h == 0 ? "none (deleted after the next sync)" : "\(h) hours"))
         } else if p.problems.contains(where: { $0.key == ManagedPolicy.Key.purgeGraceHours.rawValue }) {
             // A refused value leaves the standard notice (`watchtower policy show` says the same).
             out.append(Line(label: graceLabel, value: "72 hours (profile value ignored)"))

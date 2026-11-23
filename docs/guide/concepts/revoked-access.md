@@ -10,7 +10,7 @@ It is off by default because a revocation is not always a goodbye. Unlinking an 
 
 ## How it works
 
-Nothing is deleted without a notice, and reconnecting stops it. The notice is 72 hours unless your company's configuration profile sets another, from 0 to 720 hours; with 0 the data goes on the next sync cycle. The times below assume 72 hours.
+Nothing is deleted without a notice, and reconnecting stops it. The notice is 72 hours unless your company's configuration profile sets another, from 0 to 720 hours; with 0 the data goes after the next sync cycle, unless that sync shows the account works again. The times below assume 72 hours.
 
 - **Revoked access:** when a source rejects an account's sign-in, its data is scheduled for deletion 72 hours after Watchtower first sees the revocation. A sync that fails for another reason, such as no network, is not a revocation, and a sync that works again afterwards cancels it.
 - **Not reached for 30 days:** when no account of a source (Slack, Google, Jira or Linear) has synced for 30 days, the data of each is scheduled, due 72 hours later (on a Mac that stays on, at the 30-day mark). Days offline count, but a Mac back after a long time away first tries to sync. A disabled account still counts, and one account syncing keeps all of them safe; for Jira, a Confluence sync counts too. A source your company's profile does not allow is never scheduled this way while the rule holds.
