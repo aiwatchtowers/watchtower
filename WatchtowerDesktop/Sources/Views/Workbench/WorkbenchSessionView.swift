@@ -385,36 +385,26 @@ private struct TerminalHost: NSViewRepresentable {
     }
 }
 
-/// Kept on a terminal view (which outlives its hosts), for
-/// `TerminalHostAttachment.show`: the keyboard request serial a host of it
-/// honoured last, and the keyboard event number when it was made (`born`).
+/// The keyboard request serial a host of a terminal honoured last, kept on
+/// the terminal view (which outlives its hosts), for `TerminalHostAttachment.show`.
+/// A session's later view (a relaunch, an adopted process) is no target of
+/// an earlier click: `TerminalCenter` drops the click's mark (`since`) when
+/// it replaces the view.
 @MainActor
 enum HonouredFocus {
     private final class Box {
-        let value: Int
-        init(_ value: Int) { self.value = value }
+        let serial: Int
+        init(_ serial: Int) { self.serial = serial }
     }
 
-    nonisolated(unsafe) private static var serialKey: UInt8 = 0
-    nonisolated(unsafe) private static var birthKey: UInt8 = 0
+    nonisolated(unsafe) private static var key: UInt8 = 0
 
     static func serial(of terminal: NSView) -> Int? {
-        (objc_getAssociatedObject(terminal, &serialKey) as? Box)?.value
+        (objc_getAssociatedObject(terminal, &key) as? Box)?.serial
     }
 
     static func set(_ serial: Int, of terminal: NSView) {
-        objc_setAssociatedObject(terminal, &serialKey, Box(serial), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-    }
-
-    /// Records `terminal`'s birth at the current keyboard event number.
-    static func born(_ terminal: NSView) {
-        let birth = Box(TerminalContainerView.keyboardEventCount)
-        objc_setAssociatedObject(terminal, &birthKey, birth, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-    }
-
-    /// Its birth's keyboard event number; 0 for a view never recorded.
-    static func birth(of terminal: NSView) -> Int {
-        (objc_getAssociatedObject(terminal, &birthKey) as? Box)?.value ?? 0
+        objc_setAssociatedObject(terminal, &key, Box(serial), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     }
 }
 
@@ -486,13 +476,10 @@ enum TerminalHostAttachment {
         let focus = needsFocus(
             attached: attached, requested: focusSerial, honoured: honoured, obscured: obscured, keepsKeyboard: keeps
         )
-        // A click made before this view existed (a relaunch, an adopted
-        // process) is no click on it.
-        let since = focusSince.flatMap { $0 >= HonouredFocus.birth(of: terminal) ? $0 : nil }
-        let explicit = focusSerial != nil && focusSerial != honoured && (focusSince == nil || since != nil)
+        let explicit = focusSerial != nil && focusSerial != honoured
         if let focusSerial { HonouredFocus.set(focusSerial, of: terminal) }
         settleFocus(
-            terminal, in: container, focus: focus, explicit: explicit, since: explicit ? since : nil,
+            terminal, in: container, focus: focus, explicit: explicit, since: explicit ? focusSince : nil,
             keptOff: keptOff(obscured: obscured, attached: attached, keepsKeyboard: keeps)
         )
     }

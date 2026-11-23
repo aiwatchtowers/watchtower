@@ -840,6 +840,18 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertNotNil(center.keyboardFocusSerial(for: 2))
     }
 
+    /// A session closed (its process gone: a relaunch after a host restart
+    /// replaces it) keeps its keyboard request but not the click's mark: a
+    /// later view is no target of an earlier click (#1150).
+    func testClosingASessionDropsItsRequestsClickMark() async {
+        let center = makeCenter()
+        center.requestKeyboardFocus(1, since: 5)
+        let serial = center.keyboardFocusSerial(for: 1)
+        await center.close(sessionID: 1)
+        XCTAssertEqual(center.keyboardFocusSerial(for: 1), serial)
+        XCTAssertNil(center.keyboardFocusRequest?.since)
+    }
+
     /// The active session is the most recently focused live claude session
     /// of the project — never a shell, never another project's session.
     func testActiveSessionIsTheLastFocusedLiveClaudeSessionOfTheProject() throws {

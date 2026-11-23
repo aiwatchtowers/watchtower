@@ -470,9 +470,10 @@ final class TerminalHostAttachmentTests: XCTestCase {
     }
 
     /// A session's new terminal view (a relaunch after a host restart, an
-    /// adopted process) is no target of a row click made before it existed:
-    /// the center's old request focuses it like any attach, not yielding to
-    /// a panel claim made since that click.
+    /// adopted process) sees the center's old request without its click's
+    /// mark (the center drops it when it replaces the view,
+    /// `TerminalCenterTests.testClosingASessionDropsItsRequestsClickMark`):
+    /// its attach focuses it, not yielding to a panel claim made since.
     func testAnOldClickIsNoClickForANewTerminalView() throws {
         let host = window()
         let content = try XCTUnwrap(host.contentView)
@@ -486,9 +487,28 @@ final class TerminalHostAttachmentTests: XCTestCase {
         panel.takePanelKeyboard()
 
         let relaunched = PalettedTerminalView(frame: .zero)
-        TerminalHostAttachment.show(relaunched, in: first, focusSerial: 1, focusSince: click, obscured: false) { false }
+        TerminalHostAttachment.show(relaunched, in: first, focusSerial: 1, focusSince: nil, obscured: false) { false }
         drainMainQueue()
         XCTAssertTrue(host.firstResponder === relaunched)
+    }
+
+    /// A row click that launches a session not running: its view is made
+    /// during the open's awaits, after the click. The panel taking the
+    /// keyboard in that wait still wins over the click's request.
+    func testAClickThatLaunchesItsViewIsStillWeighedFromTheClick() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let panel = SessionsPanelKeyView.KeyView(frame: NSRect(x: 0, y: 0, width: 50, height: 50))
+        content.addSubview(panel)
+        let container = TerminalContainerView(frame: NSRect(x: 100, y: 0, width: 300, height: 300))
+        content.addSubview(container)
+
+        let click = TerminalContainerView.keyboardEventCount
+        panel.takePanelKeyboard()
+        let launched = PalettedTerminalView(frame: .zero)
+        TerminalHostAttachment.show(launched, in: container, focusSerial: 7, focusSince: click, obscured: false) { false }
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === panel)
     }
 
     /// A second row click on the terminal already on screen (clause (d)) is

@@ -524,9 +524,8 @@ final class TerminalCenter {
     }
 
     /// Moves the keyboard into the session's terminal once its host is on
-    /// screen — also when that host shows it already, where attaching
-    /// changes nothing and so moves no focus (an overlay such as the go-to
-    /// palette took it away). `since`: see `KeyboardFocusRequest` (#1150).
+    /// screen — also when that host shows it already, where attaching moves
+    /// no focus (an overlay such as Go to… took it away). `since`: #1150.
     func requestKeyboardFocus(_ sessionID: Int64, since: Int? = nil) {
         keyboardFocusRequest = KeyboardFocusRequest(sessionID: sessionID, serial: (keyboardFocusRequest?.serial ?? 0) + 1, since: since)
     }
@@ -1225,6 +1224,7 @@ final class TerminalCenter {
             // A process of an earlier, ended run that is not the host's
             // client's: its view leaves the pane for the adopted one.
             if let earlier = processes.removeValue(forKey: session.id) {
+                if keyboardFocusRequest?.sessionID == session.id { keyboardFocusRequest?.since = nil } // as `forget`
                 earlier.onExit = nil
                 earlier.onOwnerInput = nil
                 earlier.onOwnerFocus = nil
@@ -1509,6 +1509,7 @@ final class TerminalCenter {
         pasteHints.remove(sessionID)
         answerHints[sessionID] = nil
         hostLinks[sessionID] = nil
+        if keyboardFocusRequest?.sessionID == sessionID { keyboardFocusRequest?.since = nil } // no click on a later view (#1150)
         // `extraHostRuns` stays: only a stop that worked, a reattach or an update's quit drops it.
         focusOrder.removeAll { $0 == sessionID }
     }
@@ -1665,7 +1666,6 @@ final class PalettedTerminalView: LocalProcessTerminalView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        HonouredFocus.born(self) // a row click before this view is not its (#1150)
         // OSC 52 read off (board #564): printed output must not read the
         // clipboard back into the pty. OSC 52 write stays on.
         let delegateGuard = TerminalClipboardReadGuard(view: self)
