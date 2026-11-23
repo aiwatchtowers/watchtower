@@ -755,6 +755,7 @@ final class MobileSettingsModelTests: XCTestCase {
         let model = makeModel(streamer: streamer, sleep: once)
         await model.load()
         model.linkPhone()
+        defer { model.pairingDismissed() }
         await model.pairing?.start()
         let reads = cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count
 
@@ -767,6 +768,31 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertGreaterThan(cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count, reads, "back on screen the reads resume")
         XCTAssertNotNil(model.pairing, "and the open pairing is untouched")
         XCTAssertFalse(streamer.sessions[0].stopped)
+    }
+
+    /// The reader boundary (#2188): a window that was never shown reads as gone,
+    /// `willClose` reports gone, an app hide/unhide re-evaluates, and a removed
+    /// view stops reporting.
+    func testWindowVisibilityViewReportsFromWindowNotifications() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let view = WindowVisibilityView()
+        var reports: [WindowPresence] = []
+        view.onChange = { reports.append($0) }
+        window.contentView = view
+        XCTAssertEqual(reports, [.gone], "a window that was never ordered in is not on screen")
+
+        NotificationCenter.default.post(name: NSApplication.didHideNotification, object: nil)
+        NotificationCenter.default.post(name: NSApplication.didUnhideNotification, object: nil)
+        XCTAssertEqual(reports.count, 3, "each app hide/unhide re-evaluates")
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        XCTAssertEqual(reports.last, .gone)
+        XCTAssertEqual(reports.count, 4)
+
+        view.stopObserving()
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        XCTAssertEqual(reports.count, 4, "a stopped view reports nothing")
     }
 
     func testTheTabLeavingTheScreenClosesThePairing() async {

@@ -554,11 +554,13 @@ private struct WindowVisibilityReader: NSViewRepresentable {
     }
 }
 
-private final class WindowVisibilityView: NSView {
+final class WindowVisibilityView: NSView {
     var onChange: ((WindowPresence) -> Void)?
     /// Written on the main actor only; read by `deinit` after every other
     /// reference is gone.
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
+    /// `orderOut` of an already covered window posts no notification.
+    private var visibleObservation: NSKeyValueObservation?
 
     deinit {
         observers.forEach(NotificationCenter.default.removeObserver)
@@ -567,6 +569,8 @@ private final class WindowVisibilityView: NSView {
     func stopObserving() {
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
+        visibleObservation?.invalidate()
+        visibleObservation = nil
     }
 
     override func viewDidMoveToWindow() {
@@ -595,6 +599,9 @@ private final class WindowVisibilityView: NSView {
         observe(NSApplication.didUnhideNotification, object: nil) { $0.report() }
         // The window is still `isVisible` while it closes.
         observe(NSWindow.willCloseNotification, object: window) { $0.onChange?(.gone) }
+        visibleObservation = window.observe(\.isVisible) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.report() }
+        }
         report()
     }
 
