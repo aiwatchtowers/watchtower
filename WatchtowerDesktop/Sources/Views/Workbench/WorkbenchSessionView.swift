@@ -219,7 +219,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
     private func host(_ center: TerminalCenter) -> some View {
         if let session, let process = center.process(for: session.id) {
             TerminalHost(session: process, focusSerial: center.keyboardFocusSerial(for: session.id),
-                         focusSince: center.keyboardFocusSince(for: session.id),
+                         focusSince: center.keyboardFocusRequest.flatMap { $0.sessionID == session.id ? $0.since : nil },
                          obscured: obscured || drawerCovers) { [id = session.id] in center.takeKeepKeyboard(id) }
         }
     }
@@ -355,7 +355,7 @@ private struct TerminalHost: NSViewRepresentable {
     let session: any TerminalSessionProcess
     /// `TerminalCenter.keyboardFocusSerial(for:)` of this session.
     let focusSerial: Int?
-    /// `TerminalCenter.keyboardFocusSince(for:)`: that request's gesture.
+    /// That request's `since` (its gesture's keyboard event number).
     let focusSince: Int?
     /// Under an expanded ask drawer: no attach or request moves focus here.
     let obscured: Bool
@@ -462,8 +462,12 @@ enum TerminalHostAttachment {
     /// update — waiting for the window, or for its turn.
     @MainActor
     static func settleFocus(
-        _ terminal: NSView, in container: TerminalContainerView, focus: Bool, explicit: Bool = false,
-        since: Int? = nil, keptOff: Bool
+        _ terminal: NSView,
+        in container: TerminalContainerView,
+        focus: Bool,
+        explicit: Bool = false,
+        since: Int? = nil,
+        keptOff: Bool
     ) {
         if focus {
             container.focusTerminal(terminal, explicit: explicit, since: since)

@@ -208,7 +208,7 @@ final class WorkbenchesViewModelPanelCursorTests: XCTestCase {
         XCTAssertNotNil(center.keyboardFocusSerial(for: b.id), "another row's terminal")
 
         await vm.openSessionRow(id: a.id, since: 7)
-        XCTAssertEqual(center.keyboardFocusSince(for: a.id), 7, "weighed from the click")
+        XCTAssertEqual(center.keyboardFocusRequest?.since, 7, "weighed from the click")
     }
 
     /// A standalone terminal's row click puts the keyboard into it the same
@@ -223,9 +223,9 @@ final class WorkbenchesViewModelPanelCursorTests: XCTestCase {
         await vm.loadSessions(projectID: nil)
 
         await vm.openStandaloneRow(shell, since: 3)
-        XCTAssertEqual(center.keyboardFocusSince(for: shell.id), 3)
+        XCTAssertEqual(center.keyboardFocusRequest?.since, 3)
         await vm.openStandaloneRow(shell, since: 4)
-        XCTAssertEqual(center.keyboardFocusSince(for: shell.id), 4, "on screen already")
+        XCTAssertEqual(center.keyboardFocusRequest?.since, 4, "on screen already")
     }
 
     /// A covered terminal (a page screen, an expanded ask drawer) takes no

@@ -520,20 +520,16 @@ final class TerminalCenter {
     struct KeyboardFocusRequest: Equatable {
         let sessionID: Int64
         let serial: Int
-        /// The keyboard event number at the gesture that asked
-        /// (`TerminalContainerView.keyboardEventCount`); nil: when it arrives.
+        /// The asking gesture's `TerminalContainerView.keyboardEventCount`.
         var since: Int?
     }
 
     /// Moves the keyboard into the session's terminal once its host is on
     /// screen — also when that host shows it already, where attaching
     /// changes nothing and so moves no focus (an overlay such as the go-to
-    /// palette took it away). `since`: the gesture's keyboard event number,
-    /// so a panel claim or typing after it wins (a row click, #1150).
+    /// palette took it away). `since`: see `KeyboardFocusRequest` (#1150).
     func requestKeyboardFocus(_ sessionID: Int64, since: Int? = nil) {
-        keyboardFocusRequest = KeyboardFocusRequest(
-            sessionID: sessionID, serial: (keyboardFocusRequest?.serial ?? 0) + 1, since: since
-        )
+        keyboardFocusRequest = KeyboardFocusRequest(sessionID: sessionID, serial: (keyboardFocusRequest?.serial ?? 0) + 1, since: since)
     }
 
     /// An ask switched from the keyboard (J / K in the drawer, Return on a
@@ -554,11 +550,6 @@ final class TerminalCenter {
     /// The latest request's serial when it is for `sessionID`.
     func keyboardFocusSerial(for sessionID: Int64) -> Int? {
         keyboardFocusRequest.flatMap { $0.sessionID == sessionID ? $0.serial : nil }
-    }
-
-    /// The latest request's gesture mark (`since`) when it is for `sessionID`.
-    func keyboardFocusSince(for sessionID: Int64) -> Int? {
-        keyboardFocusRequest.flatMap { $0.sessionID == sessionID ? $0.since : nil }
     }
 
     // MARK: A v1-only session host: the app types the line itself
