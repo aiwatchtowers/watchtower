@@ -723,12 +723,13 @@ const slackRevokeTimeout = 10 * time.Second
 const slackRevokeWarning = "Slack did not confirm the token was revoked; it may stay valid until a workspace admin removes the app"
 
 // slackRemovedDataDeletion says when a removed workspace's kept data goes
-// with the purge on (A2: zero lease, the notice after the next pass; a
-// zero notice waits for the next sync, purge.NoNotice).
+// with the purge on (A2: zero lease, the notice after the next pass). A
+// zero notice: the row is scheduled by the pass after a cycle's syncs and
+// runs only after a later cycle's syncs (purge.NoNotice).
 func slackRemovedDataDeletion() string {
 	hours := int(purge.EffectiveGrace().Hours())
 	if hours == 0 {
-		return "With account data deletion on, it is deleted after Watchtower's next sync."
+		return "With account data deletion on, it is deleted after a later Watchtower sync."
 	}
 	return fmt.Sprintf("With account data deletion on, it is deleted %d hours after Watchtower's next pass.", hours)
 }
