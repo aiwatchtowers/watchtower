@@ -241,7 +241,32 @@ func ownerNetworkArgs(ghPath string, args ...string) []string {
 		"-c", "credential.helper=!"+shellQuote(ghPath)+" auth git-credential",
 		"-c", "core.alternateRefsCommand=true",
 		"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=10")
+	if target, ok := pushTarget(args); ok {
+		// Since git 2.56 a push to a URL updates the remote-tracking refs of
+		// the one configured remote whose URL matches it (its fetch
+		// refspec); a second, command-line-only remote of the same URL
+		// leaves no unique match, so no local ref of the folder moves.
+		argv = append(argv, "-c", "remote."+pushGuardRemote+".url="+target)
+	}
 	return append(argv, args...)
+}
+
+// pushGuardRemote names the command-line-only remote ownerNetworkArgs adds
+// to a push; it is never written to any config.
+const pushGuardRemote = "watchtower-push-target"
+
+// pushTarget is the repository a push names: its first argument that is
+// not an option (options take their values in the --opt=value form).
+func pushTarget(args []string) (string, bool) {
+	if len(args) == 0 || args[0] != "push" {
+		return "", false
+	}
+	for _, a := range args[1:] {
+		if !strings.HasPrefix(a, "-") {
+			return a, true
+		}
+	}
+	return "", false
 }
 
 // shellQuote quotes s for sh (git runs a `!` credential helper through it).
