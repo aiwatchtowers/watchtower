@@ -22,13 +22,15 @@ If the account is in error rather than revoked when the time comes, the deletion
 
 ## Turning it on or off
 <!-- learn
-id: revoked-delete-data
-title: Delete a revoked account's data
+id: revoked-delete-data-opt-in
+title: Revoked-data deletion is now opt-in
 text: **Delete an account's data when its access ends** is off by default; turn it on in **Settings → System** → **Privacy**.
 area: setup
 level: power
 kind: feature
-since: 0.24.0
+since: next
+replaces: [revoked-delete-data]
+changed: It was on by default; now you turn it on, and your organization can set the notice before deletion.
 -->
 
 The switch is off by default and says **Off by default** until you change it.
