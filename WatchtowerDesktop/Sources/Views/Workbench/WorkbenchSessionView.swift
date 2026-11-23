@@ -650,7 +650,7 @@ final class WindowKeyboardState {
     /// Its number of the latest move of the first responder here.
     var latestMove = 0
 
-    private nonisolated(unsafe) static var key: UInt8 = 0
+    nonisolated(unsafe) private static var key: UInt8 = 0
 
     static func of(_ window: NSWindow) -> WindowKeyboardState {
         if let state = objc_getAssociatedObject(window, &key) as? WindowKeyboardState { return state }
