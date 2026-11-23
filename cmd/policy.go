@@ -104,6 +104,7 @@ func printPolicy(w io.Writer, p policy.Policy) error {
 		{policy.KeyAllowedAIProviders, plainList(k.AllowedAIProviders)},
 		{policy.KeyAllowClaudeAITools, plainAllowed(k.AllowClaudeAITools)},
 		{policy.KeyPurgeRevokedData, plainOnOff(k.PurgeRevokedData)},
+		{policy.KeyPurgeGraceHours, plainHours(k.PurgeGraceHours)},
 		{policy.KeyAllowBackgroundAI, plainAllowed(k.AllowBackgroundAI)},
 		{policy.KeySlackApps, plainSlackApps(k.SlackApps)},
 		{policy.KeyCompanyBundle, plainCompanyBundle(k.CompanyBundle)},
@@ -152,6 +153,13 @@ func plainSlackApps(v []policy.SlackApp) string {
 		parts = append(parts, a.TeamID+" ("+a.ClientID+")")
 	}
 	return strings.Join(parts, ", ")
+}
+
+func plainHours(v *int) string {
+	if v == nil {
+		return policyNotSet
+	}
+	return fmt.Sprintf("%d hours", *v)
 }
 
 func plainString(v *string) string {

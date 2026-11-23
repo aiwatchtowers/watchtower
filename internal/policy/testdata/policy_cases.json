@@ -14,6 +14,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -70,6 +71,7 @@
           ],
           "AllowClaudeAITools": false,
           "PurgeRevokedData": true,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": [
             {
@@ -101,6 +103,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -132,6 +135,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -166,6 +170,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -197,6 +202,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -233,6 +239,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -264,6 +271,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -290,6 +298,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -321,6 +330,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -352,6 +362,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -383,6 +394,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": false,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -414,6 +426,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": true,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -445,6 +458,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": false,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -476,6 +490,7 @@
           ],
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -509,6 +524,7 @@
           "AllowedAIProviders": [],
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -546,6 +562,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -577,6 +594,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -603,6 +621,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -635,6 +654,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -674,6 +694,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -702,6 +723,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": true,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -750,6 +772,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -796,6 +819,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -837,6 +861,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -870,6 +895,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": "eyJ2IjoxLCJjb21wYW55IjoiQWNtZSIsImF0bGFzc2lhbiI6eyJjbGllbnRfaWQiOiJhY21lQ2xpZW50SWQwMSIsImNsaWVudF9zZWNyZXQiOiJhY21lLXNlY3JldCIsInNpdGUiOiJodHRwczovL2FjbWUuYXRsYXNzaWFuLm5ldCIsImNvbmZsdWVuY2UiOnRydWV9fQ",
@@ -898,6 +924,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -937,6 +964,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -968,6 +996,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -1009,6 +1038,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": [
             {
@@ -1044,6 +1074,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": [],
           "CompanyBundle": null,
@@ -1092,6 +1123,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": [
             {
@@ -1137,6 +1169,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": [
             {
@@ -1173,6 +1206,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": null,
           "SlackApps": [],
           "CompanyBundle": null,
@@ -1199,6 +1233,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": true,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -1225,6 +1260,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": false,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -1251,6 +1287,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": false,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -1285,6 +1322,7 @@
           "AllowedAIProviders": [],
           "AllowClaudeAITools": false,
           "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
           "AllowBackgroundAI": false,
           "SlackApps": null,
           "CompanyBundle": null,
@@ -1307,6 +1345,274 @@
           },
           {
             "key": "AllowBackgroundAI",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "purge_grace_hours_valid",
+      "raw": {
+        "PurgeGraceHours": 24
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "PurgeGraceHours": 24,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "purge_grace_hours_zero",
+      "raw": {
+        "PurgeGraceHours": 0
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "PurgeGraceHours": 0,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "purge_grace_hours_max",
+      "raw": {
+        "PurgeGraceHours": 720
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "PurgeGraceHours": 720,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "purge_grace_hours_whole_real",
+      "raw": {
+        "PurgeGraceHours": 48.0
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "PurgeGraceHours": 48,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "purge_grace_hours_negative",
+      "raw": {
+        "PurgeGraceHours": -1
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "PurgeGraceHours",
+            "problem": "unknown_value"
+          }
+        ]
+      }
+    },
+    {
+      "name": "purge_grace_hours_too_long",
+      "raw": {
+        "PurgeGraceHours": 721
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "PurgeGraceHours",
+            "problem": "unknown_value"
+          }
+        ]
+      }
+    },
+    {
+      "name": "purge_grace_hours_fraction",
+      "raw": {
+        "PurgeGraceHours": 12.5
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "PurgeGraceHours",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "purge_grace_hours_string",
+      "raw": {
+        "PurgeGraceHours": "24"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "PurgeGraceHours",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "purge_grace_hours_boolean",
+      "raw": {
+        "PurgeGraceHours": true
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "PurgeGraceHours": null,
+          "AllowBackgroundAI": null,
+          "SlackApps": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "PurgeGraceHours",
             "problem": "wrong_type"
           }
         ]

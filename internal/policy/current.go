@@ -80,3 +80,6 @@ func ClaudeAIToolsAllowed() bool { return Current().ClaudeAIToolsAllowed() }
 // PurgeRevokedData returns the current forced purge switch (#601's policy
 // origin).
 func PurgeRevokedData() (on, set bool) { return Current().PurgeRevokedData() }
+
+// PurgeGraceHours returns the current forced notice before a purge, in hours.
+func PurgeGraceHours() (hours int, set bool) { return Current().PurgeGraceHours() }

@@ -131,18 +131,20 @@ func jiraOnSharedApp(workspaceDir string, a db.JiraAccount) bool {
 // jiraPurgeLeases is each Jira account's lease deadline under the daemon's
 // purge rule (purge.Enabled, daemon.AccountSyncAllowed). An unreadable ledger
 // gives none: the note is left out, never guessed. A deadline less than
-// purge.Grace away is left out too: the next pass schedules the purge (due
-// at least Grace after it), and the purge line then says when.
+// the notice (purge.EffectiveGrace) away is left out too: the next pass
+// schedules the purge (due at least the notice after it), and the purge line
+// then says when.
 func jiraPurgeLeases(cfg *config.Config, database *db.DB, now time.Time) map[int64]time.Time {
 	accounts, err := database.ListPurgeAccounts()
 	if err != nil {
 		log.Printf("jira accounts: purge leases: %v", err)
 		return nil
 	}
-	on, origin := purge.Enabled(cfg)
-	leases := purge.LeaseDeadlines(accounts, purge.AccountRules(on, origin, daemon.AccountSyncAllowed), "jira")
+	on, _ := purge.Enabled(cfg)
+	leases := purge.LeaseDeadlines(accounts, purge.AccountRules(on, daemon.AccountSyncAllowed), "jira")
+	grace := purge.EffectiveGrace()
 	for id, due := range leases {
-		if due.Before(now.Add(purge.Grace)) {
+		if due.Before(now.Add(grace)) {
 			delete(leases, id)
 		}
 	}

@@ -1,13 +1,14 @@
 [
-  {"name": "nothing set: on by default", "policy": null, "setting": null, "build": "", "status_enabled": null, "status_enabled_by": "", "shown": true, "origin": "default"},
+  {"name": "nothing set: off by default", "policy": null, "setting": null, "build": "", "status_enabled": null, "status_enabled_by": "", "shown": false, "origin": "default"},
   {"name": "build on", "policy": null, "setting": null, "build": "on", "status_enabled": null, "status_enabled_by": "", "shown": true, "origin": "build"},
   {"name": "setting true", "policy": null, "setting": true, "build": "", "status_enabled": null, "status_enabled_by": "", "shown": true, "origin": "setting"},
   {"name": "setting false", "policy": null, "setting": false, "build": "", "status_enabled": null, "status_enabled_by": "", "shown": false, "origin": "setting"},
   {"name": "setting false beats build on", "policy": null, "setting": false, "build": "on", "status_enabled": null, "status_enabled_by": "", "shown": false, "origin": "setting"},
   {"name": "policy off beats setting true", "policy": false, "setting": true, "build": "on", "status_enabled": null, "status_enabled_by": "", "shown": false, "origin": "policy"},
   {"name": "policy on beats setting false", "policy": true, "setting": false, "build": "", "status_enabled": null, "status_enabled_by": "", "shown": true, "origin": "policy"},
-  {"name": "status from the CLI: on by default", "policy": null, "setting": null, "build": "", "status_enabled": true, "status_enabled_by": "default", "shown": true, "origin": "default"},
+  {"name": "status from the CLI: off by default", "policy": null, "setting": null, "build": "", "status_enabled": false, "status_enabled_by": "default", "shown": false, "origin": "default"},
   {"name": "status from the CLI: on by the build", "policy": null, "setting": null, "build": "", "status_enabled": true, "status_enabled_by": "build", "shown": true, "origin": "build"},
-  {"name": "setting false beats the status", "policy": null, "setting": false, "build": "", "status_enabled": true, "status_enabled_by": "default", "shown": false, "origin": "setting"},
-  {"name": "policy off beats the status", "policy": false, "setting": null, "build": "", "status_enabled": true, "status_enabled_by": "default", "shown": false, "origin": "policy"}
+  {"name": "setting true beats the status", "policy": null, "setting": true, "build": "", "status_enabled": false, "status_enabled_by": "default", "shown": true, "origin": "setting"},
+  {"name": "setting false beats the status", "policy": null, "setting": false, "build": "", "status_enabled": true, "status_enabled_by": "build", "shown": false, "origin": "setting"},
+  {"name": "policy off beats the status", "policy": false, "setting": null, "build": "", "status_enabled": true, "status_enabled_by": "build", "shown": false, "origin": "policy"}
 ]

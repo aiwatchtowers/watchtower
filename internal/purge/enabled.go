@@ -14,8 +14,8 @@ import (
 // BuildDefault is the build-time default of the purge switch, set by ldflags
 // (`-X watchtower/internal/purge.BuildDefault=on` from WATCHTOWER_PURGE_DEFAULT;
 // the corporate build profile sets it). "on" = on with origin build; anything
-// else leaves the switch to the default fallback, which is on too (#1769, A1):
-// the build value only changes the origin, and with it the per-account rules.
+// else leaves the switch to the default fallback, which is off (owner
+// decision 2026-11-23).
 var BuildDefault = ""
 
 // Origin names what decided the effective value of the switch.
@@ -31,7 +31,8 @@ const (
 
 // Timing and chunk constants of the purge.
 const (
-	// Grace is the notice between scheduling and deleting.
+	// Grace is the standard notice between scheduling and deleting; a
+	// managed PurgeGraceHours replaces it (EffectiveGrace).
 	Grace = 72 * time.Hour
 	// Lease is how long a source may go without confirmed access.
 	Lease = 30 * 24 * time.Hour
@@ -46,9 +47,20 @@ const (
 // whether a forced value decides the switch, on its value. A seam for tests.
 var policySwitch = policy.PurgeRevokedData
 
+// EffectiveGrace returns the notice a purge scheduled now gets: the managed
+// PurgeGraceHours when the organization sets one (0 = due at the pass that
+// schedules it), else Grace. It applies whatever turned the purge on.
+func EffectiveGrace() time.Duration {
+	if h, set := policy.PurgeGraceHours(); set {
+		return time.Duration(h) * time.Hour
+	}
+	return Grace
+}
+
 // Enabled returns the effective purge switch and its origin: a managed policy
 // first, then the owner's privacy.purge_revoked_data setting, then the build
-// default, then on with origin default (#1769, A1) — in every build.
+// default, then off with origin default (owner decision 2026-11-23: an
+// unlinked app must not delete a workspace's history unasked).
 func Enabled(cfg *config.Config) (bool, Origin) {
 	if on, set := policySwitch(); set {
 		return on, OriginPolicy
@@ -59,7 +71,7 @@ func Enabled(cfg *config.Config) (bool, Origin) {
 	if BuildDefault == "on" {
 		return true, OriginBuild
 	}
-	return true, OriginDefault
+	return false, OriginDefault
 }
 
 // Rule is what the purge may do to one account (#1769, A21).
@@ -70,9 +82,9 @@ const (
 	// RuleNone schedules nothing for the account and cancels its scheduled
 	// rows; a running row still finishes.
 	RuleNone Rule = iota
-	// RuleRevokedAndRemoved runs the revoked rule (72 h) and the removed
-	// account's lease (zero for Slack, Lease for the others); a live
-	// account's inactivity lease is held.
+	// RuleRevokedAndRemoved runs the revoked rule and the removed account's
+	// lease (zero for Slack, Lease for the others); a live account's
+	// inactivity lease is held. Only a policy hold gives it.
 	RuleRevokedAndRemoved
 	// RuleFull adds the live accounts' 30-day lease.
 	RuleFull
@@ -82,19 +94,20 @@ const (
 // rules"):
 //
 //   - off: RuleNone for every account;
-//   - on with origin default: RuleRevokedAndRemoved — a live account is never
-//     deleted for inactivity;
-//   - on with origin setting, policy or build: RuleFull;
+//   - on: RuleFull;
 //   - a source sourceAllowed refuses (POLICY-03, #608) is not synced, so its
 //     leases are held: its removed accounts get RuleNone, its live and revoked
 //     ones RuleRevokedAndRemoved (the revoked rule still runs). nil allows
 //     every source.
-func Rules(on bool, origin Origin, sourceAllowed func(string) bool) func(db.PurgeAccount) Rule {
+//
+// The switch is on only by a setting, a policy or the build (Enabled), so
+// whatever turned it on gives the same rules.
+func Rules(on bool, sourceAllowed func(string) bool) func(db.PurgeAccount) Rule {
 	var allowed func(db.PurgeAccount) bool
 	if sourceAllowed != nil {
 		allowed = func(a db.PurgeAccount) bool { return sourceAllowed(a.Source) }
 	}
-	return AccountRules(on, origin, allowed)
+	return AccountRules(on, allowed)
 }
 
 // AccountRules is Rules over a per-account verdict: an account the policy
@@ -102,7 +115,7 @@ func Rules(on bool, origin Origin, sourceAllowed func(string) bool) func(db.Purg
 // under AllowAtlassianAPIToken = false (#1887 D24) — is not synced either,
 // so its leases are held the same way and its data kept (POLICY-03). nil
 // allows every account.
-func AccountRules(on bool, origin Origin, syncAllowed func(db.PurgeAccount) bool) func(db.PurgeAccount) Rule {
+func AccountRules(on bool, syncAllowed func(db.PurgeAccount) bool) func(db.PurgeAccount) Rule {
 	return func(a db.PurgeAccount) Rule {
 		switch {
 		case !on:
@@ -111,8 +124,6 @@ func AccountRules(on bool, origin Origin, syncAllowed func(db.PurgeAccount) bool
 			if a.Status == "removed" {
 				return RuleNone
 			}
-			return RuleRevokedAndRemoved
-		case origin == OriginDefault:
 			return RuleRevokedAndRemoved
 		default:
 			return RuleFull
@@ -132,7 +143,7 @@ func Cutoff(a db.PurgeAccount, r Rule, now time.Time) (cutoff time.Time, require
 }
 
 // zeroLease reports whether the account is a removed Slack account whose
-// rule schedules it: due Grace after the first pass after the remove (A2).
+// rule schedules it: due the grace after the first pass after the remove (A2).
 func zeroLease(a db.PurgeAccount, r Rule) bool {
 	return r != RuleNone && a.Source == "slack" && a.Status == "removed"
 }

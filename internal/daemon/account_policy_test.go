@@ -23,6 +23,7 @@ import (
 func TestAccountPolicy_StopsOneAccountKeepsOthers(t *testing.T) {
 	d, _, _ := newJiraTestDaemon(t)
 	policytest.Set(t, nil)
+	setPurge(d, true)
 	var logs bytes.Buffer
 	d.SetLogger(log.New(&logs, "", 0))
 	var own, work int
@@ -45,7 +46,7 @@ func TestAccountPolicy_StopsOneAccountKeepsOthers(t *testing.T) {
 	rules := d.purgeRules()
 	assert.Equal(t, purge.RuleRevokedAndRemoved, rules(db.PurgeAccount{Source: "google", ID: 1, Status: "ok"}), "the lease is held")
 	assert.Equal(t, purge.RuleNone, rules(db.PurgeAccount{Source: "google", ID: 1, Status: "removed"}))
-	assert.Equal(t, purge.AccountRules(true, purge.OriginDefault, nil)(db.PurgeAccount{Source: "google", ID: 2, Status: "ok"}),
+	assert.Equal(t, purge.AccountRules(true, nil)(db.PurgeAccount{Source: "google", ID: 2, Status: "ok"}),
 		rules(db.PurgeAccount{Source: "google", ID: 2, Status: "ok"}), "the other account's rule is unchanged")
 
 	stopped = false

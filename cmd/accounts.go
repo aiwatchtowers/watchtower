@@ -98,7 +98,7 @@ func runAccountsPurges(cmd *cobra.Command, _ []string) error {
 	doc := accountPurgesJSON{
 		Enabled:    on,
 		EnabledBy:  string(origin),
-		GraceHours: int(purge.Grace.Hours()),
+		GraceHours: int(purge.EffectiveGrace().Hours()),
 		LeaseDays:  int(purge.Lease.Hours() / 24),
 		Purges:     make([]accountPurgeJSON, 0, len(rows)),
 	}

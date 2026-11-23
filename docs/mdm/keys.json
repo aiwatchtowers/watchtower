@@ -42,6 +42,12 @@
     "effect": "Whether an account whose access was revoked has its data wiped."
   },
   {
+    "key": "PurgeGraceHours",
+    "type": "integer",
+    "default": "not set: 72 hours",
+    "effect": "Hours of notice before the data of an account whose access ended is deleted, 0 to 720. 0 deletes it on the next sync cycle. A value outside the range or not a whole number is ignored."
+  },
+  {
     "key": "AllowBackgroundAI",
     "type": "boolean",
     "default": "not set: each person is asked",

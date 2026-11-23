@@ -37,14 +37,15 @@ type accountKey struct {
 }
 
 // Plan decides, from the account rows and the open ledger rows only, which
-// purges to schedule, cancel and run (PURGE-01). It reads nothing else; rules
-// (Rules) says per account what the purge may do.
+// purges to schedule, cancel and run (PURGE-01). It reads nothing else but
+// the notice (EffectiveGrace, "the grace" below); rules (Rules) says per
+// account what the purge may do.
 //
 //   - RuleNone (the switch off, or a removed account of a source the policy
 //     forbids): every scheduled row of the account is cancelled; nothing is
 //     scheduled or run but a running row, which always finishes.
-//   - Revoked (any other rule): a revoked account is scheduled Grace after
-//     the pass that first sees it. It is cancelled once the account is no
+//   - Revoked (any other rule): a revoked account is scheduled the grace
+//     after the pass that first sees it. It is cancelled once the account is no
 //     longer revoked or in error (a reconnect writes ok; a removed account
 //     falls under the removed lease), or once its access_ok_at is newer than
 //     its revoked_at (a clean Jira/Linear pass, which never writes ok —
@@ -53,12 +54,12 @@ type accountKey struct {
 //     access: still revoked.
 //   - Lease (live accounts under RuleFull, status not removed/purged,
 //     disabled included): when every live account of a source has an
-//     access_ok_at and the newest is older than Lease − Grace, each live
-//     account is scheduled, due Grace later — newest + Lease on a daemon
+//     access_ok_at and the newest is older than Lease − the grace, each live
+//     account is scheduled, due the grace later — newest + Lease on a daemon
 //     that runs every cycle. Under RuleRevokedAndRemoved a live account has
 //     no lease.
 //   - Lease (removed accounts, ask #477): a removed account whose own
-//     access_ok_at is older than Lease is scheduled Grace after now; a
+//     access_ok_at is older than Lease is scheduled the grace after now; a
 //     removed Slack account has a zero lease (#1769, A2): it is scheduled by
 //     the first pass after the remove.
 //   - A lease row is cancelled when its account's lease deadline moves past
@@ -66,8 +67,9 @@ type accountKey struct {
 //     that no longer gives it a lease), and runs only once that deadline has
 //     passed.
 //
-// Every due date is at least Grace after the pass that schedules it, so the
-// notice always shows for the full grace period — also when the purge is
+// Every due date is at least the grace after the pass that schedules it, so
+// the notice always shows for the full grace period (a grace of 0 makes the
+// row due at once: the next run executes it) — also when the purge is
 // turned on for an account revoked long ago, or the daemon did not run for
 // longer than the lease.
 // An empty or unreadable time is no evidence: it never schedules an
@@ -130,7 +132,8 @@ func Plan(accounts []db.PurgeAccount, open []db.AccountPurge, rules func(db.Purg
 			out.Cancel = append(out.Cancel, p.ID)
 		}
 	}
-	floor := now.Add(Grace)
+	grace := EffectiveGrace()
+	floor := now.Add(grace)
 	for _, a := range accounts {
 		k := accountKey{a.Source, a.ID}
 		if openFor[k] || a.Status == "purged" || rules(a) == RuleNone {
@@ -152,9 +155,9 @@ func Plan(accounts []db.PurgeAccount, open []db.AccountPurge, rules func(db.Purg
 			}
 			continue
 		}
-		// Scheduled once the deadline is within Grace; due Grace from now,
-		// which on a daemon that runs is the deadline itself (one cycle).
-		if !now.Before(deadline.Add(-Grace)) {
+		// Scheduled once the deadline is within the grace; due the grace from
+		// now, which on a daemon that runs is the deadline itself (one cycle).
+		if !now.Before(deadline.Add(-grace)) {
 			out.Schedule = append(out.Schedule, ScheduleItem{a.Source, a.ID, ReasonLease, floor})
 		}
 	}
@@ -240,7 +243,7 @@ func accessSinceScheduled(a db.PurgeAccount, p db.AccountPurge) bool {
 // left (verifyLeftPrefix) and which has confirmed no access since that row
 // finished (a same-second tie releases). Such an account is not scheduled
 // again on its own — a leftover the steps cannot delete would otherwise give
-// a new notice every 72 h forever — and the sync phases skip it; the failed
+// a new notice every grace period forever — and the sync phases skip it; the failed
 // row stays visible. A Re-login or adding a removed account back confirms
 // access and releases it. A live account is never held: a verify failure of
 // its lease purge releases it like a chunk failure (MaxChunkFailures) does,

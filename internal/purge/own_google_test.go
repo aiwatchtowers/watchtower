@@ -15,7 +15,7 @@ import (
 func TestPurge01_PolicyStoppedOwnGoogleHoldsLease(t *testing.T) {
 	stale := t0.Add(-Lease + Grace - time.Minute)
 	own, work := acct("google", 1, "ok", stale), acct("google", 2, "ok", stale)
-	stopped := AccountRules(true, OriginSetting, func(a db.PurgeAccount) bool { return !(a.Source == "google" && a.ID == 1) })
+	stopped := AccountRules(true, func(a db.PurgeAccount) bool { return !(a.Source == "google" && a.ID == 1) })
 
 	got := Plan([]db.PurgeAccount{own, work}, nil, stopped, t0)
 	if len(got.Schedule) != 1 || got.Schedule[0].AccountID != 2 {

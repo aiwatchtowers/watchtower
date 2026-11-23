@@ -322,6 +322,7 @@ func TestRefreshPurgeHold_FailedReleases(t *testing.T) {
 // the failure.
 func TestRefreshPurgeHold_VerifyFailureHolds(t *testing.T) {
 	d, database := newLinearTestDaemon(t)
+	setPurge(d, true)
 	id := seedRevokedLinear(t, database, time.Hour)
 	_, err := database.Exec(`INSERT INTO account_purges (source, account_id, reason, due_at, state, finished_at, error)
 		VALUES ('linear', ?, 'revoked', '2026-01-01T00:00:00Z', 'failed', '2026-01-04T00:00:00Z', 'left: linear_teams=1')`, id)

@@ -14,7 +14,8 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
-// TestPurge01_EnabledOrder pins the order policy > setting > build > default.
+// TestPurge01_EnabledOrder pins the order policy > setting > build > default,
+// and that the default is off (owner decision 2026-11-23).
 func TestPurge01_EnabledOrder(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -25,9 +26,9 @@ func TestPurge01_EnabledOrder(t *testing.T) {
 		wantOn     bool
 		wantOrigin Origin
 	}{
-		{"nothing set: on by default", false, false, nil, "", true, OriginDefault},
+		{"nothing set: off by default", false, false, nil, "", false, OriginDefault},
 		{"build on", false, false, nil, "on", true, OriginBuild},
-		{"build other value falls back to the default", false, false, nil, "yes", true, OriginDefault},
+		{"build other value falls back to the default", false, false, nil, "yes", false, OriginDefault},
 		{"setting true", false, false, boolPtr(true), "", true, OriginSetting},
 		{"setting false beats build on", false, false, boolPtr(false), "on", false, OriginSetting},
 		{"policy off beats setting true", false, true, boolPtr(true), "on", false, OriginPolicy},
@@ -129,7 +130,8 @@ func TestPurge01_DefaultSharedFixture(t *testing.T) {
 }
 
 // TestPurgeRules_Table pins every row of spec §2 "Per-account rules" (#1769,
-// A21), and the lease deadline each rule gives.
+// A21; origin default is off since the owner's 2026-11-23 decision), and the
+// lease deadline each rule gives.
 func TestPurgeRules_Table(t *testing.T) {
 	allowAll := func(string) bool { return true }
 	noJira := func(s string) bool { return s != "jira" }
@@ -153,49 +155,27 @@ func TestPurgeRules_Table(t *testing.T) {
 		rules func(db.PurgeAccount) Rule
 		want  map[accountKey]want
 	}{
-		{"off", Rules(false, OriginDefault, allowAll), map[accountKey]want{
+		{"off", Rules(false, allowAll), map[accountKey]want{
 			{"slack", 1}: {RuleNone, none}, {"slack", 2}: {RuleNone, none}, {"slack", 3}: {RuleNone, none},
 			{"google", 1}: {RuleNone, none}, {"google", 2}: {RuleNone, none},
 			{"jira", 1}: {RuleNone, none}, {"jira", 2}: {RuleNone, none}, {"jira", 3}: {RuleNone, none},
 		}},
-		{"on, origin default", Rules(true, OriginDefault, allowAll), map[accountKey]want{
-			{"slack", 1}:  {RuleRevokedAndRemoved, none},
-			{"slack", 2}:  {RuleRevokedAndRemoved, t0.Add(-time.Hour)}, // zero lease
-			{"slack", 3}:  {RuleRevokedAndRemoved, none},
-			{"google", 1}: {RuleRevokedAndRemoved, none},
-			{"google", 2}: {RuleRevokedAndRemoved, t0.Add(-40 * 24 * time.Hour).Add(Lease)},
-			{"jira", 1}:   {RuleRevokedAndRemoved, none},
-			{"jira", 2}:   {RuleRevokedAndRemoved, t0.Add(-40 * 24 * time.Hour).Add(Lease)},
-			{"jira", 3}:   {RuleRevokedAndRemoved, none},
-		}},
-	}
-	for _, origin := range []Origin{OriginSetting, OriginPolicy, OriginBuild} {
-		cases = append(cases, struct {
-			name  string
-			rules func(db.PurgeAccount) Rule
-			want  map[accountKey]want
-		}{"on, origin " + string(origin), Rules(true, origin, allowAll), map[accountKey]want{
+		{"on", Rules(true, allowAll), map[accountKey]want{
 			{"slack", 1}:  {RuleFull, t0.Add(-40 * 24 * time.Hour).Add(Lease)},
-			{"slack", 2}:  {RuleFull, t0.Add(-time.Hour)},
+			{"slack", 2}:  {RuleFull, t0.Add(-time.Hour)},                      // zero lease
 			{"slack", 3}:  {RuleFull, t0.Add(-40 * 24 * time.Hour).Add(Lease)}, // a revoked account is live
 			{"google", 1}: {RuleFull, t0.Add(-40 * 24 * time.Hour).Add(Lease)},
 			{"google", 2}: {RuleFull, t0.Add(-40 * 24 * time.Hour).Add(Lease)},
 			{"jira", 1}:   {RuleFull, t0.Add(-40 * 24 * time.Hour).Add(Lease)},
 			{"jira", 2}:   {RuleFull, t0.Add(-40 * 24 * time.Hour).Add(Lease)},
 			{"jira", 3}:   {RuleFull, t0.Add(-40 * 24 * time.Hour).Add(Lease)},
-		}})
-	}
-	for _, origin := range []Origin{OriginDefault, OriginSetting} {
-		cases = append(cases, struct {
-			name  string
-			rules func(db.PurgeAccount) Rule
-			want  map[accountKey]want
-		}{"jira forbidden by policy, origin " + string(origin), Rules(true, origin, noJira), map[accountKey]want{
+		}},
+		{"jira forbidden by policy", Rules(true, noJira), map[accountKey]want{
 			// The source's leases are held; its revoked rule still runs.
 			{"jira", 1}: {RuleRevokedAndRemoved, none},
 			{"jira", 2}: {RuleNone, none},
 			{"jira", 3}: {RuleRevokedAndRemoved, none},
-		}})
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

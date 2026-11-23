@@ -18,7 +18,7 @@ func TestPurge01_PolicyStoppedAPITokenHoldsLease(t *testing.T) {
 	token.AuthKind = "api_token"
 	oauth := acct("jira", 2, "ok", stale)
 	oauth.AuthKind = "oauth"
-	stopped := AccountRules(true, OriginSetting, func(a db.PurgeAccount) bool { return a.AuthKind != "api_token" })
+	stopped := AccountRules(true, func(a db.PurgeAccount) bool { return a.AuthKind != "api_token" })
 
 	got := Plan([]db.PurgeAccount{token, oauth}, nil, stopped, t0)
 	if len(got.Schedule) != 1 || got.Schedule[0].AccountID != 2 {
@@ -27,7 +27,7 @@ func TestPurge01_PolicyStoppedAPITokenHoldsLease(t *testing.T) {
 	if r := stopped(token); r != RuleRevokedAndRemoved {
 		t.Fatalf("a stopped live account keeps the revoked rule only, got %v", r)
 	}
-	if got := Plan([]db.PurgeAccount{token, oauth}, nil, AccountRules(true, OriginSetting, nil), t0); len(got.Schedule) != 2 {
+	if got := Plan([]db.PurgeAccount{token, oauth}, nil, AccountRules(true, nil), t0); len(got.Schedule) != 2 {
 		t.Fatalf("not stopped: both leases are scheduled, got %+v", got.Schedule)
 	}
 }
