@@ -13,7 +13,7 @@ A service in **Connections** shows a red dot, an account row has a **Re-login** 
 
 ## Why
 
-The service revoked or expired the sign-in (a password change, an admin removing the app, a long idle period), or the server refused the connection. Watchtower keeps what it already synced and stops asking until you sign in again, unless [revoked-access deletion](../concepts/revoked-access.md) is on: then the data is deleted after a notice of at least 72 hours.
+The service revoked or expired the sign-in (a password change, an admin removing the app, a long idle period), or the server refused the connection. Watchtower keeps what it already synced and stops asking until you sign in again, unless [revoked-access deletion](../concepts/revoked-access.md) is on: then the data is deleted after a notice (72 hours unless your organization sets another).
 
 ## Fix
 
