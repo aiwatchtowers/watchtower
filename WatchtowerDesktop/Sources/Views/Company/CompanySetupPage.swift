@@ -210,6 +210,9 @@ struct CompanySetupPage: View {
     private var secondary: some View {
         if foundPhase {
             Button(Model.createNew) { model.createNew() }.buttonStyle(.kitSecondary)
+        } else if vendor == .slack, model.slackOffersNewApp {
+            Button(Model.backTitle) { model.back() }.buttonStyle(.kitSecondary)
+            Button(Model.createNewAppInstead) { model.createNewSlackApp() }.buttonStyle(.kitSecondary)
         } else if waitingForConsent {
             Button(Model.checkAgain) { Task { await model.check(.microsoft) } }.buttonStyle(.kitSecondary)
         } else if model.current != .services {

@@ -48,7 +48,7 @@ final class CompanySetupMockCopyTests: XCTestCase {
         for hint in [Copy.notSureSlack, Copy.notSureGoogle, Copy.notSureAtlassian, Copy.notSureLinear, Copy.notSureMicrosoft] {
             XCTAssertTrue(hint.hasPrefix("Not sure? "), hint)
         }
-        XCTAssertTrue(Copy.notCollaborator.contains("Ask the app's owner to add you as a collaborator"))
+        XCTAssertTrue(Copy.notCollaborator.contains("(no_permission)") && Copy.notCollaborator.contains("from one of its collaborators"))
         XCTAssertEqual(Copy.confirmChecks.count, 3)
         XCTAssertTrue(Copy.publishSummary[2].hasSuffix("checked and connected by your sign-in"))
         // Ask #1503: the check sign-in is the person's real connection; Discard keeps it.

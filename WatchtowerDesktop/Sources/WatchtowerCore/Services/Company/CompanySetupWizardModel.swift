@@ -188,6 +188,12 @@ package final class CompanySetupWizardModel {
     /// The running adopt confirms an app whose diff was shown.
     private var slackConfirming = false
     private var slackReused = false
+    /// **Create a new app instead**: the next create makes a second app
+    /// (`--new-app`) beside the workspace's app this token cannot change.
+    private var slackNewApp = false
+    /// The create found the workspace's own Watchtower app, which this Mac
+    /// knows only by its Client ID: the link field asks for it.
+    package private(set) var slackFoundExisting = false
     /// The deny list's field and its problem.
     package var hostField = ""
     package private(set) var hostInvalid = false
@@ -546,6 +552,8 @@ package final class CompanySetupWizardModel {
         slackAttempt = false
         slackReused = false
         slackAppIDInput = ""
+        slackNewApp = false
+        slackFoundExisting = false
         slackClientID = ""
         slackConfirming = false
         hostField = ""
@@ -663,7 +671,7 @@ package final class CompanySetupWizardModel {
 
     private func clearEntries(_ v: CompanyVendor) {
         switch v {
-        case .slack: draft.slack = .init(); slackReuse = nil
+        case .slack: draft.slack = .init(); slackReuse = nil; slackNewApp = false; slackFoundExisting = false
         case .google: draft.google = nil; googleFile = nil
         case .atlassian: draft.atlassian = nil; atlassianConfirmed = [false, false, false]
         case .linear: draft.linear = nil
@@ -694,6 +702,7 @@ package final class CompanySetupWizardModel {
             // it (the choice is made again on the first screen).
             slackAttempt = false
             slackReuse = nil
+            slackNewApp = false
             slack.resetForm()
             phases[.slack] = nil
             enter(current)
@@ -800,13 +809,16 @@ package final class CompanySetupWizardModel {
     package func createNew() {
         guard case let .vendor(v) = current else { return }
         // Create new drops every App ID the step held, typed or from a picked app.
-        if v == .slack { slackReuse = nil; slackAttempt = false; slackAppIDInput = "" }
+        if v == .slack {
+            slackReuse = nil; slackAttempt = false; slackNewApp = false; slackFoundExisting = false; slackAppIDInput = ""
+        }
         phases[v] = .create
     }
 
     /// **We already have one**.
     package func alreadyHaveOne() {
         guard case let .vendor(v) = current else { return }
+        if v == .slack { slackFoundExisting = false }
         phases[v] = .existing
     }
 
@@ -1115,11 +1127,13 @@ package final class CompanySetupWizardModel {
             // A client id with no App ID known here: the App ID field names it.
             slackReuse = nil
             slackClientID = c.clientID
+            slackFoundExisting = false
             phases[.slack] = .existing
             return
         }
         slackReuse = (appID, c.clientID)
         slackAttempt = false
+        slackNewApp = false
         phases[.slack] = .create
     }
 
@@ -1132,6 +1146,8 @@ package final class CompanySetupWizardModel {
         let typed = slackClientID.trimmingCharacters(in: .whitespacesAndNewlines)
         slackReuse = (appID, typed.isEmpty ? known : typed)
         slackAttempt = false
+        slackNewApp = false
+        slackFoundExisting = false
         phases[.slack] = .create
     }
 
@@ -1218,7 +1234,7 @@ package final class CompanySetupWizardModel {
             slack.startAdopt(token: token, appID: reuse.appID, clientID: reuse.clientID, dryRun: !confirming)
         } else {
             slackConfirming = false
-            slack.startCreate(token: token)
+            slack.startCreate(token: token, newApp: slackNewApp)
         }
     }
 
@@ -1236,9 +1252,49 @@ package final class CompanySetupWizardModel {
             Task {
                 if current == .vendor(.slack) { await advance() } else { await saveDraft() }
             }
+        case let .existingApp(appID, clientID):
+            slackNewApp = false
+            // The step moved on (Skip) while the create's records were read:
+            // nothing starts behind the owner's back.
+            guard current == .vendor(.slack), phases[.slack] == .create else {
+                slackAttempt = false
+                return
+            }
+            if appID.isEmpty {
+                // Known only by its Client ID: its App ID names it.
+                slackAttempt = false
+                slackReuse = nil
+                slackClientID = clientID
+                slackFoundExisting = true
+                phases[.slack] = .existing
+            } else {
+                // Read the app with the same token and show what updating it changes.
+                slackReuse = (appID, clientID)
+                startSlackRun()
+            }
         case .failed:
             break
         }
+    }
+
+    /// The reused app refused this token (`no_permission`): the step offers
+    /// **Create a new app instead**.
+    package var slackOffersNewApp: Bool {
+        guard slackAttempt, !slack.isRunning, slackReuse != nil,
+              case .finished(.problem(.notCollaborator)) = slack.phase else { return false }
+        return true
+    }
+
+    /// **Create a new app instead**: back to the token form; its create makes
+    /// a second app (`--new-app`). The token stays in the field.
+    package func createNewSlackApp() {
+        guard slackOffersNewApp else { return }
+        slackReuse = nil
+        slackAttempt = false
+        slackFoundExisting = false
+        slackNewApp = true
+        slack.resetForm()
+        phases[.slack] = .create
     }
 
     /// The reused app's settings differ: what **Update the app** changes.

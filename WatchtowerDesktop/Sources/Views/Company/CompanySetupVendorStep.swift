@@ -267,6 +267,7 @@ struct CompanySetupVendorStep: View {
     @ViewBuilder
     private var slackExisting: some View {
         let specs = CompanyVendorGuide.alreadyHaveFields(.slack)
+        if model.slackFoundExisting { WizardCaption(Model.slackFoundExisting) }
         WizardChoice(title: Model.alreadyHaveOne, detail: Model.alreadyHaveDetail, selected: true) {}
         ForEach(specs) { spec in
             VStack(alignment: .leading, spacing: Spacing.tight) {

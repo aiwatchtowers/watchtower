@@ -304,6 +304,137 @@ final class CompanySetupWizardModelTests: XCTestCase {
         XCTAssertFalse(create?.args.contains(token) ?? true)
     }
 
+    /// #1142: Create the app on a workspace whose company app this Mac knows
+    /// by App ID reads that app with the same token instead of doing nothing.
+    func testCreateFindingTheCompanyAppReadsIt() async {
+        let cli = CompanyScriptedCLI()
+        let (model, _) = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        await model.next() // nothing found → Create new
+        model.slackToken = token
+        cli.on(["slack", "app", "create"], [#"{"result":"existing_app","team_id":"T0ACME","team_name":"acme","#
+            + #""app_id":"A0ACME","client_id":"1111.2222"}"#])
+        cli.on(["slack", "app", "adopt"], [confirmApp])
+        await model.next()
+        await untilObserved { model.slackDiff != nil }
+        XCTAssertEqual(model.slackDiff?.appID, "A0ACME")
+        XCTAssertEqual(model.primary.title, "Update the app")
+        XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).first?.args.suffix(5),
+                       ["--app-id", "A0ACME", "--client-id", "1111.2222", "--dry-run"])
+        XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).first?.input, token + "\n")
+    }
+
+    /// #1142: the company app known only by its Client ID: the step asks for
+    /// its App ID, saying why.
+    func testCreateFindingAnUnknownCompanyAppAsksForItsLink() async {
+        let cli = CompanyScriptedCLI()
+        let (model, _) = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        await model.next()
+        model.slackToken = token
+        cli.on(["slack", "app", "create"], [#"{"result":"existing_app","team_id":"T0ACME","team_name":"acme","#
+            + #""client_id":"1111.2222"}"#])
+        await model.next()
+        await untilObserved { model.phase(.slack) == .existing }
+        XCTAssertTrue(model.slackFoundExisting)
+        XCTAssertEqual(model.slackClientID, "1111.2222")
+        XCTAssertEqual(Model.slackFoundExisting,
+                       "This workspace already has a Watchtower app. Paste its App ID to update it.")
+        model.setField(.slack, .slackAppID, "https://api.slack.com/apps/A0ACME")
+        await model.next()
+        XCTAssertFalse(model.slackFoundExisting)
+        XCTAssertEqual(model.primary.title, "Continue")
+    }
+
+    /// #1142: an app Slack will not let this token change offers a second app;
+    /// its create runs with --new-app.
+    func testNotCollaboratorOffersANewApp() async {
+        let cli = CompanyScriptedCLI()
+        let (model, _) = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        model.alreadyHaveOne()
+        model.setField(.slack, .slackAppID, "https://api.slack.com/apps/A0ACME")
+        await model.next()
+        model.slackToken = token
+        cli.on(["slack", "app", "adopt"], [#"{"result":"not_collaborator","team_id":"T0ACME","team_name":"acme","#
+            + #""code":"no_permission"}"#])
+        await model.next()
+        await untilObserved { model.slackOffersNewApp }
+        model.createNewSlackApp()
+        XCTAssertFalse(model.slackOffersNewApp)
+        XCTAssertNil(model.slackProblem)
+        XCTAssertEqual(model.primary, .init(title: "Create the app", enabled: true), "the token stays")
+        cli.on(["slack", "app", "create"], [#"{"result":"ok","team_id":"T0ACME","team_name":"acme","app_id":"A0NEW","#
+            + #""client_id":"3333.4444","link_written":false}"#])
+        cli.setups = acmeSetup
+        await model.next()
+        await untilObserved { model.current == .denyList }
+        XCTAssertEqual(cli.calls(["slack", "app", "create"]).first?.args, ["slack", "app", "create", "--json", "--new-app"])
+    }
+
+    /// #1142, the owner's dead end end to end: create → existing_app → the
+    /// app's read refused (no_permission) → Create a new app instead → --new-app.
+    func testExistingAppRefusedThenNewApp() async {
+        let cli = CompanyScriptedCLI()
+        let (model, _) = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        await model.next()
+        model.slackToken = token
+        cli.on(["slack", "app", "create"], [#"{"result":"existing_app","team_id":"T0ACME","team_name":"acme","#
+            + #""app_id":"A0ACME","client_id":"1111.2222"}"#])
+        cli.on(["slack", "app", "adopt"], [#"{"result":"not_collaborator","team_id":"T0ACME","team_name":"acme","#
+            + #""code":"no_permission"}"#])
+        await model.next()
+        await settled(model) // the create, then the read it chains
+        XCTAssertTrue(model.slackOffersNewApp)
+        XCTAssertEqual(model.primary.title, "Try again")
+        model.createNewSlackApp()
+        cli.on(["slack", "app", "create"], [#"{"result":"ok","team_id":"T0ACME","team_name":"acme","app_id":"A0NEW","#
+            + #""client_id":"3333.4444","link_written":false}"#])
+        cli.setups = acmeSetup
+        await model.next()
+        await settled(model)
+        XCTAssertEqual(model.current, .denyList)
+        XCTAssertEqual(cli.calls(["slack", "app", "create"]).map(\.args),
+                       [["slack", "app", "create", "--json"], ["slack", "app", "create", "--json", "--new-app"]])
+    }
+
+    /// #1142: Skip while the create's records are read: the found app is not
+    /// read behind the owner's back.
+    func testExistingAppAfterSkipStartsNothing() async {
+        let cli = CompanyScriptedCLI()
+        let (model, _) = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        await model.next()
+        model.slackToken = token
+        cli.hold(["slack", "app", "status"])
+        cli.on(["slack", "app", "create"], [#"{"result":"existing_app","team_id":"T0ACME","team_name":"acme","#
+            + #""app_id":"A0ACME","client_id":"1111.2222"}"#])
+        let statusReads = cli.calls(["slack", "app", "status"]).count
+        await model.next()
+        await cli.waitFor(["slack", "app", "status"], count: statusReads + 1) // the create's own records read
+        await model.skip()
+        cli.release(["slack", "app", "status"], [#"{"setups":[]}"#])
+        await settled(model)
+        XCTAssertTrue(cli.calls(["slack", "app", "adopt"]).isEmpty)
+        XCTAssertFalse(model.slack.isRunning)
+    }
+
+    /// Waits out the Slack run and any run its outcome chains.
+    private func settled(_ model: CompanySetupWizardModel) async {
+        repeat { await model.slack.runTask?.value } while model.slack.isRunning
+    }
+
     func testReusedAppShowsDiffThenUpdates() async {
         let cli = CompanyScriptedCLI()
         cli.on(["company", "discover"], [#"{"candidates":[{"vendor":"slack","client_id":"1111.2222","app_id":"A0ACME","#
@@ -597,8 +728,9 @@ final class CompanySetupWizardModelTests: XCTestCase {
         cli.on(["slack", "app", "adopt"], [#"{"result":"not_collaborator","team_id":"T0ACME","team_name":"acme"}"#])
         await model.next()
         await untilObserved { model.slackProblem != nil }
-        XCTAssertEqual(model.slackProblem, "You are not a collaborator on app A0ACME, so Slack does not let you change it. "
-            + "Ask the app's owner to add you as a collaborator, then try again.")
+        XCTAssertEqual(model.slackProblem, "Slack would not let this token change app A0ACME (no_permission). The token has to "
+            + "come from the workspace the app was made in, from one of its collaborators: make a new token there and try "
+            + "again.")
         XCTAssertEqual(model.current, .vendor(.slack), "the step stays open")
         XCTAssertEqual(model.primary.title, "Try again")
         XCTAssertTrue(cli.calls(["slack", "app", "create"]).isEmpty, "nothing created")

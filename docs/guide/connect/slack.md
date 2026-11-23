@@ -54,7 +54,7 @@ The assistant's panel always offers **Set up by hand**, which opens **Connection
 - **Slack says your admin must approve the app.** Watchtower keeps waiting; connect again once they approve.
 - **"Signed in as someone else; nothing was changed."** Sign in as the same Slack person the account belongs to.
 - **"Your workspace does not let you create apps."** Ask a Slack admin to run the setup, or to allow app creation.
-- **"Your token cannot change this app."** One of the app's collaborators (its **Collaborators** page lists them) must run the update.
+- **"Slack would not let your token change this app."** Make the configuration token in the workspace the app was made in, signed in as one of the app's collaborators (its **Collaborators** page lists them), and run the update again.
 - **Watchtower asks for the app's App ID.** Use **Set up by hand** and enter it from the app's **Basic Information** page.
 - **"Setup is not finished: Watchtower's app exists in …, but you have not connected yet."** The app is there; only your own sign-in is missing. Do not create the app again: use **Set up by hand** and press **Continue setup**.
 - **"Waiting for your admin's approval."** Slack sent an admin a request to install Watchtower. Once they approve, use **Set up by hand** and press **Check again**.

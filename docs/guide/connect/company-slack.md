@@ -42,7 +42,8 @@ Run this last, after the Microsoft 365 page.
 The assistant's panel always offers **Set up by hand**, which opens the setup wizard: the wizard and the panel share one draft.
 
 - **"Your workspace does not let you create apps."** Ask a workspace admin to run the setup, or to allow app creation.
-- **"Your token cannot change this app."** One of the app's collaborators (its **Collaborators** page lists them) runs the Slack step.
+- **"Slack would not let this token change app …"** Make the configuration token in the workspace the app was made in, signed in as one of the app's collaborators (its **Collaborators** page lists them), and press **Try again**. If that is not possible, press **Create a new app instead**: Watchtower makes a second app with the same token, and the company link uses that one.
+- **"This workspace already has a Watchtower app."** **Create the app** found the Watchtower app a Slack account on this Mac is connected through. Paste its App ID (it starts with A, like `A0123ABCD`; a link to the app works too) to update that app instead of making a second one.
 - **"That token did not work: it has expired or is not a configuration token."** Run Slack steps 3–4 again with a fresh token.
 - **"Another setup is already running on this Mac."** Wait for it, then run the Slack step again.
 - **The update card was declined.** The app was not changed. Create a new app, or run the step again.
