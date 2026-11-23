@@ -268,7 +268,13 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             wizard.slackToken = ""
             return .failure(ConnectSecret.failure(wizard.slackProblem, secret: token, fallback: Self.slackDidNotStart))
         }
-        await wizard.slack.runTask?.value
+        // A create that found the workspace's app chains a read of it (#1142):
+        // wait for the run the step ends on.
+        repeat { await wizard.slack.runTask?.value } while wizard.slack.isRunning
+        if wizard.slackFoundExisting {
+            wizard.slackToken = ""
+            return .failure(.failed(Self.slackFoundExisting))
+        }
         if let diff = wizard.slackDiff {
             // The app was only read: its changes wait on the customer's card.
             shownUpdate = diff
@@ -497,6 +503,8 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
     package static let publishStopped = "Publish did not go through."
     package static let checkLeft = "The check's values changed while it ran. Check again."
     package static let slackDidNotStart = "The Slack step did not start. Open the setup wizard's Slack step."
+    package static let slackFoundExisting = "This workspace already has a Watchtower app. Save its settings link "
+        + "(https://api.slack.com/apps/A…), then send the token again to update that app."
     package static let slackStopped = "The Slack step stopped before the app was ready. Finish it in the setup wizard."
     package static let updateGone = "The Slack update is no longer waiting. Run the Slack step again."
     package static func otherSlackApp(_ appID: String) -> String {

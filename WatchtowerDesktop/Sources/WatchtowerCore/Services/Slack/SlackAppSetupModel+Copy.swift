@@ -231,8 +231,8 @@ extension SlackAppSetupModel {
     package static let badTokenBody = "That token did not work: it has expired or is not a configuration token. "
         + "Generate a new one and paste it."
     package static let notAllowedBody = "Your workspace does not let you create apps. Ask a workspace admin to run this setup."
-    package static let notCollaboratorBody = "Your token cannot change this app. Ask one of its collaborators "
-        + "(listed on its Collaborators page) to run this setup."
+    package static let notCollaboratorBody = "Slack would not let your token change this app (no_permission). Make the token "
+        + "in the workspace the app was made in, as one of its collaborators (its Collaborators page), and try again."
     package static let saveFailedBody = "Watchtower could not save this on this Mac. Nothing changed on Slack's side; try again."
 
     package static func notPendingLine(_ workspace: String) -> String {

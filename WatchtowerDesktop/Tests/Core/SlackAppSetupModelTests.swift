@@ -579,8 +579,8 @@ final class SlackAppSetupModelTests: XCTestCase {
     func testNotCollaboratorState() async {
         let model = await problem(result("not_collaborator", extra: #","code":"no_permission""#), form: adopt)
         XCTAssertEqual(model.notice?.title, "Watchtower's app already exists in acme")
-        XCTAssertEqual(model.notice?.body, "Your token cannot change this app. Ask one of its collaborators (listed on "
-            + "its Collaborators page) to run this setup.")
+        XCTAssertEqual(model.notice?.body, "Slack would not let your token change this app (no_permission). Make the token "
+            + "in the workspace the app was made in, as one of its collaborators (its Collaborators page), and try again.")
         XCTAssertEqual(labels(model), ["Cancel", "Copy a note for your admin", "Try again"])
         XCTAssertTrue(model.copyAdminNote().hasPrefix("Please set up Watchtower for acme in Slack: "))
     }
@@ -1028,11 +1028,13 @@ final class SlackAppSetupModelTests: XCTestCase {
         XCTAssertTrue(box.outcomes.contains(.failed(.badToken)), "\(box.outcomes)")
     }
 
-    func testWizardCreateExistingAppEndsOnTheAdoptForm() async {
+    /// #1142: the wizard is told about the company app (it showed nothing
+    /// when only the form changed).
+    func testWizardCreateExistingAppReportsTheApp() async {
         let (model, _, _, box) = makeWizard([reply(result("existing_app")), reply(statusDoc())])
         model.startCreate(token: token)
-        await untilObserved { !model.records.isEmpty }
-        XCTAssertTrue(box.outcomes.isEmpty, "the wizard reads the form")
+        await reported(box)
+        XCTAssertEqual(box.outcomes, [.existingApp(appID: "A0ACME", clientID: "1111.2222")])
         guard case .adopt = model.form else { return XCTFail("\(model.form)") }
         XCTAssertEqual(model.phase, .editing)
     }

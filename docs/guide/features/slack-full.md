@@ -75,7 +75,7 @@ An account connected through Watchtower's old shared app keeps syncing until Sla
 - **"Slack signed you in to a different workspace than the link names."** Switch to that workspace on Slack's page, then **Start again**.
 - **Slack says your admin must approve the app.** Watchtower keeps waiting with **Cancel**; connect again once they approve.
 - **"Your workspace does not let you create apps."** Press **Copy a note for your admin** and send it to an admin; it links here.
-- **"Your token cannot change this app."** Ask one of the app's collaborators (its Collaborators page lists them) to run the setup.
+- **"Slack would not let your token change this app."** Make the configuration token in the workspace the app was made in, signed in as one of the app's collaborators (its Collaborators page lists them), and try again.
 - **"The app's About page has no connect link yet."** The token expired mid-setup. Press **Add the link to the app** and paste a fresh token.
 - **"Slack did not answer when Watchtower asked it to create the app."** Look for Watchtower on api.slack.com/apps. Found: enter its **App ID** and **Client ID** and press **Use this app**. Not there: **Start again**.
 - **A sign-in expired** ("Sign in again: the Slack sign-in expired"): press **Re-login** on the row and allow Watchtower again.

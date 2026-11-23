@@ -98,6 +98,7 @@ func slackAppTestCmd(stdin string, flags map[string]string) (*cobra.Command, *by
 	c.Flags().String("client-id", "", "")
 	c.Flags().Bool("enable-pkce", false, "")
 	c.Flags().Bool("dry-run", false, "")
+	c.Flags().Bool("new-app", false, "")
 	for k, v := range flags {
 		_ = c.Flags().Set(k, v)
 	}
@@ -318,6 +319,31 @@ func TestAppSetup_AdoptBuiltinAppDeferredCLI(t *testing.T) {
 	err = runSlackAppAdopt(c, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "later Watchtower update")
+}
+
+// TestAppSetup_CreateNewAppCLI: --new-app creates a second app where the
+// workspace's company app answers existing_app.
+func TestAppSetup_CreateNewAppCLI(t *testing.T) {
+	cfg, _ := setupSlackAppWorkspace(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	id, err := database.CreateSlackAccount(db.SlackAccount{TeamID: "T0ACME", TeamName: "Acme", CurrentUserID: "1:U1"})
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE slack_accounts SET client_id = '5555.6666', status = 'ok' WHERE id = ?`, id)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+	fake := &fakeSlackAppServer{}
+	fake.serve(t)
+
+	c, out, _ := slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true"})
+	require.NoError(t, runSlackAppCreate(c, nil))
+	lines := jsonLines(t, out.String())
+	assert.Equal(t, "existing_app", lines[len(lines)-1]["result"])
+
+	c, out, _ = slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true", "new-app": "true"})
+	require.NoError(t, runSlackAppCreate(c, nil))
+	lines = jsonLines(t, out.String())
+	assert.Equal(t, "ok", lines[len(lines)-1]["result"], "--new-app creates the second app")
 }
 
 // The one-release Task 18 corp build (ask #1632) keeps the corp app's client

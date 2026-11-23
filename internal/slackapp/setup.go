@@ -327,6 +327,20 @@ func (r *Runner) builtin(acct db.SlackAccount) bool {
 // its answer, so neither a run cut off after the create nor a lost answer
 // ever leads to a second app.
 func (r *Runner) Create(ctx context.Context, cfgToken string) (Result, error) {
+	return r.CreateWith(ctx, cfgToken, CreateOptions{})
+}
+
+// CreateOptions are create's flags.
+type CreateOptions struct {
+	// NewApp is the owner's explicit choice of a second app when the team's
+	// company app cannot be adopted (Slack refused the token on it): the
+	// KindExistingApp answer is skipped. A setup record and the build's own
+	// app still stop the create.
+	NewApp bool
+}
+
+// CreateWith is Create with the company wizard's --new-app.
+func (r *Runner) CreateWith(ctx context.Context, cfgToken string, opts CreateOptions) (Result, error) {
 	return r.locked(func() (Result, error) {
 		teamID, teamName, fail := r.team(ctx, cfgToken)
 		if fail != nil {
@@ -341,7 +355,7 @@ func (r *Runner) Create(ctx context.Context, cfgToken string) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		if ok {
+		if ok && (!opts.NewApp || r.builtin(acct)) {
 			kind := KindExistingApp
 			if r.builtin(acct) {
 				kind = KindBuiltinPKCEDeferred // never offer the adopt

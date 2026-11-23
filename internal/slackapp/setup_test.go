@@ -323,6 +323,33 @@ func TestAdopt_NoSecondApp(t *testing.T) {
 	assert.Empty(t, h.setups(t))
 }
 
+// TestCreate_NewAppSkipsTheCompanyApp: --new-app is the owner's way out when
+// Slack refuses the token on the company app; a setup record and the build's
+// own app still stop it.
+func TestCreate_NewAppSkipsTheCompanyApp(t *testing.T) {
+	h := newHarness(t)
+	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
+	res, err := h.r.CreateWith(context.Background(), cfgToken, CreateOptions{NewApp: true})
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind)
+	assert.Equal(t, 1, h.api.creates)
+
+	res, err = h.r.CreateWith(context.Background(), cfgToken, CreateOptions{NewApp: true})
+	require.NoError(t, err)
+	assert.Equal(t, KindExists, res.Kind, "a setup record still stops a second create")
+	assert.Equal(t, 1, h.api.creates)
+}
+
+func TestCreate_NewAppNeverOnTheBuiltinApp(t *testing.T) {
+	h := newHarness(t)
+	h.r.BuiltinClientID = "5555.6666"
+	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
+	res, err := h.r.CreateWith(context.Background(), cfgToken, CreateOptions{NewApp: true})
+	require.NoError(t, err)
+	assert.Equal(t, KindBuiltinPKCEDeferred, res.Kind)
+	assert.Zero(t, h.api.creates)
+}
+
 func TestAdopt_SharedAppIsNotACompanyApp(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "9999.0000", "", "ok") // the retired shared app
