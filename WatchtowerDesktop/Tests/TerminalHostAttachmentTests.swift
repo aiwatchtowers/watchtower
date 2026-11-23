@@ -430,8 +430,9 @@ final class TerminalHostAttachmentTests: XCTestCase {
     }
 
     /// A host rebuilt later (Workchat → Terminal) reads the center's last
-    /// request again with a fresh coordinator: a request its terminal's
-    /// host honoured already is no new row click, so the fresh attach
+    /// request again; the serial honoured is kept on the terminal
+    /// (`HonouredFocus`), so a request its terminal's host honoured
+    /// already is no new row click, and the fresh attach
     /// focuses as any attach — not yielding to a panel claim made since
     /// that old click. A request no host of the terminal honoured yet (the
     /// click that opened a fresh host) still counts as the click's.
@@ -466,6 +467,56 @@ final class TerminalHostAttachmentTests: XCTestCase {
         TerminalHostAttachment.show(other, in: fresh, focusSerial: 2, focusSince: nextClick, obscured: false) { false }
         drainMainQueue()
         XCTAssertTrue(host.firstResponder === panel, "the click's own request: a claim after it wins")
+    }
+
+    /// A session's new terminal view (a relaunch after a host restart, an
+    /// adopted process) is no target of a row click made before it existed:
+    /// the center's old request focuses it like any attach, not yielding to
+    /// a panel claim made since that click.
+    func testAnOldClickIsNoClickForANewTerminalView() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let panel = SessionsPanelKeyView.KeyView(frame: NSRect(x: 0, y: 0, width: 50, height: 50))
+        content.addSubview(panel)
+        let first = TerminalContainerView(frame: NSRect(x: 100, y: 0, width: 300, height: 300))
+        content.addSubview(first)
+        let click = TerminalContainerView.keyboardEventCount
+        TerminalHostAttachment.show(FocusableView(), in: first, focusSerial: 1, focusSince: click, obscured: false) { false }
+        drainMainQueue()
+        panel.takePanelKeyboard()
+
+        let relaunched = PalettedTerminalView(frame: .zero)
+        TerminalHostAttachment.show(relaunched, in: first, focusSerial: 1, focusSince: click, obscured: false) { false }
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === relaunched)
+    }
+
+    /// A second row click on the terminal already on screen (clause (d)) is
+    /// a new request for a terminal that honoured one: still the click's,
+    /// so the panel claiming the keyboard between the click and the update
+    /// keeps it; with no claim the terminal takes it.
+    func testASecondClickOnTheShownTerminalIsWeighedFromItsClick() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let panel = SessionsPanelKeyView.KeyView(frame: NSRect(x: 0, y: 0, width: 50, height: 50))
+        content.addSubview(panel)
+        let container = TerminalContainerView(frame: NSRect(x: 100, y: 0, width: 300, height: 300))
+        content.addSubview(container)
+        let terminal = FocusableView()
+        TerminalHostAttachment.show(terminal, in: container, focusSerial: 1, focusSince: nil, obscured: false) { false }
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === terminal)
+
+        var click = TerminalContainerView.keyboardEventCount
+        panel.takePanelKeyboard()
+        TerminalHostAttachment.show(terminal, in: container, focusSerial: 2, focusSince: click, obscured: false) { false }
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === panel, "claimed between the click and the update")
+
+        click = TerminalContainerView.keyboardEventCount
+        TerminalHostAttachment.show(terminal, in: container, focusSerial: 3, focusSince: click, obscured: false) { false }
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === terminal, "nothing since the click")
     }
 
     // MARK: - The focus contract (#1150)

@@ -520,8 +520,7 @@ final class TerminalCenter {
     struct KeyboardFocusRequest: Equatable {
         let sessionID: Int64
         let serial: Int
-        /// The asking gesture's `TerminalContainerView.keyboardEventCount`.
-        var since: Int?
+        var since: Int? // the asking gesture's TerminalContainerView.keyboardEventCount
     }
 
     /// Moves the keyboard into the session's terminal once its host is on
@@ -1666,6 +1665,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        HonouredFocus.born(self) // a row click before this view is not its (#1150)
         // OSC 52 read off (board #564): printed output must not read the
         // clipboard back into the pty. OSC 52 write stays on.
         let delegateGuard = TerminalClipboardReadGuard(view: self)
