@@ -795,6 +795,28 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertEqual(reports.count, 4, "a stopped view reports nothing")
     }
 
+    /// A visible window that is then ordered out posts no notification but
+    /// `isVisible` (KVO); `willClose` reports gone although the window still
+    /// reads visible.
+    func testWindowVisibilityViewFollowsIsVisibleAndWillClose() {
+        let window = StubVisibilityWindow()
+        let view = WindowVisibilityView()
+        var reports: [WindowPresence] = []
+        view.onChange = { reports.append($0) }
+        window.shown = true
+        window.contentView = view
+        XCTAssertEqual(reports, [.occluded], "visible but not in the occlusion state: covered, not gone")
+
+        window.shown = false
+        XCTAssertEqual(reports.last, .gone, "ordered out while covered: only the isVisible KVO tells")
+
+        window.shown = true
+        XCTAssertEqual(reports.last, .occluded)
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        XCTAssertEqual(reports.last, .gone, "closing reports gone while the window still reads visible")
+        view.stopObserving()
+    }
+
     func testTheTabLeavingTheScreenClosesThePairing() async {
         runningWith()
         let streamer = FakePairStreamer()
@@ -1173,4 +1195,19 @@ private actor SleepLog {
     private(set) var all: [Duration] = []
     var count: Int { all.count }
     func add(_ duration: Duration) { all.append(duration) }
+}
+
+/// A window never ordered in whose `isVisible` the test controls.
+private final class StubVisibilityWindow: NSWindow {
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        isReleasedWhenClosed = false
+    }
+
+    var shown = false {
+        willSet { willChangeValue(forKey: "visible") }
+        didSet { didChangeValue(forKey: "visible") }
+    }
+
+    override var isVisible: Bool { shown }
 }
