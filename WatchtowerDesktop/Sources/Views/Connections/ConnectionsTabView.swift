@@ -140,7 +140,8 @@ struct ConnectionsDetailSplit: View {
             back: { appState.selectedConnection = nil },
             openQuickConnections: { appState.openConnections(.quickConnections) },
             showFile: { appState.showCompanySetupFile($0) },
-            connectThisMac: appState.connectThisMacAction
+            connectThisMac: appState.connectThisMacAction,
+            agent: appState.companySetupAgent
         ))
     }
 }

@@ -14,6 +14,12 @@ import Observation
 /// chat's turn stops (its process is ended), and a probe still running is
 /// cancelled. A flow on the driver keeps today's behaviour (§8). Callbacks
 /// of an ended run are dropped: each carries its run number.
+///
+/// A browser harness whose probe finds no connected browser pauses the run
+/// before its first turn (`browserMissing`, #1144): **Check again** probes
+/// once more and starts in browser mode when it finds one; **Continue
+/// without the browser** starts in words. A browser lost mid-run keeps the
+/// same guide and Check again beside the run in words.
 @MainActor
 @Observable
 package final class ConnectAssistantSession {
@@ -27,25 +33,34 @@ package final class ConnectAssistantSession {
     package let harnesses: [ConnectHarness]
     package private(set) var harness: ConnectHarness
     /// False once this run's probe or a browser tool said the extension is not
-    /// connected; every run start (Start, Retry, a reopen) asks again.
+    /// connected (or the probe gave no answer); every run start (Start,
+    /// Retry, a reopen) asks again.
     package private(set) var browserAvailable = true
+    /// The browser guide's last Check again.
+    package private(set) var browserCheck = ConnectBrowserCheck.notChecked
     /// The current run's chat; the last run's after Cancel, nil after Close.
     package private(set) var engine: EmbeddedChatEngine?
     /// The current run's rules; the panel's cards answer through it.
     package private(set) var controller: ConnectRunController?
 
-    private enum Phase { case idle, starting, running }
+    /// `browserMissing`: the probe found no browser and the run waits on
+    /// Check again or Continue without the browser, before its first turn.
+    private enum Phase { case idle, starting, browserMissing, running }
 
     private var phase = Phase.idle
     /// The customer chose Guide me in words.
     private var wordsChosen = false
+    /// The probe or a browser tool found the extension not connected and the
+    /// customer did not choose to go on without it: the panel shows the
+    /// browser guide.
+    private var offersBrowserGuide = false
     private var runFailure: ConnectAssistantFailure?
     @ObservationIgnored private var server: ConnectRunServer?
     @ObservationIgnored private var run = 0
     @ObservationIgnored private var startTask: Task<Void, Never>?
+    /// A mid-run Check again's probe.
+    @ObservationIgnored private var checkTask: Task<Void, Never>?
     @ObservationIgnored private var statusJSON = "{}"
-    /// The S1 probe turn is in flight: the socket refuses every call.
-    @ObservationIgnored private var probing = false
     /// The running turn's browser steps, by step id.
     @ObservationIgnored private var browserSteps: Set<String> = []
 
@@ -84,6 +99,7 @@ package final class ConnectAssistantSession {
 
     package var state: ConnectAssistantState {
         if phase == .idle { return .empty }
+        if phase == .browserMissing { return .browserMissing }
         if let runFailure { return .failed(runFailure) }
         if let controllerState = controller?.state, controllerState != .thinking { return controllerState }
         if phase == .starting || engine?.isBusy == true || engine?.isFinishing == true { return .thinking }
@@ -94,13 +110,15 @@ package final class ConnectAssistantSession {
         var secretKind: String?
         if case let .secret(kind, _, _) = controller?.pendingCard { secretKind = kind }
         return ConnectAssistantPresentation(service: displayName, harness: harness, mode: mode,
-                                            browserAvailable: browserAvailable, state: state, secretKind: secretKind)
+                                            browserAvailable: browserAvailable, state: state, secretKind: secretKind,
+                                            browserCheck: offersBrowserGuide ? browserCheck : nil)
     }
 
     // MARK: - Panel actions
 
-    /// Starts a run: the socket, a fresh controller, `connect_status`, the
-    /// browser probe (browser mode only), then the chat's first turn.
+    /// Starts a run: the socket, a fresh controller, the browser probe
+    /// (browser mode only; no browser pauses in `browserMissing`), then
+    /// `connect_status` and the chat's first turn.
     package func start() {
         guard phase == .idle else { return }
         engine = nil
@@ -110,6 +128,8 @@ package final class ConnectAssistantSession {
         browserSteps = []
         // Each run asks again: an extension connected since the last run counts.
         browserAvailable = true
+        offersBrowserGuide = false
+        browserCheck = .notChecked
         let controller = ConnectRunController(driver: driver)
         let server = ConnectRunServer(service: service, handler: handler(for: controller))
         self.controller = controller
@@ -127,10 +147,10 @@ package final class ConnectAssistantSession {
         }
     }
 
-    /// One call from the run's socket. Refused while the probe runs: the
-    /// probe turn has no connect tools and no socket (`--connect-mode
-    /// probe`), so a call then is out of place, and it never reaches the
-    /// controller.
+    /// One call from the run's socket. Refused until the run's first turn
+    /// starts (the probe, the browser-missing pause): the probe turn has no
+    /// connect tools and no socket (`--connect-mode probe`), so a call then
+    /// is out of place, and it never reaches the controller.
     package func handle(_ request: ConnectWireRequest) async -> ConnectWireResponse {
         await handle(request, on: controller)
     }
@@ -150,9 +170,10 @@ package final class ConnectAssistantSession {
     }
 
     private func handle(_ request: ConnectWireRequest, on controller: ConnectRunController?) async -> ConnectWireResponse {
-        guard !probing, let controller else {
+        let beforeFirstTurn = phase == .starting || phase == .browserMissing
+        guard !beforeFirstTurn, let controller else {
             return ConnectWireResponse(id: request.id, error: .closed,
-                                       message: probing ? Self.probingMessage : Self.runEndedMessage)
+                                       message: beforeFirstTurn ? Self.probingMessage : Self.runEndedMessage)
         }
         return await controller.handle(request)
     }
@@ -162,6 +183,40 @@ package final class ConnectAssistantSession {
         guard phase == .idle else { return }
         wordsChosen = true
         start()
+    }
+
+    /// **Check again** (#1144): the probe once more, never a new run. Before
+    /// the first turn a browser found starts the run in browser mode; mid-run
+    /// it switches the run back to the browser with a hidden turn. No
+    /// browser keeps the guide, saying it is still not connected.
+    package func checkBrowser() {
+        guard offersBrowserGuide, browserCheck != .checking else { return }
+        let run = run
+        switch phase {
+        case .browserMissing:
+            browserCheck = .checking
+            startTask = Task { [weak self] in await self?.recheckBeforeFirstTurn(run: run) }
+        case .running where engine != nil:
+            browserCheck = .checking
+            checkTask = Task { [weak self] in await self?.recheckDuringRun(run: run) }
+        case .idle, .starting, .running:
+            return
+        }
+    }
+
+    /// **Continue without the browser**: the paused run starts in words.
+    package func continueWithoutBrowser() {
+        guard phase == .browserMissing, browserCheck != .checking else { return }
+        offersBrowserGuide = false
+        browserCheck = .notChecked
+        phase = .starting
+        let run = run
+        startTask = Task { [weak self] in await self?.launch(run: run) }
+    }
+
+    /// Returns once a mid-run Check again has answered.
+    package func browserChecked() async {
+        await checkTask?.value
     }
 
     /// Another harness from the picker: the run ends and the panel waits for
@@ -209,16 +264,58 @@ package final class ConnectAssistantSession {
     // MARK: - Run
 
     private func prepare(run: Int) async {
+        if mode == .browser {
+            let answer = await probe.answer(for: harness, service: service)
+            guard run == self.run else { return }
+            if answer != .connected { browserAvailable = false }
+            if answer == .missing {
+                // Offer to connect the browser before the agent's first turn.
+                offersBrowserGuide = true
+                phase = .browserMissing
+                startTask = nil
+                return
+            }
+        }
+        await launch(run: run)
+    }
+
+    private func recheckBeforeFirstTurn(run: Int) async {
+        let answer = await probe.answer(for: harness, service: service)
+        guard run == self.run else { return }
+        guard answer == .connected else {
+            browserCheck = .stillMissing
+            startTask = nil
+            return
+        }
+        browserFound()
+        phase = .starting
+        await launch(run: run)
+    }
+
+    private func recheckDuringRun(run: Int) async {
+        let answer = await probe.answer(for: harness, service: service)
+        guard run == self.run else { return }
+        checkTask = nil
+        guard answer == .connected else {
+            browserCheck = .stillMissing
+            return
+        }
+        browserFound()
+        engine?.update(spec: spec())
+        engine?.sendFollowUp(prompt: ConnectBrowserProbe.foundFollowUp)
+    }
+
+    private func browserFound() {
+        browserAvailable = true
+        offersBrowserGuide = false
+        browserCheck = .notChecked
+    }
+
+    /// `connect_status` (read now: a pause may have lasted), then the chat's first turn.
+    private func launch(run: Int) async {
         let status = await driver.status()
         guard run == self.run else { return }
         statusJSON = Self.json(status)
-        if mode == .browser {
-            probing = true
-            let probed = await probe.mode(for: harness, service: service)
-            guard run == self.run else { return }  // endRun cleared `probing`
-            probing = false
-            if probed == .words { browserAvailable = false }
-        }
         startTask = nil
         let engine = EmbeddedChatEngine(spec: spec(), store: MemoryEmbeddedChatStore(), aiService: aiService,
                                         gate: gate, provider: harness.id)
@@ -257,6 +354,8 @@ package final class ConnectAssistantSession {
             browserSteps.remove(end.id)
             guard ConnectBrowserProbe.browserLost(end), mode == .browser else { return }
             browserAvailable = false
+            offersBrowserGuide = true
+            browserCheck = .notChecked
             engine?.update(spec: spec())
             engine?.sendFollowUp(prompt: ConnectBrowserProbe.lostFollowUp)
         default:
@@ -282,13 +381,16 @@ package final class ConnectAssistantSession {
         run += 1
         startTask?.cancel()  // a probe's stream ends, and its process with it
         startTask = nil
+        checkTask?.cancel()
+        checkTask = nil
         controller?.end()
         controller = nil
         server?.stop()
         server = nil
         engine?.shutdown(quietly: true)
         browserSteps = []
-        probing = false
+        offersBrowserGuide = false
+        browserCheck = .notChecked
         runFailure = nil
     }
 
