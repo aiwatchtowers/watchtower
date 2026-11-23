@@ -169,15 +169,15 @@ package final class CompanySetupWizardModel {
     /// Publish asked for the token (none held, or the last one was refused):
     /// its field stays while it is typed, though `publishNeedsToken` turns false.
     package private(set) var publishTokenAsked = false
-    /// The app chosen for reuse (Found, or a pasted settings link).
+    /// The app chosen for reuse (Found, or the App ID entered).
     package private(set) var slackReuse: (appID: String, clientID: String)?
-    /// The pasted settings link (**We already have one**).
-    package var slackSettingsLink = ""
+    /// The App ID field (**We already have one**): the id, or a link to the app.
+    package var slackAppIDInput = ""
     /// The app's Client ID (Basic Information), for an app no account here is on.
     package var slackClientID = ""
-    /// The link field's error: typed, but not a settings link.
-    package var slackSettingsLinkInvalid: Bool {
-        !slackSettingsLink.trimmingCharacters(in: .whitespaces).isEmpty && Self.appID(fromSettingsLink: slackSettingsLink) == nil
+    /// The App ID field's error: typed, but no App ID in it.
+    package var slackAppIDInvalid: Bool {
+        !slackAppIDInput.trimmingCharacters(in: .whitespaces).isEmpty && Self.slackAppID(from: slackAppIDInput) == nil
     }
     /// The last Slack run was started by this wizard (its problem shows).
     private var slackAttempt = false
@@ -539,7 +539,7 @@ package final class CompanySetupWizardModel {
         slackReuse = nil
         slackAttempt = false
         slackReused = false
-        slackSettingsLink = ""
+        slackAppIDInput = ""
         slackClientID = ""
         slackConfirming = false
         hostField = ""
@@ -677,9 +677,11 @@ package final class CompanySetupWizardModel {
     package func back() {
         // A running Publish keeps its step: its link and code land there.
         guard publishState != .running else { return }
-        if case .vendor(.slack) = current, slackAttempt, !slack.isRunning {
-            // From the Slack step's diff or problem: back to its choice. The
-            // confirmed App ID goes too: only Update the app may confirm it.
+        if case .vendor(.slack) = current, !slack.isRunning, slackAttempt || phase(.slack) == .existing {
+            // From the Slack step's diff or problem, or its App ID field: back
+            // to its choice (a step left on the field would open on it again,
+            // with no way to Create new). The confirmed App ID goes too: only
+            // Update the app may confirm it.
             slackAttempt = false
             slack.resetForm()
             phases[.slack] = nil
@@ -808,8 +810,8 @@ package final class CompanySetupWizardModel {
     package func setField(_ v: CompanyVendor, _ key: CompanyFieldSpec.Key, _ value: String) {
         touched = true
         switch (v, key) {
-        case (.slack, .slackSettingsLink):
-            slackSettingsLink = value
+        case (.slack, .slackAppID):
+            slackAppIDInput = value
         case (.slack, .clientID):
             slackClientID = value
         case (.google, .clientID): edit(\.google, .init()) { $0.clientID = value }
@@ -1097,7 +1099,7 @@ package final class CompanySetupWizardModel {
             return
         }
         guard !appID.isEmpty else {
-            // A client id with no App ID known here: the settings link names it.
+            // A client id with no App ID known here: the App ID field names it.
             slackReuse = nil
             slackClientID = c.clientID
             phases[.slack] = .existing
@@ -1108,9 +1110,9 @@ package final class CompanySetupWizardModel {
         phases[.slack] = .create
     }
 
-    /// **Continue** on **We already have one**: the settings link names the app.
-    private func useSettingsLink() {
-        guard let appID = Self.appID(fromSettingsLink: slackSettingsLink) else { return }
+    /// **Continue** on **We already have one**: the App ID field names the app.
+    private func useEnteredAppID() {
+        guard let appID = Self.slackAppID(from: slackAppIDInput) else { return }
         // An app no account here is on is adopted by its Client ID too (Go AdoptWith).
         let known = candidates.first { $0.vendor == "slack" && $0.appID == appID }?.clientID
             ?? slack.records.first { $0.appID == appID }?.clientID ?? ""
@@ -1120,23 +1122,33 @@ package final class CompanySetupWizardModel {
         phases[.slack] = .create
     }
 
-    /// The App ID in `https://api.slack.com/apps/A…` (Go `ParseSlackAppSettingsURL`).
-    package static func appID(fromSettingsLink link: String) -> String? {
-        let text = link.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefix = "https://api.slack.com/apps/"
-        guard text.hasPrefix(prefix) else { return nil }
-        let rest = text.dropFirst(prefix.count)
-        let id = rest.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
-        guard id.count > 1, id.first == "A", id.allSatisfy({ $0.isUppercase || $0.isNumber }), id.allSatisfy(\.isASCII) else {
-            return nil
-        }
-        return String(id)
+    /// The App ID in what was entered for the app (Go `slackapp.ParseSlackAppID`,
+    /// shared fixture `internal/slackapp/testdata/app_id_inputs.json`): the bare
+    /// id in any case, or a link to the app (`api.slack.com/apps/A…`,
+    /// `app.slack.com/app/A…`, `app.slack.com/apps/A…`, the scheme optional, any
+    /// sub-page, query or fragment after it); upper-cased. Nil for anything
+    /// else, and for anything but printable ASCII inside.
+    package static func slackAppID(from input: String) -> String? {
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.unicodeScalars.allSatisfy({ (0x21...0x7E).contains($0.value) }) else { return nil }
+        if isSlackAppID(Substring(text)) { return text.uppercased() }
+        let lower = text.lowercased()
+        let scheme = ["https://", "http://"].first(where: lower.hasPrefix)?.count ?? 0
+        let paths = ["api.slack.com/apps/", "app.slack.com/apps/", "app.slack.com/app/"]
+        guard let path = paths.first(where: { lower.dropFirst(scheme).hasPrefix($0) }) else { return nil }
+        let id = text.dropFirst(scheme + path.count).prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+        return isSlackAppID(id) ? id.uppercased() : nil
+    }
+
+    /// `A` then letters and digits (any case), ASCII only.
+    private static func isSlackAppID(_ s: Substring) -> Bool {
+        s.count > 1 && s.first?.uppercased() == "A" && s.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
     }
 
     // MARK: The connect assistant's Slack step (agent connect spec §5.4, F3 relaxed)
 
     /// The Slack step's first run with the token in `slackToken`: a create,
-    /// or the read of the app the settings link named. Only on the Slack
+    /// or the read of the app the App ID named. Only on the Slack
     /// step's token form; false when nothing started.
     package func startSlackStep() -> Bool {
         guard current == .vendor(.slack), phase(.slack) == .create, slackDiff == nil, slackProblem == nil,
@@ -1359,7 +1371,7 @@ package final class CompanySetupWizardModel {
         case .nothingFound:
             return Primary(title: Self.continueTitle, enabled: true)
         case .existing:
-            return Primary(title: Self.continueTitle, enabled: Self.appID(fromSettingsLink: slackSettingsLink) != nil)
+            return Primary(title: Self.continueTitle, enabled: Self.slackAppID(from: slackAppIDInput) != nil)
         case .create, .reuseSecret, .noOrgAccess:
             let token = !slackToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             return Primary(title: slackReuse == nil ? Self.createApp : Self.continueTitle, enabled: token)
@@ -1408,7 +1420,7 @@ package final class CompanySetupWizardModel {
 
     private func slackNext() async {
         if case .editing = slack.phase, slackProblem != nil {
-            // The pasted link named no usable app: back to the link field.
+            // The App ID named no usable app: back to its field.
             slackAttempt = false
             slack.resetForm()
             phases[.slack] = .existing
@@ -1425,7 +1437,7 @@ package final class CompanySetupWizardModel {
         case .nothingFound:
             if alreadyHaveSelected[.slack] == true { alreadyHaveOne() } else { createNew() }
         case .existing:
-            useSettingsLink()
+            useEnteredAppID()
         case .create, .reuseSecret, .noOrgAccess:
             startSlackRun()
         case .looking:

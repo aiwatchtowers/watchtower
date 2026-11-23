@@ -154,11 +154,11 @@ func runSlackAppAdopt(cmd *cobra.Command, _ []string) error {
 	enablePKCE, _ := cmd.Flags().GetBool("enable-pkce")
 	clientID, _ := cmd.Flags().GetString("client-id")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	// The company wizard passes the app's settings URL as the person pasted it.
-	if id, ok := slackapp.ParseSlackAppSettingsURL(appID); ok {
+	// An App ID may come as the person entered it: any case, or a link to the app.
+	if id, ok := slackapp.ParseSlackAppID(appID); ok {
 		appID = id
 	}
-	if id, ok := slackapp.ParseSlackAppSettingsURL(confirm); ok {
+	if id, ok := slackapp.ParseSlackAppID(confirm); ok {
 		confirm = id
 	}
 	return runSlackAppSetup(cmd, func(ctx context.Context, r *slackapp.Runner, tok string) (slackapp.Result, error) {

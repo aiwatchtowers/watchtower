@@ -572,4 +572,11 @@ func TestReuse_AdoptTakesSettingsURLCLI(t *testing.T) {
 	lines = jsonLines(t, out.String())
 	assert.Equal(t, "wrong_workspace", lines[len(lines)-1]["result"])
 	assert.Equal(t, "T0OTHER", lines[len(lines)-1]["app_team_id"])
+
+	// Any form the wizard's App ID field takes (#1147): a lower-case id in an app.slack.com link.
+	c, out, _ = slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true", "app-id": "app.slack.com/app/a0else"})
+	require.NoError(t, runSlackAppAdopt(c, nil))
+	lines = jsonLines(t, out.String())
+	assert.Equal(t, "wrong_workspace", lines[len(lines)-1]["result"])
+	assert.Equal(t, "A0ELSE", lines[len(lines)-1]["app_id"])
 }

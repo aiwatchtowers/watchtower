@@ -19,7 +19,7 @@ Press **Connect with Claude** (or Codex) beside **Set up for my company** in **C
 A Slack problem never ends the run: the other vendor pages go on, and only Publish waits for the Slack app.
 
 1. **Agent:** Call `connect_status` and `company_draft`. If the draft has no company name, ask the customer for it (colleagues see "Connect <name>?") and save it with `company_draft`. Ask which services the company uses and save them with `company_draft`. If Slack is not among them, or the draft already holds a ready Slack app, go on to the Google page.
-2. **Agent:** Ask the customer whether the workspace already has a Watchtower app. If it does, read the app's settings link from the app list on api.slack.com/apps (the address carries its App ID; do not open the app's pages) and save it with `company_draft`. Without one, Watchtower creates the app.
+2. **Agent:** Ask the customer whether the workspace already has a Watchtower app. If it does, read the app's App ID from the app list on api.slack.com/apps (it starts with A, like `A0123ABCD`, and each app's link carries it; do not open the app's pages) and save it as `app_id` with `company_draft`. Without one, Watchtower creates the app.
 3. **Agent:** Open api.slack.com/apps, scroll to **Your App Configuration Tokens** and stop there. Call `request_secret` with kind `slack_config_token`. The card asks the customer to leave the page before sending.
 4. **You only:** Press **Generate Token** for your workspace, copy the access token into the card, leave Slack's page, then press **Send**.
 5. **You:** For an existing app, the panel shows a confirm card listing what the update changes; it turns on Slack's PKCE sign-in, which only Slack support can turn off. Press its confirm button, or decline.
