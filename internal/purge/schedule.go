@@ -54,10 +54,11 @@ type accountKey struct {
 //     access: still revoked.
 //   - Lease (live accounts under RuleFull, status not removed/purged,
 //     disabled included): when every live account of a source has an
-//     access_ok_at and the newest is older than Lease − the grace, each live
-//     account is scheduled, due the grace later — newest + Lease on a daemon
-//     that runs every cycle. Under RuleRevokedAndRemoved a live account has
-//     no lease.
+//     access_ok_at and the newest is older than Lease − Grace (the fixed 72 h
+//     schedule-ahead window, whatever the managed notice), each live account
+//     is scheduled, due at its deadline (newest + Lease) or the grace after
+//     the pass, whichever is later. Under RuleRevokedAndRemoved a live
+//     account has no lease.
 //   - Lease (removed accounts, ask #477): a removed account whose own
 //     access_ok_at is older than Lease is scheduled the grace after now; a
 //     removed Slack account has a zero lease (#1769, A2): it is scheduled by
@@ -155,10 +156,18 @@ func Plan(accounts []db.PurgeAccount, open []db.AccountPurge, rules func(db.Purg
 			}
 			continue
 		}
-		// Scheduled once the deadline is within the grace; due the grace from
-		// now, which on a daemon that runs is the deadline itself (one cycle).
-		if !now.Before(deadline.Add(-grace)) {
-			out.Schedule = append(out.Schedule, ScheduleItem{a.Source, a.ID, ReasonLease, floor})
+		// Scheduled once the deadline is within the fixed schedule-ahead
+		// window (Grace, never the managed notice: a long PurgeGraceHours must
+		// not put a notice on an account that syncs every day); due at the
+		// deadline, or the grace after now when that is later. Due is never
+		// before the deadline, so the cancel rule above (deadline moved past
+		// due) fires only on fresh access.
+		if !now.Before(deadline.Add(-Grace)) {
+			due := floor
+			if deadline.After(due) {
+				due = deadline
+			}
+			out.Schedule = append(out.Schedule, ScheduleItem{a.Source, a.ID, ReasonLease, due})
 		}
 	}
 	sort.Slice(out.Due, func(i, j int) bool { return out.Due[i].ID < out.Due[j].ID })

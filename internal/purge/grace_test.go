@@ -65,14 +65,22 @@ func TestPurge01_ZeroGraceRunsOnTheNextPass(t *testing.T) {
 		t.Fatalf("next pass = %+v, %v; want the row due", got, err)
 	}
 
+	// A live lease is scheduled in the fixed 72 h window before its deadline
+	// and due at the deadline (ask #862); past the deadline (a daemon that
+	// was off) a zero grace makes it due at the pass.
 	deadline := t0.Add(time.Hour)
 	live := []db.PurgeAccount{acct("jira", 1, "ok", deadline.Add(-Lease))}
-	if got := Plan(live, nil, setting(true), t0); len(got.Schedule) != 0 {
-		t.Fatalf("before the lease deadline nothing is scheduled, got %+v", got.Schedule)
+	if got := Plan(live, nil, setting(true), deadline.Add(-Grace-time.Minute)); len(got.Schedule) != 0 {
+		t.Fatalf("before the schedule-ahead window nothing is scheduled, got %+v", got.Schedule)
 	}
-	got = Plan(live, nil, setting(true), deadline)
+	got = Plan(live, nil, setting(true), t0)
 	if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(deadline) {
-		t.Fatalf("at the deadline the lease is due at once, got %+v", got.Schedule)
+		t.Fatalf("within the window the lease is due at its deadline, got %+v", got.Schedule)
+	}
+	late := deadline.Add(time.Hour)
+	got = Plan(live, nil, setting(true), late)
+	if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(late) {
+		t.Fatalf("past the deadline the lease is due at the pass, got %+v", got.Schedule)
 	}
 }
 
@@ -111,5 +119,46 @@ func TestPurge01_GraceChangeKeepsScheduledRows(t *testing.T) {
 	got, err := Apply(d, setting(true), true, later)
 	if err != nil || len(got.Schedule) != 1 || got.Schedule[0].AccountID != 2 || !got.Schedule[0].DueAt.Equal(later.Add(24*time.Hour)) {
 		t.Fatalf("new row = %+v, %v; want account 2 due 24 h after its pass", got.Schedule, err)
+	}
+}
+
+// TestPurge01_LiveLeaseWindowIgnoresTheManagedGrace pins ask #862: a live
+// account's lease is scheduled only within the fixed 72 h window before its
+// deadline, whatever PurgeGraceHours says, and due at the deadline or the
+// grace after the pass, whichever is later — so a long grace neither puts a
+// notice on an account that syncs every day nor churns rows as its access
+// advances.
+func TestPurge01_LiveLeaseWindowIgnoresTheManagedGrace(t *testing.T) {
+	for _, hours := range []int64{720, 600} {
+		policytest.Set(t, map[string]any{"PurgeGraceHours": hours})
+		fresh := []db.PurgeAccount{acct("jira", 1, "ok", t0.Add(-time.Hour))}
+		if got := Plan(fresh, nil, setting(true), t0); len(got.Schedule) != 0 {
+			t.Fatalf("grace %d: an account synced an hour ago got %+v", hours, got.Schedule)
+		}
+	}
+
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(720)})
+	d := openPurgeDB(t)
+	execAll(t, d, `INSERT INTO jira_accounts (id, cloud_id, status) VALUES (1, 'c1', 'ok')`)
+	for i, at := range []time.Time{t0, t0.Add(time.Hour), t0.Add(2 * time.Hour)} {
+		if _, err := d.Exec(`UPDATE jira_accounts SET access_ok_at = ? WHERE id = 1`, ts(at.Add(-time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Apply(d, setting(true), true, at); err != nil {
+			t.Fatal(err)
+		}
+		if rows, err := d.ListAccountPurges(false); err != nil || len(rows) != 0 {
+			t.Fatalf("pass %d: ledger = %+v, %v; want no rows while access advances", i, rows, err)
+		}
+	}
+
+	// Idle about 30 days: scheduled at deadline − 72 h, due the 720 h grace later.
+	idle := []db.PurgeAccount{acct("jira", 1, "ok", t0.Add(-Lease+Grace))}
+	got := Plan(idle, nil, setting(true), t0)
+	if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(t0.Add(720*time.Hour)) {
+		t.Fatalf("idle account: want one row due 720 h after the pass, got %+v", got.Schedule)
+	}
+	if got := Plan(idle, nil, setting(true), t0.Add(-time.Minute)); len(got.Schedule) != 0 {
+		t.Fatalf("idle account before the window: got %+v", got.Schedule)
 	}
 }
