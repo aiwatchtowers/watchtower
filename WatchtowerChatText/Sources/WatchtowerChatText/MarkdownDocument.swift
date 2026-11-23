@@ -85,8 +85,8 @@ public enum MarkdownDocument {
 
     private static func block(_ node: Markup) -> MarkdownBlock? {
         switch node {
-        case let heading as Heading: .heading(level: heading.level, inlines: inlines(heading))
-        case let paragraph as Paragraph: .paragraph(inlines(paragraph))
+        case let heading as Heading: .heading(level: heading.level, inlines: prose(heading))
+        case let paragraph as Paragraph: .paragraph(prose(paragraph))
         case let code as CodeBlock: .code(language: nonEmpty(code.language), code: trimTrailingNewline(code.code))
         case let list as UnorderedList: .list(MarkdownList(ordered: false, start: 1, items: list.listItems.map(item)))
         case let list as OrderedList: .list(MarkdownList(ordered: true, start: Int(list.startIndex), items: list.listItems.map(item)))
@@ -108,8 +108,8 @@ public enum MarkdownDocument {
     }
 
     private static func table(_ table: Markdown.Table) -> MarkdownTable {
-        let header = table.head.cells.map { inlines($0) }
-        let rows = table.body.rows.map { row in Array(row.cells.map { inlines($0) }) }
+        let header = table.head.cells.map { prose($0) }
+        let rows = table.body.rows.map { row in Array(row.cells.map { prose($0) }) }
         let alignments: [MarkdownAlignment] = table.columnAlignments.map { alignment in
             switch alignment {
             case .center: .center
@@ -122,6 +122,13 @@ public enum MarkdownDocument {
 
     private static func inlines(_ node: Markup) -> [MarkdownInline] {
         node.children.compactMap(inline)
+    }
+
+    /// A heading's, paragraph's or table cell's inlines, its plain-text web
+    /// addresses as links (`WebAddressLinks`); a link's own text is never
+    /// linked again.
+    private static func prose(_ node: Markup) -> [MarkdownInline] {
+        WebAddressLinks.linked(inlines(node))
     }
 
     private static func inline(_ node: Markup) -> MarkdownInline? {
