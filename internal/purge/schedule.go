@@ -374,6 +374,17 @@ func Apply(d *db.DB, rules func(db.PurgeAccount) Rule, leases bool, now time.Tim
 	return done, errors.Join(errs...)
 }
 
+// LeaseDue is when a live lease with this deadline would be deleted: it is
+// scheduled Grace (72 h) before the deadline and due at the deadline or the
+// effective grace after that scheduling, whichever is later (Plan).
+func LeaseDue(deadline time.Time) time.Time {
+	due := deadline.Add(-Grace).Add(EffectiveGrace())
+	if deadline.After(due) {
+		return deadline
+	}
+	return due
+}
+
 // LeaseDeadlines returns the lease deadline of each of source's accounts that
 // has one under rules (leaseDeadlines): the day PURGE-01 would delete it when
 // nothing confirms access before. The Desktop's dead-token note (#1887 §6.3)

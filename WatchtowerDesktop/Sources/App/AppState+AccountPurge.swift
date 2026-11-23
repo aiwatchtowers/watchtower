@@ -11,12 +11,6 @@ extension AppState {
         center.start()
     }
 
-    /// The purge notice in hours: the organization's PurgeGraceHours, else
-    /// Go's `grace_hours`, else 72 while the CLI has not answered.
-    var accountPurgeGraceHours: Int {
-        AccountPurgeStatus.graceHours(accountPurgeCenter?.status, policy: managedPolicy.policy)
-    }
-
     /// A Slack Remove or Disconnect dialog's message: the switch and notice
     /// from the organization's policy, the owner's saved setting and Go's
     /// status (`AccountPurgeStatus.removeDialogMessage`).

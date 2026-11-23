@@ -136,7 +136,7 @@ final class JiraConnectionDetailTests: XCTestCase {
 
         let view = JiraConnectionDetail().environment(appState)
         XCTAssertNoThrow(try view.inspect().find(text: Pres.tokenDead))
-        let lease = Pres.tokenLease(Date(timeIntervalSince1970: 1_797_584_400), graceHours: 72, zone: .current)
+        let lease = Pres.tokenLease(Date(timeIntervalSince1970: 1_797_584_400), zone: .current)
         XCTAssertNoThrow(try view.inspect().find(text: lease))
         XCTAssertThrowsError(try view.inspect().find(button: RowStatus.Action.relogin.title))
         try view.inspect().find(button: RowStatus.Action.pasteNewToken.title).tap()

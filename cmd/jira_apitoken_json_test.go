@@ -151,14 +151,20 @@ func TestJiraAccountsJSON_PurgeLease(t *testing.T) {
 	assert.Empty(t, lease(), "POLICY-03 holds a stopped token site's lease")
 
 	// The cut-off is the fixed schedule-ahead window (purge.Grace), whatever
-	// the managed notice: the pass schedules the lease then.
+	// the managed notice: the pass schedules the lease then. The date is the
+	// real due date: the 30-day mark, or the notice after the 72 h warning
+	// when that is later.
 	soon := time.Now().UTC().Add(-purge.Lease + time.Hour).Truncate(time.Second)
-	for _, hours := range []int64{0, 720} {
-		policytest.Set(t, map[string]any{"PurgeRevokedData": true, "PurgeGraceHours": hours})
+	mark := access.Add(purge.Lease)
+	for _, c := range []struct {
+		hours int64
+		due   time.Time
+	}{{0, mark}, {24, mark}, {720, mark.Add(-purge.Grace + 720*time.Hour)}} {
+		policytest.Set(t, map[string]any{"PurgeRevokedData": true, "PurgeGraceHours": c.hours})
 		setAccess(soon)
-		assert.Empty(t, lease(), "grace %d: an hour away, the purge line takes over", hours)
+		assert.Empty(t, lease(), "grace %d: an hour away, the purge line takes over", c.hours)
 		setAccess(access)
-		assert.Equal(t, access.Add(purge.Lease).Format(time.RFC3339), lease(), "grace %d: 29 days away shows", hours)
+		assert.Equal(t, c.due.Format(time.RFC3339), lease(), "grace %d: 29 days away shows the due date", c.hours)
 	}
 }
 

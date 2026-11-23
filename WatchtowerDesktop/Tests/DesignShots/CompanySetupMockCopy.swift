@@ -404,7 +404,7 @@ enum CompanySetupMockCopy {
     static let connectCompanyAtlassian = "Connect with Acme's Atlassian app"
     static let tokenDead = "The API token stopped working (expired or revoked) — paste a new one"
     static let tokenLease = "Its data stays. If no new token comes, the 30-day rule deletes it on Dec 18, "
-        + "with a notice 72 hours before."
+        + "with a notice 72 hours before the 30-day mark."
     static let pasteNewToken = "Paste a new token"
     static let tokenLocked = "Your organization does not allow Atlassian API tokens. Token sites stop syncing "
         + "and keep their data."

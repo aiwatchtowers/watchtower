@@ -159,6 +159,9 @@ func TestPurge01_LiveLeaseWindowIgnoresTheManagedGrace(t *testing.T) {
 	if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(t0.Add(720*time.Hour)) {
 		t.Fatalf("idle account: want one row due 720 h after the pass, got %+v", got.Schedule)
 	}
+	if due := LeaseDue(t0.Add(Grace)); !due.Equal(got.Schedule[0].DueAt) {
+		t.Fatalf("LeaseDue = %s, want the planned %s", due, got.Schedule[0].DueAt)
+	}
 	if got := Plan(idle, nil, setting(true), t0.Add(-time.Minute)); len(got.Schedule) != 0 {
 		t.Fatalf("idle account before the window: got %+v", got.Schedule)
 	}
