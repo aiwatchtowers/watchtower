@@ -302,9 +302,9 @@ final class CompanySetupMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.notCollaborator, Model.notCollaborator(appID: "A0ACME"))
         XCTAssertEqual(Copy.wrongWorkspace, SlackAppSetupModel.wrongWorkspaceLine(appID: "A0ACME", appTeam: "T0OTHER",
                                                                                   workspace: "acme"))
-        XCTAssertEqual(Copy.slackSettingsLink, Guide.alreadyHaveFields(.slack)[0].label)
-        XCTAssertEqual(Copy.slackSettingsHelp, Guide.alreadyHaveFields(.slack)[0].help)
-        XCTAssertEqual(Copy.slackSettingsInvalid, Model.slackSettingsInvalid)
+        XCTAssertEqual(Copy.slackAppIDLabel, Guide.alreadyHaveFields(.slack)[0].label)
+        XCTAssertEqual(Copy.slackAppIDHelp, Guide.alreadyHaveFields(.slack)[0].help)
+        XCTAssertEqual(Copy.slackAppIDInvalidLine, Model.slackAppIDInvalidLine)
         XCTAssertEqual(Copy.badToken, SlackAppSetupModel.badTokenBody)
         // Google.
         XCTAssertEqual(Copy.googleGuide, Guide.guideLines(.google).map(\.text))

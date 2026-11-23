@@ -345,7 +345,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     private let confirmApp = #"{"result":"confirm_app","team_id":"T0ACME","team_name":"acme","app_id":"A0ACME","#
         + #""app_name":"Watchtower","client_id":"1111.2222","changes":{"add_scopes":["reactions:read"]}}"#
 
-    /// The settings link's app, through the token form to the diff.
+    /// The App ID's app, through the token form to the diff.
     private func slackAtDiff() async -> (Model, CompanyScriptedCLI) {
         let cli = CompanyScriptedCLI()
         let (model, _) = make(cli)
@@ -353,7 +353,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
         model.toggle(.slack)
         await model.next()
         model.alreadyHaveOne()
-        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        model.setField(.slack, .slackAppID, "https://api.slack.com/apps/A0ACME")
         await model.next()
         model.slackToken = token
         cli.on(["slack", "app", "adopt"], [confirmApp])
@@ -367,7 +367,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
         model.back()
         XCTAssertNil(model.slackDiff)
         model.alreadyHaveOne()
-        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        model.setField(.slack, .slackAppID, "https://api.slack.com/apps/A0ACME")
         await model.next()
         cli.on(["slack", "app", "adopt"], [confirmApp])
         await model.next()
@@ -384,13 +384,13 @@ final class CompanySetupWizardModelTests: XCTestCase {
         model.toggle(.slack)
         await model.next()
         model.alreadyHaveOne()
-        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0NOPE")
+        model.setField(.slack, .slackAppID, "https://api.slack.com/apps/A0NOPE")
         await model.next()
         model.slackToken = token
         cli.on(["slack", "app", "adopt"], [#"{"result":"app_not_found","team_id":"T0ACME","team_name":"acme"}"#])
         await model.next()
         await untilObserved { model.slackProblem != nil }
-        XCTAssertEqual(model.slackProblem, "Slack has no app A0NOPE this token can see. Check the link and paste it again.")
+        XCTAssertEqual(model.slackProblem, "Slack has no app A0NOPE this token can see. Check the App ID and enter it again.")
         XCTAssertEqual(model.primary.title, "Try again")
         await model.next()
         XCTAssertEqual(model.phase(.slack), .existing, "back to the link field")
@@ -405,12 +405,12 @@ final class CompanySetupWizardModelTests: XCTestCase {
         model.toggle(.slack)
         await model.next()
         model.alreadyHaveOne()
-        model.setField(.slack, .slackSettingsLink, "https://acme.slack.com/apps")
-        XCTAssertTrue(model.slackSettingsLinkInvalid)
+        model.setField(.slack, .slackAppID, "https://acme.slack.com/apps")
+        XCTAssertTrue(model.slackAppIDInvalid)
         XCTAssertFalse(model.primary.enabled, "Continue waits for a valid link")
-        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        model.setField(.slack, .slackAppID, "https://api.slack.com/apps/A0ACME")
         model.setField(.slack, .clientID, "1111.2222")
-        XCTAssertFalse(model.slackSettingsLinkInvalid)
+        XCTAssertFalse(model.slackAppIDInvalid)
         await model.next()
         model.slackToken = token
         cli.on(["slack", "app", "adopt"], [confirmApp])
@@ -420,6 +420,93 @@ final class CompanySetupWizardModelTests: XCTestCase {
                        ["--app-id", "A0ACME", "--client-id", "1111.2222", "--dry-run"])
     }
 
+    /// The App ID field reads the same inputs as Go's `slackapp.ParseSlackAppID`
+    /// (`TestParseSlackAppID_SharedFixture`), one fixture for both.
+    func testSlackAppIDSharedFixture() throws {
+        struct Fixture: Decodable {
+            struct Accepted: Decodable {
+                let input: String
+                let appID: String
+                enum CodingKeys: String, CodingKey { case input = "in", appID = "app_id" }
+            }
+            let accepted: [Accepted]
+            let rejected: [String]
+        }
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/slackapp/testdata/app_id_inputs.json")
+        let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
+        XCTAssertGreaterThanOrEqual(fixture.accepted.count, 10)
+        XCTAssertGreaterThanOrEqual(fixture.rejected.count, 10)
+        for c in fixture.accepted {
+            XCTAssertEqual(Model.slackAppID(from: c.input), c.appID, c.input)
+        }
+        for input in fixture.rejected {
+            XCTAssertNil(Model.slackAppID(from: input), input)
+        }
+    }
+
+    /// The link form the owner pasted (#1147) names the app to adopt.
+    func testAppLinkFormAdoptsItsID() async {
+        let cli = CompanyScriptedCLI()
+        let (model, _) = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        model.alreadyHaveOne()
+        model.setField(.slack, .slackAppID, "https://app.slack.com/app/a0acme")
+        XCTAssertFalse(model.slackAppIDInvalid)
+        XCTAssertTrue(model.primary.enabled)
+        await model.next()
+        model.slackToken = token
+        cli.on(["slack", "app", "adopt"], [confirmApp])
+        await model.next()
+        await untilObserved { model.slackDiff != nil }
+        XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).first?.args.contains("A0ACME"), true, "the id, upper-cased")
+    }
+
+    /// A wrong entry blocks Continue only until the field is fixed.
+    func testAppIDErrorThenFixCanContinue() async {
+        let (model, _) = make()
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        model.alreadyHaveOne()
+        model.setField(.slack, .slackAppID, "https://acme.slack.com/apps")
+        XCTAssertTrue(model.slackAppIDInvalid)
+        XCTAssertFalse(model.primary.enabled)
+        await model.next()
+        XCTAssertEqual(model.phase(.slack), .existing, "a press on the disabled button does nothing")
+        model.setField(.slack, .slackAppID, "A0ACME")
+        XCTAssertFalse(model.slackAppIDInvalid, "the edit clears the error")
+        XCTAssertTrue(model.primary.enabled, "and Continue re-evaluates")
+        await model.next()
+        XCTAssertEqual(model.phase(.slack), .create, "on to the token form for app A0ACME")
+        XCTAssertEqual(model.slackReuse?.appID, "A0ACME")
+    }
+
+    /// Back from the App ID field returns to the step's choice: a step left
+    /// on the field would open on it again, with no way to Create new.
+    func testBackFromAppIDFieldReturnsToChoice() async {
+        let (model, _) = make()
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        model.alreadyHaveOne()
+        model.setField(.slack, .slackAppID, "nope")
+        model.back()
+        XCTAssertEqual(model.current, .vendor(.slack), "Back stays on the Slack step")
+        XCTAssertEqual(model.phase(.slack), .nothingFound)
+        model.createNew()
+        XCTAssertEqual(model.phase(.slack), .create)
+        XCTAssertEqual(model.primary.title, Model.createApp)
+        model.back()
+        XCTAssertNotEqual(model.current, .vendor(.slack), "Back from the token form leaves the step as before")
+    }
+
     func testMatchingAppShowsNoDiffLines() async {
         let cli = CompanyScriptedCLI()
         let (model, _) = make(cli)
@@ -427,7 +514,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
         model.toggle(.slack)
         await model.next()
         model.alreadyHaveOne()
-        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        model.setField(.slack, .slackAppID, "https://api.slack.com/apps/A0ACME")
         await model.next()
         model.slackToken = token
         cli.on(["slack", "app", "adopt"], [#"{"result":"confirm_app","team_id":"T0ACME","app_id":"A0ACME","changes":{}}"#])
@@ -459,11 +546,11 @@ final class CompanySetupWizardModelTests: XCTestCase {
         model.hostField = "https://bad"
         model.addHost()
         model.toggle(.slack)
-        model.setField(.slack, .slackSettingsLink, "nope")
+        model.setField(.slack, .slackAppID, "nope")
         await model.discard()
         XCTAssertEqual(model.hostField, "")
         XCTAssertFalse(model.hostInvalid)
-        XCTAssertEqual(model.slackSettingsLink, "")
+        XCTAssertEqual(model.slackAppIDInput, "")
         XCTAssertEqual(model.ticked, [.linear], "found apps are pre-ticked again")
     }
 
@@ -499,12 +586,12 @@ final class CompanySetupWizardModelTests: XCTestCase {
         model.toggle(.slack)
         await model.next()
         model.alreadyHaveOne()
-        model.setField(.slack, .slackSettingsLink, "https://acme.slack.com/apps")
+        model.setField(.slack, .slackAppID, "https://acme.slack.com/apps")
         await model.next()
-        XCTAssertTrue(model.slackSettingsLinkInvalid)
-        XCTAssertEqual(Model.slackSettingsInvalid, "That is not a Slack app settings link. It looks like "
-            + "https://api.slack.com/apps/A0123ABCD.")
-        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME/general")
+        XCTAssertTrue(model.slackAppIDInvalid)
+        XCTAssertEqual(Model.slackAppIDInvalidLine, "That is not a Slack App ID. It starts with A, like A0123ABCD: "
+            + "api.slack.com/apps → your app → Basic Information.")
+        model.setField(.slack, .slackAppID, "https://api.slack.com/apps/A0ACME/general")
         await model.next()
         model.slackToken = token
         cli.on(["slack", "app", "adopt"], [#"{"result":"not_collaborator","team_id":"T0ACME","team_name":"acme"}"#])
@@ -525,7 +612,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
         model.toggle(.slack)
         await model.next()
         model.alreadyHaveOne()
-        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        model.setField(.slack, .slackAppID, "https://api.slack.com/apps/A0ACME")
         await model.next()
         model.slackToken = token
         cli.on(["slack", "app", "adopt"], [#"{"result":"wrong_workspace","team_id":"T0ACME","team_name":"acme","#
@@ -533,7 +620,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
         await model.next()
         await untilObserved { model.slackProblem != nil }
         XCTAssertEqual(model.slackProblem, "App A0ACME belongs to another workspace (T0OTHER), not acme. "
-            + "Check the link and paste it again.")
+            + "Check the App ID and enter it again.")
         XCTAssertEqual(model.current, .vendor(.slack))
 
         // Per-vendor dry checks refuse a wrong tenant or id at the step.

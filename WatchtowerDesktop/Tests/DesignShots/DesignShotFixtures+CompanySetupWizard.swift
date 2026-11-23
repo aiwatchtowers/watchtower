@@ -159,9 +159,9 @@ enum CompanyWizardScenes {
             WizardScene("slack-create", step: 0, slackToken + [footer(Copy.createApp)]),
             WizardScene("slack-existing", step: 0, [
                 .choices([MockChoice(title: Copy.alreadyHaveOne, detail: Copy.alreadyHaveDetail, selected: true)]),
-                .fields([MockField(label: Copy.slackSettingsLink, value: "https://acme.slack.com/apps")],
-                        error: Copy.slackSettingsInvalid),
-                .caption(Copy.slackSettingsHelp),
+                .fields([MockField(label: Copy.slackAppIDLabel, value: "https://acme.slack.com/apps")],
+                        error: Copy.slackAppIDInvalidLine),
+                .caption(Copy.slackAppIDHelp),
                 footer(disabled: true)
             ]),
             WizardScene("slack-progress", step: 0, [
@@ -179,7 +179,7 @@ enum CompanyWizardScenes {
             ]),
             WizardScene("slack-notCollaborator", step: 0, [.problem(Copy.notCollaborator, nil), footer(Copy.tryAgain)]),
             WizardScene("slack-wrongWorkspace", step: 0, [
-                .fields([MockField(label: Copy.slackSettingsLink, value: Copy.slackSettingsValue)], error: nil),
+                .fields([MockField(label: Copy.slackAppIDLabel, value: Copy.slackAppIDValue)], error: nil),
                 .problem(Copy.wrongWorkspace, nil),
                 footer(Copy.tryAgain)
             ]),

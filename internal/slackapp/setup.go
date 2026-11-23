@@ -676,19 +676,29 @@ func (r *Runner) appTeam(appID string) (string, error) {
 	return "", nil
 }
 
-// settingsURLPattern is an app's page on api.slack.com (any sub-page, query
-// or fragment).
-var settingsURLPattern = regexp.MustCompile(`^https://api\.slack\.com/apps/(A[A-Z0-9]+)([/?#].*)?$`)
+// appIDInputPattern is an App ID as a person enters it: the bare id, or a
+// link to the app on api.slack.com/apps/<id> or app.slack.com/app(s)/<id>,
+// with or without the scheme, and any sub-page, query or fragment after it.
+var appIDInputPattern = regexp.MustCompile(
+	`(?i)^(?:(A[A-Z0-9]+)|(?:https?://)?(?:api\.slack\.com/apps|app\.slack\.com/apps?)/(A[A-Z0-9]+)(?:[/?#].*)?)$`)
 
-// ParseSlackAppSettingsURL is the App ID in an app's settings URL
-// (https://api.slack.com/apps/A0123ABCD or any of its pages), surrounding
-// spaces ignored.
-func ParseSlackAppSettingsURL(s string) (appID string, ok bool) {
-	m := settingsURLPattern.FindStringSubmatch(strings.TrimSpace(s))
+// ParseSlackAppID is the App ID in what a person entered for an app: the
+// bare id (any case) or a link to the app (see appIDInputPattern), surrounding
+// spaces ignored, the id upper-cased. Anything but printable ASCII inside is
+// refused. The Desktop's CompanySetupWizardModel.slackAppID(from:) reads the
+// same inputs (shared fixture testdata/app_id_inputs.json).
+func ParseSlackAppID(s string) (appID string, ok bool) {
+	s = strings.TrimSpace(s)
+	for i := 0; i < len(s); i++ {
+		if s[i] <= ' ' || s[i] > '~' {
+			return "", false
+		}
+	}
+	m := appIDInputPattern.FindStringSubmatch(s)
 	if m == nil {
 		return "", false
 	}
-	return m[1], true
+	return strings.ToUpper(m[1] + m[2]), true
 }
 
 // ClearPending deletes team's pending setup record: the owner checked

@@ -176,6 +176,20 @@ final class CompanyConnectDriverTests: XCTestCase {
     private let confirmApp = #"{"result":"confirm_app","team_id":"T0ACME","team_name":"acme","app_id":"A0ACME","#
         + #""app_name":"Watchtower","client_id":"1111.2222","changes":{"add_scopes":["reactions:read"],"enable_pkce":true}}"#
 
+    /// `app_id` takes the id (any case) or a link to the app; `settings_link`
+    /// is its older name, and both at once are refused.
+    func testSlackAppIDField() async {
+        let (driver, wizard) = make()
+        let both = await driver.saveDraft(vendor: "slack", fields: ["app_id": "A0ACME", "settings_link": "A0ACME"])
+        XCTAssertEqual(Self.error(both), .badArgs("app_id and settings_link both name the Slack app; give app_id only"))
+        let bad = await driver.saveDraft(vendor: "slack", fields: ["app_id": "https://acme.slack.com/apps"])
+        XCTAssertEqual(Self.error(bad), .badArgs(CompanySetupWizardModel.slackAppIDInvalidLine))
+        let saved = await driver.saveDraft(vendor: "slack", fields: ["app_id": "https://app.slack.com/app/a0acme"])
+        XCTAssertNil(Self.error(saved))
+        XCTAssertEqual(wizard.slackReuse?.appID, "A0ACME")
+        XCTAssertEqual(wizard.slackAppIDInput, "A0ACME", "the field shows the id")
+    }
+
     func testSavedLinkUpdatesTheAppAfterConfirm() async {
         let cli = CompanyScriptedCLI()
         let (driver, wizard) = make(cli)
@@ -261,7 +275,7 @@ final class CompanyConnectDriverTests: XCTestCase {
         wizard.toggle(.slack)
         await wizard.next()
         wizard.alreadyHaveOne()
-        wizard.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        wizard.setField(.slack, .slackAppID, "https://api.slack.com/apps/A0ACME")
         await wizard.next()
         wizard.slackToken = token
         cli.on(["slack", "app", "adopt"], [confirmApp])

@@ -166,7 +166,7 @@ struct CompanySetupVendorStep: View {
     private func value(_ key: CompanyFieldSpec.Key) -> String {
         let draft = model.draft
         return switch (vendor, key) {
-        case (.slack, .slackSettingsLink): model.slackSettingsLink
+        case (.slack, .slackAppID): model.slackAppIDInput
         case (.slack, .clientID): model.slackClientID
         case (.google, .clientID): draft.google?.clientID ?? ""
         case (.google, .clientSecret): draft.google?.clientSecret ?? ""
@@ -271,8 +271,8 @@ struct CompanySetupVendorStep: View {
         ForEach(specs) { spec in
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 WizardField(label: spec.label, text: binding(spec.key))
-                if spec.key == .slackSettingsLink, model.slackSettingsLinkInvalid {
-                    Text(Model.slackSettingsInvalid)
+                if spec.key == .slackAppID, model.slackAppIDInvalid {
+                    Text(Model.slackAppIDInvalidLine)
                         .font(.caption)
                         .foregroundStyle(Tone.error)
                         .fixedSize(horizontal: false, vertical: true)
