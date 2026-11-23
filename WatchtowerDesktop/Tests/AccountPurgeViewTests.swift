@@ -97,8 +97,12 @@ final class AccountPurgeViewTests: XCTestCase {
         XCTAssertNoThrow(try failed.inspect().find(text: "x"))
         XCTAssertThrowsError(try failed.inspect().find(text: "Off by default"))
 
+        // Not answered yet: no claim (a build may turn the purge on).
         let unknown = PrivacySettingsContent(isOn: .constant(false), status: nil, statusError: nil)
-        XCTAssertNoThrow(try unknown.inspect().find(text: "Off by default"))
+        XCTAssertThrowsError(try unknown.inspect().find(text: "Off by default"))
+        let answered = PrivacySettingsContent(
+            isOn: .constant(false), status: AccountPurgeStatus(enabled: false, enabledBy: "default"), statusError: nil)
+        XCTAssertNoThrow(try answered.inspect().find(text: "Off by default"))
     }
 
     /// Fix round 1: a policy-forced value shows no "Off by default", even

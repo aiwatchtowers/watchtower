@@ -111,8 +111,9 @@ final class ConfigService {
     /// unrelated Save (#740) — nor materialize `false` on a fresh install.
     private var diskCalendarEnabled = true
     private var diskGmailEnabled = true
-    /// `privacy.purge_revoked_data` as last read from or written to disk.
-    private var diskPurgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// `privacy.purge_revoked_data` as last read from or written to disk: the
+    /// owner's saved setting (the Remove dialogs read it, not an unsaved edit).
+    private(set) var diskPurgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
     /// The providers' capability rows: the fallback pair is their
     /// `reserve_peer` (LLMTRANSPORT-01), never a Swift copy of the rule.
     @ObservationIgnored private let catalog: AIModelCatalog

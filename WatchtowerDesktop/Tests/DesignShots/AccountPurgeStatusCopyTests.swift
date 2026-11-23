@@ -22,15 +22,17 @@ final class AccountPurgeStatusCopyTests: XCTestCase {
         XCTAssertEqual(AccountPurgeStatus.footnote(byDefault, shown: false), Copy.footOff)
 
         XCTAssertEqual(AccountPurgeStatus.caption(byDefault, shown: false), Copy.captionDefault)
-        XCTAssertEqual(AccountPurgeStatus.caption(nil, shown: false), Copy.captionDefault)
+        XCTAssertNil(AccountPurgeStatus.caption(nil, shown: false), "unknown: a build may turn it on")
         XCTAssertNil(AccountPurgeStatus.caption(off, shown: false))
         XCTAssertNil(AccountPurgeStatus.caption(bySetting, shown: true))
         XCTAssertNil(AccountPurgeStatus.caption(byDefault, shown: true), "a pending on is the owner's, not the default")
 
-        XCTAssertEqual(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: bySetting), Copy.removeBodyOn)
-        XCTAssertEqual(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: byDefault), Copy.removeBodyOff)
-        XCTAssertEqual(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: nil), Copy.removeBodyOff)
-        XCTAssertEqual(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: off), Copy.removeBodyOff)
+        func remove(_ status: AccountPurgeStatus?) -> String {
+            AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: status, policy: .none, setting: nil)
+        }
+        XCTAssertEqual(remove(bySetting), Copy.removeBodyOn)
+        XCTAssertEqual(remove(byDefault), Copy.removeBodyOff)
+        XCTAssertEqual(remove(off), Copy.removeBodyOff)
         XCTAssertEqual(AccountPurgeStatus.removeButton, Copy.remove)
     }
 
@@ -58,9 +60,10 @@ final class AccountPurgeStatusCopyTests: XCTestCase {
         XCTAssertEqual(forced, "policy")
         XCTAssertNil(AccountPurgeStatus.caption(nil, shown: false, origin: forced))
 
-        // Nothing known: the default.
+        // Nothing known (the CLI has not answered or failed): no claim, a
+        // build may turn the purge on.
         let unknown = AccountPurgeStatus.shownOrigin(policy: nil, setting: nil, status: nil)
-        XCTAssertEqual(AccountPurgeStatus.caption(nil, shown: false, origin: unknown), Copy.captionDefault)
+        XCTAssertNil(AccountPurgeStatus.caption(nil, shown: false, origin: unknown))
     }
 
     /// The notice follows Go's grace_hours (an organization's PurgeGraceHours);
@@ -68,16 +71,17 @@ final class AccountPurgeStatusCopyTests: XCTestCase {
     func testNoticeFollowsTheGraceHours() {
         let day = AccountPurgeStatus(enabled: true, enabledBy: "policy", graceHours: 24)
         XCTAssertTrue(AccountPurgeStatus.footnote(day, shown: true).contains("deleted 24 hours later"))
-        XCTAssertTrue(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: day).contains("deleted in 24 hours"))
+        XCTAssertTrue(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: day, policy: .none, setting: nil)
+            .contains("deleted in 24 hours"))
 
         let now = AccountPurgeStatus(enabled: true, enabledBy: "policy", graceHours: 0)
         let foot = AccountPurgeStatus.footnote(now, shown: true)
         XCTAssertTrue(foot.contains("deleted at the next sync unless you reconnect"), foot)
         XCTAssertTrue(foot.contains("goes at the next sync after the remove"), foot)
         XCTAssertFalse(foot.contains("0 hours"), foot)
-        let dialog = AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: now)
+        let dialog = AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: now, policy: .none, setting: nil)
         XCTAssertTrue(dialog.contains("deleted at the next sync unless"), dialog)
-        let jira = AccountPurgeStatus.removeDialogMessage("Kept.", status: now)
+        let jira = AccountPurgeStatus.removeDialogMessage("Kept.", status: now, policy: .none, setting: nil)
         XCTAssertEqual(jira, "Kept. Because deleting data on revoked access is on, it is deleted about "
             + "30 days after the account was last reached.")
     }

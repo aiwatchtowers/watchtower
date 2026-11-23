@@ -231,6 +231,7 @@ struct SlackConnectionDetail: View {
 
                 if slackAuth.disconnectTarget != nil {
                     Button(role: .destructive) {
+                        appState.refreshAccountPurgeStatus()
                         showSlackDisconnectConfirm = true
                     } label: {
                         HStack(spacing: Spacing.small) {
@@ -284,10 +285,7 @@ struct SlackConnectionDetail: View {
         } message: {
             // `auth logout` is `slack remove` of account #1 (revoke, token
             // delete, row removed), so it says what the Remove dialog says.
-            Text(AccountPurgeStatus.removeDialogMessage(
-                slackAccount: disconnectName,
-                status: appState.accountPurgeCenter?.status
-            ))
+            Text(appState.slackRemoveDialogMessage(disconnectName))
         }
     }
 
@@ -385,10 +383,7 @@ struct SlackConnectionDetail: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(AccountPurgeStatus.removeDialogMessage(
-                slackAccount: slackAccountPendingRemoval?.displayName ?? "this workspace",
-                status: appState.accountPurgeCenter?.status
-            ))
+            Text(appState.slackRemoveDialogMessage(slackAccountPendingRemoval?.displayName ?? "this workspace"))
         }
     }
 
@@ -475,6 +470,7 @@ struct SlackConnectionDetail: View {
                 .buttonStyle(.kitQuiet)
                 .disabled(vm.isConnecting)
                 Button("Remove") {
+                    appState.refreshAccountPurgeStatus()
                     slackAccountPendingRemoval = account
                 }
                 .buttonStyle(KitQuietButtonStyle(label: Tone.error))
