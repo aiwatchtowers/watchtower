@@ -393,14 +393,16 @@ final class CompanySetupWizardModelTests: XCTestCase {
         cli.on(["slack", "app", "adopt"], [#"{"result":"not_collaborator","team_id":"T0ACME","team_name":"acme","#
             + #""code":"no_permission"}"#])
         await model.next()
-        await untilObserved { model.slackOffersNewApp }
+        await settled(model) // the create, then the read it chains
+        XCTAssertTrue(model.slackOffersNewApp)
         XCTAssertEqual(model.primary.title, "Try again")
         model.createNewSlackApp()
         cli.on(["slack", "app", "create"], [#"{"result":"ok","team_id":"T0ACME","team_name":"acme","app_id":"A0NEW","#
             + #""client_id":"3333.4444","link_written":false}"#])
         cli.setups = acmeSetup
         await model.next()
-        await untilObserved { model.current == .denyList }
+        await settled(model)
+        XCTAssertEqual(model.current, .denyList)
         XCTAssertEqual(cli.calls(["slack", "app", "create"]).map(\.args),
                        [["slack", "app", "create", "--json"], ["slack", "app", "create", "--json", "--new-app"]])
     }
@@ -418,13 +420,19 @@ final class CompanySetupWizardModelTests: XCTestCase {
         cli.hold(["slack", "app", "status"])
         cli.on(["slack", "app", "create"], [#"{"result":"existing_app","team_id":"T0ACME","team_name":"acme","#
             + #""app_id":"A0ACME","client_id":"1111.2222"}"#])
+        let statusReads = cli.calls(["slack", "app", "status"]).count
         await model.next()
-        await cli.waitFor(["slack", "app", "status"])
+        await cli.waitFor(["slack", "app", "status"], count: statusReads + 1) // the create's own records read
         await model.skip()
         cli.release(["slack", "app", "status"], [#"{"setups":[]}"#])
-        await model.slack.runTask?.value
+        await settled(model)
         XCTAssertTrue(cli.calls(["slack", "app", "adopt"]).isEmpty)
         XCTAssertFalse(model.slack.isRunning)
+    }
+
+    /// Waits out the Slack run and any run its outcome chains.
+    private func settled(_ model: CompanySetupWizardModel) async {
+        repeat { await model.slack.runTask?.value } while model.slack.isRunning
     }
 
     func testReusedAppShowsDiffThenUpdates() async {
