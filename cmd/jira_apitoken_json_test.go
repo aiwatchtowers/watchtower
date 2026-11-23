@@ -149,6 +149,15 @@ func TestJiraAccountsJSON_PurgeLease(t *testing.T) {
 	setAccess(access)
 	policytest.Set(t, map[string]any{"PurgeRevokedData": true, "AllowAtlassianAPIToken": false})
 	assert.Empty(t, lease(), "POLICY-03 holds a stopped token site's lease")
+
+	// The cut-off follows the managed notice (purge.EffectiveGrace).
+	soon := time.Now().UTC().Add(-purge.Lease + time.Hour).Truncate(time.Second)
+	setAccess(soon)
+	policytest.Set(t, map[string]any{"PurgeRevokedData": true, "PurgeGraceHours": int64(0)})
+	assert.Equal(t, soon.Add(purge.Lease).Format(time.RFC3339), lease(), "grace 0: an hour away still shows")
+	setAccess(time.Now().UTC().Add(-time.Minute).Truncate(time.Second))
+	policytest.Set(t, map[string]any{"PurgeRevokedData": true, "PurgeGraceHours": int64(720)})
+	assert.Empty(t, lease(), "grace 720 (the whole lease): even a fresh deadline is under the notice")
 }
 
 // TestJiraAPIToken_ConfluenceProbed (#1887 C5, closes Task 17's "scopes

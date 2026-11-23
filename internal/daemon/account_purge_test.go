@@ -16,6 +16,8 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/linear"
+	"watchtower/internal/policy/policytest"
+	"watchtower/internal/purge"
 	"watchtower/internal/reactioncmd"
 )
 
@@ -143,6 +145,32 @@ func TestPhaseAccountPurge_OffCancelsScheduled(t *testing.T) {
 	require.Len(t, all, 1)
 	assert.Equal(t, "cancelled", all[0].State)
 	assert.Equal(t, 3, linearRowCount(t, database, id))
+}
+
+// PURGE-01 (owner decision 2026-11-23): with nothing set — no setting, no
+// policy, no build default — the purge is off, so a pass cancels a row
+// scheduled earlier (here already due) and deletes nothing.
+func TestPurge01_UnsetSwitchCancelsAndKeepsData(t *testing.T) {
+	d, database := newLinearTestDaemon(t)
+	d.config.Privacy.PurgeRevokedData = nil
+	policytest.Set(t, nil)
+	prev := purge.BuildDefault
+	purge.BuildDefault = ""
+	t.Cleanup(func() { purge.BuildDefault = prev })
+	id := seedRevokedLinear(t, database, 10*24*time.Hour)
+	_, err := database.ScheduleAccountPurge("linear", id, "revoked", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	require.NoError(t, err)
+
+	d.phaseAccountPurge(context.Background())
+
+	all, err := database.ListAccountPurges(false)
+	require.NoError(t, err)
+	require.Len(t, all, 1)
+	assert.Equal(t, "cancelled", all[0].State)
+	assert.Equal(t, 3, linearRowCount(t, database, id), "off by default: data is kept")
+	acc, err := database.GetLinearAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "revoked", acc.Status)
 }
 
 // PURGE-01 (review #601): a revoked Jira or Linear account whose next pass

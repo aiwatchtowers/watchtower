@@ -17,6 +17,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/policy/policytest"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/slackauth"
 )
@@ -188,6 +189,16 @@ func TestSlackRemove_SaysWhenDataGoesAndLogsRevokeFailure(t *testing.T) {
 		"With account data deletion on, it is deleted 72 hours after Watchtower's next pass.")
 	assert.Contains(t, errOut.String(), "revoking slack account 1")
 	assert.Contains(t, errOut.String(), "did not revoke the token")
+}
+
+// The remove line follows the managed notice (purge.EffectiveGrace): a
+// PurgeGraceHours of 0 deletes at the next pass, another value names it.
+func TestSlackRemovedDataDeletion_FollowsTheManagedGrace(t *testing.T) {
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(0)})
+	assert.Equal(t, "With account data deletion on, it is deleted at Watchtower's next pass.", slackRemovedDataDeletion())
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(24)})
+	assert.Equal(t, "With account data deletion on, it is deleted 24 hours after Watchtower's next pass.",
+		slackRemovedDataDeletion())
 }
 
 // The Desktop finds the warning in the CLI output by its exact text
