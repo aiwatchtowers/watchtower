@@ -143,9 +143,9 @@ final class ConnectEntryPointsTests: XCTestCase {
         try view.inspect().find(button: "Connect").tap()
         XCTAssertEqual(opened, ["google"])
         XCTAssertEqual(detail, [.jira, .google])
-        XCTAssertEqual(try view.inspect().findAll(ViewType.Button.self) { button in
-            (try? button.labelView().find(text: "Connect with Claude")) != nil
-        }.count, 1, "only the card with no account")
+        // Counted per card: the card lays the pair out twice (row and stacked) under ViewThatFits.
+        XCTAssertEqual(cards.filter { (try? $0.find(button: "Connect with Claude")) != nil }
+            .map { try? $0.actualView().summary.service }, [.google], "only the card with no account")
 
         // The Connect… menu (preflight F22): a submenu per service and the company entry.
         let menu = try view.inspect().find(ViewType.Menu.self)

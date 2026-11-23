@@ -140,20 +140,28 @@ struct CompaniesZone: View {
         }
     }
 
+    /// In a row, stacked when the pane is narrower than the row (the inspector
+    /// open), so the row never widens the overview past its pane.
     private func zoneButtons(only shown: [CompaniesZoneState.Action]) -> some View {
-        HStack(spacing: Spacing.regular) {
-            if let agent, shown.contains(.setUpForCompany) {
-                ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(agent.harness), action: agent.open)
-            }
-            ForEach(Array(shown.enumerated()), id: \.offset) { _, action in
-                Button(action.title) {
-                    switch action {
-                    case .setUpForCompany: actions.setUpForCompany()
-                    case .connectWithCode: model.openCodeField()
-                    }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Spacing.regular) { zoneButtonList(shown) }
+            VStack(alignment: .leading, spacing: Spacing.small) { zoneButtonList(shown) }
+        }
+    }
+
+    @ViewBuilder
+    private func zoneButtonList(_ shown: [CompaniesZoneState.Action]) -> some View {
+        if let agent, shown.contains(.setUpForCompany) {
+            ConnectAgentButton(title: ConnectAssistantPresentation.connectWith(agent.harness), action: agent.open)
+        }
+        ForEach(Array(shown.enumerated()), id: \.offset) { _, action in
+            Button(action.title) {
+                switch action {
+                case .setUpForCompany: actions.setUpForCompany()
+                case .connectWithCode: model.openCodeField()
                 }
-                .buttonStyle(.kitQuiet)
             }
+            .buttonStyle(.kitQuiet)
         }
     }
 
