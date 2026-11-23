@@ -489,21 +489,21 @@ final class TerminalContainerView: NSView {
     private var focusRequests = 0
     /// Every time a sessions panel took the keyboard on the owner's request
     /// (`SessionsPanelKeyView.KeyView.takePanelKeyboard`) gets the next
-    /// number, kept as its window's latest claim: a terminal focus asked
-    /// before its window's latest claim gives way — the owner's later
-    /// choice. A claim in another window leaves it alone, and a panel or
-    /// list that only holds the keyboard from before is still overridden.
+    /// number, kept as its window's latest claim (`WindowKeyboardState`):
+    /// a terminal focus asked before its window's latest claim gives way —
+    /// the owner's later choice. A claim in another window leaves it alone,
+    /// and a panel or list that only holds the keyboard from before is
+    /// still overridden.
     private static var claimSequence = 0
-    private static var latestClaims: [ObjectIdentifier: Int] = [:]
 
     static func panelClaimedKeyboard(in window: NSWindow) {
         claimSequence += 1
-        latestClaims[ObjectIdentifier(window)] = claimSequence
+        WindowKeyboardState.of(window).latestClaim = claimSequence
     }
 
     /// The panel of `window` took the keyboard after claim number `sequence`.
     private static func panelClaimed(in window: NSWindow, since sequence: Int) -> Bool {
-        (latestClaims[ObjectIdentifier(window)] ?? 0) > sequence
+        WindowKeyboardState.of(window).latestClaim > sequence
     }
 
     override init(frame frameRect: NSRect) {
@@ -598,5 +598,22 @@ final class TerminalContainerView: NSView {
         backgroundObservation = nil
         observedTerminal = nil
         layer?.backgroundColor = nil
+    }
+}
+
+/// Keyboard facts of one window the terminal focus reads (#1150), kept on
+/// the window itself so they go with it.
+@MainActor
+final class WindowKeyboardState {
+    /// `TerminalContainerView`'s number of the panel's latest claim here.
+    var latestClaim = 0
+
+    private nonisolated(unsafe) static var key: UInt8 = 0
+
+    static func of(_ window: NSWindow) -> WindowKeyboardState {
+        if let state = objc_getAssociatedObject(window, &key) as? WindowKeyboardState { return state }
+        let state = WindowKeyboardState()
+        objc_setAssociatedObject(window, &key, state, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        return state
     }
 }
