@@ -377,6 +377,38 @@ final class CompanyConnectDriverTests: XCTestCase {
         XCTAssertEqual(read.vendors["linear"]?.skipped, true)
         XCTAssertEqual(read.vendors["slack"]?.ready, true)
         XCTAssertNil(read.vendors["microsoft"]?.ready, "ready is Slack's alone")
+        XCTAssertEqual(read.services, ["slack", "linear", "microsoft"], "the ticked services, in the wizard's order")
+    }
+
+    /// What the customer already chose in the wizard reaches the agent's
+    /// read, so the playbook does not ask it again (#1146).
+    func testDraftReadCarriesTheWizardsChoices() async throws {
+        let cli = CompanyScriptedCLI()
+        let (driver, wizard) = make(cli)
+        _ = await driver.status()
+        wizard.toggle(.google)
+        wizard.toggle(.slack)
+        wizard.setCompanyName("Acme")
+        func read() async throws -> ConnectCompanyDraft {
+            try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
+        }
+        var draft = try await read()
+        XCTAssertEqual(draft.services, ["slack", "google"])
+        XCTAssertEqual(draft.company, "Acme")
+        XCTAssertNil(draft.vendors["slack"]?.app, "no choice before the Slack step")
+
+        await wizard.next()  // the Slack step's first screen: still no choice
+        draft = try await read()
+        XCTAssertNil(draft.vendors["slack"]?.app)
+
+        wizard.createNew()
+        draft = try await read()
+        XCTAssertEqual(draft.vendors["slack"]?.app, "new")
+        XCTAssertNil(draft.vendors["google"]?.app, "app is Slack's alone")
+
+        wizard.alreadyHaveOne()
+        draft = try await read()
+        XCTAssertEqual(draft.vendors["slack"]?.app, "existing")
     }
 
     func testSlackProblemIsTheWizardsLine() async {

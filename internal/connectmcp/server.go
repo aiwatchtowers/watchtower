@@ -172,7 +172,7 @@ func tool(name string, ts toolSet) *mcpsdk.Tool {
 			"select": {Type: "array", Items: &jsonschema.Schema{Type: "string"}, Description: "ids to select; omit to list"},
 		}, "what")
 	case "company_draft":
-		desc = "Read the company setup draft (secrets show only as set or not), or save a vendor's non-secret values into it. Client secrets go through request_secret."
+		desc = "Read the company setup draft (secrets show only as set or not), or save a vendor's non-secret values into it. The read carries what the customer already chose in the setup wizard: the company name, the services they ticked (services) and, for Slack, app new or existing; do not ask for those again. Client secrets go through request_secret."
 		schema = object(map[string]*jsonschema.Schema{
 			"vendor": enum("the vendor whose values to save", ts.vendors),
 			"fields": stringMap("field name → value; omit to read the draft"),

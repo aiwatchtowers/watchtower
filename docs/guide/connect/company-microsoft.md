@@ -14,8 +14,8 @@ The Microsoft 365 step of the company setup: the assistant registers your compan
 
 ## Steps
 
-1. **Agent:** Call `connect_status` and `company_draft`. If the draft has no company name, ask the customer for it and save it with `company_draft`. If the company does not use Microsoft 365, save that and go on to Publish. If the draft already holds both ids, go to step 7.
-2. **Agent:** On entra.microsoft.com, open **App registrations → New registration**: name Watchtower, **Accounts in this organizational directory only**, no redirect URI yet. Register it.
+1. **Agent:** Call `connect_status` and `company_draft`. If the draft has no company name, ask the customer for it and save it with `company_draft`. If Microsoft 365 is not among the draft's `services` (what the customer ticked in the wizard; never ask again), go on to Publish. If the draft already holds both ids, go to step 7.
+2. **Agent:** On [entra.microsoft.com](https://entra.microsoft.com), open **App registrations → New registration**: name Watchtower, **Accounts in this organizational directory only**, no redirect URI yet. Register it.
 3. **Agent:** Watchtower signs in on `http://127.0.0.1:<port>/callback`. The portal's redirect box refuses an `http` address with `127.0.0.1`, so open the app's **Manifest**, add `"http://127.0.0.1/callback"` to `publicClient.redirectUris`, then save it.
 4. **Agent:** Under **API permissions**, add the delegated permissions `IMAP.AccessAsUser.All`, `offline_access`, `openid` and `email`. Never open **Certificates & secrets**: Watchtower uses no secret.
 5. **You:** If you are a tenant admin, press **Grant admin consent** on **API permissions** and confirm. If not, skip it: step 8 gives you a link for your admin.

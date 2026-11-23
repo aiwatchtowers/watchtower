@@ -15,8 +15,8 @@ The Atlassian step of the company setup: the assistant builds your company's Atl
 
 ## Steps
 
-1. **Agent:** Call `connect_status` and `company_draft`. If the draft has no company name, ask the customer for it and save it with `company_draft`. If the company does not use Atlassian, save that and go on to the next vendor page. If the draft already holds an Atlassian Client ID with `client_secret_set`, go to step 8.
-2. **Agent:** On developer.atlassian.com/console/myapps, make a new OAuth 2.0 integration named Watchtower. Ask the customer before you accept Atlassian's developer terms for them.
+1. **Agent:** Call `connect_status` and `company_draft`. If the draft has no company name, ask the customer for it and save it with `company_draft`. If Atlassian is not among the draft's `services` (what the customer ticked in the wizard; never ask again), go on to the next vendor page. If the draft already holds an Atlassian Client ID with `client_secret_set`, go to step 8.
+2. **Agent:** On [developer.atlassian.com/console/myapps](https://developer.atlassian.com/console/myapps), make a new OAuth 2.0 integration named Watchtower. Ask the customer before you accept Atlassian's developer terms for them.
 3. **Agent:** Under **Permissions**, add the Jira API with the scopes `read:jira-work write:jira-work read:jira-user read:board-scope:jira-software read:sprint:jira-software read:issue:jira-software read:project:jira`, the Confluence API with `read:space:confluence read:page:confluence read:blogpost:confluence read:comment:confluence read:attachment:confluence read:user:confluence read:content-details:confluence search:confluence readonly:content.attachment:confluence read:confluence-user`, and the personal data reporting API with `report:personal-data`.
 4. **Agent:** Under **Authorization**, turn on OAuth 2.0 (3LO) and set the callback URL to `http://localhost:18511/callback`. Atlassian takes one callback URL, and Watchtower's sign-in listens on port 18511.
 5. **Agent:** Under **Distribution**, turn sharing on and answer Yes to "Does your app store personal data?". Offer to add a second admin as an owner, so the app outlives one person.

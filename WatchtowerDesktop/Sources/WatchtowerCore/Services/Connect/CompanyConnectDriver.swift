@@ -71,7 +71,7 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             vendors[v.rawValue] = switch v {
             case .slack:
                 .init(clientID: Self.nonEmpty(wizard.slack.record(appID: draft.slack.appID)?.clientID), clientSecretSet: false,
-                      checked: checked, skipped: skipped, ready: wizard.slackAppReady)
+                      checked: checked, skipped: skipped, ready: wizard.slackAppReady, app: slackAppChoice)
             case .google:
                 .init(clientID: Self.nonEmpty(draft.google?.clientID), clientSecretSet: !(draft.google?.clientSecret ?? "").isEmpty,
                       checked: checked, skipped: skipped)
@@ -86,7 +86,22 @@ package final class CompanyConnectDriver: ConnectCompanyDriving, ConnectSecretCo
             }
         }
         let company = draft.company.isEmpty ? wizard.publishName.trimmingCharacters(in: .whitespacesAndNewlines) : draft.company
-        return .success(Self.json(ConnectCompanyDraft(company: company, vendors: vendors)))
+        return .success(Self.json(ConnectCompanyDraft(company: company, services: wizard.ticked.map(\.rawValue),
+                                                      vendors: vendors)))
+    }
+
+    /// The customer's choice on the wizard's Slack step, so the agent does
+    /// not ask again: an app picked or a settings link → `existing`,
+    /// **We already have one** → `existing`, **Create new** → `new`; nil
+    /// while no choice is made (the step not opened yet, or its first screen).
+    /// The wizard keeps it in memory only: after a relaunch it is asked again.
+    private var slackAppChoice: String? {
+        if wizard.slackReuse != nil { return "existing" }
+        switch wizard.phase(.slack) {
+        case .existing: return "existing"
+        case .create: return "new"
+        case .looking, .found, .nothingFound, .reuseSecret, .noOrgAccess: return nil
+        }
     }
 
     /// The keys a `company_draft` save takes: any vendor's call carries the
