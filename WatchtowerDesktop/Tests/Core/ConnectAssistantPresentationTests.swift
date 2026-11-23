@@ -84,6 +84,10 @@ struct ConnectAssistantPresentationTests {
                          state: .browserMissing, browserCheck: .stillMissing)
         #expect(still.browserGuide?.note == "Still not connected.")
         #expect(still.actions == [.checkBrowser, .continueWithoutBrowser, .setUpByHand])
+        let failed = Pres(service: "Slack", harness: claude, mode: .words, browserAvailable: false,
+                          state: .browserMissing, browserCheck: .failed)
+        #expect(failed.browserGuide?.note == "Couldn't check the browser — try again.")
+        #expect(failed.actions == [.checkBrowser, .continueWithoutBrowser, .setUpByHand])
     }
 
     @Test("the browser lost mid-run: the guide and Check again beside the run, never over a card")
@@ -99,6 +103,8 @@ struct ConnectAssistantPresentationTests {
         #expect(lost(.waiting(step: "press Allow")).actions == [.cancel, .checkBrowser])
         #expect(lost(.thinking, .checking).actions == [.cancel])
         #expect(lost(.thinking, .stillMissing).browserGuide?.note == "Still not connected.")
+        #expect(lost(.thinking, .failed).browserGuide?.note == "Couldn't check the browser — try again.")
+        #expect(lost(.thinking, .failed).actions == [.cancel, .checkBrowser])
         #expect(lost(.secret(label: "Token")).browserGuide == nil)
         #expect(lost(.confirm(.slackPKCE)).browserGuide == nil)
         #expect(lost(.failed(.quota)).browserGuide == nil)

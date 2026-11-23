@@ -42,11 +42,13 @@ package enum ConnectAssistantServer: Equatable, Sendable {
 }
 
 /// The browser guide's **Check again** (#1144): not pressed yet, running
-/// (a probe turn), or it found no browser again.
+/// (a probe turn), it found no browser again, or the probe gave no answer
+/// (it failed: nothing is known about the browser).
 package enum ConnectBrowserCheck: Equatable, Sendable {
     case notChecked
     case checking
     case stillMissing
+    case failed
 }
 
 /// One state of the connect assistant panel (§7).
@@ -315,6 +317,7 @@ package struct ConnectAssistantPresentation: Equatable, Sendable {
         case .notChecked: nil
         case .checking: "Checking for \(name) in Chrome…"
         case .stillMissing: "Still not connected."
+        case .failed: "Couldn't check the browser — try again."
         }
         return BrowserGuide(
             title: "Connect \(name) in Chrome",

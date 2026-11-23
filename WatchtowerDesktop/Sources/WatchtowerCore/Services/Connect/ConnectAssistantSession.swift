@@ -282,8 +282,8 @@ package final class ConnectAssistantSession {
     private func recheckBeforeFirstTurn(run: Int) async {
         let answer = await probe.answer(for: harness, service: service)
         guard run == self.run else { return }
-        guard answer == .connected else {
-            browserCheck = .stillMissing
+        if let check = Self.notFound(answer) {
+            browserCheck = check
             startTask = nil
             return
         }
@@ -296,13 +296,24 @@ package final class ConnectAssistantSession {
         let answer = await probe.answer(for: harness, service: service)
         guard run == self.run else { return }
         checkTask = nil
-        guard answer == .connected else {
-            browserCheck = .stillMissing
+        if let check = Self.notFound(answer) {
+            browserCheck = check
             return
         }
         browserFound()
         engine?.update(spec: spec())
         engine?.sendFollowUp(prompt: ConnectBrowserProbe.foundFollowUp)
+    }
+
+    /// What Check again shows when the probe found no browser: no browser
+    /// listed, or no answer at all (a failed probe is not "still not
+    /// connected"); nil when it found one.
+    private static func notFound(_ answer: ConnectBrowserProbe.Answer) -> ConnectBrowserCheck? {
+        switch answer {
+        case .connected: nil
+        case .missing: .stillMissing
+        case .unknown: .failed
+        }
     }
 
     private func browserFound() {

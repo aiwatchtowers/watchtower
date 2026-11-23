@@ -270,13 +270,49 @@ final class ConnectAssistantSessionTests: XCTestCase {
         XCTAssertNil(session.engine)
         XCTAssertEqual(ai.calls.count, 2, "no turn started")
 
-        // A failed probe is no browser either.
+        // A failed probe says nothing about the browser: its own note.
         session.checkBrowser()
         await ai.untilCalls(3)
         ai.finish(call: 2, throwing: WatchtowerAIError.exitCode(1, "probe failed"))
         await session.prepared()
-        XCTAssertEqual(session.browserCheck, .stillMissing)
+        XCTAssertEqual(session.browserCheck, .failed)
+        XCTAssertEqual(session.presentation.browserGuide?.note, "Couldn't check the browser — try again.")
         XCTAssertEqual(session.state, .browserMissing)
+        XCTAssertEqual(session.presentation.actions, [.checkBrowser, .continueWithoutBrowser, .setUpByHand])
+    }
+
+    /// A mid-run Check again whose probe fails is not "still not connected".
+    func testMidRunCheckAgainProbeFailure() async {
+        let session = make(browserHarness)
+        let turn = await startRun(session, probe: #"[{"id":"b1"}]"#)
+        ai.emit(.toolStart(ChatToolStart(turnID: "t", id: "n1", name: "claude-in-chrome:navigate", argsJSON: "{}")),
+                .toolEnd(ChatToolEnd(turnID: "t", id: "n1", ok: true, summary: ConnectBrowserProbe.lostMarker,
+                                     sources: [])),
+                call: turn)
+        await untilObserved { session.mode == .words }
+        session.checkBrowser()
+        await ai.untilCalls(turn + 2)
+        ai.finish(call: turn + 1, throwing: WatchtowerAIError.exitCode(1, "probe failed"))
+        await session.browserChecked()
+        XCTAssertEqual(session.browserCheck, .failed)
+        XCTAssertEqual(session.presentation.browserGuide?.note, "Couldn't check the browser — try again.")
+        XCTAssertEqual(session.mode, .words)
+        XCTAssertEqual(session.presentation.actions, [.cancel, .checkBrowser])
+    }
+
+    /// A list tool step that ends with an error is an answer: no browser.
+    func testProbeListToolErrorIsMissing() async {
+        let session = make(browserHarness)
+        session.start()
+        await ai.untilCalls(1)
+        ai.emit(.toolStart(ChatToolStart(turnID: "p", id: "probe", name: "claude-in-chrome:list_connected_browsers",
+                                         argsJSON: "{}")),
+                .toolEnd(ChatToolEnd(turnID: "p", id: "probe", ok: false, summary: "MCP error: server not running",
+                                     sources: [])),
+                call: 0)
+        await session.prepared()
+        XCTAssertEqual(session.state, .browserMissing)
+        XCTAssertNotNil(session.presentation.browserGuide)
     }
 
     func testContinueWithoutTheBrowserStartsInWords() async {
@@ -377,6 +413,8 @@ final class ConnectAssistantSessionTests: XCTestCase {
         await session.engine?.started()
         XCTAssertEqual(session.mode, .words)
         XCTAssertEqual(ai.calls[1].connectArgs?.last, "words")
+        XCTAssertNotEqual(session.state, .browserMissing, "no answer is no pause")
+        XCTAssertNil(session.presentation.browserGuide, "no answer offers no guide")
     }
 
     // MARK: - Failures

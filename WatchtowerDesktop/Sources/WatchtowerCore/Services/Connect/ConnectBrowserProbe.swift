@@ -101,13 +101,17 @@ package struct ConnectBrowserProbe: Sendable {
                 case .toolStart(let start) where isBrowserTool(start.name, named: listTool):
                     listCalls.insert(start.id)
                 case .toolEnd(let end) where listCalls.contains(end.id):
+                    if !end.ok { print("[connect-probe] \(listTool) failed: \(CLILog.detail(end.summary))") }
                     answer.yield(end.ok && mode(fromResult: end.summary) == .browser ? .connected : .missing)
                 default:
                     continue
                 }
             }
+        } catch is CancellationError {
+            return  // answered or ended: the reader was cancelled
         } catch {
-            return  // no answer: unknown
+            // No answer: unknown. The panel says only that the check failed.
+            print("[connect-probe] the probe turn failed: \(CLILog.detail(String(describing: error)))")
         }
     }
 
