@@ -55,8 +55,9 @@ struct MobileSettingsView: View {
     typealias Copy = MobileSettingsModel
     let model: MobileSettingsModel
     var openDiagnostics: () -> Void = {}
-    /// Whether the Settings window is on screen; the reads repeat only then.
-    @State private var windowVisible = true
+    /// Where the Settings window is; the reads repeat only while it is on
+    /// screen, and an open pairing outlives a covered window.
+    @State private var presence = MobileSettingsModel.WindowPresence.onScreen
 
     var body: some View {
         ScrollView {
@@ -72,8 +73,8 @@ struct MobileSettingsView: View {
             .padding(.vertical, Spacing.medium)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .background(WindowVisibilityReader(isVisible: $windowVisible))
-        .task(id: windowVisible) { await model.windowVisibility(windowVisible) }
+        .background(WindowVisibilityReader(presence: $presence))
+        .task(id: presence) { await model.windowVisibility(presence) }
         .onDisappear { model.disappeared() }
         .sheet(item: Binding(get: { model.pairing }, set: { if $0 == nil { model.pairingDismissed() } })) { sheet in
             MobilePairingSheet(model: sheet) { model.pairingDismissed() }
@@ -531,17 +532,17 @@ private struct MobileSettingsDialogs: ViewModifier {
     }
 }
 
-/// Reports whether the hosting window is on screen (shown and not fully
-/// covered): a closed Settings window is ordered out, which SwiftUI does
-/// not always answer with `onDisappear`.
+/// Reports where the hosting window is (on screen, covered, or ordered out):
+/// a closed Settings window is ordered out, which SwiftUI does not always
+/// answer with `onDisappear`.
 private struct WindowVisibilityReader: NSViewRepresentable {
-    @Binding var isVisible: Bool
+    @Binding var presence: MobileSettingsModel.WindowPresence
 
     func makeNSView(context: Context) -> WindowVisibilityView {
         let view = WindowVisibilityView()
-        view.onChange = { visible in
+        view.onChange = { next in
             // Off the view update in progress.
-            DispatchQueue.main.async { if isVisible != visible { isVisible = visible } }
+            DispatchQueue.main.async { if presence != next { presence = next } }
         }
         return view
     }
@@ -554,7 +555,7 @@ private struct WindowVisibilityReader: NSViewRepresentable {
 }
 
 private final class WindowVisibilityView: NSView {
-    var onChange: ((Bool) -> Void)?
+    var onChange: ((MobileSettingsModel.WindowPresence) -> Void)?
     /// Written on the main actor only; read by `deinit` after every other
     /// reference is gone.
     nonisolated(unsafe) private var observer: NSObjectProtocol?
@@ -573,7 +574,7 @@ private final class WindowVisibilityView: NSView {
         // Leaving the window (the view going away) ends the observation.
         stopObserving()
         guard let window else {
-            onChange?(false)
+            onChange?(.gone)
             return
         }
         observer = NotificationCenter.default.addObserver(
@@ -581,10 +582,16 @@ private final class WindowVisibilityView: NSView {
         ) { [weak self, weak window] _ in
             MainActor.assumeIsolated {
                 guard let window else { return }
-                self?.onChange?(window.occlusionState.contains(.visible))
+                self?.onChange?(Self.presence(of: window))
             }
         }
-        onChange?(window.occlusionState.contains(.visible))
+        onChange?(Self.presence(of: window))
+    }
+
+    /// A minimized window is still open, like a covered one.
+    private static func presence(of window: NSWindow) -> MobileSettingsModel.WindowPresence {
+        if window.occlusionState.contains(.visible) { return .onScreen }
+        return window.isVisible || window.isMiniaturized ? .occluded : .gone
     }
 }
 

@@ -702,7 +702,7 @@ final class MobileSettingsModelTests: XCTestCase {
             if await sleeps.count >= 2 { withUnsafeCurrentTask { $0?.cancel() } }
         }
         let model = makeModel(sleep: twice)
-        await Task { await model.windowVisibility(true) }.value
+        await Task { await model.windowVisibility(.onScreen) }.value
         let recorded = await sleeps.all
         XCTAssertEqual(recorded, [Model.refreshInterval, Model.refreshInterval])
         XCTAssertEqual(cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count, 2)
@@ -714,7 +714,7 @@ final class MobileSettingsModelTests: XCTestCase {
             withUnsafeCurrentTask { $0?.cancel() }
         }
         let starting = makeModel(sleep: once)
-        await Task { await starting.windowVisibility(true) }.value
+        await Task { await starting.windowVisibility(.onScreen) }.value
         let first = await fast.all
         XCTAssertEqual(first, [Model.startingRefreshInterval], "5 s while the hub starts")
     }
@@ -734,8 +734,8 @@ final class MobileSettingsModelTests: XCTestCase {
         await sheet?.start()
         XCTAssertEqual(streamer.sessions.count, 1)
 
-        await model.windowVisibility(false)
-        XCTAssertNil(model.pairing, "a hidden window closes the pairing")
+        await model.windowVisibility(.gone)
+        XCTAssertNil(model.pairing, "a closed or ordered-out window closes the pairing")
         XCTAssertTrue(streamer.sessions[0].stopped)
 
         model.linkPhone()
@@ -744,6 +744,42 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertNil(model.pairing, "turning Mobile off closes the pairing")
         XCTAssertTrue(streamer.sessions[1].stopped)
         XCTAssertEqual(Model.linkTitle, "Link a phone…")
+    }
+
+    /// #2188: a covered Settings window (another app in front, another Space,
+    /// the display asleep) must not close the code the phone is scanning.
+    func testACoveredWindowKeepsThePairingAndOnlyStopsThePolling() async {
+        runningWith()
+        let streamer = FakePairStreamer()
+        let model = makeModel(streamer: streamer)
+        await model.load()
+        model.linkPhone()
+        await model.pairing?.start()
+        let reads = cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count
+
+        await model.windowVisibility(.occluded)
+        XCTAssertNotNil(model.pairing, "a covered window leaves the sheet open")
+        XCTAssertFalse(streamer.sessions[0].stopped, "the stream, and so the code, stays open")
+        XCTAssertEqual(cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count, reads, "no read while covered")
+
+        let once: @Sendable (Duration) async -> Void = { _ in withUnsafeCurrentTask { $0?.cancel() } }
+        let back = makeModel(streamer: streamer, sleep: once)
+        await Task { await back.windowVisibility(.onScreen) }.value
+        XCTAssertGreaterThan(cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count, reads, "back on screen the reads resume")
+        XCTAssertNotNil(model.pairing, "and the open pairing is untouched")
+        XCTAssertFalse(streamer.sessions[0].stopped)
+    }
+
+    func testTheTabLeavingTheScreenClosesThePairing() async {
+        runningWith()
+        let streamer = FakePairStreamer()
+        let model = makeModel(streamer: streamer)
+        await model.load()
+        model.linkPhone()
+        await model.pairing?.start()
+        model.disappeared()
+        XCTAssertNil(model.pairing)
+        XCTAssertTrue(streamer.sessions[0].stopped)
     }
 
     // MARK: - Relay indicators (go hub plan 4 Task 8)
