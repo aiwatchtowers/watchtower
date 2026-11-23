@@ -103,9 +103,12 @@ type jiraAccountJSON struct {
 	// Atlassian app (D4) — the shared-Atlassian banner ("sign in again").
 	SharedAtlassian bool `json:"shared_atlassian"`
 	// PurgeLeaseAt is the day PURGE-01's 30-day lease would delete the
-	// account (purge.LeaseDue, RFC 3339), set only while that lease counts for it: purge on
-	// under a rule with leases, the account not stopped by the policy
-	// (POLICY-03 holds a locked token site's lease). The dead-token row's
+	// account (purge.LeaseDues, RFC 3339: a live site at its 30-day mark or
+	// the notice after the 72 h warning, whichever is later; a removed one
+	// the notice after its own 30-day mark), set only while that lease
+	// counts for it and is not scheduled yet: purge on under a rule with
+	// leases, the account not stopped by the policy (POLICY-03 holds a
+	// locked token site's lease). The dead-token row's
 	// note (#1887 §6.3) shows it; the Desktop keeps no copy of the rule.
 	PurgeLeaseAt string `json:"purge_lease_at,omitempty"`
 }
@@ -129,13 +132,10 @@ func jiraOnSharedApp(workspaceDir string, a db.JiraAccount) bool {
 }
 
 // jiraPurgeLeases is when each Jira account's lease would delete it under the
-// daemon's purge rule (purge.Enabled, daemon.AccountSyncAllowed): the
-// deadline's due date (purge.LeaseDue — the 30-day mark, or the
-// organization's notice after the 72 h warning when that is later). An
-// unreadable ledger gives none: the note is left out, never guessed. A
-// deadline less than purge.Grace (the fixed schedule-ahead window) away is
-// left out too: the next pass schedules the purge, and the purge line then
-// says when.
+// daemon's purge rule (purge.Enabled, daemon.AccountSyncAllowed), as
+// purge.LeaseDues computes it for live and removed sites alike. An
+// unreadable ledger gives none: the note is left out, never guessed. A lease
+// the next pass schedules is left out too: the purge line then says when.
 func jiraPurgeLeases(cfg *config.Config, database *db.DB, now time.Time) map[int64]time.Time {
 	accounts, err := database.ListPurgeAccounts()
 	if err != nil {
@@ -143,14 +143,7 @@ func jiraPurgeLeases(cfg *config.Config, database *db.DB, now time.Time) map[int
 		return nil
 	}
 	on, _ := purge.Enabled(cfg)
-	leases := purge.LeaseDeadlines(accounts, purge.AccountRules(on, daemon.AccountSyncAllowed), "jira")
-	out := make(map[int64]time.Time, len(leases))
-	for id, deadline := range leases {
-		if !deadline.Before(now.Add(purge.Grace)) {
-			out[id] = purge.LeaseDue(deadline)
-		}
-	}
-	return out
+	return purge.LeaseDues(accounts, purge.AccountRules(on, daemon.AccountSyncAllowed), "jira", now)
 }
 
 func writeJiraAccountsJSON(w io.Writer, workspaceDir string, accounts []db.JiraAccount, leases map[int64]time.Time) error {

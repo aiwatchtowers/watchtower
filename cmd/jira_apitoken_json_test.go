@@ -166,6 +166,12 @@ func TestJiraAccountsJSON_PurgeLease(t *testing.T) {
 		setAccess(access)
 		assert.Equal(t, c.due.Format(time.RFC3339), lease(), "grace %d: 29 days away shows the due date", c.hours)
 	}
+
+	// A removed site is scheduled at its own 30-day mark, due the notice after it.
+	_, err := h.database.Exec(`UPDATE jira_accounts SET status = 'removed' WHERE id = ?`, a.ID)
+	require.NoError(t, err)
+	policytest.Set(t, map[string]any{"PurgeRevokedData": true, "PurgeGraceHours": int64(24)})
+	assert.Equal(t, mark.Add(24*time.Hour).Format(time.RFC3339), lease(), "removed: the mark plus the notice")
 }
 
 // TestJiraAPIToken_ConfluenceProbed (#1887 C5, closes Task 17's "scopes

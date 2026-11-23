@@ -385,6 +385,31 @@ func LeaseDue(deadline time.Time) time.Time {
 	return due
 }
 
+// LeaseDues returns when each of source's accounts whose lease counts would
+// be deleted, as Plan will schedule it: a live account's LeaseDue, a removed
+// account's deadline + EffectiveGrace (scheduled at its deadline, due the
+// grace later). An account the next pass would schedule — a live lease
+// within Grace of its deadline, a removed one at or past it — is left out:
+// its purge line then says when.
+func LeaseDues(accounts []db.PurgeAccount, rules func(db.PurgeAccount) Rule, source string, now time.Time) map[int64]time.Time {
+	removed := map[int64]bool{}
+	for _, a := range accounts {
+		if a.Source == source && a.Status == "removed" {
+			removed[a.ID] = true
+		}
+	}
+	out := map[int64]time.Time{}
+	for id, deadline := range LeaseDeadlines(accounts, rules, source) {
+		switch {
+		case removed[id] && now.Before(deadline):
+			out[id] = deadline.Add(EffectiveGrace())
+		case !removed[id] && now.Before(deadline.Add(-Grace)):
+			out[id] = LeaseDue(deadline)
+		}
+	}
+	return out
+}
+
 // LeaseDeadlines returns the lease deadline of each of source's accounts that
 // has one under rules (leaseDeadlines): the day PURGE-01 would delete it when
 // nothing confirms access before. The Desktop's dead-token note (#1887 §6.3)

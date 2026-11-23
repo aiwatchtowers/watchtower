@@ -210,3 +210,30 @@ func TestPurge01_NoNoticeWaitsForASync(t *testing.T) {
 		}
 	}
 }
+
+// TestLeaseDues_LiveAndRemoved pins the due dates a caller shows for a lease
+// not scheduled yet: a live account's LeaseDue, a removed account's deadline
+// plus the grace — each what Plan schedules once it is due to — and nothing
+// for a lease the next pass schedules.
+func TestLeaseDues_LiveAndRemoved(t *testing.T) {
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(24)})
+	live := acct("jira", 1, "ok", t0.Add(-24*time.Hour))
+	removed := acct("jira", 2, "removed", t0.Add(-10*24*time.Hour))
+	pastRemoved := acct("jira", 3, "removed", t0.Add(-Lease-time.Hour))
+	accounts := []db.PurgeAccount{live, removed, pastRemoved}
+
+	got := LeaseDues(accounts, setting(true), "jira", t0)
+	liveMark, removedMark := t0.Add(-24*time.Hour).Add(Lease), t0.Add(-10*24*time.Hour).Add(Lease)
+	if len(got) != 2 || !got[1].Equal(liveMark) || !got[2].Equal(removedMark.Add(24*time.Hour)) {
+		t.Fatalf("LeaseDues = %v; want live at its mark %v, removed at %v", got, liveMark, removedMark.Add(24*time.Hour))
+	}
+	// The removed one, at its mark, is planned due exactly then.
+	plan := Plan([]db.PurgeAccount{removed}, nil, setting(true), removedMark)
+	if len(plan.Schedule) != 1 || !plan.Schedule[0].DueAt.Equal(got[2]) {
+		t.Fatalf("Plan at the mark = %+v, want due %v", plan.Schedule, got[2])
+	}
+	// A live lease inside the 72 h window is the next pass's: left out.
+	if got := LeaseDues([]db.PurgeAccount{live}, setting(true), "jira", liveMark.Add(-Grace)); len(got) != 0 {
+		t.Fatalf("inside the window: want none, got %v", got)
+	}
+}
