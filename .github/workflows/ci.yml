@@ -144,7 +144,7 @@ jobs:
               - 'docs/guide/reference/keyboard-shortcuts.md'
               - 'docs/mdm/site.json'
               - 'cmd/testdata/**'
-              - 'internal/{aiconsent,asks,automations,automations/blocks,automations/builtin,chat,chatengine,chatstore,coach,codewalk,codex,companybundle,config,connectwire,db,ideas,inbox,inboxfeed,instructions,jira,planusage,policy,purge,reviewdiff,sessionhost,sessionstart,sessionstate,skills,slackconnect,slackmode,specreview,tools,watchman}/testdata/**'
+              - 'internal/{aiconsent,asks,automations,automations/blocks,automations/builtin,chat,chatengine,chatstore,coach,codewalk,codex,companybundle,config,connectwire,db,ideas,inbox,inboxfeed,instructions,jira,planusage,policy,purge,reviewdiff,sessionhost,sessionstart,sessionstate,skills,slackapp,slackconnect,slackmode,specreview,tools,watchman}/testdata/**'
               - 'internal/hub/{identity,secure,transport/cloudkit}/testdata/**'
               - 'internal/tower/api/testdata/**'
               - 'internal/db/schema.sql'
