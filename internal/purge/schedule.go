@@ -388,13 +388,16 @@ func LeaseDeadlines(accounts []db.PurgeAccount, rules func(db.PurgeAccount) Rule
 	return out
 }
 
-// minNotice is the smallest notice a non-zero PurgeGraceHours gives; a row
-// due less than this after it was scheduled had no notice (NoNotice).
-const minNotice = time.Hour
+// noNoticeBelow is where NoNotice draws the line: half the smallest non-zero
+// notice (one hour). due_at comes from Go's clock and scheduled_at from
+// SQLite's a moment later, each truncated to the second, so a one-hour row
+// can read as due a second short of an hour after scheduling; the margin
+// keeps it a row with a notice.
+const noNoticeBelow = 30 * time.Minute
 
 // NoNotice reports whether a scheduled row was given no notice: due less than
-// an hour after it was scheduled (a PurgeGraceHours of 0, or under it a lease
-// already past its deadline). Such a row is deleted only after the next sync
+// 30 minutes after it was scheduled (a PurgeGraceHours of 0, or under it a
+// lease already past its deadline). Such a row is deleted only after the next sync
 // cycle (owner decision 2026-11-23, ask #862): the daemon's start-of-cycle
 // pass never runs it, and the pass after a cycle's syncs runs it only when
 // those syncs started after it was scheduled (SyncedSince), so a sync that
@@ -406,7 +409,7 @@ func NoNotice(p db.AccountPurge) bool {
 	}
 	due, okDue := parseTime(p.DueAt)
 	scheduled, okScheduled := parseTime(p.ScheduledAt)
-	return !okDue || !okScheduled || due.Before(scheduled.Add(minNotice))
+	return !okDue || !okScheduled || due.Before(scheduled.Add(noNoticeBelow))
 }
 
 // SyncedSince reports whether a cycle's syncs that started at syncStart began

@@ -165,7 +165,7 @@ func TestPurge01_LiveLeaseWindowIgnoresTheManagedGrace(t *testing.T) {
 }
 
 // TestPurge01_NoNoticeWaitsForASync pins the zero-notice hold (ask #862): a
-// scheduled row due less than an hour after scheduling has no notice and
+// scheduled row due less than 30 minutes after scheduling has no notice and
 // runs only after syncs that started after it was scheduled, in a later
 // second (the ledger clock's precision); a row with a notice, or a running
 // one, is not held.
@@ -180,8 +180,9 @@ func TestPurge01_NoNoticeWaitsForASync(t *testing.T) {
 		want bool
 	}{
 		{"grace 0", row(at, "scheduled"), true},
-		{"a lease past its deadline", row(at.Add(30*time.Minute), "scheduled"), true},
+		{"a lease past its deadline", row(at.Add(29*time.Minute), "scheduled"), true},
 		{"an hour's notice", row(at.Add(time.Hour), "scheduled"), false},
+		{"an hour's notice a second short (two clocks)", row(at.Add(time.Hour-time.Second), "scheduled"), false},
 		{"72 h", row(at.Add(Grace), "scheduled"), false},
 		{"running", row(at, "running"), false},
 		{"unreadable", db.AccountPurge{State: "scheduled", ScheduledAt: "x", DueAt: ts(at)}, true},
