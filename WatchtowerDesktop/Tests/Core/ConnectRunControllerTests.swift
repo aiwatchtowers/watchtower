@@ -495,7 +495,7 @@ final class ConnectRunControllerTests: XCTestCase {
     func testCompanyDraftReadHidesBothSecrets() async {
         let company = FakeCompanyDriver()
         company.draft = Data("""
-        {"company":"Acme","vendors":{
+        {"company":"Acme","services":["google","atlassian"],"vendors":{
           "google":{"client_id":"acme.apps.googleusercontent.com","client_secret":"g-secret-sample",
             "client_secret_set":true,"checked":true,"skipped":false},
           "atlassian":{"client_id":"acme-client","site":"acme.atlassian.net","client_secret":"a-secret-sample",

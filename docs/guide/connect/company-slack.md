@@ -18,9 +18,9 @@ Press **Connect with Claude** (or Codex) beside **Set up for my company** in **C
 
 A Slack problem never ends the run: the other vendor pages go on, and only Publish waits for the Slack app.
 
-1. **Agent:** Call `connect_status` and `company_draft`. If the draft has no company name, ask the customer for it (colleagues see "Connect <name>?") and save it with `company_draft`. Ask which services the company uses and save them with `company_draft`. If Slack is not among them, or the draft already holds a ready Slack app, go on to the Google page.
-2. **Agent:** Ask the customer whether the workspace already has a Watchtower app. If it does, read the app's settings link from the app list on api.slack.com/apps (the address carries its App ID; do not open the app's pages) and save it with `company_draft`. Without one, Watchtower creates the app.
-3. **Agent:** Open api.slack.com/apps, scroll to **Your App Configuration Tokens** and stop there. Call `request_secret` with kind `slack_config_token`. The card asks the customer to leave the page before sending.
+1. **Agent:** Call `connect_status` and `company_draft`. The draft holds what the customer chose in the wizard: the company name, the confirmed `services` (empty until confirmed) and Slack's `app` (`new` or `existing`); never ask for those again. With no company name, ask for it (colleagues see "Connect <name>?"); with empty `services`, ask which services the company uses (Slack, Google, Atlassian, Linear, Microsoft 365); save each with `company_draft`. If Slack is not among the services, or its app is ready, go on to the Google page.
+2. **Agent:** If Slack's `app` is `new`, Watchtower creates the app: go on to step 3. If it is absent, ask whether the workspace already has a Watchtower app; without one, Watchtower creates it. For an existing app, a set `app_id` is that app: do not ask for it again. Otherwise read its App ID (starts with A, like `A0123ABCD`) from the app list on [api.slack.com/apps](https://api.slack.com/apps) without opening the app's pages, and save it as `app_id` with `company_draft`.
+3. **Agent:** Open [api.slack.com/apps](https://api.slack.com/apps), scroll to **Your App Configuration Tokens** and stop there. Call `request_secret` with kind `slack_config_token`. The card asks the customer to leave the page before sending.
 4. **You only:** Press **Generate Token** for your workspace, copy the access token into the card, leave Slack's page, then press **Send**.
 5. **You:** For an existing app, the panel shows a confirm card listing what the update changes; it turns on Slack's PKCE sign-in, which only Slack support can turn off. Press its confirm button, or decline.
 6. **Check:** While `request_secret` says `waiting`, call it again. On `ok` (or `exists`), the app is ready: go on to the Google page. On `cancelled`, `declined`, `timeout` or another result, tell the customer the reason, note it under [If something goes wrong](#if-something-goes-wrong), and go on to the Google page anyway.
@@ -31,9 +31,9 @@ Run this last, after the Microsoft 365 page.
 
 1. **Agent:** Ask the customer for the link deny list: hosts whose links Watchtower never fetches or reads on its own to add to knowledge, such as the intranet (`intranet.example.com`, no `https://` or path). Save them with `company_draft`, or none.
 2. **Agent:** Call `company_draft`. Every service the company uses is checked, or skipped by the customer; Atlassian also needs the customer's three ticks; when Slack is part of the setup, its app is ready. A company without Slack publishes without it: no token, and the result is `no_slack`. Read the company name to the customer and save a change with `company_draft`.
-3. **Agent:** Call `company_publish`. The panel shows a confirm card: Publish writes the connect link and code to the About page of the company's Slack app, which the whole company sees.
+3. **Agent:** Call `company_publish`. The panel shows a confirm card: Publish writes the connect link and code to the Slack app's About page, which the whole company sees.
 4. **You:** Read the card and press its confirm button, or decline. A decline writes nothing.
-5. **Agent:** With Slack in the setup, after the confirm, open api.slack.com/apps, scroll to **Your App Configuration Tokens** and stop there. Call `request_secret` with kind `slack_config_token`. Without Slack, skip to step 7.
+5. **Agent:** With Slack in the setup, after the confirm, open [api.slack.com/apps](https://api.slack.com/apps), scroll to **Your App Configuration Tokens** and stop there. Call `request_secret` with kind `slack_config_token`. Without Slack, skip to step 7.
 6. **You only:** Press **Generate Token** for the app's workspace, copy the access token into the card, leave Slack's page, then press **Send**.
 7. **Check:** While `company_publish` (or `request_secret`) says `waiting`, call it again. On `ok` or `no_slack`, tell the customer the link, the code and the profile wait on the wizard's Publish page, and **Connect this Mac** connects what they have not signed in to yet. On `cancelled`, `declined`, `timeout` or a failure, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong).
 
@@ -43,7 +43,7 @@ The assistant's panel always offers **Set up by hand**, which opens the setup wi
 
 - **"Your workspace does not let you create apps."** Ask a workspace admin to run the setup, or to allow app creation.
 - **"Slack would not let this token change app …"** Make the configuration token in the workspace the app was made in, signed in as one of the app's collaborators (its **Collaborators** page lists them), and press **Try again**. If that is not possible, press **Create a new app instead**: Watchtower makes a second app with the same token, and the company link uses that one.
-- **"This workspace already has a Watchtower app."** **Create the app** found the Watchtower app a Slack account on this Mac is connected through. Paste its settings link (`https://api.slack.com/apps/A…`) to update that app instead of making a second one.
+- **"This workspace already has a Watchtower app."** **Create the app** found the app a Slack account on this Mac uses. Paste its App ID (or a link to it) to update that app instead of making a second one.
 - **"That token did not work: it has expired or is not a configuration token."** Run Slack steps 3–4 again with a fresh token.
 - **"Another setup is already running on this Mac."** Wait for it, then run the Slack step again.
 - **The update card was declined.** The app was not changed. Create a new app, or run the step again.

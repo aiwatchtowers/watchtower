@@ -518,17 +518,17 @@ final class TerminalCenter {
     }
 
     struct KeyboardFocusRequest: Equatable {
-        let sessionID: Int64
+        let sessionID: Int64? // nil: dropped with its session's view; the serial stays, so none repeats
         let serial: Int
+        var since: Int? // the asking gesture's TerminalContainerView.keyboardEventCount
     }
 
-    /// Moves the keyboard into the session's terminal once its host is on
-    /// screen — also when that host shows it already, where attaching
-    /// changes nothing and so moves no focus (an overlay such as the go-to
-    /// palette took it away).
-    func requestKeyboardFocus(_ sessionID: Int64) {
-        keyboardFocusRequest = KeyboardFocusRequest(sessionID: sessionID, serial: (keyboardFocusRequest?.serial ?? 0) + 1)
+    /// Moves the keyboard into the session's terminal once its host is on screen — also when
+    /// that host shows it already, where attaching moves no focus (Go to… took it). `since`: #1150.
+    func requestKeyboardFocus(_ sessionID: Int64, since: Int? = nil) {
+        keyboardFocusRequest = KeyboardFocusRequest(sessionID: sessionID, serial: (keyboardFocusRequest?.serial ?? 0) + 1, since: since)
     }
+    private func dropKeyboardRequest() { keyboardFocusRequest = keyboardFocusRequest.map { .init(sessionID: nil, serial: $0.serial) } }
 
     /// An ask switched from the keyboard (J / K in the drawer, Return on a
     /// card, board #412) puts `sessionID` on screen: its next attach leaves
@@ -1224,6 +1224,7 @@ final class TerminalCenter {
             // A process of an earlier, ended run that is not the host's
             // client's: its view leaves the pane for the adopted one.
             if let earlier = processes.removeValue(forKey: session.id) {
+                if keyboardFocusRequest?.sessionID == session.id { dropKeyboardRequest() } // as `forget`
                 earlier.onExit = nil
                 earlier.onOwnerInput = nil
                 earlier.onOwnerFocus = nil
@@ -1508,6 +1509,7 @@ final class TerminalCenter {
         pasteHints.remove(sessionID)
         answerHints[sessionID] = nil
         hostLinks[sessionID] = nil
+        if keyboardFocusRequest?.sessionID == sessionID { dropKeyboardRequest() } // a later view attaches plainly (#1150)
         // `extraHostRuns` stays: only a stop that worked, a reattach or an update's quit drops it.
         focusOrder.removeAll { $0 == sessionID }
     }

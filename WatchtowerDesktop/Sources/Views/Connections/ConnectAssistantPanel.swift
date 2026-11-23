@@ -89,6 +89,7 @@ struct ConnectAssistantPanel: View {
     @ViewBuilder private var stateArea: some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
             if let card = presentation.card { cardView(card) }
+            if let guide = presentation.browserGuide { browserGuideView(guide) }
             if let status = presentation.status { statusRow(status) }
             if !presentation.actions.isEmpty { actionRow }
         }
@@ -227,6 +228,40 @@ struct ConnectAssistantPanel: View {
         }
     }
 
+    /// How to connect the harness's browser (#1144); Check again is in the action row.
+    private func browserGuideView(_ guide: Pres.BrowserGuide) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            if let lead = guide.lead {
+                Text(lead)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Label(guide.title, systemImage: "globe")
+                .font(.callout.weight(.semibold))
+            ForEach(Array(guide.steps.enumerated()), id: \.offset) { index, step in
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    Text("\(index + 1). \(step)")
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if index == 0 {
+                        Link(guide.linkTitle, destination: guide.link)
+                            .font(.callout)
+                            .padding(.leading, Spacing.cozy)
+                    }
+                }
+            }
+            if let note = guide.note {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(Spacing.medium)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+    }
+
     private func ask() {
         guard !question.isEmpty else { return }
         onAsk(question)
@@ -277,7 +312,7 @@ struct ConnectAssistantPanel: View {
         let button = Button(action.title) { onAction(action) }
         if prominent {
             button.buttonStyle(.kitPrimary)
-        } else if action == .setUpByHand || action == .guideInWords {
+        } else if action == .setUpByHand || action == .guideInWords || action == .continueWithoutBrowser {
             button.buttonStyle(.kitQuiet)
         } else {
             button.buttonStyle(.kitSecondary)
@@ -333,14 +368,15 @@ struct ConnectAssistantHost: View {
     /// window holds the sign-in, a question would reach no run.
     static func acceptsQuestions(_ state: ConnectAssistantState) -> Bool {
         switch state {
-        case .empty, .failed, .busy: false
+        case .empty, .browserMissing, .failed, .busy: false
         case .thinking, .listening, .waiting, .secret, .confirm, .done: true
         }
     }
 
     private func perform(_ action: ConnectAssistantPresentation.Action) {
         switch action {
-        case .start, .guideInWords, .retry: appState.connectAssistantRun(action, service: session.service)
+        case .start, .guideInWords, .retry, .checkBrowser, .continueWithoutBrowser:
+            appState.connectAssistantRun(action, service: session.service)
         case .cancel: session.cancel()
         case .setUpByHand: appState.connectAssistantSetUpByHand(service: session.service)
         case .openIt: appState.connectAssistantOpenOther(service: session.service)

@@ -272,10 +272,10 @@ enum CompanyWizardLive {
             }
         case "slack-existing":
             model.alreadyHaveOne()
-            model.setField(.slack, .slackSettingsLink, "https://acme.slack.com/apps")
+            model.setField(.slack, .slackAppID, "https://acme.slack.com/apps")
         case "slack-wrongWorkspace":
             model.alreadyHaveOne()
-            model.setField(.slack, .slackSettingsLink, Copy.slackSettingsValue)
+            model.setField(.slack, .slackAppID, Copy.slackAppIDValue)
             run { await model.next() }
             model.slackToken = token
             cli.on(["slack", "app", "adopt"], [#"{"result":"wrong_workspace","team_id":"T0ACME","team_name":"acme","#

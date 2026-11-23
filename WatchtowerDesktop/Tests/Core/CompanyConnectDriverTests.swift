@@ -176,6 +176,20 @@ final class CompanyConnectDriverTests: XCTestCase {
     private let confirmApp = #"{"result":"confirm_app","team_id":"T0ACME","team_name":"acme","app_id":"A0ACME","#
         + #""app_name":"Watchtower","client_id":"1111.2222","changes":{"add_scopes":["reactions:read"],"enable_pkce":true}}"#
 
+    /// `app_id` takes the id (any case) or a link to the app; `settings_link`
+    /// is its older name, and both at once are refused.
+    func testSlackAppIDField() async {
+        let (driver, wizard) = make()
+        let both = await driver.saveDraft(vendor: "slack", fields: ["app_id": "A0ACME", "settings_link": "A0ACME"])
+        XCTAssertEqual(Self.error(both), .badArgs("app_id and settings_link both name the Slack app; give app_id only"))
+        let bad = await driver.saveDraft(vendor: "slack", fields: ["app_id": "https://acme.slack.com/apps"])
+        XCTAssertEqual(Self.error(bad), .badArgs(CompanySetupWizardModel.slackAppIDInvalidLine))
+        let saved = await driver.saveDraft(vendor: "slack", fields: ["app_id": "https://app.slack.com/app/a0acme"])
+        XCTAssertNil(Self.error(saved))
+        XCTAssertEqual(wizard.slackReuse?.appID, "A0ACME")
+        XCTAssertEqual(wizard.slackAppIDInput, "A0ACME", "the field shows the id")
+    }
+
     func testSavedLinkUpdatesTheAppAfterConfirm() async {
         let cli = CompanyScriptedCLI()
         let (driver, wizard) = make(cli)
@@ -261,7 +275,7 @@ final class CompanyConnectDriverTests: XCTestCase {
         wizard.toggle(.slack)
         await wizard.next()
         wizard.alreadyHaveOne()
-        wizard.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        wizard.setField(.slack, .slackAppID, "https://api.slack.com/apps/A0ACME")
         await wizard.next()
         wizard.slackToken = token
         cli.on(["slack", "app", "adopt"], [confirmApp])
@@ -377,6 +391,116 @@ final class CompanyConnectDriverTests: XCTestCase {
         XCTAssertEqual(read.vendors["linear"]?.skipped, true)
         XCTAssertEqual(read.vendors["slack"]?.ready, true)
         XCTAssertNil(read.vendors["microsoft"]?.ready, "ready is Slack's alone")
+        XCTAssertEqual(read.services, ["slack", "linear", "microsoft"], "the ticked services, in the wizard's order")
+    }
+
+    /// What the customer already chose in the wizard reaches the agent's
+    /// read, so the playbook does not ask it again (#1146).
+    func testDraftReadCarriesTheWizardsChoices() async throws {
+        let cli = CompanyScriptedCLI()
+        let (driver, wizard) = make(cli)
+        _ = await driver.status()
+        wizard.toggle(.google)
+        wizard.toggle(.slack)
+        wizard.setCompanyName("Acme")
+        func read() async throws -> ConnectCompanyDraft {
+            try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
+        }
+        var draft = try await read()
+        XCTAssertEqual(draft.services, [], "ticks on the Services step are not settled until it is continued")
+        XCTAssertEqual(draft.company, "Acme")
+
+        await wizard.next()  // past Services: the Slack step's first screen, still no choice
+        draft = try await read()
+        XCTAssertEqual(draft.services, ["slack", "google"])
+        XCTAssertNil(draft.vendors["slack"]?.app, "no choice on the Slack step's first screen")
+
+        wizard.createNew()
+        draft = try await read()
+        XCTAssertEqual(draft.vendors["slack"]?.app, "new")
+        XCTAssertNil(draft.vendors["google"]?.app, "app is Slack's alone")
+
+        wizard.alreadyHaveOne()
+        draft = try await read()
+        XCTAssertEqual(draft.vendors["slack"]?.app, "existing")
+
+        // An App ID entered, then Back from the run's problem: the choice is open again.
+        XCTAssertNil(draft.vendors["slack"]?.appID, "no App ID entered yet")
+        wizard.setField(.slack, .slackAppID, "A0ACME")
+        await wizard.next()
+        draft = try await read()
+        XCTAssertEqual(draft.vendors["slack"]?.app, "existing")
+        XCTAssertEqual(draft.vendors["slack"]?.appID, "A0ACME", "the App ID entered: not asked again")
+        wizard.slackToken = token
+        cli.on(["slack", "app", "adopt"], [#"{"result":"not_collaborator","team_id":"T0ACME","team_name":"acme"}"#])
+        await wizard.next()
+        await untilObserved { wizard.slackProblem != nil }
+        wizard.back()
+        XCTAssertEqual(wizard.current, .vendor(.slack), "back to the step's first screen")
+        draft = try await read()
+        XCTAssertNil(draft.vendors["slack"]?.app, "Back leaves no choice behind")
+    }
+
+    /// A found app picked on the Slack step is an existing app.
+    func testPickedFoundSlackAppIsExisting() async throws {
+        let cli = CompanyScriptedCLI()
+        cli.on(["company", "discover"], [#"{"candidates":[{"vendor":"slack","client_id":"1111.2222","app_id":"A0ACME","#
+            + #""label":"Watchtower · A0ACME","source":"account","source_label":"Slack app — your connected account acme"}]}"#])
+        let (driver, wizard) = make(cli)
+        await wizard.open()
+        await wizard.next()
+        XCTAssertEqual(wizard.phase(.slack), .found)
+        var draft = try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
+        XCTAssertNil(draft.vendors["slack"]?.app, "Found is the step's first screen")
+        await wizard.next()  // Use Watchtower
+        draft = try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
+        XCTAssertEqual(draft.vendors["slack"]?.app, "existing")
+        XCTAssertEqual(draft.vendors["slack"]?.appID, "A0ACME", "the picked app's App ID")
+
+        // The token then updates the picked app; it never creates a new one.
+        cli.on(["slack", "app", "adopt"], [confirmApp])
+        _ = await driver.submitSecret(kind: "slack_config_token", value: token)
+        XCTAssertTrue(cli.calls(["slack", "app", "create"]).isEmpty, "a picked app is never replaced by a new one")
+        XCTAssertFalse(cli.calls(["slack", "app", "adopt"]).isEmpty)
+        XCTAssertEqual(wizard.slackReuse?.appID, "A0ACME")
+
+        // Back, then Create new: the next token creates an app, never updates the old pick.
+        wizard.back()
+        wizard.createNew()
+        XCTAssertEqual(wizard.slackAppIDInput, "", "Create new drops the App ID")
+        cli.on(["slack", "app", "create"], [#"{"result":"ok","team_id":"T0ACME","team_name":"acme","app_id":"A0NEW","#
+            + #""client_id":"3333.4444","link_written":false}"#])
+        _ = await driver.submitSecret(kind: "slack_config_token", value: token)
+        XCTAssertFalse(cli.calls(["slack", "app", "create"]).isEmpty, "Create new after a pick creates the app")
+    }
+
+    /// Discovery pre-ticks the vendors it found; the read says none until
+    /// the customer confirms the Services step, so the playbook asks.
+    func testDiscoveryPreTicksAreNotTheCustomersServices() async throws {
+        let cli = CompanyScriptedCLI()
+        cli.on(["company", "discover"], [#"{"candidates":[{"vendor":"linear","client_id":"lin","label":"lin","#
+            + #""source":"account","source_label":"Linear"}]}"#])
+        let (driver, wizard) = make(cli)
+        await wizard.open()
+        XCTAssertEqual(wizard.ticked, [.linear], "discovery pre-ticked Linear")
+        func read() async throws -> ConnectCompanyDraft {
+            try JSONDecoder().decode(ConnectCompanyDraft.self, from: await driver.draftView().get())
+        }
+        var draft = try await read()
+        XCTAssertEqual(draft.services, [], "opened on Services, never continued")
+        XCTAssertEqual(draft.vendors, [:])
+
+        await wizard.next()
+        draft = try await read()
+        XCTAssertEqual(draft.services, ["linear"], "continued: the ticks are the customer's")
+        XCTAssertNotNil(draft.vendors["linear"])
+
+        // The agent saving a list settles it too.
+        let (other, otherWizard) = make(cli)
+        await otherWizard.open()
+        _ = try await other.saveDraft(vendor: "google", fields: ["services": "google"]).get()
+        draft = try JSONDecoder().decode(ConnectCompanyDraft.self, from: await other.draftView().get())
+        XCTAssertEqual(draft.services, ["google"])
     }
 
     /// #1142: a create that finds the workspace's app ends on that app's diff
@@ -394,7 +518,7 @@ final class CompanyConnectDriverTests: XCTestCase {
     }
 
     /// #1142: the workspace's app is known only by its Client ID: the agent is
-    /// asked for its settings link.
+    /// asked for its App ID.
     func testSlackTokenOnAnUnknownExistingAppAsksForItsLink() async {
         let cli = CompanyScriptedCLI()
         let (driver, wizard) = make(cli)

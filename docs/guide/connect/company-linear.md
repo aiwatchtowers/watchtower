@@ -14,8 +14,8 @@ The Linear step of the company setup: the assistant makes your company's Linear 
 
 ## Steps
 
-1. **Agent:** Call `connect_status` and `company_draft`. If the draft has no company name, ask the customer for it and save it with `company_draft`. If the company does not use Linear, save that and go on to the next vendor page. If the draft already holds a Linear Client ID, go to step 4.
-2. **Agent:** On linear.app, open the new OAuth application page (settings, API, OAuth applications). Name it Watchtower, add the callback URLs `http://localhost:18531/callback` through `http://localhost:18535/callback`, one per port, and save it. If Linear says only admins can make it, stop at [If something goes wrong](#if-something-goes-wrong).
+1. **Agent:** Call `connect_status` and `company_draft`. If the draft has no company name, ask the customer for it and save it with `company_draft`. If `services` is empty (the customer has not confirmed the wizard's Services step), ask which services the company uses (Slack, Google, Atlassian, Linear, Microsoft 365) and save them with `company_draft`. If Linear is not among the draft's `services` (what the customer chose; never ask again), go on to the next vendor page. If the draft already holds a Linear Client ID, go to step 4.
+2. **Agent:** On [linear.app](https://linear.app), open the new OAuth application page (settings, API, OAuth applications). Name it Watchtower, add the callback URLs `http://localhost:18531/callback` through `http://localhost:18535/callback`, one per port, and save it. If Linear says only admins can make it, stop at [If something goes wrong](#if-something-goes-wrong).
 3. **Agent:** On the application's page, read its Client ID and save it with `company_draft`. Do not reveal or copy its client secret: Watchtower uses none.
 4. **Agent:** Call `company_check` with vendor `linear`. Watchtower asks Linear about the client and its callback URL without a sign-in.
 5. **Check:** On `ok`, go on to the next vendor page. On any other result, tell the customer the reason and stop at [If something goes wrong](#if-something-goes-wrong).

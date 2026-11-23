@@ -371,7 +371,7 @@ func runAIQuery(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return refuseQuery(enc, err)
 		}
-		systemPrompt = connectplay.SystemPrompt(connectPlaybooks, mode) + "\n\n" + systemPrompt
+		systemPrompt = connectplay.SystemPrompt(connectPlaybooks, mode, cfg.Digest.Language) + "\n\n" + systemPrompt
 		queryOpts.BrowserHosts = connectplay.Hosts(connectPlaybooks)
 	}
 

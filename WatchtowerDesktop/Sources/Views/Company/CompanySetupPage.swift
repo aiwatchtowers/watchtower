@@ -12,6 +12,9 @@ struct CompanySetupActions {
     var showFile: (String) -> Void = { _ in }
     /// **Connect this Mac** after Publish (the company connect flow); nil hides it.
     var connectThisMac: (() -> Void)?
+    /// **Set up with <harness>** in the header (#1149): the connect assistant
+    /// on this wizard's draft (`AppState.companySetupAgent`); nil hides it.
+    var agent: (harness: ConnectHarness, open: () -> Void)?
 }
 
 /// **Set up for my company** (company screens spec §2.2, C1): a page in the
@@ -48,9 +51,16 @@ struct CompanySetupPage: View {
         VStack(alignment: .leading, spacing: Spacing.large) {
             Button(action: actions.back) { Label(Model.backToConnections, systemImage: "chevron.left") }
                 .buttonStyle(.kitQuiet)
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Model.wizardTitle).font(.title3.weight(.semibold))
-                WizardCaption(Model.wizardIntro)
+            HStack(alignment: .top, spacing: Spacing.medium) {
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    Text(Model.wizardTitle).font(.title3.weight(.semibold))
+                    WizardCaption(Model.wizardIntro)
+                }
+                Spacer(minLength: Spacing.regular)
+                // In the header, so every step offers it.
+                if let agent = actions.agent {
+                    ConnectAgentButton(title: ConnectAssistantPresentation.setUpWith(agent.harness), action: agent.open)
+                }
             }
             if let line = model.resumeLine { resume(line) }
             if let problem = model.storageProblem {
