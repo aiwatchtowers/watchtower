@@ -13,7 +13,7 @@ Your company's configuration profile sets the value, and the app follows it unti
 - Which Quick Connections the chat and automations may use.
 - Whether automations may run shell commands.
 - Which AI provider Watchtower uses (and so which coding agent a workbench session can start), and whether the chat may use claude.ai tools.
-- Whether a revoked account's data is deleted.
+- Whether a revoked account's data is deleted, and how long the notice before it is.
 - Your [company setup](../start/company-setup.md): its card under **Connections → Companies** shows **Managed by your organization** and **Connect all**, and nothing connects before you press it.
 - Whether you may connect Jira with an API token, and whether you may use your own Google project for Gmail.
 
