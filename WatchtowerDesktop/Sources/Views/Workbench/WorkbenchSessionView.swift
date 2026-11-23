@@ -363,41 +363,45 @@ private struct TerminalHost: NSViewRepresentable {
     /// (`TerminalCenter.takeKeepKeyboard`, board #412).
     let keepsKeyboard: () -> Bool
 
-    /// The focus request serial already honoured.
-    final class Coordinator {
-        var honouredSerial: Int?
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
     func makeNSView(context: Context) -> TerminalContainerView {
         let container = TerminalContainerView()
-        attach(to: container, context.coordinator)
+        attach(to: container)
         return container
     }
 
     func updateNSView(_ container: TerminalContainerView, context: Context) {
-        attach(to: container, context.coordinator)
+        attach(to: container)
     }
 
-    static func dismantleNSView(_ container: TerminalContainerView, coordinator: Coordinator) {
+    static func dismantleNSView(_ container: TerminalContainerView, coordinator: ()) {
         container.subviews.forEach { $0.removeFromSuperview() }
     }
 
-    private func attach(to container: TerminalContainerView, _ coordinator: Coordinator) {
-        let terminal = session.view
-        let attached = TerminalHostAttachment.attach(terminal, to: container)
-        let keeps = attached && keepsKeyboard()
-        let focus = TerminalHostAttachment.needsFocus(
-            attached: attached, requested: focusSerial, honoured: coordinator.honouredSerial, obscured: obscured,
-            keepsKeyboard: keeps
+    private func attach(to container: TerminalContainerView) {
+        TerminalHostAttachment.show(
+            session.view, in: container, focusSerial: focusSerial, focusSince: focusSince, obscured: obscured,
+            keepsKeyboard: keepsKeyboard
         )
-        let explicit = focusSerial != nil && focusSerial != coordinator.honouredSerial
-        coordinator.honouredSerial = focusSerial
-        TerminalHostAttachment.settleFocus(
-            terminal, in: container, focus: focus, explicit: explicit, since: explicit ? focusSince : nil,
-            keptOff: TerminalHostAttachment.keptOff(obscured: obscured, attached: attached, keepsKeyboard: keeps)
-        )
+    }
+}
+
+/// The keyboard request serial a host of a terminal honoured last, kept on
+/// the terminal view (which outlives its hosts), for `TerminalHostAttachment.show`.
+@MainActor
+enum HonouredFocus {
+    private final class Box {
+        let serial: Int
+        init(_ serial: Int) { self.serial = serial }
+    }
+
+    nonisolated(unsafe) private static var key: UInt8 = 0
+
+    static func serial(of terminal: NSView) -> Int? {
+        (objc_getAssociatedObject(terminal, &key) as? Box)?.serial
+    }
+
+    static func set(_ serial: Int, of terminal: NSView) {
+        objc_setAssociatedObject(terminal, &key, Box(serial), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     }
 }
 
@@ -446,6 +450,35 @@ enum TerminalHostAttachment {
     /// keyboard) moves nothing either; a request still does.
     static func needsFocus(attached: Bool, requested: Int?, honoured: Int?, obscured: Bool = false, keepsKeyboard: Bool = false) -> Bool {
         !obscured && ((attached && !keepsKeyboard) || (requested != nil && requested != honoured))
+    }
+
+    /// What a host does on each update: shows `terminal` and settles its
+    /// focus. The request serial honoured is kept on the terminal itself,
+    /// not the host: a host rebuilt later (Workchat → Terminal) reads the
+    /// center's last request again, and one a host of this terminal
+    /// honoured already is no new row click — the fresh attach then
+    /// focuses like any attach (#1150).
+    @MainActor
+    static func show(
+        _ terminal: NSView,
+        in container: TerminalContainerView,
+        focusSerial: Int?,
+        focusSince: Int?,
+        obscured: Bool,
+        keepsKeyboard: () -> Bool
+    ) {
+        let honoured = HonouredFocus.serial(of: terminal)
+        let attached = attach(terminal, to: container)
+        let keeps = attached && keepsKeyboard()
+        let focus = needsFocus(
+            attached: attached, requested: focusSerial, honoured: honoured, obscured: obscured, keepsKeyboard: keeps
+        )
+        let explicit = focusSerial != nil && focusSerial != honoured
+        if let focusSerial { HonouredFocus.set(focusSerial, of: terminal) }
+        settleFocus(
+            terminal, in: container, focus: focus, explicit: explicit, since: explicit ? focusSince : nil,
+            keptOff: keptOff(obscured: obscured, attached: attached, keepsKeyboard: keeps)
+        )
     }
 
     /// The terminal may not take the keyboard now: covered (an ask drawer,
