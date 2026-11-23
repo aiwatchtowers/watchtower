@@ -25,6 +25,7 @@ struct PrivacySettings: View {
             lockedByPolicy: appState.managedPolicy.policy.isLocked(.purgeRevokedData),
             status: status,
             statusError: appState.accountPurgeCenter?.statusError,
+            policy: appState.managedPolicy.policy,
             origin: AccountPurgeStatus.shownOrigin(policy: policy, setting: config.purgeRevokedData, status: status)
         )
         .task { await appState.accountPurgeCenter?.reloadStatus() }
@@ -39,6 +40,8 @@ struct PrivacySettingsContent: View {
     var lockedByPolicy = false
     let status: AccountPurgeStatus?
     let statusError: String?
+    /// The organization's policy: its PurgeGraceHours sets the footnote's notice.
+    var policy: ManagedPolicy = .none
     /// Where the shown value comes from (`AccountPurgeStatus.shownOrigin`);
     /// nil: the CLI status's origin.
     var origin: String?
@@ -50,7 +53,7 @@ struct PrivacySettingsContent: View {
                     .labelsHidden()
                     .managedByOrganization(lockedByPolicy || (status?.isSetByPolicy ?? false))
             }
-            Text(AccountPurgeStatus.footnote(status, shown: isOn))
+            Text(AccountPurgeStatus.footnote(status, policy: policy, shown: isOn))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

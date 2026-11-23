@@ -10,7 +10,7 @@ final class SlackPolicyMockCopyTests: XCTestCase {
 
     func testPrivacyFootnotesTellTheTruthInEveryState() {
         XCTAssertTrue(Copy.footOnAll.contains("72 hours"))
-        XCTAssertTrue(Copy.footOnAll.contains("has not reached its source for 30 days"))
+        XCTAssertTrue(Copy.footOnAll.contains("has not reached a source for 30 days"))
         XCTAssertTrue(Copy.footOnAll.hasSuffix("meeting transcripts are kept."))
         XCTAssertTrue(Copy.footOff.contains("Reset All Data…"))
         XCTAssertTrue(Copy.footOff.contains("14 business days"))

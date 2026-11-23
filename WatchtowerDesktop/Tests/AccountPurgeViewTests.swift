@@ -85,7 +85,7 @@ final class AccountPurgeViewTests: XCTestCase {
 
     func testFootnoteUsesGoNumbers() {
         let text = AccountPurgeStatus.footnote(
-            AccountPurgeStatus(enabled: true, enabledBy: "build", graceHours: 48, leaseDays: 14), shown: true)
+            AccountPurgeStatus(enabled: true, enabledBy: "build", graceHours: 48, leaseDays: 14), policy: .none, shown: true)
         XCTAssertTrue(text.contains("for 14 days"))
         XCTAssertTrue(text.contains("48 hours later"))
         XCTAssertTrue(text.contains("meeting transcripts are kept"))

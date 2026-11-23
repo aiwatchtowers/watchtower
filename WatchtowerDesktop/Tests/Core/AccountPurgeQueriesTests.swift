@@ -153,16 +153,6 @@ final class AccountPurgeStatusDecodingTests: XCTestCase {
         )
     }
 
-    /// The notice outside the footnote: the policy's, else the CLI's, else 72.
-    func testGraceHoursPrefersThePolicy() {
-        var policy = ManagedPolicy()
-        let status = AccountPurgeStatus(enabled: true, enabledBy: "setting", graceHours: 48)
-        XCTAssertEqual(AccountPurgeStatus.graceHours(nil, policy: policy), 72)
-        XCTAssertEqual(AccountPurgeStatus.graceHours(status, policy: policy), 48)
-        policy.purgeGraceHours = 0
-        XCTAssertEqual(AccountPurgeStatus.graceHours(status, policy: policy), 0)
-    }
-
     /// Fix round 1: an organization's PurgeGraceHours sets the dialogs'
     /// notice even before (or against a stale) CLI status.
     func testRemoveDialogGraceFromPolicy() {
@@ -179,7 +169,7 @@ final class AccountPurgeStatusDecodingTests: XCTestCase {
         }
         policy.purgeGraceHours = 0
         let slack = AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: nil, policy: policy, setting: nil)
-        XCTAssertTrue(slack.contains("deleted after the next sync unless"), slack)
+        XCTAssertTrue(slack.contains("deleted after a later sync unless"), slack)
         let jira = AccountPurgeStatus.removeDialogMessage("Kept.", status: nil, policy: policy, setting: nil)
         XCTAssertTrue(jira.hasSuffix("days after the account was last reached."), jira)
     }

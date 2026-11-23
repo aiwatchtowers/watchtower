@@ -14,12 +14,12 @@ final class AccountPurgeStatusCopyTests: XCTestCase {
         let off = AccountPurgeStatus(enabled: false, enabledBy: "setting")
 
         XCTAssertEqual(AccountPurgeStatus.switchTitle, Copy.purgeTitle)
-        XCTAssertEqual(AccountPurgeStatus.footnote(bySetting, shown: true), Copy.footOnAll)
-        XCTAssertEqual(AccountPurgeStatus.footnote(nil, shown: true), Copy.footOnAll)
-        XCTAssertEqual(AccountPurgeStatus.footnote(AccountPurgeStatus(enabled: true, enabledBy: "policy"), shown: true),
-                       Copy.footOnAll)
-        XCTAssertEqual(AccountPurgeStatus.footnote(off, shown: false), Copy.footOff)
-        XCTAssertEqual(AccountPurgeStatus.footnote(byDefault, shown: false), Copy.footOff)
+        XCTAssertEqual(AccountPurgeStatus.footnote(bySetting, policy: .none, shown: true), Copy.footOnAll)
+        XCTAssertEqual(AccountPurgeStatus.footnote(nil, policy: .none, shown: true), Copy.footOnAll)
+        let byPolicy = AccountPurgeStatus(enabled: true, enabledBy: "policy")
+        XCTAssertEqual(AccountPurgeStatus.footnote(byPolicy, policy: .none, shown: true), Copy.footOnAll)
+        XCTAssertEqual(AccountPurgeStatus.footnote(off, policy: .none, shown: false), Copy.footOff)
+        XCTAssertEqual(AccountPurgeStatus.footnote(byDefault, policy: .none, shown: false), Copy.footOff)
 
         XCTAssertEqual(AccountPurgeStatus.caption(byDefault, shown: false), Copy.captionDefault)
         XCTAssertNil(AccountPurgeStatus.caption(nil, shown: false), "unknown: a build may turn it on")
@@ -67,22 +67,39 @@ final class AccountPurgeStatusCopyTests: XCTestCase {
     }
 
     /// The notice follows Go's grace_hours (an organization's PurgeGraceHours);
-    /// 0 reads as after the next sync, never "0 hours".
+    /// 0 reads as after the next (a removed workspace: a later) sync, never
+    /// "0 hours"; the 30-day rule always warns 72 hours before the mark.
     func testNoticeFollowsTheGraceHours() {
         let day = AccountPurgeStatus(enabled: true, enabledBy: "policy", graceHours: 24)
-        XCTAssertTrue(AccountPurgeStatus.footnote(day, shown: true).contains("deleted 24 hours later"))
+        XCTAssertTrue(AccountPurgeStatus.footnote(day, policy: .none, shown: true).contains("deleted 24 hours later"))
         XCTAssertTrue(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: day, policy: .none, setting: nil)
             .contains("deleted in 24 hours"))
 
         let now = AccountPurgeStatus(enabled: true, enabledBy: "policy", graceHours: 0)
-        let foot = AccountPurgeStatus.footnote(now, shown: true)
+        let foot = AccountPurgeStatus.footnote(now, policy: .none, shown: true)
         XCTAssertTrue(foot.contains("deleted after the next sync unless you reconnect"), foot)
-        XCTAssertTrue(foot.contains("goes after the first sync after the remove"), foot)
+        XCTAssertTrue(foot.contains("goes after a later sync"), foot)
         XCTAssertFalse(foot.contains("0 hours"), foot)
+        XCTAssertTrue(foot.contains("a notice comes 72 hours before that 30-day mark and the data is deleted at the mark"),
+                      foot)
         let dialog = AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: now, policy: .none, setting: nil)
-        XCTAssertTrue(dialog.contains("deleted after the next sync unless"), dialog)
+        XCTAssertTrue(dialog.contains("deleted after a later sync unless"), dialog)
         let jira = AccountPurgeStatus.removeDialogMessage("Kept.", status: now, policy: .none, setting: nil)
         XCTAssertEqual(jira, "Kept. Because deleting data on revoked access is on, it is deleted about "
             + "30 days after the account was last reached.")
+    }
+
+    /// The organization's PurgeGraceHours sets the footnote's notice before
+    /// a stale CLI status; past 72 hours the 30-day rule deletes that long
+    /// after its 72-hour warning, not at the mark.
+    func testFootnoteGraceFromPolicyAndLongNotice() {
+        var policy = ManagedPolicy()
+        policy.purgeGraceHours = 240
+        let stale = AccountPurgeStatus(enabled: true, enabledBy: "policy", graceHours: 72)
+        let foot = AccountPurgeStatus.footnote(stale, policy: policy, shown: true)
+        XCTAssertTrue(foot.contains("deleted 240 hours later unless you reconnect"), foot)
+        XCTAssertTrue(foot.contains("a notice comes 72 hours before that 30-day mark and the data is deleted "
+            + "240 hours after that notice"), foot)
+        XCTAssertTrue(foot.contains("goes 240 hours after the remove"), foot)
     }
 }

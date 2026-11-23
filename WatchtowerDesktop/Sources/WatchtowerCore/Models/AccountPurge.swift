@@ -160,28 +160,30 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
         policyGrace ?? status?.graceHours ?? 72
     }
 
-    /// The notice in hours as the app states it outside the Privacy footnote
-    /// (the Remove dialogs, a dead token's lease note).
-    package static func graceHours(_ status: Self?, policy: ManagedPolicy) -> Int {
-        notice(status, policyGrace: policy.purgeGraceHours)
-    }
-
     /// The Privacy switch's footnote for the shown value. The switch is on
-    /// only by a setting, a policy or the build, so on gives every rule.
-    package static func footnote(_ status: Self?, shown: Bool) -> String {
+    /// only by a setting, a policy or the build, so on gives every rule. The
+    /// notice is the organization's PurgeGraceHours first (as in the Remove
+    /// dialogs), else the CLI's. The 30-day rule warns 72 hours before the
+    /// mark whatever the notice, and deletes at the mark or the notice after
+    /// the warning, whichever is later (`purge.LeaseDue`). With a notice of
+    /// 0 a removed Slack workspace's row runs only after a later cycle's
+    /// syncs (`purge.NoNotice`), so it says "a later sync".
+    package static func footnote(_ status: Self?, policy: ManagedPolicy, shown: Bool) -> String {
         guard shown else {
             return "Off: synced data stays on this Mac after access ends, until you delete it with "
                 + "Reset All Data… in Settings → System. Slack expects a workspace's data to be gone within "
                 + "14 business days after its app is removed."
         }
-        let grace = notice(status)
+        let grace = notice(status, policyGrace: policy.purgeGraceHours)
         let lease = status?.leaseDays ?? 30
-        let later = grace == 0 ? "after the next sync" : "\(grace) hours later"
-        let afterRemove = grace == 0 ? "after the first sync after the remove" : "\(grace) hours after the remove"
-        return "On: when an account's access is revoked, or Watchtower has not reached its source for "
-            + "\(lease) days, its synced data is deleted \(later) unless you reconnect. A removed Slack "
-            + "workspace's data goes \(afterRemove), another removed account's \(lease) days after it was last "
-            + "reached. Briefings, recaps, ideas, memory, chats and meeting transcripts are kept."
+        let revoked = grace == 0 ? "after the next sync" : "\(grace) hours later"
+        let leaseWhen = grace > 72 ? "\(grace) hours after that notice" : "at the mark"
+        let afterRemove = grace == 0 ? "after a later sync" : "\(grace) hours after the remove"
+        return "On: when an account's access is revoked, its synced data is deleted \(revoked) unless you "
+            + "reconnect. When Watchtower has not reached a source for \(lease) days, a notice comes 72 hours "
+            + "before that \(lease)-day mark and the data is deleted \(leaseWhen) unless it syncs again. A removed "
+            + "Slack workspace's data goes \(afterRemove), another removed account's \(lease) days after it was "
+            + "last reached. Briefings, recaps, ideas, memory, chats and meeting transcripts are kept."
     }
 
     /// "Off by default" while the switch is off by its default origin; nil
@@ -219,7 +221,9 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
         let signOut = "Watchtower stops syncing \(label) and signs out of it at Slack, so this sign-in stops "
             + "working on every Mac that uses it."
         let grace = notice(status, policyGrace: policy.purgeGraceHours)
-        let when = grace == 0 ? "after the next sync" : "in \(grace) hours"
+        // A removed workspace's zero-notice row runs only after a later
+        // cycle's syncs (`purge.NoNotice`), not the next one.
+        let when = grace == 0 ? "after a later sync" : "in \(grace) hours"
         guard let enabled = dialogEnabled(status, policy: policy, setting: setting) else {
             return signOut + " If deleting data when access ends is on, its synced data is deleted \(when) unless "
                 + "you add the workspace again; otherwise it stays on this Mac until you delete it. Check "
