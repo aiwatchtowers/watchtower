@@ -321,13 +321,6 @@ final class MobileSettingsModel {
         }
     }
 
-    /// Where the Settings window is: on screen, still open but covered (another
-    /// app in front, another Space, the display asleep) or gone (closed or
-    /// ordered out).
-    enum WindowPresence: Equatable {
-        case onScreen, occluded, gone
-    }
-
     /// The view's `.task`, keyed on the window's presence: reads now and then
     /// every `refreshInterval` (5 s while the hub starts) until the task is
     /// cancelled. A covered window only stops the reads: its pairing sheet

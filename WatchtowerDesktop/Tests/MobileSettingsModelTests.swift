@@ -751,7 +751,8 @@ final class MobileSettingsModelTests: XCTestCase {
     func testACoveredWindowKeepsThePairingAndOnlyStopsThePolling() async {
         runningWith()
         let streamer = FakePairStreamer()
-        let model = makeModel(streamer: streamer)
+        let once: @Sendable (Duration) async -> Void = { _ in withUnsafeCurrentTask { $0?.cancel() } }
+        let model = makeModel(streamer: streamer, sleep: once)
         await model.load()
         model.linkPhone()
         await model.pairing?.start()
@@ -762,9 +763,7 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertFalse(streamer.sessions[0].stopped, "the stream, and so the code, stays open")
         XCTAssertEqual(cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count, reads, "no read while covered")
 
-        let once: @Sendable (Duration) async -> Void = { _ in withUnsafeCurrentTask { $0?.cancel() } }
-        let back = makeModel(streamer: streamer, sleep: once)
-        await Task { await back.windowVisibility(.onScreen) }.value
+        await Task { await model.windowVisibility(.onScreen) }.value
         XCTAssertGreaterThan(cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count, reads, "back on screen the reads resume")
         XCTAssertNotNil(model.pairing, "and the open pairing is untouched")
         XCTAssertFalse(streamer.sessions[0].stopped)

@@ -57,7 +57,7 @@ struct MobileSettingsView: View {
     var openDiagnostics: () -> Void = {}
     /// Where the Settings window is; the reads repeat only while it is on
     /// screen, and an open pairing outlives a covered window.
-    @State private var presence = MobileSettingsModel.WindowPresence.onScreen
+    @State private var presence = WindowPresence.onScreen
 
     var body: some View {
         ScrollView {
@@ -536,7 +536,7 @@ private struct MobileSettingsDialogs: ViewModifier {
 /// a closed Settings window is ordered out, which SwiftUI does not always
 /// answer with `onDisappear`.
 private struct WindowVisibilityReader: NSViewRepresentable {
-    @Binding var presence: MobileSettingsModel.WindowPresence
+    @Binding var presence: WindowPresence
 
     func makeNSView(context: Context) -> WindowVisibilityView {
         let view = WindowVisibilityView()
@@ -555,18 +555,18 @@ private struct WindowVisibilityReader: NSViewRepresentable {
 }
 
 private final class WindowVisibilityView: NSView {
-    var onChange: ((MobileSettingsModel.WindowPresence) -> Void)?
+    var onChange: ((WindowPresence) -> Void)?
     /// Written on the main actor only; read by `deinit` after every other
     /// reference is gone.
-    nonisolated(unsafe) private var observer: NSObjectProtocol?
+    nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
 
     deinit {
-        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observers.forEach(NotificationCenter.default.removeObserver)
     }
 
     func stopObserving() {
-        if let observer { NotificationCenter.default.removeObserver(observer) }
-        observer = nil
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
     }
 
     override func viewDidMoveToWindow() {
@@ -577,21 +577,35 @@ private final class WindowVisibilityView: NSView {
             onChange?(.gone)
             return
         }
-        observer = NotificationCenter.default.addObserver(
-            forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
-        ) { [weak self, weak window] _ in
-            MainActor.assumeIsolated {
-                guard let window else { return }
-                self?.onChange?(Self.presence(of: window))
-            }
+        let center = NotificationCenter.default
+        func observe(_ name: Notification.Name, object: Any?, _ react: @escaping @MainActor (WindowVisibilityView) -> Void) {
+            observers.append(center.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    // A view that is gone with its window reports the window gone.
+                    if let self { react(self) }
+                }
+            })
         }
-        onChange?(Self.presence(of: window))
+        // Covered, another Space, display asleep, ordered out.
+        observe(NSWindow.didChangeOcclusionStateNotification, object: window) { $0.report() }
+        observe(NSWindow.didMiniaturizeNotification, object: window) { $0.report() }
+        observe(NSWindow.didDeminiaturizeNotification, object: window) { $0.report() }
+        // Hiding the app (Cmd-H) orders every window out without closing any.
+        observe(NSApplication.didHideNotification, object: nil) { $0.report() }
+        observe(NSApplication.didUnhideNotification, object: nil) { $0.report() }
+        // The window is still `isVisible` while it closes.
+        observe(NSWindow.willCloseNotification, object: window) { $0.onChange?(.gone) }
+        report()
     }
 
-    /// A minimized window is still open, like a covered one.
-    private static func presence(of window: NSWindow) -> MobileSettingsModel.WindowPresence {
-        if window.occlusionState.contains(.visible) { return .onScreen }
-        return window.isVisible || window.isMiniaturized ? .occluded : .gone
+    private func report() {
+        onChange?(WindowPresence.of(
+            occlusionVisible: window?.occlusionState.contains(.visible) ?? false,
+            isVisible: window?.isVisible ?? false,
+            isMiniaturized: window?.isMiniaturized ?? false,
+            appHidden: NSApp?.isHidden ?? false,
+            windowExists: window != nil
+        ))
     }
 }
 
