@@ -34,12 +34,7 @@ package enum OrganizationPolicyPresentation {
         if let b = p.purgeRevokedData {
             out.append(Line(label: "Delete a revoked account's data", value: b ? "on" : "off"))
         }
-        if let h = p.purgeGraceHours {
-            out.append(Line(label: graceLabel, value: h == 0 ? "none (deleted after the next sync)" : "\(h) hours"))
-        } else if p.problems.contains(where: { $0.key == ManagedPolicy.Key.purgeGraceHours.rawValue }) {
-            // A refused value leaves the standard notice (`watchtower policy show` says the same).
-            out.append(Line(label: graceLabel, value: "72 hours (profile value ignored)"))
-        }
+        if let line = graceLine(p) { out.append(line) }
         // The company's name only: the bundle carries client ids and secrets.
         if let wire = p.companyBundle, case .success(let bundle) = CompanyBundle.parse(wire, origin: .mdm) {
             out.append(Line(label: "Company", value: bundle.company))
@@ -66,7 +61,16 @@ package enum OrganizationPolicyPresentation {
         return out
     }
 
-    private static let graceLabel = "Notice before data is deleted"
+    /// PurgeGraceHours: the hours, "none" for 0, or the standard notice a
+    /// refused value leaves (`watchtower policy show` words it the same).
+    private static func graceLine(_ p: ManagedPolicy) -> Line? {
+        let label = "Notice before data is deleted"
+        if let h = p.purgeGraceHours {
+            return Line(label: label, value: h == 0 ? "none (deleted after the next sync)" : "\(h) hours")
+        }
+        guard p.problems.contains(where: { $0.key == ManagedPolicy.Key.purgeGraceHours.rawValue }) else { return nil }
+        return Line(label: label, value: "72 hours (profile value ignored)")
+    }
 
     /// A policy source's name as the Connections tab shows it.
     package static func sourceName(_ source: String) -> String {

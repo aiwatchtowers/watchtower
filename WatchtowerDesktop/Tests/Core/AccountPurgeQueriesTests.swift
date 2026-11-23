@@ -171,15 +171,16 @@ final class AccountPurgeStatusDecodingTests: XCTestCase {
         policy.purgeGraceHours = 24
         let stale = AccountPurgeStatus(enabled: true, enabledBy: "policy", graceHours: 72)
         for status in [nil, stale] {
-            XCTAssertTrue(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: status, policy: policy,
-                                                                 setting: nil).contains("deleted in 24 hours"))
-            XCTAssertTrue(AccountPurgeStatus.removeDialogMessage("Kept.", status: status, policy: policy, setting: nil)
-                .hasSuffix(", plus 24 hours' notice."))
+            let slack = AccountPurgeStatus.removeDialogMessage(
+                slackAccount: "acme", status: status, policy: policy, setting: nil)
+            XCTAssertTrue(slack.contains("deleted in 24 hours"), slack)
+            let jira = AccountPurgeStatus.removeDialogMessage("Kept.", status: status, policy: policy, setting: nil)
+            XCTAssertTrue(jira.hasSuffix(", plus 24 hours' notice."), jira)
         }
         policy.purgeGraceHours = 0
-        XCTAssertTrue(AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: nil, policy: policy,
-                                                             setting: nil).contains("deleted after the next sync unless"))
-        XCTAssertTrue(AccountPurgeStatus.removeDialogMessage("Kept.", status: nil, policy: policy, setting: nil)
-            .hasSuffix("days after the account was last reached."))
+        let slack = AccountPurgeStatus.removeDialogMessage(slackAccount: "acme", status: nil, policy: policy, setting: nil)
+        XCTAssertTrue(slack.contains("deleted after the next sync unless"), slack)
+        let jira = AccountPurgeStatus.removeDialogMessage("Kept.", status: nil, policy: policy, setting: nil)
+        XCTAssertTrue(jira.hasSuffix("days after the account was last reached."), jira)
     }
 }
