@@ -198,6 +198,30 @@ final class SessionsPanelListKeyboardTests: XCTestCase {
         XCTAssertTrue(harness.window.firstResponder === other)
     }
 
+    /// The keyboard came from another list (the board's): it goes back
+    /// there once — that move, made while the same mouse-down is the
+    /// current event, is no click on the panel's list.
+    func testAGiveBackToAnotherListDoesNotBounce() throws {
+        let harness = try harness()
+        let scroll = NSScrollView(frame: NSRect(x: 300, y: 0, width: 100, height: 100))
+        let other = ListLike(frame: scroll.bounds)
+        scroll.documentView = other
+        harness.content.addSubview(scroll)
+        XCTAssertTrue(harness.window.makeFirstResponder(other))
+        let table = try table(harness)
+        let keys = try keys(harness)
+        let row = table.convert(table.rect(ofRow: 0), to: nil)
+        let point = NSPoint(x: row.midX, y: row.midY)
+        let down = try mouse(.leftMouseDown, at: point, in: harness.window)
+        keys.currentEvent = { down }
+        defer { keys.currentEvent = { nil } }
+
+        XCTAssertTrue(harness.window.makeFirstResponder(table), "the row's mouse-down")
+        drain(until: { harness.window.firstResponder === other }, "back to the other list")
+        settle()
+        XCTAssertTrue(harness.window.firstResponder === other, "and it stays there")
+    }
+
     /// The panel taking the keyboard in the click's turn (its empty space)
     /// keeps it, and its keys work.
     func testThePanelTakingTheKeyboardKeepsIt() throws {

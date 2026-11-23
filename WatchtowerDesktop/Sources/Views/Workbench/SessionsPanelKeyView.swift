@@ -216,9 +216,13 @@ struct SessionsPanelKeyView: NSViewRepresentable {
         /// open), it goes back to the view that had it — still in the
         /// window, shown — or to the window.
         private func giveBackFromList(in window: NSWindow, previous: NSResponder?) {
-            guard let list = window.firstResponder as? NSTableView, !isHiddenOrHasHiddenAncestor,
+            // Its own give-back, and any table the mouse-down did not hit (the
+            // view the keyboard goes back to may be another list), are no
+            // click on this list.
+            guard !givingBack, let list = window.firstResponder as? NSTableView, !isHiddenOrHasHiddenAncestor,
                   let event = currentEvent(), event.type == .leftMouseDown, event.window === window,
-                  convert(bounds, to: nil).contains(event.locationInWindow) else { return }
+                  convert(bounds, to: nil).contains(event.locationInWindow),
+                  Self.table(hitBy: event, in: window) === list else { return }
             let request = currentFocusRequest?()
             weak var holder = previous as? NSView
             DispatchQueue.main.async { [weak self] in
@@ -231,6 +235,16 @@ struct SessionsPanelKeyView: NSViewRepresentable {
                 }
                 window.makeFirstResponder(nil)
             }
+        }
+
+        /// The table holding the view `event` hits in `window`.
+        private static func table(hitBy event: NSEvent, in window: NSWindow) -> NSTableView? {
+            var view = window.contentView?.hitTest(event.locationInWindow)
+            while let current = view {
+                if let table = current as? NSTableView { return table }
+                view = current.superview
+            }
+            return nil
         }
 
         /// Whether the local click monitor is installed; a seam for tests.
