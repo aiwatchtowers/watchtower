@@ -64,9 +64,9 @@ package enum OrganizationPolicyPresentation {
     /// PurgeGraceHours: the hours, "none" for 0, or the standard notice a
     /// refused value leaves (`watchtower policy show` words it the same).
     private static func graceLine(_ p: ManagedPolicy) -> Line? {
-        let label = "Notice before data is deleted"
+        let label = "Notice before a revoked or removed account's data is deleted"
         if let h = p.purgeGraceHours {
-            return Line(label: label, value: h == 0 ? "none (deleted after the next sync)" : "\(h) hours")
+            return Line(label: label, value: h == 0 ? "none (after a later sync)" : "\(h) hours")
         }
         guard p.problems.contains(where: { $0.key == ManagedPolicy.Key.purgeGraceHours.rawValue }) else { return nil }
         return Line(label: label, value: "72 hours (profile value ignored)")
