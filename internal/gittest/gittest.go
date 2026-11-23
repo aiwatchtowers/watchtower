@@ -74,7 +74,7 @@ func quietTemplateDir() string {
 	// directory instead of reusing an older one.
 	sum := sha256.Sum256([]byte("config+info/exclude+hooks/\n" + content))
 	dir := filepath.Join(os.TempDir(), "watchtower-gittest-template-"+hex.EncodeToString(sum[:6]))
-	if _, err := os.Stat(filepath.Join(dir, "config")); err == nil {
+	if hasConfig(dir) {
 		return dir
 	}
 	tmp, err := os.MkdirTemp(os.TempDir(), "watchtower-gittest-template-*")
@@ -94,14 +94,32 @@ func quietTemplateDir() string {
 	if err := os.WriteFile(filepath.Join(tmp, "config"), []byte(content), 0o600); err != nil {
 		panic(err)
 	}
-	if err := os.Rename(tmp, dir); err != nil {
+	err = os.Rename(tmp, dir)
+	if err != nil && !hasConfig(dir) {
+		// A stale directory: the OS temp cleaner deleted its old files but
+		// kept the directory, so the rename finds it in the way. Move it
+		// aside (a rename, so a binary racing us cannot lose a fresh copy
+		// half-deleted) and install ours.
+		stale := tmp + ".stale"
+		if os.Rename(dir, stale) == nil {
+			_ = os.RemoveAll(stale)
+		}
+		err = os.Rename(tmp, dir)
+	}
+	if err != nil {
 		// Another test binary renamed its copy into place first.
 		_ = os.RemoveAll(tmp)
-		if _, statErr := os.Stat(filepath.Join(dir, "config")); statErr != nil {
+		if !hasConfig(dir) {
 			panic(fmt.Sprintf("gittest: installing the git template dir: %v", err))
 		}
 	}
 	return dir
+}
+
+// hasConfig reports whether the template directory dir is installed.
+func hasConfig(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "config"))
+	return err == nil
 }
 
 func mustSetenv(k, v string) {

@@ -128,3 +128,24 @@ func TestDisableBackgroundGit_ReachesAPushedToBareRepository(t *testing.T) {
 		t.Errorf("receive-pack in the bare remote sees %q, want %q", got, want)
 	}
 }
+
+// TestQuietTemplateDir_ReplacesAStaleDirectory: the OS temp cleaner can
+// delete the template's old files and keep the directory (seen on the CI
+// Macs: the directory was there, its config gone). The next test binary
+// must reinstall it instead of panicking on the rename.
+func TestQuietTemplateDir_ReplacesAStaleDirectory(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	dir := quietTemplateDir()
+	if err := os.Remove(filepath.Join(dir, "config")); err != nil {
+		t.Fatal(err)
+	}
+	if got := quietTemplateDir(); got != dir {
+		t.Fatalf("template dir = %q, want %q", got, dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config")); err != nil {
+		t.Fatalf("config not reinstalled: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "info", "exclude")); err != nil {
+		t.Fatalf("info/exclude not reinstalled: %v", err)
+	}
+}
