@@ -81,6 +81,8 @@ ai:
   ollama_url: %q
   models:
     strong: some-model
+digest:
+  language: Russian
 `, claudePath, provider, ollamaURL), 0o600))
 	return cfgPath, filepath.Join(dir, "wt.db")
 }
@@ -153,7 +155,8 @@ func TestAIQueryConnect_ClaudeBrowserRun(t *testing.T) {
 	require.NoError(t, err)
 	pbs, err := connectplay.ForService("slack", "")
 	require.NoError(t, err)
-	assert.Equal(t, connectplay.SystemPrompt(pbs, connectplay.ModeBrowser)+"\n\nSTATE: no Slack account yet", string(system))
+	assert.Equal(t, connectplay.SystemPrompt(pbs, connectplay.ModeBrowser, "Russian")+"\n\nSTATE: no Slack account yet", string(system))
+	assert.Contains(t, string(system), "Write every message in Russian", "the owner's assistant language (digest.language)")
 }
 
 // TestAIQueryConnect_ProbeRun: `--connect-mode probe` end to end on claude

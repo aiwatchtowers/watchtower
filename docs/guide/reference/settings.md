@@ -13,7 +13,7 @@ kind: tip
 since: 0.24.0
 -->
 
-- **Assistant language** — the language of Catch Up, briefings, tracks and digests. A new install starts from your Mac's first preferred language, else English. In chat the assistant answers in the language you write. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
+- **Assistant language** — the language of Catch Up, briefings, tracks and digests. A new install starts from your Mac's first preferred language, else English. In chat the assistant answers in the language you write; the connect assistant starts in this one. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
 
 ## Connections
 

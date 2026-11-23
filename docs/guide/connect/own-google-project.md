@@ -17,7 +17,7 @@ Open **Use my own Google project** in **Connections → Google** and press **Con
 ## Steps
 
 1. **Agent:** Call `connect_status`. If own projects are blocked by the organization, say so and stop. If a flow is running, wait for it with `connect_wait`. Ask the customer for the Google address they connect.
-2. **Agent:** On console.cloud.google.com, open the new-project page, name the project `watchtower` plus a short word of the customer's, submit the form and wait until the console selects the new project.
+2. **Agent:** On [console.cloud.google.com](https://console.cloud.google.com), open the new-project page, name the project `watchtower` plus a short word of the customer's, submit the form and wait until the console selects the new project.
 3. **Agent:** In the API library, turn on the Gmail API and the Google Calendar API for that project.
 4. **Agent:** Open the OAuth consent screen: user type **External**, app name Watchtower, the customer's address as support and contact email, and the customer as a test user. Then publish the app to production; Google calls it unverified, which is expected for a project of your own.
 5. **Agent:** Open **Credentials**, start **Create credentials → OAuth client ID**, set the type to **Desktop app** and the name to Watchtower, and stop before the form's last button. Call `request_secret` with kind `google_client_secret`. The card asks the customer to close Google's result window before sending.

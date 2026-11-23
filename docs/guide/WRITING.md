@@ -84,6 +84,8 @@ Every item of a list with step tags starts with one tag, which says who acts:
 - `3. **You only:** …` a click that shows a secret: Google's **Create** on the OAuth client form, Atlassian's app **Settings**, Slack's **Generate Token**. The agent step before it calls `request_secret`; the customer clicks, copies the secret into the card, leaves the page or closes the dialog, then presses **Send**. The parser fails a page whose other steps name such a page or button (`internal/connectplay/reveal.go`).
 - `4. **Check:** …` how the assistant checks a step worked (`connect_wait`, `connect_status`).
 
+**Links.** A page the agent or the customer opens is written as a full Markdown link, `[api.slack.com/apps](https://api.slack.com/apps)`, never a bare host or path: the agent copies the playbook's form into the chat, so the customer gets a link to click. The `Before you start` host list and the `domains` line stay bare hosts; a value the customer types (a deny-list host, a site) stays in `code`.
+
 **Public safety.** A playbook is public and goes into the model's prompt: no real workspace, site or company names, no ids, no addresses outside `example.com`, no local paths (`TestPlaybooks_PublicSafe`). A secret never appears on the page, not even as a sample.
 
 ## Learn cards
