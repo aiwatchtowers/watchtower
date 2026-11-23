@@ -79,3 +79,41 @@ func TestPurge01_ZeroGraceRunsOnTheNextPass(t *testing.T) {
 		t.Fatalf("at the deadline the lease is due at once, got %+v", got.Schedule)
 	}
 }
+
+// TestPurge01_GraceChangeKeepsScheduledRows pins that a PurgeGraceHours change
+// applies only to rows scheduled after it: a row already scheduled keeps its
+// due_at, shortened or lengthened, and a row scheduled later takes the new
+// notice.
+func TestPurge01_GraceChangeKeepsScheduledRows(t *testing.T) {
+	d := openPurgeDB(t)
+	if _, err := d.Exec(`INSERT INTO slack_accounts (id, team_id, status, revoked_at, access_ok_at) VALUES (1, 'T1', 'revoked', ?, ?)`,
+		ts(t0), ts(t0.Add(-time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	policytest.Set(t, nil)
+	if _, err := Apply(d, setting(true), true, t0); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []map[string]any{{"PurgeGraceHours": int64(0)}, {"PurgeGraceHours": int64(720)}} {
+		policytest.Set(t, raw)
+		got, err := Apply(d, setting(true), true, t0.Add(time.Hour))
+		if err != nil || len(got.Schedule) != 0 || len(got.Due) != 0 {
+			t.Fatalf("%v: pass = %+v, %v; want nothing scheduled or due", raw, got, err)
+		}
+		rows, err := d.ListAccountPurges(true)
+		if err != nil || len(rows) != 1 || rows[0].DueAt != ts(t0.Add(Grace)) {
+			t.Fatalf("%v: ledger = %+v, %v; want the row still due the 72 h notice after scheduling", raw, rows, err)
+		}
+	}
+
+	if _, err := d.Exec(`INSERT INTO slack_accounts (id, team_id, status, revoked_at, access_ok_at) VALUES (2, 'T2', 'revoked', ?, ?)`,
+		ts(t0), ts(t0.Add(-time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	policytest.Set(t, map[string]any{"PurgeGraceHours": int64(24)})
+	later := t0.Add(2 * time.Hour)
+	got, err := Apply(d, setting(true), true, later)
+	if err != nil || len(got.Schedule) != 1 || got.Schedule[0].AccountID != 2 || !got.Schedule[0].DueAt.Equal(later.Add(24*time.Hour)) {
+		t.Fatalf("new row = %+v, %v; want account 2 due 24 h after its pass", got.Schedule, err)
+	}
+}
