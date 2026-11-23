@@ -211,6 +211,23 @@ final class WorkbenchesViewModelPanelCursorTests: XCTestCase {
         XCTAssertEqual(center.keyboardFocusSince(for: a.id), 7, "weighed from the click")
     }
 
+    /// A standalone terminal's row click puts the keyboard into it the same
+    /// way — also when it is on screen already.
+    func testAStandaloneRowClickPutsTheKeyboardInItsTerminal() async throws {
+        let folderPath = folder.path
+        let shell = try await pool.write {
+            try TerminalSessionQueries.create($0, .init(projectID: nil, kind: .shell, title: "zsh", folderPath: folderPath))
+        }
+        let vm = makeVM()
+        await vm.reload()
+        await vm.loadSessions(projectID: nil)
+
+        await vm.openStandaloneRow(shell, since: 3)
+        XCTAssertEqual(center.keyboardFocusSince(for: shell.id), 3)
+        await vm.openStandaloneRow(shell, since: 4)
+        XCTAssertEqual(center.keyboardFocusSince(for: shell.id), 4, "on screen already")
+    }
+
     /// A covered terminal (a page screen, an expanded ask drawer) takes no
     /// keyboard, so handing it back reports false and requests no focus —
     /// the host would drop the request and nothing would retry (#1150).

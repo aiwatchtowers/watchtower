@@ -56,7 +56,9 @@ extension WorkbenchesViewModel {
         panelCursor = visible[min(max(index + step, 0), visible.count - 1)]
     }
 
-    /// Return: the cursor row opens like a click on it.
+    /// Return: the cursor row's session opens and goes on screen; unlike a
+    /// click on the row, the keyboard stays with the panel (ask #195) — no
+    /// terminal focus is requested.
     func openAtPanelCursor(projectID: Int64) async {
         guard let id = listedPanelCursor(projectID: projectID) else { return }
         await showSession(id: id)

@@ -681,6 +681,15 @@ extension WorkbenchesViewModel {
         setLayout(updated, projectID: projectID)
     }
 
+    /// A standalone terminal's row click: like `openSessionRow`, the
+    /// keyboard goes into it by an explicit request weighed from the click
+    /// (`since`) — also when it is on screen already.
+    func openStandaloneRow(_ session: TerminalSession, since: Int? = nil) async {
+        await selectStandalone(session)
+        guard selectedStandaloneID == session.id, terminalCenter?.liveIDs.contains(session.id) == true else { return }
+        terminalCenter?.requestKeyboardFocus(session.id, since: since)
+    }
+
     /// A standalone terminal takes the whole page, single pane (spec §3).
     func selectStandalone(_ session: TerminalSession) async {
         showStandalone(session.id)

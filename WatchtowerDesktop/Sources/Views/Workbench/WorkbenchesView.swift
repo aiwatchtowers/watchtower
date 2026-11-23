@@ -140,7 +140,7 @@ struct WorkbenchesView: View {
                 let click = TerminalContainerView.keyboardEventCount
                 Task {
                     if session.projectID == nil {
-                        await vm.selectStandalone(session)
+                        await vm.openStandaloneRow(session, since: click)
                     } else {
                         await vm.openSessionRow(id: session.id, since: click)
                     }
