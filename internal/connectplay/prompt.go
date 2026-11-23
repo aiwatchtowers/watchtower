@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // Mode is how the connect assistant works in a run (agent connect spec
@@ -22,11 +23,11 @@ const (
 const defaultLanguage = "English"
 
 // languageName is a reply language the prompt takes as written: one line of
-// letters, spaces and hyphens, at most 40 characters ("Russian",
-// "Brazilian Portuguese"). Anything else in digest.language (a sentence,
+// letters, spaces, hyphens and one parenthesised qualifier, at most 40
+// characters ("Russian", "Brazilian Portuguese", "Chinese (Traditional)"). Anything else in digest.language (a sentence,
 // a newline, punctuation) would be text the config writes into the safety
 // prompt, so it falls back to English.
-var languageName = regexp.MustCompile(`^\p{L}[\p{L} -]{0,39}$`)
+var languageName = regexp.MustCompile(`^\p{L}[\p{L} -]*( \(\p{L}[\p{L} -]*\))?$`)
 
 // SystemPrompt is the connect assistant's system prompt over pbs (one
 // service's playbooks, ForService order) in mode: the role, the language
@@ -40,7 +41,7 @@ var languageName = regexp.MustCompile(`^\p{L}[\p{L} -]{0,39}$`)
 // contract, which a tuned prompt must not be able to drop.
 func SystemPrompt(pbs []Playbook, mode Mode, language string) string {
 	language = strings.TrimSpace(language)
-	if !languageName.MatchString(language) {
+	if utf8.RuneCountInString(language) > 40 || !languageName.MatchString(language) {
 		language = defaultLanguage
 	}
 	var b strings.Builder
