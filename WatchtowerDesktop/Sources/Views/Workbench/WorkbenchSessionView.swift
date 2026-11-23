@@ -389,8 +389,11 @@ private struct TerminalHost: NSViewRepresentable {
             attached: attached, requested: focusSerial, honoured: coordinator.honouredSerial, obscured: obscured,
             keepsKeyboard: keepsOff
         )
+        let explicit = focusSerial != nil && focusSerial != coordinator.honouredSerial
         coordinator.honouredSerial = focusSerial
-        TerminalHostAttachment.settleFocus(terminal, in: container, focus: focus, keptOff: obscured || keepsOff)
+        TerminalHostAttachment.settleFocus(
+            terminal, in: container, focus: focus, explicit: explicit, keptOff: obscured || keepsOff
+        )
     }
 }
 
@@ -442,13 +445,16 @@ enum TerminalHostAttachment {
     }
 
     /// After an attach: the focus `needsFocus` decided goes to the
-    /// container (`focusTerminal`). A terminal covered or kept from the
-    /// keyboard (`keptOff`) also drops a focus still pending from an
-    /// earlier update — waiting for the window, or for its turn.
+    /// container (`focusTerminal`; `explicit` for a keyboard request not
+    /// honoured yet). A terminal covered or kept from the keyboard
+    /// (`keptOff`) also drops a focus still pending from an earlier
+    /// update — waiting for the window, or for its turn.
     @MainActor
-    static func settleFocus(_ terminal: NSView, in container: TerminalContainerView, focus: Bool, keptOff: Bool) {
+    static func settleFocus(
+        _ terminal: NSView, in container: TerminalContainerView, focus: Bool, explicit: Bool = false, keptOff: Bool
+    ) {
         if focus {
-            container.focusTerminal(terminal)
+            container.focusTerminal(terminal, explicit: explicit)
         } else if keptOff {
             container.cancelFocus()
         }
@@ -478,32 +484,42 @@ enum TerminalHostAttachment {
 final class TerminalContainerView: NSView {
     private weak var observedTerminal: NSView?
     private var backgroundObservation: NSKeyValueObservation?
-    /// The terminal whose `focusTerminal` found no window: it takes the
-    /// keyboard when the container enters one; dropped when it leaves the
-    /// container.
-    private weak var terminalWaitingForWindow: NSView?
-    /// `claimSequence` when that terminal asked.
-    private var waitingSince = 0
+    /// A focus asked of this container.
+    private struct PendingFocus {
+        weak var terminal: NSView?
+        /// `keyboardEvents` when it was asked.
+        let asked: Int
+        /// From a keyboard request (a row click), not an attach alone.
+        let explicit: Bool
+    }
+
+    /// The focus whose turn found no window: it is given when the
+    /// container enters one; dropped when its terminal leaves the container.
+    private var waitingForWindow: PendingFocus?
     /// Counts `focusTerminal` and `cancelFocus` calls: a queued focus runs
     /// only while it is still the latest.
     private var focusRequests = 0
-    /// Every time a sessions panel took the keyboard on the owner's request
-    /// (`SessionsPanelKeyView.KeyView.takePanelKeyboard`) gets the next
-    /// number, kept as its window's latest claim (`WindowKeyboardState`):
-    /// a terminal focus asked before its window's latest claim gives way —
-    /// the owner's later choice. A claim in another window leaves it alone,
-    /// and a panel or list that only holds the keyboard from before is
-    /// still overridden.
-    private static var claimSequence = 0
+    /// Numbers the keyboard events a pending focus is weighed against, each
+    /// kept as its window's latest (`WindowKeyboardState`):
+    /// - a sessions panel taking the keyboard on the owner's request
+    ///   (`SessionsPanelKeyView.KeyView.takePanelKeyboard`): a focus asked
+    ///   before its window's latest claim gives way — the owner's later
+    ///   choice; a claim in another window leaves it alone, and a panel or
+    ///   list that only holds the keyboard from before is still overridden;
+    /// - any other move of the window's first responder the panel sees
+    ///   (not the list's own give-back): a focus from a keyboard request
+    ///   yields to typed input only when the keyboard moved there after it
+    ///   was asked.
+    private static var keyboardEvents = 0
 
     static func panelClaimedKeyboard(in window: NSWindow) {
-        claimSequence += 1
-        WindowKeyboardState.of(window).latestClaim = claimSequence
+        keyboardEvents += 1
+        WindowKeyboardState.of(window).latestClaim = keyboardEvents
     }
 
-    /// The panel of `window` took the keyboard after claim number `sequence`.
-    private static func panelClaimed(in window: NSWindow, since sequence: Int) -> Bool {
-        WindowKeyboardState.of(window).latestClaim > sequence
+    static func keyboardMoved(in window: NSWindow) {
+        keyboardEvents += 1
+        WindowKeyboardState.of(window).latestMove = keyboardEvents
     }
 
     override init(frame frameRect: NSRect) {
@@ -523,37 +539,47 @@ final class TerminalContainerView: NSView {
     /// Moves the keyboard into `terminal` on the next main-queue turn
     /// (after the update that asked). A new host SwiftUI has not put in
     /// the window by then (#1150) gives it once it is in one — unless the
-    /// owner is typing elsewhere by then (`holdsTypedInput`). Only while
-    /// `terminal` is still the one shown: a reused host may have swapped
-    /// in a terminal that asked for nothing.
-    func focusTerminal(_ terminal: NSView) {
+    /// owner is typing elsewhere (`yields`). Only while `terminal` is still
+    /// the one shown: a reused host may have swapped in a terminal that
+    /// asked for nothing. `explicit`: from a keyboard request (a row click).
+    func focusTerminal(_ terminal: NSView, explicit: Bool = false) {
         focusRequests += 1
         let request = focusRequests
-        let asked = Self.claimSequence
-        DispatchQueue.main.async { [weak self, weak terminal] in
-            guard let self, request == focusRequests, let terminal, subviews.first === terminal else { return }
+        let focus = PendingFocus(terminal: terminal, asked: Self.keyboardEvents, explicit: explicit)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, request == focusRequests, let terminal = focus.terminal,
+                  subviews.first === terminal else { return }
             guard let window else {
-                terminalWaitingForWindow = terminal
-                waitingSince = asked
+                waitingForWindow = focus
                 return
             }
-            guard !Self.panelClaimed(in: window, since: asked) else { return }
+            guard WindowKeyboardState.of(window).latestClaim <= focus.asked else { return }
             window.makeFirstResponder(terminal)
         }
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard let terminal = terminalWaitingForWindow, window != nil else { return }
-        terminalWaitingForWindow = nil
+        guard let focus = waitingForWindow, window != nil else { return }
+        waitingForWindow = nil
         let request = focusRequests
-        let asked = waitingSince
-        DispatchQueue.main.async { [weak self, weak terminal] in
-            guard let self, request == focusRequests, let terminal, subviews.first === terminal, let window,
-                  !Self.panelClaimed(in: window, since: asked),
-                  !Self.holdsTypedInput(window.firstResponder) else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, request == focusRequests, let terminal = focus.terminal, subviews.first === terminal,
+                  let window, !Self.yields(focus, in: window) else { return }
             window.makeFirstResponder(terminal)
         }
+    }
+
+    /// A focus given once its container is in the window gives way to the
+    /// panel's later claim, and to typed input (`holdsTypedInput`) — for a
+    /// keyboard request only when the keyboard moved there after it was
+    /// asked: the terminal the owner left by a row click is no reason to
+    /// stay.
+    private static func yields(_ focus: PendingFocus, in window: NSWindow) -> Bool {
+        let state = WindowKeyboardState.of(window)
+        if state.latestClaim > focus.asked { return true }
+        guard holdsTypedInput(window.firstResponder) else { return false }
+        return !focus.explicit || state.latestMove > focus.asked
     }
 
     /// Drops a focus still pending — queued for its turn or waiting for
@@ -561,7 +587,7 @@ final class TerminalContainerView: NSView {
     /// (dropped, not kept).
     func cancelFocus() {
         focusRequests += 1
-        terminalWaitingForWindow = nil
+        waitingForWindow = nil
     }
 
     /// The deferred focus yields only to typed input: a text view or field
@@ -593,7 +619,7 @@ final class TerminalContainerView: NSView {
     override func willRemoveSubview(_ subview: NSView) {
         super.willRemoveSubview(subview)
         // A swap (or the host's dismantle) drops a wait for the window.
-        if subview === terminalWaitingForWindow { terminalWaitingForWindow = nil }
+        if subview === waitingForWindow?.terminal { waitingForWindow = nil }
         guard subview === observedTerminal else { return }
         backgroundObservation = nil
         observedTerminal = nil
@@ -607,6 +633,8 @@ final class TerminalContainerView: NSView {
 final class WindowKeyboardState {
     /// `TerminalContainerView`'s number of the panel's latest claim here.
     var latestClaim = 0
+    /// Its number of the latest move of the first responder here.
+    var latestMove = 0
 
     private nonisolated(unsafe) static var key: UInt8 = 0
 

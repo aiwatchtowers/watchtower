@@ -1,4 +1,5 @@
 import AppKit
+import WebKit
 import XCTest
 @testable import WatchtowerDesktop
 
@@ -302,6 +303,93 @@ final class TerminalHostAttachmentTests: XCTestCase {
         content.addSubview(container)
         drainMainQueue()
         XCTAssertFalse(host.firstResponder === asking, "a swap drops the wait")
+    }
+
+    // MARK: - The focus contract (#1150)
+
+    private enum Holder: CaseIterable {
+        case terminal, monaco, list, panel
+    }
+
+    /// One case of the contract: a window with the panel's key view (which
+    /// numbers the keyboard's moves), another terminal, a web editor, the
+    /// list; `holder` has the keyboard; then a row click's request for `T`
+    /// — on a host in the window already, or a fresh one that enters it
+    /// after — or, `covered`, the host drops it.
+    private func focusCase(holder: Holder, fresh: Bool, covered: Bool) throws -> (NSWindow, NSView) {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        content.addSubview(SessionsPanelKeyView.KeyView(frame: NSRect(x: 0, y: 0, width: 50, height: 50)))
+        let list = ListLike(frame: NSRect(x: 0, y: 50, width: 50, height: 50))
+        content.addSubview(list)
+        let otherContainer = TerminalContainerView(frame: NSRect(x: 50, y: 0, width: 100, height: 100))
+        let otherTerminal = FocusableView()
+        TerminalHostAttachment.attach(otherTerminal, to: otherContainer)
+        content.addSubview(otherContainer)
+        let monaco = WKWebView(frame: NSRect(x: 150, y: 0, width: 50, height: 50))
+        content.addSubview(monaco)
+        let panel = try XCTUnwrap(content.subviews.first)
+        let holding: NSView = switch holder {
+        case .terminal: otherTerminal
+        case .monaco: monaco
+        case .list: list
+        case .panel: panel
+        }
+        XCTAssertTrue(host.makeFirstResponder(holding))
+
+        let container = TerminalContainerView(frame: NSRect(x: 200, y: 0, width: 200, height: 300))
+        let terminal = FocusableView()
+        TerminalHostAttachment.attach(terminal, to: container)
+        if !fresh { content.addSubview(container) }
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: !covered, explicit: !covered, keptOff: covered)
+        drainMainQueue()
+        if fresh { content.addSubview(container) }
+        drainMainQueue()
+        return (host, terminal)
+    }
+
+    /// A row click's request (row open × host in the window or fresh ×
+    /// holder: another terminal, Monaco, the list, the panel × covered):
+    /// the terminal takes the keyboard from any holder the owner had before
+    /// the click; a covered terminal takes nothing.
+    func testTheFocusContractTruthTable() throws {
+        for holder in Holder.allCases {
+            for fresh in [false, true] {
+                for covered in [false, true] {
+                    let (host, terminal) = try focusCase(holder: holder, fresh: fresh, covered: covered)
+                    let label = "\(holder) fresh=\(fresh) covered=\(covered)"
+                    XCTAssertEqual(host.firstResponder === terminal, !covered, label)
+                }
+            }
+        }
+    }
+
+    /// The owner typing elsewhere after the request (Monaco, another
+    /// terminal) keeps the keyboard there: the fresh host's focus yields.
+    /// A focus from an attach alone yields to typed input already there.
+    func testAFocusYieldsToTypingThatCameAfterIt() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        content.addSubview(SessionsPanelKeyView.KeyView(frame: NSRect(x: 0, y: 0, width: 50, height: 50)))
+        let monaco = WKWebView(frame: NSRect(x: 50, y: 0, width: 50, height: 50))
+        content.addSubview(monaco)
+        let container = TerminalContainerView(frame: NSRect(x: 200, y: 0, width: 200, height: 300))
+        let terminal = FocusableView()
+        TerminalHostAttachment.attach(terminal, to: container)
+
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: true, explicit: true, keptOff: false)
+        drainMainQueue()
+        XCTAssertTrue(host.makeFirstResponder(monaco))
+        content.addSubview(container)
+        drainMainQueue()
+        XCTAssertFalse(host.firstResponder === terminal, "the owner moved on after the click")
+
+        container.removeFromSuperview()
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: true, explicit: false, keptOff: false)
+        drainMainQueue()
+        content.addSubview(container)
+        drainMainQueue()
+        XCTAssertFalse(host.firstResponder === terminal, "an attach alone yields to Monaco")
     }
 }
 

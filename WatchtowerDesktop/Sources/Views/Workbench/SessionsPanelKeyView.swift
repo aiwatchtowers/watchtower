@@ -103,6 +103,8 @@ struct SessionsPanelKeyView: NSViewRepresentable {
         private var clickMonitor: Any?
         private var responderObservation: NSKeyValueObservation?
         private weak var observedWindow: NSWindow?
+        /// The list's give-back is moving the keyboard.
+        private var givingBack = false
 
         override var acceptsFirstResponder: Bool { true }
         override var focusRingType: NSFocusRingType {
@@ -190,8 +192,16 @@ struct SessionsPanelKeyView: NSViewRepresentable {
             observedWindow = window
             responderObservation = window?.observe(\.firstResponder, options: [.old]) { [weak self] window, change in
                 let previous = change.oldValue.flatMap(\.self)
-                MainActor.assumeIsolated { self?.giveBackFromList(in: window, previous: previous) }
+                MainActor.assumeIsolated { self?.keyboardMoved(in: window, from: previous) }
             }
+        }
+
+        /// Every move of the window's first responder but the list's own
+        /// give-back counts for a terminal focus still pending
+        /// (`TerminalContainerView.keyboardMoved`).
+        private func keyboardMoved(in window: NSWindow, from previous: NSResponder?) {
+            if !givingBack { TerminalContainerView.keyboardMoved(in: window) }
+            giveBackFromList(in: window, previous: previous)
         }
 
         /// The list this view lies behind never keeps the keyboard a click
@@ -212,7 +222,9 @@ struct SessionsPanelKeyView: NSViewRepresentable {
             let request = currentFocusRequest?()
             weak var holder = previous as? NSView
             DispatchQueue.main.async { [weak self] in
-                guard window.firstResponder === list, self?.currentFocusRequest?() == request else { return }
+                guard let self, window.firstResponder === list, currentFocusRequest?() == request else { return }
+                givingBack = true
+                defer { givingBack = false }
                 if let holder, holder.window === window, !holder.isHiddenOrHasHiddenAncestor,
                    !holder.visibleRect.isEmpty, window.makeFirstResponder(holder) {
                     return
