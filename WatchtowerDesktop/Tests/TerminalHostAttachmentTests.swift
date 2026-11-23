@@ -180,6 +180,10 @@ final class TerminalHostAttachmentTests: XCTestCase {
         TerminalContainerView().addSubview(inTerminal)
         XCTAssertTrue(TerminalContainerView.holdsTypedInput(NSTextView()), "a text view or field editor")
         XCTAssertTrue(TerminalContainerView.holdsTypedInput(inTerminal), "another terminal")
+        let webEditor = WKWebView()
+        let insideWeb = NSView()
+        webEditor.addSubview(insideWeb)
+        XCTAssertTrue(TerminalContainerView.holdsTypedInput(insideWeb), "a web editor (Monaco)")
         XCTAssertFalse(TerminalContainerView.holdsTypedInput(host))
         XCTAssertFalse(TerminalContainerView.holdsTypedInput(nil))
     }
@@ -283,12 +287,13 @@ final class TerminalHostAttachmentTests: XCTestCase {
         content.addSubview(container)
         let asking = FocusableView()
         let other = FocusableView()
+        XCTAssertTrue(host.makeFirstResponder(nil))
 
         TerminalHostAttachment.attach(asking, to: container)
         container.focusTerminal(asking)
         TerminalHostAttachment.attach(other, to: container)
         drainMainQueue()
-        XCTAssertFalse(host.firstResponder === other, "swapped in before the turn")
+        XCTAssertTrue(host.firstResponder === host, "swapped in before the turn: nobody focused")
 
         container.removeFromSuperview()
         TerminalHostAttachment.attach(asking, to: container)
@@ -297,12 +302,68 @@ final class TerminalHostAttachmentTests: XCTestCase {
         TerminalHostAttachment.attach(other, to: container)
         content.addSubview(container)
         drainMainQueue()
-        XCTAssertFalse(host.firstResponder === other, "swapped in before the window")
-        TerminalHostAttachment.attach(asking, to: container)
+        XCTAssertTrue(host.firstResponder === host, "swapped in before the window: nobody focused")
+
         container.removeFromSuperview()
+        TerminalHostAttachment.attach(asking, to: container)
+        container.focusTerminal(asking)
+        drainMainQueue()
+        TerminalHostAttachment.attach(other, to: container)
+        TerminalHostAttachment.attach(asking, to: container)
         content.addSubview(container)
         drainMainQueue()
-        XCTAssertFalse(host.firstResponder === asking, "a swap drops the wait")
+        XCTAssertTrue(host.firstResponder === host, "a swap drops the wait, also swapped back")
+    }
+
+    /// The focus queued on entering the window is dropped by an update
+    /// that finds the terminal covered before that turn.
+    func testACoverBeforeTheWindowTurnDropsTheFocus() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let container = TerminalContainerView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let terminal = FocusableView()
+        TerminalHostAttachment.attach(terminal, to: container)
+        container.focusTerminal(terminal)
+        drainMainQueue()
+
+        content.addSubview(container)
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: false, keptOff: true)
+        drainMainQueue()
+        XCTAssertFalse(host.firstResponder === terminal)
+    }
+
+    /// The panel's claim counts also when it holds the keyboard already
+    /// (the owner clicked the SESSIONS label while it had it).
+    func testAClaimByThePanelHoldingTheKeyboardStillCounts() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let panel = SessionsPanelKeyView.KeyView(frame: NSRect(x: 0, y: 0, width: 50, height: 50))
+        content.addSubview(panel)
+        XCTAssertTrue(host.makeFirstResponder(panel))
+        let container = TerminalContainerView(frame: NSRect(x: 100, y: 0, width: 300, height: 300))
+        let terminal = FocusableView()
+        TerminalHostAttachment.attach(terminal, to: container)
+        content.addSubview(container)
+
+        container.focusTerminal(terminal)
+        panel.takePanelKeyboard()
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === panel)
+    }
+
+    /// Kept off the keyboard: covered, or an attach an ask switched from
+    /// the keyboard asked to leave it (`keepsKeyboard`, board #412).
+    func testKeptOffTruthTable() {
+        for obscured in [false, true] {
+            for attached in [false, true] {
+                for keeps in [false, true] {
+                    XCTAssertEqual(
+                        TerminalHostAttachment.keptOff(obscured: obscured, attached: attached, keepsKeyboard: keeps),
+                        obscured || (attached && keeps), "obscured=\(obscured) attached=\(attached) keeps=\(keeps)"
+                    )
+                }
+            }
+        }
     }
 
     /// A container that enters the window and leaves it again before the

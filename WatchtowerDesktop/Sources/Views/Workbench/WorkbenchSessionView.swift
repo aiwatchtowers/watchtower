@@ -384,15 +384,16 @@ private struct TerminalHost: NSViewRepresentable {
     private func attach(to container: TerminalContainerView, _ coordinator: Coordinator) {
         let terminal = session.view
         let attached = TerminalHostAttachment.attach(terminal, to: container)
-        let keepsOff = attached && keepsKeyboard()
+        let keeps = attached && keepsKeyboard()
         let focus = TerminalHostAttachment.needsFocus(
             attached: attached, requested: focusSerial, honoured: coordinator.honouredSerial, obscured: obscured,
-            keepsKeyboard: keepsOff
+            keepsKeyboard: keeps
         )
         let explicit = focusSerial != nil && focusSerial != coordinator.honouredSerial
         coordinator.honouredSerial = focusSerial
         TerminalHostAttachment.settleFocus(
-            terminal, in: container, focus: focus, explicit: explicit, keptOff: obscured || keepsOff
+            terminal, in: container, focus: focus, explicit: explicit,
+            keptOff: TerminalHostAttachment.keptOff(obscured: obscured, attached: attached, keepsKeyboard: keeps)
         )
     }
 }
@@ -442,6 +443,13 @@ enum TerminalHostAttachment {
     /// keyboard) moves nothing either; a request still does.
     static func needsFocus(attached: Bool, requested: Int?, honoured: Int?, obscured: Bool = false, keepsKeyboard: Bool = false) -> Bool {
         !obscured && ((attached && !keepsKeyboard) || (requested != nil && requested != honoured))
+    }
+
+    /// The terminal may not take the keyboard now: covered (an ask drawer,
+    /// a page screen), or attached by an ask switched from the keyboard
+    /// (`keepsKeyboard`, board #412). A focus still pending is dropped.
+    static func keptOff(obscured: Bool, attached: Bool, keepsKeyboard: Bool) -> Bool {
+        obscured || (attached && keepsKeyboard)
     }
 
     /// After an attach: the focus `needsFocus` decided goes to the
