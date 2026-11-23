@@ -45,7 +45,7 @@
     "key": "PurgeGraceHours",
     "type": "integer",
     "default": "not set: 72 hours",
-    "effect": "Hours of notice before the data of an account whose access ended is deleted, 0 to 720. 0 deletes it after the next sync cycle, unless that sync proves access. A value outside the range or not a whole number is ignored."
+    "effect": "Hours of notice before a revoked or removed account's data is deleted, 0 to 720; 0 deletes it after a later sync, unless that sync proves access. For an account not reached for 30 days the warning still comes 72 hours before the 30-day mark, and the data goes at the mark or this many hours after the warning, whichever is later. A value outside the range or not a whole number is ignored."
   },
   {
     "key": "AllowBackgroundAI",

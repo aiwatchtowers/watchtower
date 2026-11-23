@@ -71,7 +71,7 @@
                                 <!-- Delete a revoked or long-unreached account's data after its notice (PurgeGraceHours). -->
                                 <key>PurgeRevokedData</key>
                                 <true/>
-                                <!-- Hours of notice before that deletion, 0 to 720 (0 = after the next sync cycle); not set = 72. -->
+                                <!-- Hours of notice before a revoked or removed account's data is deleted, 0 to 720 (0 = after a later sync); not set = 72. The 30-day rule still warns 72 hours before its mark and deletes at the mark or this many hours after the warning, whichever is later. -->
                                 <key>PurgeGraceHours</key>
                                 <integer>72</integer>
                                 <!-- Background AI (digests, tracks, automations without you at the screen): true = your organization consents, false = never runs. -->

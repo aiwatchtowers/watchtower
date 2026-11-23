@@ -35,7 +35,7 @@ var keyDocs = map[string]KeyDoc{
 	KeyPurgeRevokedData: {Type: "boolean", Default: "not set: the person's own setting",
 		Effect: "Whether an account whose access was revoked has its data wiped."},
 	KeyPurgeGraceHours: {Type: "integer", Default: "not set: 72 hours",
-		Effect: "Hours of notice before the data of an account whose access ended is deleted, 0 to 720. 0 deletes it after the next sync cycle, unless that sync proves access. A value outside the range or not a whole number is ignored."},
+		Effect: "Hours of notice before a revoked or removed account's data is deleted, 0 to 720; 0 deletes it after a later sync, unless that sync proves access. For an account not reached for 30 days the warning still comes 72 hours before the 30-day mark, and the data goes at the mark or this many hours after the warning, whichever is later. A value outside the range or not a whole number is ignored."},
 	KeyAllowBackgroundAI: {Type: "boolean", Default: "not set: each person is asked",
 		Effect: "true is the organization's consent to AI that runs in the background, so people are not asked; each person can still pause it. false keeps background AI off and locks the switch."},
 	KeySlackApps: {Type: "array of dictionaries", Default: "not set: none",
