@@ -96,4 +96,222 @@ final class TerminalHostAttachmentTests: XCTestCase {
         XCTAssertFalse(TerminalHostAttachment.needsFocus(attached: false, requested: 4, honoured: 3, obscured: true),
                        "nor does a request")
     }
+
+    private func window() -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        addTeardownBlock { window.close() }
+        return window
+    }
+
+    private func drainMainQueue() {
+        let drained = expectation(description: "main queue drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 5)
+    }
+
+    /// A new host SwiftUI puts in the window only after the focus turn
+    /// (seen switching workbenches from the switcher popover, #1150): the
+    /// keyboard follows once the container is in a window — unless
+    /// something there has it by then. In a window already, it moves on
+    /// the next turn.
+    func testFocusWaitsForTheContainersWindow() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let container = TerminalContainerView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let terminal = FocusableView()
+        TerminalHostAttachment.attach(terminal, to: container)
+
+        container.focusTerminal(terminal)
+        drainMainQueue()
+        content.addSubview(container)
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === terminal, "focused once in the window")
+
+        container.removeFromSuperview()
+        XCTAssertTrue(host.makeFirstResponder(nil))
+        container.focusTerminal(terminal)
+        drainMainQueue()
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 50, height: 20))
+        content.addSubview(field)
+        XCTAssertTrue(host.makeFirstResponder(field))
+        content.addSubview(container)
+        drainMainQueue()
+        XCTAssertFalse(host.firstResponder === terminal, "the keyboard the owner put elsewhere stays there")
+
+        container.removeFromSuperview()
+        content.addSubview(container)
+        drainMainQueue()
+        XCTAssertFalse(host.firstResponder === terminal, "a wait is used once")
+
+        container.focusTerminal(terminal)
+        XCTAssertFalse(host.firstResponder === terminal, "not inside the update")
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === terminal, "in a window: the next turn")
+    }
+
+    /// The deferred focus yields only to typed input (a text view or field
+    /// editor, a web editor, another terminal). The sessions list and the
+    /// panel's key view, where a row click can leave the keyboard, keep it
+    /// from no terminal that arrives (#1150).
+    func testDeferredFocusOverridesTheListAndThePanel() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let list = ListLike(frame: NSRect(x: 0, y: 0, width: 50, height: 50))
+        let panel = SessionsPanelKeyView.KeyView(frame: NSRect(x: 0, y: 50, width: 50, height: 50))
+        content.addSubview(list)
+        content.addSubview(panel)
+        for holder in [list, panel] as [NSView] {
+            let container = TerminalContainerView(frame: NSRect(x: 100, y: 0, width: 300, height: 300))
+            let terminal = FocusableView()
+            TerminalHostAttachment.attach(terminal, to: container)
+            container.focusTerminal(terminal)
+            drainMainQueue()
+            XCTAssertTrue(host.makeFirstResponder(holder))
+            content.addSubview(container)
+            drainMainQueue()
+            XCTAssertTrue(host.firstResponder === terminal, "\(type(of: holder)) keeps the keyboard from the terminal")
+            container.removeFromSuperview()
+        }
+
+        let inTerminal = NSView()
+        TerminalContainerView().addSubview(inTerminal)
+        XCTAssertTrue(TerminalContainerView.holdsTypedInput(NSTextView()), "a text view or field editor")
+        XCTAssertTrue(TerminalContainerView.holdsTypedInput(inTerminal), "another terminal")
+        XCTAssertFalse(TerminalContainerView.holdsTypedInput(host))
+        XCTAssertFalse(TerminalContainerView.holdsTypedInput(nil))
+    }
+
+    /// The panel taking the keyboard on the owner's request (the SESSIONS
+    /// label, the group header, a ✕, Undo, its empty space) after a
+    /// terminal's focus was asked wins over that focus still pending — the
+    /// later choice (ask #195). A panel that only holds the keyboard from
+    /// before is still overridden (`testDeferredFocusOverridesTheListAndThePanel`).
+    func testALaterPanelKeyboardRequestWinsOverAPendingFocus() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let panel = SessionsPanelKeyView.KeyView(frame: NSRect(x: 0, y: 0, width: 50, height: 50))
+        content.addSubview(panel)
+
+        let waiting = TerminalContainerView(frame: NSRect(x: 100, y: 0, width: 300, height: 300))
+        let terminal = FocusableView()
+        TerminalHostAttachment.attach(terminal, to: waiting)
+        waiting.focusTerminal(terminal)
+        drainMainQueue()
+        panel.takePanelKeyboard()
+        XCTAssertTrue(host.firstResponder === panel)
+        content.addSubview(waiting)
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === panel, "waiting for the window")
+
+        waiting.focusTerminal(terminal)
+        XCTAssertTrue(host.makeFirstResponder(nil))
+        panel.takePanelKeyboard()
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === panel, "queued for its turn")
+    }
+
+    /// A panel claim is its own window's: the panel of another window
+    /// taking its keyboard leaves this window's pending focus alone.
+    func testAPanelClaimInAnotherWindowLeavesThePendingFocus() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let other = window()
+        let otherPanel = SessionsPanelKeyView.KeyView(frame: NSRect(x: 0, y: 0, width: 50, height: 50))
+        try XCTUnwrap(other.contentView).addSubview(otherPanel)
+
+        let waiting = TerminalContainerView(frame: NSRect(x: 100, y: 0, width: 300, height: 300))
+        let terminal = FocusableView()
+        TerminalHostAttachment.attach(terminal, to: waiting)
+        waiting.focusTerminal(terminal)
+        drainMainQueue()
+        otherPanel.takePanelKeyboard()
+        content.addSubview(waiting)
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === terminal, "waiting for the window")
+
+        XCTAssertTrue(host.makeFirstResponder(nil))
+        waiting.focusTerminal(terminal)
+        otherPanel.takePanelKeyboard()
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === terminal, "queued for its turn")
+    }
+
+    /// An update that finds the terminal covered (an ask drawer, a page
+    /// screen) or kept from the keyboard drops a focus still pending —
+    /// waiting for the window or for its turn: dropped, not kept. An
+    /// update that only decides no new focus keeps it.
+    func testACoveredTerminalDropsItsPendingFocus() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let container = TerminalContainerView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let terminal = FocusableView()
+        TerminalHostAttachment.attach(terminal, to: container)
+
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: true, keptOff: false)
+        drainMainQueue()
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: false, keptOff: false)
+        content.addSubview(container)
+        drainMainQueue()
+        XCTAssertTrue(host.firstResponder === terminal, "an update with nothing new keeps the wait")
+
+        container.removeFromSuperview()
+        XCTAssertTrue(host.makeFirstResponder(nil))
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: true, keptOff: false)
+        drainMainQueue()
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: false, keptOff: true)
+        content.addSubview(container)
+        drainMainQueue()
+        XCTAssertFalse(host.firstResponder === terminal, "covered while waiting for the window")
+
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: true, keptOff: false)
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: false, keptOff: true)
+        drainMainQueue()
+        XCTAssertFalse(host.firstResponder === terminal, "covered before its turn")
+    }
+
+    /// A focus is the terminal's that asked: SwiftUI reuses a host, and a
+    /// terminal swapped in before the turn (or before the window) made no
+    /// request — it may be one kept from the keyboard (`keepsKeyboard`, an
+    /// ask drawer over it).
+    func testAFocusIsTheRequestingTerminals() throws {
+        let host = window()
+        let content = try XCTUnwrap(host.contentView)
+        let container = TerminalContainerView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        content.addSubview(container)
+        let asking = FocusableView()
+        let other = FocusableView()
+
+        TerminalHostAttachment.attach(asking, to: container)
+        container.focusTerminal(asking)
+        TerminalHostAttachment.attach(other, to: container)
+        drainMainQueue()
+        XCTAssertFalse(host.firstResponder === other, "swapped in before the turn")
+
+        container.removeFromSuperview()
+        TerminalHostAttachment.attach(asking, to: container)
+        container.focusTerminal(asking)
+        drainMainQueue()
+        TerminalHostAttachment.attach(other, to: container)
+        content.addSubview(container)
+        drainMainQueue()
+        XCTAssertFalse(host.firstResponder === other, "swapped in before the window")
+        TerminalHostAttachment.attach(asking, to: container)
+        container.removeFromSuperview()
+        content.addSubview(container)
+        drainMainQueue()
+        XCTAssertFalse(host.firstResponder === asking, "a swap drops the wait")
+    }
+}
+
+/// Takes the keyboard like the embedded terminal.
+private final class FocusableView: NSView {
+    override var acceptsFirstResponder: Bool { true }
+}
+
+/// Keeps first responder like SwiftUI's list table (a bare NSTableView
+/// outside a scroll view hands it straight to the window).
+private final class ListLike: NSTableView {
+    override func becomeFirstResponder() -> Bool { true }
 }

@@ -122,7 +122,11 @@ struct SessionsPanelKeyView: NSViewRepresentable {
         }
 
         func takePanelKeyboard() {
-            guard let window, window.firstResponder !== self, !hasSheet(window) else { return }
+            guard let window, !hasSheet(window) else { return }
+            // The owner's later choice: a terminal focus still pending in
+            // this window gives way.
+            TerminalContainerView.panelClaimedKeyboard(in: window)
+            guard window.firstResponder !== self else { return }
             window.makeFirstResponder(self)
         }
 

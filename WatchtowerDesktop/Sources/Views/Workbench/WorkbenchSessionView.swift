@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WatchtowerCore
+import WebKit
 
 /// A session pane of a project page (spec §3): one `terminal_sessions` row
 /// from `AppState.terminalCenter`, which owns the process — this view never
@@ -383,13 +384,13 @@ private struct TerminalHost: NSViewRepresentable {
     private func attach(to container: TerminalContainerView, _ coordinator: Coordinator) {
         let terminal = session.view
         let attached = TerminalHostAttachment.attach(terminal, to: container)
+        let keepsOff = attached && keepsKeyboard()
         let focus = TerminalHostAttachment.needsFocus(
             attached: attached, requested: focusSerial, honoured: coordinator.honouredSerial, obscured: obscured,
-            keepsKeyboard: attached && keepsKeyboard()
+            keepsKeyboard: keepsOff
         )
         coordinator.honouredSerial = focusSerial
-        guard focus else { return }
-        DispatchQueue.main.async { terminal.window?.makeFirstResponder(terminal) }
+        TerminalHostAttachment.settleFocus(terminal, in: container, focus: focus, keptOff: obscured || keepsOff)
     }
 }
 
@@ -440,6 +441,19 @@ enum TerminalHostAttachment {
         !obscured && ((attached && !keepsKeyboard) || (requested != nil && requested != honoured))
     }
 
+    /// After an attach: the focus `needsFocus` decided goes to the
+    /// container (`focusTerminal`). A terminal covered or kept from the
+    /// keyboard (`keptOff`) also drops a focus still pending from an
+    /// earlier update — waiting for the window, or for its turn.
+    @MainActor
+    static func settleFocus(_ terminal: NSView, in container: TerminalContainerView, focus: Bool, keptOff: Bool) {
+        if focus {
+            container.focusTerminal(terminal)
+        } else if keptOff {
+            container.cancelFocus()
+        }
+    }
+
     /// Whether the keyboard is in a session's terminal (a view inside a
     /// `TerminalContainerView`) of `window`.
     @MainActor
@@ -464,6 +478,33 @@ enum TerminalHostAttachment {
 final class TerminalContainerView: NSView {
     private weak var observedTerminal: NSView?
     private var backgroundObservation: NSKeyValueObservation?
+    /// The terminal whose `focusTerminal` found no window: it takes the
+    /// keyboard when the container enters one; dropped when it leaves the
+    /// container.
+    private weak var terminalWaitingForWindow: NSView?
+    /// `claimSequence` when that terminal asked.
+    private var waitingSince = 0
+    /// Counts `focusTerminal` and `cancelFocus` calls: a queued focus runs
+    /// only while it is still the latest.
+    private var focusRequests = 0
+    /// Every time a sessions panel took the keyboard on the owner's request
+    /// (`SessionsPanelKeyView.KeyView.takePanelKeyboard`) gets the next
+    /// number, kept as its window's latest claim: a terminal focus asked
+    /// before its window's latest claim gives way — the owner's later
+    /// choice. A claim in another window leaves it alone, and a panel or
+    /// list that only holds the keyboard from before is still overridden.
+    private static var claimSequence = 0
+    private static var latestClaims: [ObjectIdentifier: Int] = [:]
+
+    static func panelClaimedKeyboard(in window: NSWindow) {
+        claimSequence += 1
+        latestClaims[ObjectIdentifier(window)] = claimSequence
+    }
+
+    /// The panel of `window` took the keyboard after claim number `sequence`.
+    private static func panelClaimed(in window: NSWindow, since sequence: Int) -> Bool {
+        (latestClaims[ObjectIdentifier(window)] ?? 0) > sequence
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -477,6 +518,64 @@ final class TerminalContainerView: NSView {
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
         subviews.forEach { $0.frame = TerminalHostAttachment.contentFrame(in: bounds) }
+    }
+
+    /// Moves the keyboard into `terminal` on the next main-queue turn
+    /// (after the update that asked). A new host SwiftUI has not put in
+    /// the window by then (#1150) gives it once it is in one — unless the
+    /// owner is typing elsewhere by then (`holdsTypedInput`). Only while
+    /// `terminal` is still the one shown: a reused host may have swapped
+    /// in a terminal that asked for nothing.
+    func focusTerminal(_ terminal: NSView) {
+        focusRequests += 1
+        let request = focusRequests
+        let asked = Self.claimSequence
+        DispatchQueue.main.async { [weak self, weak terminal] in
+            guard let self, request == focusRequests, let terminal, subviews.first === terminal else { return }
+            guard let window else {
+                terminalWaitingForWindow = terminal
+                waitingSince = asked
+                return
+            }
+            guard !Self.panelClaimed(in: window, since: asked) else { return }
+            window.makeFirstResponder(terminal)
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let terminal = terminalWaitingForWindow, window != nil else { return }
+        terminalWaitingForWindow = nil
+        let request = focusRequests
+        let asked = waitingSince
+        DispatchQueue.main.async { [weak self, weak terminal] in
+            guard let self, request == focusRequests, let terminal, subviews.first === terminal, let window,
+                  !Self.panelClaimed(in: window, since: asked),
+                  !Self.holdsTypedInput(window.firstResponder) else { return }
+            window.makeFirstResponder(terminal)
+        }
+    }
+
+    /// Drops a focus still pending — queued for its turn or waiting for
+    /// the window: the terminal is covered or kept from the keyboard now
+    /// (dropped, not kept).
+    func cancelFocus() {
+        focusRequests += 1
+        terminalWaitingForWindow = nil
+    }
+
+    /// The deferred focus yields only to typed input: a text view or field
+    /// editor, a web editor (Monaco) or a terminal. Anything else — the
+    /// window itself, the sessions list a row click left it in, the
+    /// panel's key view — gives way to the terminal.
+    static func holdsTypedInput(_ responder: NSResponder?) -> Bool {
+        var view = responder as? NSView
+        if view is NSText { return true }
+        while let current = view {
+            if current is WKWebView || current is TerminalContainerView { return true }
+            view = current.superview
+        }
+        return false
     }
 
     override func didAddSubview(_ subview: NSView) {
@@ -493,6 +592,8 @@ final class TerminalContainerView: NSView {
 
     override func willRemoveSubview(_ subview: NSView) {
         super.willRemoveSubview(subview)
+        // A swap (or the host's dismantle) drops a wait for the window.
+        if subview === terminalWaitingForWindow { terminalWaitingForWindow = nil }
         guard subview === observedTerminal else { return }
         backgroundObservation = nil
         observedTerminal = nil
