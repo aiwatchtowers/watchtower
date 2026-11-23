@@ -379,6 +379,33 @@ final class CompanyConnectDriverTests: XCTestCase {
         XCTAssertNil(read.vendors["microsoft"]?.ready, "ready is Slack's alone")
     }
 
+    /// #1142: a create that finds the workspace's app ends on that app's diff
+    /// card (the chained read), never on a bare "stopped".
+    func testSlackTokenOnAnExistingAppShowsItsUpdate() async {
+        let cli = CompanyScriptedCLI()
+        let (driver, wizard) = make(cli)
+        cli.on(["slack", "app", "create"], [#"{"result":"existing_app","team_id":"T0ACME","team_name":"acme","#
+            + #""app_id":"A0ACME","client_id":"1111.2222"}"#])
+        cli.on(["slack", "app", "adopt"], [confirmApp])
+        let answer = await driver.submitSecret(kind: "slack_config_token", value: token)
+        XCTAssertEqual(Self.text(answer), #"{"result":"confirm_update"}"#)
+        XCTAssertNotNil(driver.secretConfirm(kind: "slack_config_token"))
+        XCTAssertEqual(wizard.slackToken, token, "Update the app still has the token")
+    }
+
+    /// #1142: the workspace's app is known only by its Client ID: the agent is
+    /// asked for its settings link.
+    func testSlackTokenOnAnUnknownExistingAppAsksForItsLink() async {
+        let cli = CompanyScriptedCLI()
+        let (driver, wizard) = make(cli)
+        cli.on(["slack", "app", "create"], [#"{"result":"existing_app","team_id":"T0ACME","team_name":"acme","#
+            + #""client_id":"1111.2222"}"#])
+        let answer = await driver.submitSecret(kind: "slack_config_token", value: token)
+        guard case let .failure(.failed(line)) = answer else { return XCTFail("\(answer)") }
+        XCTAssertEqual(line, Driver.slackFoundExisting)
+        XCTAssertEqual(wizard.slackToken, "")
+    }
+
     func testSlackProblemIsTheWizardsLine() async {
         let cli = CompanyScriptedCLI()
         let (driver, wizard) = make(cli)

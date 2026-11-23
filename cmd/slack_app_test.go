@@ -321,8 +321,6 @@ func TestAppSetup_AdoptBuiltinAppDeferredCLI(t *testing.T) {
 	assert.Contains(t, err.Error(), "later Watchtower update")
 }
 
-// The one-release Task 18 corp build (ask #1632) keeps the corp app's client
-// id without its secret: no built-in app, so create offers the adopt and
 // TestAppSetup_CreateNewAppCLI: --new-app creates a second app where the
 // workspace's company app answers existing_app.
 func TestAppSetup_CreateNewAppCLI(t *testing.T) {
@@ -348,6 +346,8 @@ func TestAppSetup_CreateNewAppCLI(t *testing.T) {
 	assert.Equal(t, "ok", lines[len(lines)-1]["result"], "--new-app creates the second app")
 }
 
+// The one-release Task 18 corp build (ask #1632) keeps the corp app's client
+// id without its secret: no built-in app, so create offers the adopt and
 // adopt with --enable-pkce turns PKCE on instead of answering
 // builtin_app_pkce_deferred.
 func TestAppSetup_CorpIDWithoutSecretNotDeferredCLI(t *testing.T) {

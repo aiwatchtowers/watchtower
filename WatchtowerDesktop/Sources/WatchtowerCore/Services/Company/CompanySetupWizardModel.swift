@@ -665,7 +665,7 @@ package final class CompanySetupWizardModel {
 
     private func clearEntries(_ v: CompanyVendor) {
         switch v {
-        case .slack: draft.slack = .init(); slackReuse = nil
+        case .slack: draft.slack = .init(); slackReuse = nil; slackNewApp = false; slackFoundExisting = false
         case .google: draft.google = nil; googleFile = nil
         case .atlassian: draft.atlassian = nil; atlassianConfirmed = [false, false, false]
         case .linear: draft.linear = nil
@@ -689,6 +689,7 @@ package final class CompanySetupWizardModel {
             // From the Slack step's diff or problem: back to its choice. The
             // confirmed App ID goes too: only Update the app may confirm it.
             slackAttempt = false
+            slackNewApp = false
             slack.resetForm()
             phases[.slack] = nil
             enter(current)
@@ -800,6 +801,7 @@ package final class CompanySetupWizardModel {
     /// **We already have one**.
     package func alreadyHaveOne() {
         guard case let .vendor(v) = current else { return }
+        if v == .slack { slackFoundExisting = false }
         phases[v] = .existing
     }
 
@@ -1108,6 +1110,7 @@ package final class CompanySetupWizardModel {
             // A client id with no App ID known here: the settings link names it.
             slackReuse = nil
             slackClientID = c.clientID
+            slackFoundExisting = false
             phases[.slack] = .existing
             return
         }
@@ -1224,6 +1227,12 @@ package final class CompanySetupWizardModel {
             }
         case let .existingApp(appID, clientID):
             slackNewApp = false
+            // The step moved on (Skip) while the create's records were read:
+            // nothing starts behind the owner's back.
+            guard current == .vendor(.slack), phases[.slack] == .create else {
+                slackAttempt = false
+                return
+            }
             if appID.isEmpty {
                 // Known only by its Client ID: its settings link names it.
                 slackAttempt = false

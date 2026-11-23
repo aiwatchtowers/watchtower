@@ -160,9 +160,10 @@ extension CompanySetupWizardModel {
 
     /// Slack's `no_permission` on the app: also a token made in another
     /// workspace than the app's, not only a missing collaborator (#1142).
+    /// The connect assistant sends it too, so it names no wizard button.
     package static func notCollaborator(appID: String) -> String {
         "Slack would not let this token change app \(appID) (no_permission). The token has to come from the workspace "
-            + "the app was made in, from one of its collaborators: make a new token there and try again, or create a new app instead."
+            + "the app was made in, from one of its collaborators: make a new token there and try again."
     }
     package static let createNewAppInstead = "Create a new app instead"
     package static let slackFoundExisting = "This workspace already has a Watchtower app. Paste its settings link to update it."

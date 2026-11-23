@@ -378,6 +378,55 @@ final class CompanySetupWizardModelTests: XCTestCase {
         XCTAssertEqual(cli.calls(["slack", "app", "create"]).first?.args, ["slack", "app", "create", "--json", "--new-app"])
     }
 
+    /// #1142, the owner's dead end end to end: create → existing_app → the
+    /// app's read refused (no_permission) → Create a new app instead → --new-app.
+    func testExistingAppRefusedThenNewApp() async {
+        let cli = CompanyScriptedCLI()
+        let (model, _) = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        await model.next()
+        model.slackToken = token
+        cli.on(["slack", "app", "create"], [#"{"result":"existing_app","team_id":"T0ACME","team_name":"acme","#
+            + #""app_id":"A0ACME","client_id":"1111.2222"}"#])
+        cli.on(["slack", "app", "adopt"], [#"{"result":"not_collaborator","team_id":"T0ACME","team_name":"acme","#
+            + #""code":"no_permission"}"#])
+        await model.next()
+        await untilObserved { model.slackOffersNewApp }
+        XCTAssertEqual(model.primary.title, "Try again")
+        model.createNewSlackApp()
+        cli.on(["slack", "app", "create"], [#"{"result":"ok","team_id":"T0ACME","team_name":"acme","app_id":"A0NEW","#
+            + #""client_id":"3333.4444","link_written":false}"#])
+        cli.setups = acmeSetup
+        await model.next()
+        await untilObserved { model.current == .denyList }
+        XCTAssertEqual(cli.calls(["slack", "app", "create"]).map(\.args),
+                       [["slack", "app", "create", "--json"], ["slack", "app", "create", "--json", "--new-app"]])
+    }
+
+    /// #1142: Skip while the create's records are read: the found app is not
+    /// read behind the owner's back.
+    func testExistingAppAfterSkipStartsNothing() async {
+        let cli = CompanyScriptedCLI()
+        let (model, _) = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        await model.next()
+        model.slackToken = token
+        cli.hold(["slack", "app", "status"])
+        cli.on(["slack", "app", "create"], [#"{"result":"existing_app","team_id":"T0ACME","team_name":"acme","#
+            + #""app_id":"A0ACME","client_id":"1111.2222"}"#])
+        await model.next()
+        await cli.waitFor(["slack", "app", "status"])
+        await model.skip()
+        cli.release(["slack", "app", "status"], [#"{"setups":[]}"#])
+        await model.slack.runTask?.value
+        XCTAssertTrue(cli.calls(["slack", "app", "adopt"]).isEmpty)
+        XCTAssertFalse(model.slack.isRunning)
+    }
+
     func testReusedAppShowsDiffThenUpdates() async {
         let cli = CompanyScriptedCLI()
         cli.on(["company", "discover"], [#"{"candidates":[{"vendor":"slack","client_id":"1111.2222","app_id":"A0ACME","#
@@ -586,7 +635,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
         await untilObserved { model.slackProblem != nil }
         XCTAssertEqual(model.slackProblem, "Slack would not let this token change app A0ACME (no_permission). The token has to "
             + "come from the workspace the app was made in, from one of its collaborators: make a new token there and try "
-            + "again, or create a new app instead.")
+            + "again.")
         XCTAssertEqual(model.current, .vendor(.slack), "the step stays open")
         XCTAssertEqual(model.primary.title, "Try again")
         XCTAssertTrue(cli.calls(["slack", "app", "create"]).isEmpty, "nothing created")
