@@ -94,24 +94,16 @@ func quietTemplateDir() string {
 	if err := os.WriteFile(filepath.Join(tmp, "config"), []byte(content), 0o600); err != nil {
 		panic(err)
 	}
-	err = os.Rename(tmp, dir)
-	if err != nil && !hasConfig(dir) {
-		// A stale directory: the OS temp cleaner deleted its old files but
-		// kept the directory, so the rename finds it in the way. Move it
-		// aside (a rename, so a binary racing us cannot lose a fresh copy
-		// half-deleted) and install ours.
-		stale := tmp + ".stale"
-		if os.Rename(dir, stale) == nil {
-			_ = os.RemoveAll(stale)
+	if err := os.Rename(tmp, dir); err != nil {
+		if hasConfig(dir) {
+			// Another test binary renamed its copy into place first.
+			_ = os.RemoveAll(tmp)
+			return dir
 		}
-		err = os.Rename(tmp, dir)
-	}
-	if err != nil {
-		// Another test binary renamed its copy into place first.
-		_ = os.RemoveAll(tmp)
-		if !hasConfig(dir) {
-			panic(fmt.Sprintf("gittest: installing the git template dir: %v", err))
-		}
+		// A stale directory is in the way: the OS temp cleaner deleted its
+		// old files but kept the directory. Replacing it could pull a fresh
+		// copy from under a binary racing us, so this binary keeps its own.
+		return tmp
 	}
 	return dir
 }

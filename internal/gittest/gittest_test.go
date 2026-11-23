@@ -129,23 +129,28 @@ func TestDisableBackgroundGit_ReachesAPushedToBareRepository(t *testing.T) {
 	}
 }
 
-// TestQuietTemplateDir_ReplacesAStaleDirectory: the OS temp cleaner can
-// delete the template's old files and keep the directory (seen on the CI
-// Macs: the directory was there, its config gone). The next test binary
-// must reinstall it instead of panicking on the rename.
-func TestQuietTemplateDir_ReplacesAStaleDirectory(t *testing.T) {
+// TestQuietTemplateDir_StaleDirectory: the OS temp cleaner can delete the
+// template's old files and keep its directories (seen on the CI Macs). The
+// next test binary must get a complete template of its own instead of
+// panicking on the rename, and must leave the shared directory alone.
+func TestQuietTemplateDir_StaleDirectory(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
-	dir := quietTemplateDir()
-	if err := os.Remove(filepath.Join(dir, "config")); err != nil {
-		t.Fatal(err)
+	shared := quietTemplateDir()
+	for _, f := range []string{"config", filepath.Join("info", "exclude")} {
+		if err := os.Remove(filepath.Join(shared, f)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if got := quietTemplateDir(); got != dir {
-		t.Fatalf("template dir = %q, want %q", got, dir)
+	got := quietTemplateDir()
+	if got == shared {
+		t.Fatalf("template dir = the stale shared %q", got)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "config")); err != nil {
-		t.Fatalf("config not reinstalled: %v", err)
+	for _, f := range []string{"config", filepath.Join("info", "exclude")} {
+		if _, err := os.Stat(filepath.Join(got, f)); err != nil {
+			t.Errorf("own template lacks %s: %v", f, err)
+		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, "info", "exclude")); err != nil {
-		t.Fatalf("info/exclude not reinstalled: %v", err)
+	if _, err := os.Stat(filepath.Join(shared, "info")); err != nil {
+		t.Errorf("shared stale directory was touched: %v", err)
 	}
 }
