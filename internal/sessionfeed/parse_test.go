@@ -387,3 +387,38 @@ func TestNoticeTask_Truncated(t *testing.T) {
 	assert.Equal(t, KindEvent, res.Entries[0].Kind)
 	assert.Nil(t, res.Entries[0].Task)
 }
+
+func TestNoticeTask_TrailingTextAfterClose(t *testing.T) {
+	res := parseStr(t, join(userStr("n1", agentNotice+"\nRead the output file to retrieve the result.")), 0)
+	require.Len(t, res.Entries, 1)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, 43545, res.Entries[0].Task.Tokens)
+}
+
+func TestNoticeTask_MismatchedChildIsNil(t *testing.T) {
+	res := parseStr(t, join(userStr("n1", "<task-notification>\n<task-id>a1</task-id>\n<status>done</summary>\n</task-notification>")), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Nil(t, res.Entries[0].Task)
+}
+
+func TestNoticeTask_NestedTagInResultKept(t *testing.T) {
+	n := strings.Replace(agentNotice, `This agent's report was delivered to you as a message from "aaea0001".`, "Found <b>3</b> issues in <file>x</file>.", 1)
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, "Found <b>3</b> issues in <file>x</file>.", res.Entries[0].Task.Result)
+	assert.Equal(t, 43545, res.Entries[0].Task.Tokens)
+}
+
+func TestNoticeTask_UsageOnlyFromUsageElement(t *testing.T) {
+	n := "<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent \"X\" finished</summary>\n<result>did <tool_uses>77</tool_uses> things</result>\n</task-notification>"
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, 0, res.Entries[0].Task.ToolUses)
+}
+
+func TestNoticeTask_ExitCodeAnchoredToEnd(t *testing.T) {
+	n := "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Background command \"echo (exit code 9)\" completed (exit code 3)</summary>\n</task-notification>"
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.NotNil(t, res.Entries[0].Task.ExitCode)
+	assert.Equal(t, 3, *res.Entries[0].Task.ExitCode)
+}

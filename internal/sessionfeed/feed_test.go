@@ -3,6 +3,7 @@ package sessionfeed
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -236,21 +237,56 @@ func TestFindSubagent_SidecarOnlyMarker(t *testing.T) {
 	assert.ErrorContains(t, err, "not found")
 }
 
-func TestBuild_TaskResultFromHandback(t *testing.T) {
+func taskBuildFx(t *testing.T, meta, report string) *Feed {
+	t.Helper()
 	dir := t.TempDir()
 	notice := "<task-notification>\n<task-id>t1</task-id>\n<tool-use-id>tu1</tool-use-id>\n<status>completed</status>\n<summary>Agent \"A\" finished</summary>\n<result>This agent's report was delivered to you as a message from \"t1\".</result>\n</task-notification>"
-	call := assistantRec("a1", "m1", agentCall("tu1", "Explore", "look"))
-	result := `{"type":"user","uuid":"r1","timestamp":"2026-10-01T10:00:07Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"First paragraph.\n\nSecond paragraph."}]}}` + "\n"
-	a := writeConv(t, dir, "A", join(userStr("u1", "go"), call, result, userStr("n1", notice)))
-	writeSub(t, filepath.Join(dir, "A"), "ag1", `{"toolUseId":"tu1","finished":true}`, "")
+	launch := `{"type":"user","uuid":"r1","timestamp":"2026-10-01T10:00:07Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"Async agent launched successfully."}]}}` + "\n"
+	a := writeConv(t, dir, "A", join(userStr("u1", "go"),
+		assistantRec("a1", "m1", agentCall("tu1", "Explore", "look")), launch, userStr("n1", notice)))
+	body := ""
+	if report != "" {
+		body = sideRec(assistantRec("s1", "sm1", map[string]any{"type": "tool_use", "id": "t9", "name": "SubagentHandback",
+			"input": map[string]any{"message": report}}))
+	}
+	writeSub(t, filepath.Join(dir, "A"), "ag1", meta, body)
 	f, err := Build([]Conversation{a}, nil, nil)
 	require.NoError(t, err)
-	var task *TaskRef
+	return f
+}
+
+func taskOf(t *testing.T, f *Feed) *TaskRef {
+	t.Helper()
 	for _, e := range f.Entries {
 		if e.Task != nil {
-			task = e.Task
+			return e.Task
 		}
 	}
-	require.NotNil(t, task)
-	assert.Equal(t, "First paragraph.", task.Result)
+	t.Fatal("no task entry")
+	return nil
+}
+
+const bgMeta = `{"toolUseId":"tu1","finished":true,"requestShape":"background"}`
+
+func TestBuild_TaskResultFromHandback(t *testing.T) {
+	f := taskBuildFx(t, bgMeta, "First paragraph.\n\nSecond paragraph.")
+	assert.Equal(t, "First paragraph.", taskOf(t, f).Result)
+}
+
+func TestBuild_TaskResultMissingMetaStaysEmpty(t *testing.T) {
+	f := taskBuildFx(t, "", "")
+	assert.Equal(t, "", taskOf(t, f).Result, "the launch notice must never become the result")
+}
+
+func TestBuild_TaskResultNoHandbackStaysEmpty(t *testing.T) {
+	f := taskBuildFx(t, bgMeta, "")
+	assert.Equal(t, "", taskOf(t, f).Result)
+}
+
+func TestBuild_TaskResultCapsAndSplitsOnWhitespaceLine(t *testing.T) {
+	f := taskBuildFx(t, bgMeta, "Line one\r\nline two\r\n   \r\nrest")
+	assert.Equal(t, "Line one\nline two", taskOf(t, f).Result)
+	long := strings.Repeat("я", 700)
+	f = taskBuildFx(t, bgMeta, long)
+	assert.Len(t, []rune(taskOf(t, f).Result), 600)
 }

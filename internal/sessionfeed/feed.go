@@ -104,7 +104,7 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 			continue
 		}
 		ResolveSubagents(strings.TrimSuffix(c.Path, ".jsonl"), res.Entries)
-		fillTaskResults(res.Entries)
+		fillTaskResults(strings.TrimSuffix(c.Path, ".jsonl"), res.Entries)
 		addSubagents(res.Entries, true)
 		addSubagents(subagentMarkers(c), false)
 		if read && start == 0 {
@@ -123,32 +123,53 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 // maxTaskResultRunes caps a task result taken from a subagent report.
 const maxTaskResultRunes = 600
 
-// fillTaskResults gives a task notification with no result of its own the
-// first paragraph of the report of the subagent marker (same entries) that it
-// names by tool_use_id.
-func fillTaskResults(entries []Entry) {
-	reports := map[string]string{}
-	for _, e := range entries {
-		if e.Kind == KindSubagent && e.Subagent != nil && e.Subagent.ParentReport != "" {
-			reports[e.Subagent.ToolUseID] = e.Subagent.ParentReport
-		}
-	}
+// fillTaskResults gives a task notification whose result is only the delivery
+// boilerplate the first paragraph of the agent's own SubagentHandback message,
+// read from its sidecar transcript (the meta file names the agent by
+// tool_use_id). Without a handback the result stays "": the parent's tool
+// result is a launch notice, never a report.
+func fillTaskResults(sessionDir string, entries []Entry) {
+	var metas map[string]subagentMeta
 	for i := range entries {
 		t := entries[i].Task
 		if t == nil || t.Result != "" || t.ToolUseID == "" {
 			continue
 		}
-		rep, ok := reports[t.ToolUseID]
+		if metas == nil {
+			metas, _ = readMetas(sessionDir)
+		}
+		m, ok := metas[t.ToolUseID]
 		if !ok {
 			continue
 		}
-		para, _, _ := strings.Cut(strings.TrimSpace(rep), "\n\n")
-		if r := []rune(strings.TrimSpace(para)); len(r) > maxTaskResultRunes {
-			t.Result = string(r[:maxTaskResultRunes])
-		} else {
-			t.Result = string(r)
+		path := filepath.Join(sessionDir, "subagents", "agent-"+m.agentID+".jsonl")
+		res, err := ParseSubagent(path, "")
+		if err != nil || len(res.Entries) == 0 {
+			continue
+		}
+		if last := res.Entries[len(res.Entries)-1]; last.ID == "report" {
+			t.Result = clipRunes(firstParagraph(last.Text), maxTaskResultRunes)
 		}
 	}
+}
+
+// firstParagraph is text up to its first blank (whitespace-only) line.
+func firstParagraph(text string) string {
+	var out []string
+	for _, l := range strings.Split(strings.TrimSpace(text), "\n") {
+		if strings.TrimSpace(l) == "" {
+			break
+		}
+		out = append(out, strings.TrimRight(l, "\r"))
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func clipRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 // cursorIndex is the index of the conversation the cursor points into, or -1.

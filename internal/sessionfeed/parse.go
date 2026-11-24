@@ -38,7 +38,7 @@ var (
 	taskTokensRe  = regexp.MustCompile(`<subagent_tokens>\s*(\d+)\s*</subagent_tokens>`)
 	taskUsesRe    = regexp.MustCompile(`<tool_uses>\s*(\d+)\s*</tool_uses>`)
 	taskDurRe     = regexp.MustCompile(`<duration_ms>\s*(\d+)\s*</duration_ms>`)
-	taskExitRe    = regexp.MustCompile(`\(exit code (-?\d+)\)`)
+	taskExitRe    = regexp.MustCompile(`\(exit code (-?\d+)\)$`)
 	cmdArgsRe     = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
 )
 
@@ -358,21 +358,15 @@ func noticeEntry(uuid, text string) Entry {
 		e.EventType = EventTask
 		var lines []string
 		inner := strings.TrimSuffix(strings.TrimPrefix(text, "<task-notification>"), "</task-notification>")
-		kids := map[string]string{}
 		for _, m := range taskChildRe.FindAllStringSubmatch(inner, -1) {
 			v := strings.TrimSpace(m[2])
-			if _, dup := kids[m[1]]; !dup {
-				kids[m[1]] = v
-			}
 			lines = append(lines, m[1]+": "+v)
 			if m[1] == "summary" && e.Title == "" {
 				e.Title = v
 			}
 		}
 		e.Text = strings.Join(lines, "\n")
-		if strings.HasSuffix(strings.TrimSpace(text), "</task-notification>") && len(kids) > 0 {
-			e.Task = taskRef(kids, inner)
-		}
+		e.Task = parseTaskNotification(text)
 	} else {
 		e.EventType = EventTeammate
 		body := strings.TrimPrefix(text, "<teammate-message")
@@ -404,16 +398,56 @@ var taskReportBoilerplate = []string{
 	"This agent\u2019s report was delivered to you as a message",
 }
 
-// taskRef builds the structured task from a notification's top-level children
-// (kids, first occurrence wins) and its inner text (for the nested usage).
-func taskRef(kids map[string]string, inner string) *TaskRef {
+const (
+	taskOpen  = "<task-notification>"
+	taskClose = "</task-notification>"
+)
+
+// parseTaskNotification reads the structured task from the notification at
+// the start of text, up to its first closing tag (text after it, such as a
+// "read the output file" line, is ignored). Every child must close with its
+// own element name; a truncated or mismatched notification yields nil.
+func parseTaskNotification(text string) *TaskRef {
+	end := strings.Index(text, taskClose)
+	if end < 0 {
+		return nil
+	}
+	rest := text[len(taskOpen):end]
+	kids := map[string]string{}
+	for {
+		rest = strings.TrimSpace(rest)
+		if rest == "" {
+			break
+		}
+		if rest[0] != '<' {
+			return nil
+		}
+		gt := strings.IndexByte(rest, '>')
+		if gt < 2 {
+			return nil
+		}
+		name := rest[1:gt]
+		closeTag := "</" + name + ">"
+		i := strings.Index(rest[gt+1:], closeTag)
+		if i < 0 {
+			return nil
+		}
+		if _, dup := kids[name]; !dup {
+			kids[name] = strings.TrimSpace(rest[gt+1 : gt+1+i])
+		}
+		rest = rest[gt+1+i+len(closeTag):]
+	}
+	if len(kids) == 0 {
+		return nil
+	}
+	usage := kids["usage"]
 	t := &TaskRef{
 		TaskID: kids["task-id"], ToolUseID: kids["tool-use-id"], Status: kids["status"],
 		Summary: kids["summary"], Result: kids["result"], OutputFile: kids["output-file"],
 		Kind:       "agent",
-		Tokens:     firstInt(taskTokensRe, inner),
-		ToolUses:   firstInt(taskUsesRe, inner),
-		DurationMS: firstInt(taskDurRe, inner),
+		Tokens:     firstInt(taskTokensRe, usage),
+		ToolUses:   firstInt(taskUsesRe, usage),
+		DurationMS: firstInt(taskDurRe, usage),
 	}
 	for _, b := range taskReportBoilerplate {
 		if strings.HasPrefix(t.Result, b) {

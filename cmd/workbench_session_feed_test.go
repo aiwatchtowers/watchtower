@@ -126,7 +126,9 @@ func TestSessionFeedJSON_PinnedKeys(t *testing.T) {
 	assert.Equal(t, []string{"duration_ms", "exit_code", "kind", "output_file", "result", "status", "summary", "task_id", "tokens", "tool_use_id", "tool_uses"}, feedKeys(task))
 	assert.Equal(t, "command", task["kind"])
 	assert.EqualValues(t, 2, task["exit_code"])
-	assert.NotContains(t, entries[3].(map[string]any), "task")
+	for i, e := range entries[:4] {
+		assert.NotContains(t, e.(map[string]any), "task", "entry %d is not a task notification", i)
+	}
 	sub := entries[2].(map[string]any)
 	assert.Equal(t, []string{"agent_id", "description", "status", "tool_use_id", "type"}, feedKeys(sub["subagent"].(map[string]any)))
 	assert.Len(t, got["subagents"], 1)
