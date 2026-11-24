@@ -203,7 +203,7 @@ Depends on: Task 6
 
 **Interfaces:**
 - Consumes: `SessionControl.LineHold`; T6's `draftModel.clearedByApp()` (Go, called by the host) and `DraftModel.clearedByApp()` (Swift mirror).
-- Produces Go: `DeliverRequest.ClearFirst bool` (`json:"clear_first,omitempty"`); `Options.now func() time.Time` (default `time.Now`); hold reason `"clear_too_soon"`; `clearWindow = 3 * time.Second`; `Profile.ClearSettle` (Claude Code: 400 ms, cap 1 s).
+- Produces Go: `DeliverRequest.ClearFirst bool` (`json:"clear_first,omitempty"`); `Options.now func() time.Time` (default `time.Now`); hold reason `"clear_too_soon"`; `clearWindow = 3 * time.Second`; `Profile.ClearSettle` (Claude Code: 400 ms, cap 1 s; zero for every other profile, and a `ClearFirst` delivery to a zero-`ClearSettle` profile is refused with `held(clear_unsupported)` and writes nothing).
 - Produces Swift: `WorkchatOutgoing.holdReason: SessionControl.LineHold?`; `WorkchatOutgoing.caption(state:working:holdsUntilIdle:sentWhileBusy:holdReason:)`; `WorkchatModel.canClearAndSend(_ id: UUID) -> Bool`; `WorkchatModel.holdPreview(for id: UUID) -> String?` fed by an injected `promptPreview: (Int64) -> String?` (in the app `TerminalCenter.promptPreview(sessionID:)`, the last prompt line of the terminal buffer, display only).
 
 - [ ] **Step 1: Failing tests** (`WorkchatOutgoingTests`): `.needsApproval` → `"Waiting: answer the permission prompt in the terminal"`; `.agentBusy` → `"Queued · sends in a moment"`; `.promptHasText` → `"Waiting: the terminal prompt holds text"`.
@@ -211,11 +211,13 @@ Depends on: Task 6
   - `TestDeliver_ClearFirst_InexactDraft`: draft `{3,false}`, `ClearFirst` → writes `0x03`, then the paste and Return; `holdsText()` false after.
   - `TestDeliver_ClearFirst_TooSoon`: two `ClearFirst` deliveries 1 s apart (fake `now`) → second `held(clear_too_soon)`, one `0x03` total; at 3.1 s → allowed.
   - `TestDeliver_ClearFirst_DialogDuringPause`: a dialog hint arrives during the clear pause → `held_dialog`, no paste.
+  - `TestDeliver_ClearFirst_Unsupported`: a Codex-profile session → `held(clear_unsupported)`, nothing written.
   - `TestDeliver_ClearFirst_Interrupted`: connection ends after the `0x03` → `interrupted`, no second `0x03`.
 - [ ] **Step 3: Failing Swift tests** (`WorkchatModelTests` with `FakeHostDelivery` and a fake `SessionControl`):
   - `testClearAndSendIdle`: held `.promptHasText`, idle → one delivery with `clearFirst == true`; the mirror's draft is `{0,true}` after it reports `submitted`.
   - `testClearAndSendRefusedWhenWorking`: status flips to Working before the click → no delivery, line stays held, `canClearAndSend == false`.
   - `testClearAndSendOncePerLine`: second call for the same line → no-op.
+  - `testClearAndSendHiddenForCodex`: a session whose `AgentInputProfile` is not Claude Code → `canClearAndSend == false` (only Send together and Cancel).
   - `testClearTooSoonKeepsHeld`: the fake host answers `held(clear_too_soon)` → line stays held, caption unchanged.
   - `testHoldPreviewInCaption`: injected `promptPreview` returns `"> look at the window test again"` → `holdPreview(for:)` returns it; nil preview → nil (caption only).
   - `testSendTogether`: uses the beside-text delivery (`sharedPrompts`), one Return.

@@ -193,7 +193,7 @@ host holds the same line for `hold_if_prompt_text`.
    terminal", `agentBusy` (a line just submitted) → "Queued · sends in a moment", and
    `promptHasText` → "Waiting: the terminal prompt holds text", plus the prompt's last line when the
    Mac terminal buffer can show it (read-only display, never a decision). Actions:
-   - **Clear and send** (idle only, checked by the Mac's `workchatLineCheck` right
+   - **Clear and send** (Claude Code sessions only — another agent's Ctrl+C can mean quit, so the button is not offered there and the host refuses `clear_first` with `held(clear_unsupported)`; idle only, checked by the Mac's `workchatLineCheck` right
      before): the line goes to the session host as a delivery with a new flag
      `clear_first`. The host — the authority on the prompt — does it atomically under
      its session lock: refuse with `held(clear_too_soon)` if it sent a clear to this
