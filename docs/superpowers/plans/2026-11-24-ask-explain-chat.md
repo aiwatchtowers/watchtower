@@ -14,7 +14,7 @@
 
 - Context type string: `owner_ask_explain`; context id: `"\(workbenchID):\(askID)"`.
 - Usage purpose: `ask.explain`, display name "Ask explanations", group "Workbench".
-- UI copy exactly as the spec's Texts table (`AskExplainCopy`): entry "Not clear?", entryHelp "Ask the assistant to explain this question", back "Back to question", placeholder "Ask about this question…", explaining "Explaining…", queued "Waiting — other chats are answering.", errorPrefix "Couldn't explain:", retry "Retry", emptyHint "The assistant reads the workbench folder and never changes it.".
+- UI copy exactly as the spec's Texts table (`AskExplainCopy`): entry "Not clear?", entryHelp "Ask the assistant to explain this question", back "Back to question", placeholder "Ask about this question…", explaining "Explaining…", queued "Waiting — other chats are answering.", errorPrefix "Couldn't explain:", retry "Retry", emptyHint "The assistant explains; it never changes anything." (claude and codex read the workbench folder through `--read-folder`, ollama does not — `internal/providers/caps/caps.go` — so the hint promises no reading).
 - Only kinds `question` and `check`, open or closed; never `review`. No entry without a CLI.
 - `toolAccess: .draftOnly`; provider = config's, strong tier (model nil); `readFolder` = the workbench folder.
 - Colours only via `Tone`/kit; no `Divider()` between rows; `.kitQuiet` buttons; the entry uses `KitQuietButtonStyle(label: .secondary)`.
@@ -26,7 +26,7 @@
 1. Opening the chat twice quickly (double click, or open → back → open while the first hidden turn is still starting) must not start two hidden turns — Task 3 `testOpenTwiceStartsOneHiddenTurn`.
 2. An ask whose summary contains triple backticks or "ignore previous instructions" stays data: the fence must be longer than any backtick run — Task 2 `testFenceOutgrowsBackticksInAsk`.
 3. Switching "k of N ›" while a chat streams: the other ask shows its question view, the stream keeps going, coming back shows the chat — Task 3 `testModeIsPerAsk`.
-4. Esc in a non-empty composer must not leave the chat (it would lose the owner's place) — Task 4 `testEscWithDraftStaysInChat`.
+4. Esc follows the spec exactly: back to the question when the composer is not focused (its draft stays in `engine.draft`) or is focused and empty; a focused composer holding text keeps the owner in the chat — Task 4 `testEscRules`.
 5. A check ask (no questions, a checklist) gets a prompt with its steps, not an empty question block — Task 2 `testCheckAskPromptListsSteps`.
 
 ---
@@ -85,7 +85,7 @@
   - `testCheckAskPromptListsSteps`: a check ask's steps appear; no empty "Questions" heading.
   - `EmbeddedChatWiringTests.testAskExplainSavesNoKnowledge`: `savesKnowledge(contextType: "owner_ask_explain") == false`.
 - [ ] **Step 2:** `make test-swift FILTER='AskExplainTests|EmbeddedChatWiringTests'` → FAIL.
-- [ ] **Step 3: Implement.** Fence helper like `CodeQuestionContext.fenced` (a fence one longer than the longest backtick run, min 3); `savesKnowledge` list gains `AskExplainKey.contextType`; `LLMPurposeNames` Workbench group gains `("ask.explain", "Ask explanations")`.
+- [ ] **Step 3: Implement.** Fence helper like `CodeQuestionContext.fenced` (a fence one longer than the longest backtick run, min 3); `savesKnowledge` list gains `AskExplainKey.contextType`; `LLMPurposeNames` Workbench group gains `("ask.explain", "Ask explanations")`; the stale `ChatRunOptions.readFolder` doc comment ("no provider reads files in it yet") is corrected to what `caps.go` says (claude and codex read, ollama does not).
 - [ ] **Step 4:** Same filter → PASS; `make lint-swift`.
 - [ ] **Step 5: Commit** `feat(asks): ask explain copy, prompt and key (#2355)`.
 
@@ -133,14 +133,17 @@
 
 **Interfaces:**
 - Consumes: Task 3's `isExplaining`, `openExplain`, `closeExplain`, `explainEngine(for:)`.
-- Produces: `struct AskExplainEntry: View` (the grey button, tooltip `entryHelp`); `struct AskExplainChatView: View { init(ask: OwnerAsk, engine: EmbeddedChatEngine, onBack: @escaping () -> Void) }` — the strip (back + one-line title), `EmbeddedChatRows` compact, `EmbeddedChatComposer` with the copy's placeholder; queued and explaining lines from `AskExplainCopy`; error row's prefix `errorPrefix`.
+- Produces: `enum OwnerAskDrawerExplainLayers { enum Layer { case question, chat }; static func layers(explaining: Bool) -> [(layer: Layer, visible: Bool)] }`; `AskExplainPresentation.escapeLeavesChat(composerFocused:draft:)`; `struct AskExplainEntry: View` (the grey button, tooltip `entryHelp`); `struct AskExplainChatView: View { init(ask: OwnerAsk, engine: EmbeddedChatEngine, onBack: @escaping () -> Void) }` — the strip (back + one-line title), `EmbeddedChatRows` compact, `EmbeddedChatComposer` with the copy's placeholder; queued and explaining lines from `AskExplainCopy`; error row's prefix `errorPrefix`.
 
 - [ ] **Step 1: Failing tests**
   - `OwnerAskKeyNavigationTests.testKeysOffWhileExplaining`: with `isExplaining(ask.id)`, the drawer key handler returns false for J/K/digits and ⌘↩ does not answer.
-  - `testEscWithDraftStaysInChat`: Esc with a non-empty composer draft → still explaining; with an empty draft → back to the question.
+  - `testEscRules` (pure `AskExplainPresentation.escapeLeavesChat(composerFocused: Bool, draft: String) -> Bool`, added to Task 2's enum here): not focused + any draft → true; focused + "" → true; focused + "text" → false.
+  - `testCommandBracketNotTakenWhileExplaining`: with `isExplaining`, the drawer key handler returns false for ⌘[ (the Workbench menu's Back to Workbenches keeps it).
+  - `testQuestionStateSurvivesChat`: pick an option and type a note draft, `openExplain`, `closeExplain` → `asks.drafts.askDraft(for:)` unchanged.
   - `AskExplainViewTests.testEntryHiddenOnReviewAsk` and `testEntryShownOnClosedQuestionAsk` (through `AskExplainPresentation`, rendered with `ViewRenderProbe`).
-- [ ] **Step 2:** `make test-swift FILTER='OwnerAskKeyNavigationTests|AskExplainViewTests'` → FAIL.
-- [ ] **Step 3: Implement.** In `content`: when `asks.isExplaining(ask.id)`, after the header show `AskExplainChatView` instead of the body, the `Divider()` and `OwnerAskAnswerBar`; otherwise the entry sits trailing under `topSections` for non-review asks when `showsEntry`. `keys` gets `enabled: !asks.isExplaining(ask.id)`; Esc goes to `closeExplain` when explaining and the composer is empty, before the closed-list Esc.
+  - `AskExplainViewTests.testQuestionLayerStaysInTree`: `OwnerAskDrawerExplainLayers.layers(explaining: true)` (pure, in this task) keeps `.question` in the list with `visible: false`, `.chat` visible — the question view is hidden, never removed.
+- [ ] **Step 2:** `make test-swift FILTER='OwnerAskKeyNavigationTests|AskExplainViewTests|AskExplainTests'` → FAIL.
+- [ ] **Step 3: Implement.** `content` keeps the question body (its `ScrollView`, `Divider()` and `OwnerAskAnswerBar`) always in the tree and, while explaining, hides it (`.opacity(0)`, `.allowsHitTesting(false)`, `.accessibilityHidden(true)`) under `AskExplainChatView` laid over it in a `ZStack` below the header — so the scroll position and the answer bar's `@State` survive (the drawer host keeps hidden panes in the tree the same way). The entry sits trailing under `topSections` for non-review asks when `showsEntry`. `keys` gets `enabled: !asks.isExplaining(ask.id)` (⌘[ and ⌘↩ are not taken). Esc while explaining asks `escapeLeavesChat` with the composer's focus and `engine.draft`; true → `closeExplain`, before the closed-list Esc. Shot step in Task 5 checks the scroll position by eye (scroll down, open, back).
 - [ ] **Step 4:** Same filter → PASS; `make test-swift FILTER='OwnerAsk'`; `make lint-swift`.
 - [ ] **Step 5: Commit** `feat(asks): Not clear? entry and the chat view in the ask drawer (#2355)`.
 

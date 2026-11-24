@@ -23,7 +23,7 @@ struct AskExplainMock {
     static let queued = "Waiting — other chats are answering."
     static let errorLine = "Couldn't explain: the provider did not answer in time."
     static let retry = "Retry"
-    static let emptyHint = "The assistant reads the workbench folder and never changes it."
+    static let emptyHint = "The assistant explains; it never changes anything."
 
     // MARK: - Sample ask
 

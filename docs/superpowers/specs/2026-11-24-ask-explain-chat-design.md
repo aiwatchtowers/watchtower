@@ -27,7 +27,7 @@ One quiet control on the ask, **Not clear?**. It turns the whole ask panel into 
 | D3 | The first message is the explanation, started on open without the owner typing | conversation (mockup); approved in ask #1785 |
 | D4 | No question to the author, no answer drafting, no chips in v1 | conversation (ask #1782 that offered them was superseded unanswered) |
 | D5 | The chat is kept per ask: reopening it continues where it stopped | conversation; approved in ask #1785 |
-| D6 | The assistant reads the workbench folder and never changes anything (`.draftOnly`), at the provider's strong tier | decided by the agent: the same boundary as code questions; the strong tier because a weak explanation defeats the feature, and a turn starts only on the owner's click, never in the background |
+| D6 | The assistant reads the workbench folder (claude and codex do; ollama reads none) and never changes anything (`.draftOnly`), at the provider's strong tier | decided by the agent: the same boundary as code questions; the strong tier because a weak explanation defeats the feature, and a turn starts only on the owner's click, never in the background |
 | D7 | Question and check asks, open or closed; not review asks | decided by the agent: a spec or plan review has its own Discuss threads, a classic review is read in its document; a closed ask's chat helps understand a past decision |
 | D8 | Mac only in v1 | decided by the agent: the phone has no embedded chat engine (spec review threads are Mac-only too) |
 | D9 | No session transcript in the context | decided by the agent: the ask's summary is the agent's own statement of the question; the transcript is large, may hold other sources' text, and `ai query` has no reader for it today. A follow-up can add it |
@@ -45,7 +45,7 @@ Pressing it replaces the drawer's body **and** its answer bar with the chat view
 - the feed (`EmbeddedChatRows`, compact density), scrolling, following the latest reply;
 - the composer (`EmbeddedChatComposer`), placeholder "Ask about this question…".
 
-**Back to question** (also Esc while the composer is empty or not focused; ⌘[ stays Back to Workbenches) returns to the question view with everything there as it was: picked options, the note draft, the scroll position.
+**Back to question** (also Esc while the composer is empty or not focused; ⌘[ stays Back to Workbenches) returns to the question view with everything there as it was: picked options, the note draft, the scroll position (the question view stays in the view tree, hidden, while the chat is shown). Esc in a focused composer holding text stays in the chat.
 
 The mode is per ask: `OwnerAsksViewModel.explainOpen: Set<Int64>` (ask ids, in memory, not persisted). "k of N ›" to another ask shows that ask's own mode; coming back shows this one's. Closing the drawer forgets the mode (the chat itself is kept, D5). While the chat is shown the drawer's bare keys (`OwnerAskDrawerKeys`) are off, and ⌘↩ does not answer the ask.
 
@@ -82,7 +82,7 @@ The prompt text lives in one Swift constant (`AskExplainPrompt`), covered by a t
 | queued | Waiting — other chats are answering. |
 | errorPrefix | Couldn't explain: |
 | retry | Retry |
-| emptyHint | The assistant reads the workbench folder and never changes it. |
+| emptyHint | The assistant explains; it never changes anything. |
 
 ## States (each has a shot)
 
