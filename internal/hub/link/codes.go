@@ -104,12 +104,29 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 		}
 		c.ck.ownCodes[p.Nonce] = true
 	}
-	if ck == nil && c.ck.open != nil {
-		// A relay code replaces the CloudKit code on screen: off screen
-		// now (a close of it refuses nobody waiting on the relay code), its
-		// public link closed at the next share sweep.
+	switch {
+	case ck != nil:
+		// On screen in the same step that retired every other code: a relay
+		// code issued meanwhile can never be displaced by an older one.
+		c.ck.open = &openCode{nonce: p.Nonce, exp: time.Unix(p.Exp, 0).UTC()}
+	case c.ck.open != nil:
+		// A relay code replaces the CloudKit code on screen: off screen now
+		// (a close of it refuses nobody waiting on the relay code), closed as
+		// an answering close would: its public link at the next pass, its
+		// participants after the answer grace. Both stay due while an iCloud
+		// hold skips the passes, and the stop closes the link (CloseOnStop).
 		c.ck.open = nil
 		c.ck.linkCloseAt, c.ck.linkCloseTries = now, 0
+		c.ck.graceEnd = now.Add(c.sweep.AnswerGrace)
+		if c.ck.sweepAt.IsZero() || c.ck.sweepAt.After(c.ck.graceEnd) {
+			c.ck.sweepAt, c.ck.sweepTries = c.ck.graceEnd, 0
+		}
+	}
+	if ck == nil {
+		c.ck.relayCodes = append(c.ck.relayCodes, p.Nonce)
+		if n := len(c.ck.relayCodes); n > KeptCodes {
+			c.ck.relayCodes = slices.Delete(c.ck.relayCodes, 0, n-KeptCodes)
+		}
 	}
 	c.ck.mu.Unlock()
 	c.emit(PairEvent{Kind: EventQR, URL: url, ExpiresAt: time.Unix(p.Exp, 0).UTC()})

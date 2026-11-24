@@ -1557,6 +1557,90 @@ func TestAnAccountChangeClosesTheOpenCodeAndItsLink(t *testing.T) {
 	}
 }
 
+// An account change ends the old account's link, not a relay code's pairing
+// slot: a request waiting under a relay code (the no-iCloud fallback) is
+// kept for the owner to decide; one under a CloudKit code is refused.
+func TestAnAccountChangeSparesARelayCodesRequest(t *testing.T) {
+	r := newCKRig(t)
+	ckCode := r.issueCK()
+	a := newPhone(t)
+	if got, err := r.ckHello(a, ckCode.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("not waiting: %+v %v", got, err)
+	}
+	relayCode := r.issue()
+	b := newPhone(t)
+	if got := r.handle(b, relayCode.Nonce); got.Code == "" {
+		t.Fatalf("relay request not waiting: %+v", got)
+	}
+	if err := r.c.AccountChanged(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, []string{b.id.String()}) {
+		t.Fatalf("pending %v, want only the relay code's request", ids)
+	}
+	if kb := r.mustKeybox(a); refusal(kb) != wire.RefusedNotConfirmed {
+		t.Errorf("the CloudKit code's request %+v", kb.Grant)
+	}
+}
+
+// A relay code that replaces a CloudKit code on screen closes it as an
+// answering close does: the public link at the next pass, the participants
+// after the answer grace — also when no pass ran for long (an iCloud hold
+// skips them) — and the stop closes the link of a code replaced just now.
+func TestARelayCodeClosesTheCloudKitCodeItReplaces(t *testing.T) {
+	t.Run("passes", func(t *testing.T) {
+		r := newCKRig(t)
+		r.issueCK()
+		r.s.join("_stranger")
+		r.issue()
+		if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+			t.Fatal(err)
+		}
+		if r.s.isOpen() {
+			t.Fatal("the replaced code's public link is still open")
+		}
+		if got := r.s.names(ckZones[1]); len(got) != 1 {
+			t.Fatalf("swept inside the grace: %v", got)
+		}
+		r.advance(DefaultSweep.AnswerGrace)
+		if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+			t.Fatal(err)
+		}
+		for _, z := range ckZones {
+			if got := r.s.names(z); len(got) != 0 {
+				t.Errorf("%s: %v not swept", z, got)
+			}
+		}
+		if r.sweepMark() != "0" {
+			t.Errorf("mark %q", r.sweepMark())
+		}
+	})
+	t.Run("held", func(t *testing.T) {
+		r := newCKRig(t)
+		r.issueCK()
+		r.s.join("_stranger")
+		r.issue()
+		r.advance(24 * time.Hour) // no pass while iCloud is held
+		if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+			t.Fatal(err)
+		}
+		if r.s.isOpen() || len(r.s.names(ckZones[0])) != 0 || len(r.s.names(ckZones[1])) != 0 {
+			t.Errorf("after the hold: open %v participants %v %v", r.s.isOpen(), r.s.names(ckZones[0]), r.s.names(ckZones[1]))
+		}
+	})
+	t.Run("stop", func(t *testing.T) {
+		r := newCKRig(t)
+		r.issueCK()
+		r.issue()
+		if err := r.c.CloseOnStop(r.ctx, r.s); err != nil {
+			t.Fatal(err)
+		}
+		if r.s.isOpen() {
+			t.Error("the replaced code's public link outlived the stop")
+		}
+	})
+}
+
 // F4: a code being issued across an account change — the bridge's event,
 // or a new owner on the re-read — is not issued, and its link is closed.
 func TestACodeBeingIssuedAcrossAnAccountChangeIsClosed(t *testing.T) {
