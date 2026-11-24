@@ -261,9 +261,9 @@ final class MobileSettingsModelTests: XCTestCase {
     func testTheRelayLineSaysWhyICloudCannotBeUsed() async {
         let cases = [
             ("no_account", "iCloud is off on this Mac.", "Mobile isn't available on this Mac: iCloud is off."),
-            ("restricted", "Mobile isn't available on this Mac: iCloud is restricted by your organization.",
+            ("restricted", "iCloud is restricted by your organization on this Mac.",
              "Mobile isn't available on this Mac: iCloud is restricted by your organization."),
-            ("temporarily_unavailable", "Mobile isn't available on this Mac: iCloud account temporarily unavailable.",
+            ("temporarily_unavailable", "iCloud is temporarily unavailable on this Mac.",
              "Mobile isn't available on this Mac: iCloud account temporarily unavailable")
         ]
         let pause = Model.HubLine(text: "Paused until iCloud is available on this Mac. It goes on by itself.", tone: .warning)
@@ -288,6 +288,27 @@ final class MobileSettingsModelTests: XCTestCase {
             XCTAssertEqual(withoutRelay.hubLine, pause, account)
             XCTAssertEqual(withoutRelay.accountLine, oldAccountLine, account)
             XCTAssertFalse(withoutRelay.canLink, account)
+        }
+    }
+
+    /// An account not read yet (no `cloudkit` object, or an empty account)
+    /// on a no_icloud hub with a relay reads as off, with Link on.
+    func testTheRelayLineWithAnAccountNotReadYet() async {
+        let off = "iCloud is off on this Mac. A phone with Relay can still link; linking moves this Mac to Relay."
+        XCTAssertEqual(Model.noICloudRelayLine(""), off)
+        let statuses = [
+            #"{"state":"paused","reason":"no_icloud","transport":"cloudkit","relay":{"state":"connected"}}"#,
+            #"{"state":"paused","reason":"no_icloud","transport":"cloudkit","#
+                + #""cloudkit":{"account":"","throttled_since":"","signed":true},"relay":{"state":"connected"}}"#
+        ]
+        for status in statuses {
+            cli.status(status)
+            cli.phones("[]")
+            let model = makeModel()
+            await model.load()
+            XCTAssertEqual(model.hubLine, Model.HubLine(text: off, tone: .warning), status)
+            XCTAssertNil(model.accountLine, status)
+            XCTAssertTrue(model.canLink, status)
         }
     }
 
