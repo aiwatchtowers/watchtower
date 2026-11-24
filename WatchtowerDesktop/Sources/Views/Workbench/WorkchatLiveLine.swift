@@ -110,8 +110,8 @@ struct WorkchatLiveLine: View {
                     .foregroundStyle(.tertiary)
                     .frame(width: IconSize.header)
             }
-            if !row.symbol.isEmpty {
-                Image(systemName: row.symbol)
+            if let symbol = row.symbol {
+                Image(systemName: symbol)
                     .frame(width: IconSize.header)
                     .symbolEffect(.pulse, isActive: row.pulse && !reduceMotion)
             }
@@ -121,7 +121,7 @@ struct WorkchatLiveLine: View {
                 .fixedSize(horizontal: row.stepSummary != nil, vertical: false)
                 .help(row.text)
             if let step = row.stepSummary {
-                Text("·").foregroundStyle(.tertiary)
+                Text("·").foregroundStyle(.tertiary).accessibilityHidden(true)
                 ProgressView().controlSize(.mini)
                 Text(step).lineLimit(1).truncationMode(.middle).foregroundStyle(.primary).help(step)
                 if let time = row.stepElapsed { Text(time).monospacedDigit().foregroundStyle(.tertiary).fixedSize() }

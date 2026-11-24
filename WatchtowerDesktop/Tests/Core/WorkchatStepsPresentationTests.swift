@@ -125,13 +125,22 @@ final class WorkchatStepsPresentationTests: XCTestCase {
 
     func testCollapsedRowShowsRunningStep() throws {
         let running = step("r1", "Bash", "Run full Go test suite for #2188 gate", start: now - 214, end: nil)
-        let closed = try XCTUnwrap(row(live(steps: [step("d1", "Read", "a.go", start: now - 300, end: now - 290), running])))
+        var snap = live(steps: [step("d1", "Read", "a.go", start: now - 300, end: now - 290), running])
+        snap.current = running
+        let closed = try XCTUnwrap(row(snap))
         XCTAssertEqual(closed.stepSummary, "Run full Go test suite for #2188 gate")
         XCTAssertEqual(closed.stepElapsed, "3:34")
         XCTAssertEqual(closed.chevron, "chevron.right")
         XCTAssertEqual(closed.elapsed, "1:00", "the turn clock stays on the right")
+        XCTAssertNil(closed.symbol)
         let done = try XCTUnwrap(row(live(steps: [step("d1", "Read", "a.go", start: now - 30, end: now - 20)])))
-        XCTAssertNil(done.stepSummary, "no running step, nothing to name")
+        XCTAssertNil(done.stepSummary, "no open call, nothing to name")
+    }
+
+    func testFinishedCallWithoutEndTimeShowsNoSpinner() throws {
+        // A row lacking its end time is not the open call: only `current` says so.
+        let snap = live(steps: [step("x", "Read", "a.go", start: now - 30, end: nil)])
+        XCTAssertNil(try XCTUnwrap(row(snap)).stepSummary)
     }
 
     func testSubSecondStep() throws {
@@ -142,20 +151,18 @@ final class WorkchatStepsPresentationTests: XCTestCase {
     }
 
     func testEarlierLine() throws {
-        let cut = try XCTUnwrap(slot(live(steps: steps(6), more: 35)))
+        // The host sends 40 rows and counts the one it cut: 41 steps, six shown.
+        let cut = try XCTUnwrap(slot(live(steps: steps(40), more: 1)))
         XCTAssertEqual(cut.earlierLine, "35 earlier steps")
         XCTAssertEqual(cut.title, "This turn · 41 steps")
-        XCTAssertEqual(WorkchatLivePresentation.earlierSteps(1), "1 earlier step")
+        XCTAssertEqual(cut.rows.map(\.id), (34..<40).map { "s\($0)" }, "only the newest six rows")
         XCTAssertNil(try XCTUnwrap(slot(live(steps: steps(6)))).earlierLine)
+        XCTAssertEqual(try XCTUnwrap(slot(live(steps: steps(7)))).earlierLine, "1 earlier step")
     }
 
     func testStepRowsUseToolLabels() throws {
         let slot = try XCTUnwrap(slot(live(steps: [step("m", "SendMessage", "Codex verify round 3", start: now - 5, end: now - 4)])))
         XCTAssertEqual(slot.rows.map(\.summary), ["Message to Codex verify round 3"])
-    }
-
-    func testLoadingText() {
-        XCTAssertEqual(SessionChatPresentation.loadingText, "Reading the session…")
     }
 
     func testCardHidesTheChevron() throws {

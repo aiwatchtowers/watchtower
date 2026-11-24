@@ -29,8 +29,22 @@ enum WorkchatAgentsShotFixtures {
         shot("11-idle", .idleDone),
         shot("12-ended", .endedDone),
         shot("13-send-while-working", .typingWhileWorking),
-        shot("14-paste-tokens", .pasteTokens)
+        shot("14-paste-tokens", .pasteTokens),
+        paneShot("15-pane-loading", height: 360) { AnyView(SessionChatLoadingView()) },
+        paneShot("16-pane-error", height: 360) {
+            AnyView(VStack(spacing: 0) {
+                SessionChatErrorBar(message: "Couldn’t read the session feed", retry: noop)
+                Spacer()
+            })
+        }
     ]
+
+    private static func noop() {}
+
+    /// A pane state drawn by the built view alone, on the window background.
+    private static func paneShot(_ name: String, height: CGFloat, view: @escaping @MainActor () -> AnyView) -> DesignShot {
+        DesignShot(name: "workchat-agents-real-\(name)", size: NSSize(width: 720, height: height)) { view() }
+    }
 
     private static func shot(_ name: String, _ mock: WorkchatAgentsMock, width: CGFloat = 720, height: CGFloat = 480) -> DesignShot {
         DesignShot(name: "workchat-agents-real-\(name)", size: NSSize(width: width, height: height)) {

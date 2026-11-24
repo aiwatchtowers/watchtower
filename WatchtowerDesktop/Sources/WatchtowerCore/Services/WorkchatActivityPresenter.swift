@@ -67,20 +67,25 @@ package enum WorkchatActivityPresenter {
         }
     }
 
-    /// The label for a step the live list shows: the host's summary, or, for a bare
-    /// tool name, plain words (`SendMessage` → "Message to …", `mcp__x__y` → "y").
+    /// The label for a step the live list shows: the host's summary, or, when it
+    /// only repeats the tool name, plain words (`SendMessage` → "Message", an MCP
+    /// call → its tool name with spaces). The host's MCP summary is `tool · server`
+    /// (Claude) or the full `mcp__server__tool` name (Codex).
     package static func label(forTool tool: String, summary: String) -> String {
+        let bare = summary.isEmpty || summary == tool
         switch tool {
-        case "SendMessage": return summary.isEmpty ? "Message" : "Message to \(summary)"
+        case "SendMessage": return bare ? "Message" : "Message to \(summary)"
         case "TodoWrite": return "Update the task list"
         case "TaskOutput": return "Read a background task's output"
         default: break
         }
-        guard summary.isEmpty else { return summary }
-        if tool.hasPrefix("mcp__") {
-            let name = tool.components(separatedBy: "__").last ?? tool
-            return name.replacingOccurrences(of: "_", with: " ")
+        if tool.hasPrefix("mcp__") || summary.hasPrefix("mcp__") {
+            let raw = bare ? tool : summary
+            let name = raw.hasPrefix("mcp__")
+                ? (raw.dropFirst(5).components(separatedBy: "__").dropFirst().joined(separator: "__"))
+                : (raw.components(separatedBy: " · ").first ?? raw)
+            return (name.isEmpty ? raw : name).replacingOccurrences(of: "_", with: " ")
         }
-        return tool
+        return bare ? tool : summary
     }
 }

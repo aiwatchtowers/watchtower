@@ -233,6 +233,24 @@ final class SessionChatViewTests: XCTestCase {
             + #""subagent":{"tool_use_id":"\#(id)","agent_id":"a","type":"general","description":"d","status":"finished"}}"#
     }
 
+    func testLoadingTextAndRetryTitle() {
+        XCTAssertEqual(SessionChatPresentation.loadingText, "Reading the session…")
+        XCTAssertEqual(SessionChatPresentation.retryTitle, "Retry")
+    }
+
+    /// The spinner shows until the first feed read; a turn ending (`clearActivity`) must not bring it back.
+    func testLoadingStaysOffAfterClearActivity() async {
+        let runner = PageRunner([page([agent("e90")], before: nil)])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        XCTAssertTrue(SessionChatView.showsLoading(feedLoaded: store.feedLoaded, error: store.error, runnerMissing: false))
+        await store.refresh()
+        XCTAssertFalse(SessionChatView.showsLoading(feedLoaded: store.feedLoaded, error: store.error, runnerMissing: false))
+        store.clearActivity()
+        XCTAssertFalse(store.liveLoaded)
+        XCTAssertFalse(SessionChatView.showsLoading(feedLoaded: store.feedLoaded, error: store.error, runnerMissing: false))
+        XCTAssertFalse(SessionChatView.showsLoading(feedLoaded: false, error: "boom", runnerMissing: false))
+    }
+
     func testPermanentRefusalLeavesNoDeadRetry() async {
         let runner = PageRunner([
             page([agent("e90")], before: "e90"),

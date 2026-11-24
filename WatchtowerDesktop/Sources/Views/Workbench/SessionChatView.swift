@@ -578,14 +578,16 @@ struct SessionChatView: View {
         windowHasEarlier || (hasEarlierPage && !pageFailed)
     }
 
+    /// The first read is not back: a spinner, not "No messages yet". Keyed on the feed's
+    /// read, which `clearActivity()` (a turn ending) never resets.
+    static func showsLoading(feedLoaded: Bool, error: String?, runnerMissing: Bool) -> Bool {
+        !feedLoaded && error == nil && !runnerMissing
+    }
+
     @ViewBuilder
     private var emptyState: some View {
-        if store.error == nil && !store.runnerMissing && !store.liveLoaded {
-            HStack(spacing: Spacing.compact) {
-                ProgressView().controlSize(.small)
-                Text(SessionChatPresentation.loadingText).font(.caption).foregroundStyle(.tertiary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        if Self.showsLoading(feedLoaded: store.feedLoaded, error: store.error, runnerMissing: store.runnerMissing) {
+            SessionChatLoadingView()
         } else if store.error == nil && !store.runnerMissing {
             Text("No messages yet")
                 .foregroundStyle(.secondary)
@@ -598,6 +600,27 @@ struct SessionChatView: View {
     }
 
     private func errorBar(_ message: String, retry: (() -> Void)?) -> some View {
+        SessionChatErrorBar(message: message, retry: retry)
+    }
+}
+
+/// The pane's first-read state (#2201 spec §7): a small spinner over the text, centred.
+struct SessionChatLoadingView: View {
+    var body: some View {
+        VStack(spacing: Spacing.regular) {
+            ProgressView().controlSize(.small)
+            Text(SessionChatPresentation.loadingText).font(.caption).foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// The pane's error bar: no fill, a warning glyph, grey text, a quiet Retry.
+struct SessionChatErrorBar: View {
+    let message: String
+    let retry: (() -> Void)?
+
+    var body: some View {
         HStack(spacing: Spacing.regular) {
             Image(systemName: "exclamationmark.triangle").foregroundStyle(Tone.warning)
             Text(message).font(.callout).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
