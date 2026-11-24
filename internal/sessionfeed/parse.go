@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -35,6 +36,10 @@ var (
 	taskChildRe   = regexp.MustCompile(`(?s)<([A-Za-z][\w-]*)>(.*?)</[A-Za-z][\w-]*>`)
 	mateOpenRe    = regexp.MustCompile(`(?s)^<teammate-message\b([^>]*)>`)
 	mateSummaryRe = regexp.MustCompile(`summary="([^"]*)"`)
+	taskTokensRe  = regexp.MustCompile(`<subagent_tokens>\s*(\d+)\s*</subagent_tokens>`)
+	taskUsesRe    = regexp.MustCompile(`<tool_uses>\s*(\d+)\s*</tool_uses>`)
+	taskDurRe     = regexp.MustCompile(`<duration_ms>\s*(\d+)\s*</duration_ms>`)
+	taskExitRe    = regexp.MustCompile(`\(exit code (-?\d+)\)$`)
 	cmdArgsRe     = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
 )
 
@@ -362,6 +367,7 @@ func noticeEntry(uuid, text string) Entry {
 			}
 		}
 		e.Text = strings.Join(lines, "\n")
+		e.Task = parseTaskNotification(text)
 	} else {
 		e.EventType = EventTeammate
 		body := strings.TrimPrefix(text, "<teammate-message")
@@ -384,6 +390,105 @@ func noticeEntry(uuid, text string) Entry {
 		e.Title = string(r[:maxEventTitleRunes])
 	}
 	return e
+}
+
+// taskReportBoilerplate starts the result of a notification whose agent
+// report was delivered as a separate message; it says nothing itself.
+var taskReportBoilerplate = []string{
+	"This agent's report was delivered to you as a message",
+	"This agent\u2019s report was delivered to you as a message",
+}
+
+// maxTaskCloseAttempts bounds the close tags one notification may try, so
+// untrusted text with many repeated close tags parses in linear time.
+const maxTaskCloseAttempts = 64
+
+// taskChildren consumes the children of a notification from rest up to its
+// closing tag, which it takes after the last child (a result may quote a whole
+// notification, so a child's close is tried at each occurrence until the rest
+// parses).
+func taskChildren(rest string, kids map[string]string, budget *int) (map[string]string, bool) {
+	rest = strings.TrimSpace(rest)
+	if strings.HasPrefix(rest, taskClose) {
+		return kids, true
+	}
+	if rest == "" || rest[0] != '<' {
+		return nil, false
+	}
+	gt := strings.IndexByte(rest, '>')
+	if gt < 2 {
+		return nil, false
+	}
+	name := rest[1:gt]
+	closeTag := "</" + name + ">"
+	body := rest[gt+1:]
+	for off := 0; ; {
+		i := strings.Index(body[off:], closeTag)
+		if i < 0 {
+			return nil, false
+		}
+		i += off
+		if *budget--; *budget < 0 {
+			return nil, false // crafted text with many close tags: give up
+		}
+		next := maps.Clone(kids)
+		if _, dup := next[name]; !dup {
+			next[name] = strings.TrimSpace(body[:i])
+		}
+		if got, ok := taskChildren(body[i+len(closeTag):], next, budget); ok {
+			return got, true
+		}
+		off = i + len(closeTag)
+	}
+}
+
+const (
+	taskOpen  = "<task-notification>"
+	taskClose = "</task-notification>"
+)
+
+// parseTaskNotification reads the structured task from the notification at
+// the start of text, up to its first closing tag (text after it, such as a
+// "read the output file" line, is ignored). Every child must close with its
+// own element name; a truncated or mismatched notification yields nil.
+func parseTaskNotification(text string) *TaskRef {
+	budget := maxTaskCloseAttempts
+	kids, ok := taskChildren(text[len(taskOpen):], map[string]string{}, &budget)
+	if !ok || len(kids) == 0 {
+		return nil
+	}
+	usage := kids["usage"]
+	t := &TaskRef{
+		TaskID: kids["task-id"], ToolUseID: kids["tool-use-id"], Status: kids["status"],
+		Summary: kids["summary"], Result: kids["result"], OutputFile: kids["output-file"],
+		Kind:       "agent",
+		Tokens:     firstInt(taskTokensRe, usage),
+		ToolUses:   firstInt(taskUsesRe, usage),
+		DurationMS: firstInt(taskDurRe, usage),
+	}
+	for _, b := range taskReportBoilerplate {
+		if strings.HasPrefix(t.Result, b) {
+			t.Result = ""
+		}
+	}
+	if strings.HasPrefix(t.Summary, "Background command") {
+		t.Kind = "command"
+		if m := taskExitRe.FindStringSubmatch(t.Summary); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil {
+				t.ExitCode = &n
+			}
+		}
+	}
+	return t
+}
+
+func firstInt(re *regexp.Regexp, s string) int {
+	if m := re.FindStringSubmatch(s); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 func firstGroup(re *regexp.Regexp, s string) string {

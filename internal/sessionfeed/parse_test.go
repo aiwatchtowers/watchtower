@@ -333,3 +333,115 @@ func BenchmarkParse(b *testing.B) {
 		}
 	}
 }
+
+const agentNotice = "<task-notification>\n<task-id>aaea0001</task-id>\n<tool-use-id>toolu_01abc</tool-use-id>\n<output-file>/tmp/x.output</output-file>\n<status>completed</status>\n<summary>Agent \"Verify review #1\" finished</summary>\n<note>read the output file</note>\n<result>This agent's report was delivered to you as a message from \"aaea0001\".</result>\n<usage><subagent_tokens>43545</subagent_tokens><tool_uses>9</tool_uses><duration_ms>88925</duration_ms></usage>\n</task-notification>"
+
+func TestNoticeTask_Fields(t *testing.T) {
+	res := parseStr(t, join(userStr("n1", agentNotice)), 0)
+	require.Len(t, res.Entries, 1)
+	e := res.Entries[0]
+	require.NotNil(t, e.Task)
+	assert.Equal(t, TaskRef{
+		TaskID: "aaea0001", ToolUseID: "toolu_01abc", Status: "completed",
+		Summary: `Agent "Verify review #1" finished`, Result: "", OutputFile: "/tmp/x.output",
+		Tokens: 43545, ToolUses: 9, DurationMS: 88925, Kind: "agent",
+	}, *e.Task)
+	assert.Equal(t, `Agent "Verify review #1" finished`, e.Title)
+	assert.Contains(t, e.Text, "status: completed")
+	assert.Contains(t, e.Text, "task-id: aaea0001")
+}
+
+func TestNoticeTask_CurlyBoilerplateIsEmptyResult(t *testing.T) {
+	n := strings.Replace(agentNotice, "agent's", "agent’s", 1)
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, "", res.Entries[0].Task.Result)
+}
+
+func TestNoticeTask_RealResultKept(t *testing.T) {
+	n := strings.Replace(agentNotice, `This agent's report was delivered to you as a message from "aaea0001".`, "All green.", 1)
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, "All green.", res.Entries[0].Task.Result)
+}
+
+func TestNoticeTask_Command(t *testing.T) {
+	res := parseStr(t, join(userStr("n1", "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Background command \"Run full Go test suite\" completed (exit code 0)</summary>\n</task-notification>")), 0)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, "command", res.Entries[0].Task.Kind)
+	require.NotNil(t, res.Entries[0].Task.ExitCode)
+	assert.Equal(t, 0, *res.Entries[0].Task.ExitCode)
+}
+
+func TestNoticeTask_NoUsage(t *testing.T) {
+	res := parseStr(t, join(userStr("n1", "<task-notification>\n<task-id>a1</task-id>\n<status>failed</status>\n<summary>Agent \"X\" failed</summary>\n</task-notification>")), 0)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, 0, res.Entries[0].Task.Tokens)
+	assert.Equal(t, "failed", res.Entries[0].Task.Status)
+	assert.Equal(t, `Agent "X" failed`, res.Entries[0].Task.Summary)
+}
+
+func TestNoticeTask_Truncated(t *testing.T) {
+	res := parseStr(t, join(userStr("n1", "<task-notification>\n<task-id>a1</task-id>\n<status>comp")), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Equal(t, KindEvent, res.Entries[0].Kind)
+	assert.Nil(t, res.Entries[0].Task)
+}
+
+func TestNoticeTask_TrailingTextAfterClose(t *testing.T) {
+	res := parseStr(t, join(userStr("n1", agentNotice+"\nRead the output file to retrieve the result.")), 0)
+	require.Len(t, res.Entries, 1)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, 43545, res.Entries[0].Task.Tokens)
+}
+
+func TestNoticeTask_MismatchedChildIsNil(t *testing.T) {
+	res := parseStr(t, join(userStr("n1", "<task-notification>\n<task-id>a1</task-id>\n<status>done</summary>\n</task-notification>")), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Nil(t, res.Entries[0].Task)
+}
+
+func TestNoticeTask_NestedTagInResultKept(t *testing.T) {
+	n := strings.Replace(agentNotice, `This agent's report was delivered to you as a message from "aaea0001".`, "Found <b>3</b> issues in <file>x</file>.", 1)
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, "Found <b>3</b> issues in <file>x</file>.", res.Entries[0].Task.Result)
+	assert.Equal(t, 43545, res.Entries[0].Task.Tokens)
+}
+
+func TestNoticeTask_UsageOnlyFromUsageElement(t *testing.T) {
+	n := "<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent \"X\" finished</summary>\n<result>did <tool_uses>77</tool_uses> things</result>\n</task-notification>"
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, 0, res.Entries[0].Task.ToolUses)
+}
+
+func TestNoticeTask_ExitCodeAnchoredToEnd(t *testing.T) {
+	n := "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Background command \"echo (exit code 9)\" completed (exit code 3)</summary>\n</task-notification>"
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.NotNil(t, res.Entries[0].Task.ExitCode)
+	assert.Equal(t, 3, *res.Entries[0].Task.ExitCode)
+}
+
+func TestNoticeTask_ResultQuotingWholeNotification(t *testing.T) {
+	quoted := "<task-notification>\n<task-id>zz</task-id>\n<status>failed</status>\n</task-notification>"
+	n := strings.Replace(agentNotice, `This agent's report was delivered to you as a message from "aaea0001".`, "It printed: "+quoted, 1)
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, "aaea0001", res.Entries[0].Task.TaskID)
+	assert.Equal(t, "completed", res.Entries[0].Task.Status)
+	assert.Equal(t, "It printed: "+quoted, res.Entries[0].Task.Result)
+	assert.Equal(t, 43545, res.Entries[0].Task.Tokens)
+}
+
+func TestNoticeTask_AdversarialCloseTagsIsFast(t *testing.T) {
+	for _, n := range []int{5000, 10000} {
+		text := "<task-notification>\n<task-id>a</task-id>\n<result>" + strings.Repeat("</result></status>", n) + "<status>x</task-notification>"
+		budget := maxTaskCloseAttempts
+		_, ok := taskChildren(text[len(taskOpen):], map[string]string{}, &budget)
+		assert.False(t, ok)
+		assert.Less(t, budget, 0, "attempts are capped, whatever the input size")
+		assert.GreaterOrEqual(t, budget, -1)
+		assert.Nil(t, parseTaskNotification(text))
+	}
+}
