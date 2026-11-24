@@ -85,6 +85,13 @@ enum MarkdownTableText {
     /// Cost = characters, as the run memo.
     private static let memo = MarkdownMemo<TextKey, NSAttributedString>(totalCostLimit: 2 << 20)
 
+    /// Drops the memoized metrics and texts, as `NSCache` may under
+    /// memory pressure (tests).
+    static func evictMemos() {
+        metricsMemo.removeAll()
+        memo.removeAll()
+    }
+
     static func metrics(_ table: MarkdownTable, links: InlineLinkContext) -> Metrics {
         metricsMemo.value(for: Key(table: table, links: links),
                           cost: { $0.cells.reduce(0) { $0 + $1.reduce(0) { $0 + $1.length } } },

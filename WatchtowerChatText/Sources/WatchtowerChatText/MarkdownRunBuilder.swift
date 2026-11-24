@@ -197,4 +197,9 @@ public final class MarkdownMemo<Key: Hashable, Value>: @unchecked Sendable {
         cache.setObject(Entry(value), forKey: box, cost: cost(value))
         return value
     }
+
+    /// Drops every entry, as `NSCache` may under memory pressure.
+    public func removeAll() {
+        cache.removeAllObjects()
+    }
 }
