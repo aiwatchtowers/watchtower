@@ -22,7 +22,10 @@ protocol HubPairStreaming {
 /// The pairing sheet of Settings → Mobile over `hub pair --json --stream`
 /// (go hub plan 3 Task 23, Plan 1a Task 15): the QR from the `qr` event and
 /// its countdown, waiting, the four-digit code to check (`sas`) with Link and
-/// Refuse (`{"confirm":…}` on the child's stdin), then linked or refused.
+/// Refuse (`{"confirm":…,"code":…,"moves_to_relay":…,"request":…}` on the
+/// child's stdin), then linked or refused. Every `sas` line means "answer this one":
+/// a new or reprinted line replaces the code and the warning and asks again,
+/// also after Link.
 /// A code that reaches 0 ends the stream and says it expired; New code and
 /// Show a new code start a new stream. Closing the sheet stops the child.
 @MainActor
@@ -60,6 +63,14 @@ final class MobilePairingModel: Identifiable {
         "Expires in \(String(format: "%d:%02d", seconds / 60, seconds % 60))"
     }
 
+    /// Q6 (#2191): the warning under the code when Link moves the Mac from
+    /// iCloud to Relay. A hub without a name reads "this Mac".
+    nonisolated static func relayMoveWarning(_ mac: String) -> String {
+        let name = mac.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "Linking this iPhone moves \(name.isEmpty ? "this Mac" : name) to Relay. "
+            + "iPhones linked over iCloud without Relay lose their connection until they subscribe."
+    }
+
     nonisolated static func linkQuestion(_ phone: String) -> String { "Link \u{201C}\(phone)\u{201D}?" }
     nonisolated static func linkedTitle(_ phone: String) -> String { "Linked \(phone)" }
 
@@ -84,6 +95,22 @@ final class MobilePairingModel: Identifiable {
     /// The QR of the code on screen (kept while waiting), rendered once per code.
     private(set) var qrImage: CGImage?
     private(set) var remainingSeconds = 0
+    /// Set on a `sas` line whose `moves_to_relay` is true (Task 4's hub
+    /// decides it); cleared by `start()` and every step after the code.
+    private(set) var relayMoveWarning: String?
+
+    /// What one `sas` line asks: the owner's answer names exactly these.
+    struct Question: Equatable {
+        let code: String
+        /// False when the line has no key (an older CLI).
+        let movesToRelay: Bool
+        /// The waiting request's opaque id; empty from an older CLI or hub.
+        let request: String
+    }
+
+    /// The question on screen (only in `.sas`). Link and Refuse capture it
+    /// when the sheet is drawn and hand it back to `confirm`.
+    private(set) var question: Question?
 
     var countdownText: String { Self.expiresText(remainingSeconds) }
     /// The code is on screen: the QR shows, with its countdown.
@@ -95,6 +122,7 @@ final class MobilePairingModel: Identifiable {
     }
 
     @ObservationIgnored private let streamer: (any HubPairStreaming)?
+    @ObservationIgnored private let macName: String
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
     @ObservationIgnored private var session: HubPairSession?
@@ -102,15 +130,19 @@ final class MobilePairingModel: Identifiable {
     @ObservationIgnored private var countdown: Task<Void, Never>?
     @ObservationIgnored private var expiresAt: Date?
     @ObservationIgnored private var phone = ""
+    /// The question of the last answer sent, while its outcome is awaited.
+    @ObservationIgnored private var answered: Question?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var closed = false
 
     init(
         streamer: (any HubPairStreaming)?,
+        macName: String = "",
         now: @escaping () -> Date = { Date() },
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.streamer = streamer
+        self.macName = macName
         self.now = now
         self.sleep = sleep
     }
@@ -124,6 +156,9 @@ final class MobilePairingModel: Identifiable {
         step = .starting
         qrImage = nil
         phone = ""
+        question = nil
+        answered = nil
+        relayMoveWarning = nil
         guard let streamer else {
             step = .failed(CLIRunnerError.binaryNotFound.localizedDescription)
             return
@@ -151,11 +186,52 @@ final class MobilePairingModel: Identifiable {
         }
     }
 
-    /// Link (true) or Refuse (false) for the code on screen.
-    func confirm(_ ok: Bool) async {
-        guard case .sas = step, let session else { return }
-        session.send(ok ? #"{"confirm":true}"# : #"{"confirm":false}"#)
+    /// Link (true) or Refuse (false) for `shown`, the question the owner saw
+    /// when the sheet was drawn. Sends nothing unless `shown` is still the
+    /// question on screen: a click queued behind a newer `sas` line, or a
+    /// second click, answers nothing. If the phone's request changed after
+    /// the answer, the hub answers `code_changed`, the CLI prints the current
+    /// `sas` line and waits, and the sheet asks again (see `receive`).
+    func confirm(_ ok: Bool, answering shown: Question) {
+        guard case .sas = step, question == shown, let session else { return }
+        session.send(Self.answerLine(confirm: ok, shown))
+        answered = shown
+        markConfirmed()
+    }
+
+    /// `{"code":…,"confirm":…,"moves_to_relay":…,"request":…}` on the
+    /// child's stdin (one line), every key copied from the `sas` line the
+    /// owner answered, with a no as well. `request` is empty when the line
+    /// had none or an empty one (an older CLI or hub); the CLI then decides
+    /// whether the answer can stand.
+    ///
+    /// Built by hand, so it cannot fail: two literal Bools and two strings
+    /// quoted by `jsonString`, which escapes every character JSON requires.
+    nonisolated static func answerLine(confirm: Bool, _ shown: Question) -> String {
+        "{\"code\":\(jsonString(shown.code)),\"confirm\":\(confirm),"
+            + "\"moves_to_relay\":\(shown.movesToRelay),\"request\":\(jsonString(shown.request))}"
+    }
+
+    /// A JSON string literal: quotes, backslash and control characters escaped.
+    nonisolated static func jsonString(_ text: String) -> String {
+        var out = "\""
+        for scalar in text.unicodeScalars {
+            switch scalar {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case _ where scalar.value < 0x20: out += String(format: "\\u%04x", scalar.value)
+            default: out.unicodeScalars.append(scalar)
+            }
+        }
+        return out + "\""
+    }
+
+    /// The step after an answer was sent: waiting for the phone, no code, no
+    /// warning (the design shots call it directly).
+    func markConfirmed() {
         qrImage = nil
+        relayMoveWarning = nil
+        question = nil
         step = .waiting
     }
 
@@ -184,10 +260,15 @@ final class MobilePairingModel: Identifiable {
         let name: String?
         let code: String?
         let reason: String?
+        /// Absent from an older CLI: no warning.
+        let movesToRelay: Bool? // swiftlint:disable:this discouraged_optional_boolean
+        /// The waiting request's opaque id (Task 4); a replacement has a new one.
+        let request: String?
 
         enum CodingKeys: String, CodingKey {
-            case event, url, name, code, reason
+            case event, url, name, code, reason, request
             case expiresAt = "expires_at"
+            case movesToRelay = "moves_to_relay"
         }
     }
 
@@ -199,15 +280,26 @@ final class MobilePairingModel: Identifiable {
             guard let raw = line.url, let url = URL(string: raw) else { return }
             let expires = line.expiresAt.flatMap(MobileHubCLI.date) ?? now().addingTimeInterval(600)
             expiresAt = expires
+            relayMoveWarning = nil
+            question = nil
             qrImage = LinkQRCode.cgImage(for: raw)
             step = .qr(url, expires: expires)
             startCountdown()
         case "waiting":
             if case .qr = step { step = .waiting }
         case "sas":
+            // The latest line is current: a new line replaces the code and the
+            // warning, and after an answer it asks again (`code_changed`, or a
+            // yes the CLI could not bind). A reprint of exactly the question
+            // already answered (same code, move and non-empty request) keeps
+            // waiting: that answer is still on its way.
             phone = line.name ?? ""
+            let asked = Question(code: line.code ?? "", movesToRelay: line.movesToRelay == true, request: line.request ?? "")
+            if case .waiting = step, !asked.request.isEmpty, asked == answered { return }
             countdown?.cancel()
-            step = .sas(code: line.code ?? "", phone: phone)
+            question = asked
+            relayMoveWarning = asked.movesToRelay ? Self.relayMoveWarning(macName) : nil
+            step = .sas(code: asked.code, phone: phone)
         case "linked":
             finish(.linked(phone))
         case "refused":
@@ -228,6 +320,8 @@ final class MobilePairingModel: Identifiable {
 
     private func finish(_ last: Step) {
         step = last
+        relayMoveWarning = nil
+        question = nil
         countdown?.cancel()
         countdown = nil
         session = nil
@@ -252,7 +346,7 @@ final class MobilePairingModel: Identifiable {
         remainingSeconds = max(0, Int(expiresAt.timeIntervalSince(now()).rounded(.down)))
         guard remainingSeconds <= 0 else { return true }
         stopSession()
-        step = .refused("expired_code")
+        finish(.refused("expired_code"))
         return false
     }
 }

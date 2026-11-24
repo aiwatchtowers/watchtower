@@ -261,15 +261,27 @@ final class MobileSettingsModel {
         hubState = status.state
         macName = status.name ?? macName
         recordingsOn = status.recordings == "on"
-        canLink = status.state == "running"
-            && Self.accountAllowsLinking(transport: status.transport, account: status.cloudKit?.account)
-        hubLine = status.state == "off" ? nil : Self.hubLine(state: status.state, reason: status.reason)
+        // A hub paused only for iCloud still links when it has a relay: it
+        // issues a Relay code (#2191, ask #1813). The app bundles its own hub,
+        // and that fallback ships in the same release as this rule.
+        let hasRelay = status.relay != nil
+        let relayLinksWithoutICloud = status.state == "paused" && status.reason == "no_icloud" && hasRelay
+        canLink = (status.state == "running" || relayLinksWithoutICloud)
+            && Self.accountAllowsLinking(transport: status.transport, account: status.cloudKit?.account, hasRelay: hasRelay)
+        hubLine = if status.state == "off" {
+            nil
+        } else if relayLinksWithoutICloud {
+            HubLine(text: Self.noICloudRelayLine(status.cloudKit?.account ?? ""), tone: .warning)
+        } else {
+            Self.hubLine(state: status.state, reason: status.reason)
+        }
         offDeleteLine = status.state == "off" ? Self.offDeleteLine(status.offDelete) : nil
         // Only on a known fact: a hub with no status file says neither.
         showsNeedsSignedBuild = status.bridge == "unavailable" || status.cloudKit?.account == "no_entitlement"
         recordingsAvailable = status.transcriber
         let running = status.state != "off"
-        accountLine = running ? status.cloudKit.flatMap { Self.accountLine($0.account) } : nil
+        // The relay line above already says iCloud is off.
+        accountLine = running && !relayLinksWithoutICloud ? status.cloudKit.flatMap { Self.accountLine($0.account) } : nil
         throttledSince = running ? status.cloudKit?.throttledSince : nil
         hubTransport = status.transport
         let relay = running ? status.relay : nil
@@ -474,7 +486,7 @@ final class MobileSettingsModel {
 
     func linkPhone() {
         guard canLink, pairing == nil else { return }
-        pairing = MobilePairingModel(streamer: pairStreamer, now: now, sleep: sleep)
+        pairing = MobilePairingModel(streamer: pairStreamer, macName: macName, now: now, sleep: sleep)
     }
 
     /// The sheet closed (Done, Esc, the tab or window went away): the
@@ -508,9 +520,10 @@ final class MobileSettingsModel {
 
     /// Link a phone needs a usable iCloud account while CloudKit carries the
     /// hub (today: no account or a restricted one hides it); an account not
-    /// read yet does not hide it, and a Relay hub links without iCloud.
-    nonisolated static func accountAllowsLinking(transport: String?, account: String?) -> Bool {
-        guard transport == "cloudkit", let account, !account.isEmpty else { return true }
+    /// read yet does not hide it, and a Relay hub, or a CloudKit hub with a
+    /// relay (it issues a Relay code), links without iCloud.
+    nonisolated static func accountAllowsLinking(transport: String?, account: String?, hasRelay: Bool = false) -> Bool {
+        guard !hasRelay, transport == "cloudkit", let account, !account.isEmpty else { return true }
         return account == "available"
     }
 

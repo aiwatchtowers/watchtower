@@ -130,8 +130,8 @@ func TestDesktopWatchHearsPairStepsWithoutCodes(t *testing.T) {
 // the other's SAS. An earlier code's refusal reaches only the stream that
 // asked for that code.
 func TestPairStreamsSeeOnlyTheirOwnCodes(t *testing.T) {
-	a := &pairListener{token: "stream-a", queue: make(chan ControlAnswer, 8), codes: map[string]string{}}
-	b := &pairListener{token: "stream-b", queue: make(chan ControlAnswer, 8), codes: map[string]string{}}
+	a := &pairListener{token: "stream-a", queue: make(chan ControlAnswer, 8), codes: map[string]pairShown{}}
+	b := &pairListener{token: "stream-b", queue: make(chan ControlAnswer, 8), codes: map[string]pairShown{}}
 	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{a: true, b: true}, watches: map[*pairListener]bool{}}
 	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/a", Nonce: "na", Token: "stream-a"})
 	s.broadcast(link.PairEvent{Kind: link.EventWaiting, Nonce: "na", Token: "stream-a"})
@@ -209,8 +209,8 @@ func TestASASBeforeThePairAnswerReachesItsStream(t *testing.T) {
 	if sas := <-a.queue; sas.Event != link.EventSAS || sas.DeviceID != "AAAA" {
 		t.Fatalf("got %+v, want the SAS", sas)
 	}
-	if code, ok := a.code("AAAA"); !ok || code != "1234" {
-		t.Fatalf("code %q %v: the confirm would find none", code, ok)
+	if code, ok := a.code("AAAA"); !ok || code.code != "1234" {
+		t.Fatalf("code %+v %v: the confirm would find none", code, ok)
 	}
 }
 

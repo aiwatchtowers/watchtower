@@ -112,6 +112,12 @@ type (
 		DeviceID string `json:"device_id"`
 		Name     string `json:"name"`
 		Code     string `json:"code"`
+		// MovesToRelay: confirming this phone moves the Mac from iCloud
+		// to Relay and cuts off iCloud phones (always present, #2191).
+		MovesToRelay bool `json:"moves_to_relay"`
+		// Request names the waiting request (opaque; a replacement has a
+		// new one even when it drew the same code).
+		Request string `json:"request"`
 	}
 	hubPairLinked struct {
 		Event    string `json:"event"`
@@ -124,6 +130,13 @@ type (
 	// hubPairConfirm is the owner's answer read from stdin.
 	hubPairConfirm struct {
 		Confirm *bool `json:"confirm"`
+		// Code, MovesToRelay and Request are the sas line answered
+		// (optional while one sas line was printed; a yes after a
+		// replacement needs Request): the hub refuses a yes or a no
+		// code_changed when the request moved on (#2191).
+		Code         string `json:"code,omitempty"`
+		MovesToRelay *bool  `json:"moves_to_relay,omitempty"`
+		Request      string `json:"request,omitempty"`
 	}
 )
 
@@ -568,10 +581,92 @@ func runHubPair(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer func() { _ = c.Close() }()
+	return pairStream(cmd, c)
+}
+
+// pairRead is one read off the pairing stream.
+type pairRead struct {
+	a   hub.ControlAnswer
+	err error
+}
+
+// pairStream narrates the pairing on c as JSON lines and hands the owner's
+// stdin answer to the hub. The stream is read while the owner decides: a
+// sas line is printed again whenever the request of the phone on screen is
+// replaced (a new request, code or moves_to_relay). An answer names the
+// line it answers ({"confirm":…,"code":…,"moves_to_relay":…,"request":…}
+// on stdin), and the hub refuses it, a yes or a no, code_changed when the
+// request moved on. Only while a single request was printed may a yes
+// leave them out (that line stands in); after a replacement an answer, a
+// yes or a no, without request is ambiguous. Either way the current sas
+// line is printed again and the owner answers again. A request that moved
+// to another pairing stream, or is gone from the hub, ends this one
+// (no_request: refused expired_code); stdin closing without an answer ends
+// it with no answer sent (errPairNoAnswer).
+func pairStream(cmd *cobra.Command, c *hub.ControlClient) error {
+	done := make(chan struct{})
+	defer close(done)
+	reads := make(chan pairRead)
+	go func() {
+		for {
+			a, err := c.Next()
+			select {
+			case reads <- pairRead{a, err}:
+			case <-done:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 	in := bufio.NewScanner(cmd.InOrStdin())
-	var device string // the phone whose code was shown, once a sas came
+	var (
+		device   string          // the phone whose code was shown, once a sas came
+		shown    hubPairSAS      // the last sas line printed for device
+		answers  chan pairAnswer // the owner's answer being read; nil when none is
+		sent     bool            // a confirm is out and not answered yet
+		replaced bool            // device's request was replaced after its first sas line
+		ask      = func() chan pairAnswer {
+			out := make(chan pairAnswer, 1) // never blocks a reader the stream outlived
+			go func() { out <- readPairConfirm(in) }()
+			return out
+		}
+	)
+	// askAgain prints the current sas line again, then reads a new answer.
+	askAgain := func() error {
+		sent = false
+		_ = c.SetReadDeadline(time.Time{})
+		if err := hubPrint(cmd, true, shown, ""); err != nil {
+			return err
+		}
+		answers = ask()
+		return nil
+	}
 	for {
-		a, err := c.Next()
+		var r pairRead
+		select {
+		case ans := <-answers:
+			answers = nil
+			req, ok, err := pairConfirmRequest(device, shown, replaced, ans)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				if err := askAgain(); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := c.Send(req); err != nil {
+				return fmt.Errorf("the hub closed the pairing: %w", err)
+			}
+			sent = true
+			_ = c.SetReadDeadline(time.Now().Add(hubPairAfterConfirm))
+			continue
+		case r = <-reads:
+		}
+		a, err := r.a, r.err
 		if err != nil {
 			var ne net.Error
 			if errors.As(err, &ne) && ne.Timeout() {
@@ -586,6 +681,16 @@ func runHubPair(cmd *cobra.Command, _ []string) error {
 			if a.Op == hub.OpConfirm && (a.Error == hub.ErrClassNoCode || a.Error == hub.ErrClassNoRequest) {
 				// The request expired while the owner looked at the code.
 				return hubPrint(cmd, true, hubPairRefused{Event: link.EventRefused, Reason: wire.RefusedExpiredCode}, "")
+			}
+			if a.Op == hub.OpConfirm && a.Error == hub.ErrClassCodeChanged {
+				// The phone's request was replaced after the line the owner
+				// answered: the current line is printed again (a newer one
+				// still on its way is printed when it comes), and the owner
+				// answers again.
+				if err := askAgain(); err != nil {
+					return err
+				}
+				continue
 			}
 			if err := hubAnswerError(a); err != nil {
 				return err
@@ -609,18 +714,29 @@ func runHubPair(cmd *cobra.Command, _ []string) error {
 				return err
 			}
 		case link.EventSAS:
-			if device != "" {
+			if device != "" && !strings.EqualFold(a.DeviceID, device) {
 				continue // another phone while this one waits for the owner
 			}
-			device = a.DeviceID
-			_ = c.SetReadDeadline(time.Time{})
-			if err := hubPrint(cmd, true, hubPairSAS{Event: a.Event, DeviceID: a.DeviceID, Name: a.Name, Code: a.Code}, ""); err != nil {
+			line := hubPairSAS{Event: a.Event, DeviceID: a.DeviceID, Name: a.Name, Code: a.Code, MovesToRelay: a.MovesToRelay,
+				Request: a.Request}
+			if device != "" && line == shown {
+				continue
+			}
+			// A new name alone is the same request. Defensive: the hub
+			// emits no sas for an unchanged request (pendingUnchanged), so
+			// a name-only line does not come from it today.
+			replaced = replaced || device != "" && (line.Code != shown.Code ||
+				line.MovesToRelay != shown.MovesToRelay || line.Request != shown.Request)
+			device, shown = a.DeviceID, line
+			if !sent {
+				_ = c.SetReadDeadline(time.Time{})
+			}
+			if err := hubPrint(cmd, true, line, ""); err != nil {
 				return err
 			}
-			if err := c.Send(hub.ControlRequest{Op: hub.OpConfirm, Device: device, Confirm: readPairConfirm(in)}); err != nil {
-				return fmt.Errorf("the hub closed the pairing: %w", err)
+			if answers == nil && !sent {
+				answers = ask()
 			}
-			_ = c.SetReadDeadline(time.Now().Add(hubPairAfterConfirm))
 		case link.EventLinked:
 			if device == "" || !strings.EqualFold(a.DeviceID, device) {
 				continue
@@ -635,9 +751,76 @@ func runHubPair(cmd *cobra.Command, _ []string) error {
 	}
 }
 
-// readPairConfirm reads the owner's {"confirm":true|false} line; anything
-// else, or stdin closing, is a no.
-func readPairConfirm(in *bufio.Scanner) bool {
+// errPairHubTooOld ends a pairing whose phone's request was replaced on a
+// running hub that sends no request id (older than this command): no yes
+// could name the request shown.
+var errPairHubTooOld = errors.New("the hub is out of date: restart Watchtower, then link again")
+
+// errPairNoAnswer ends a pairing whose stdin closed without sending an
+// answer: no confirm is sent. The stream's end still abandons its code as
+// any closed stream does (a CloudKit code's waiting phones are refused
+// not_confirmed).
+var errPairNoAnswer = errors.New("stdin closed without sending an answer")
+
+// pairConfirmRequest is the confirm for the owner's answer ans to device,
+// whose last printed sas line is shown. An answer that leaves the request
+// out is bound to shown's; a yes that leaves the code or moves_to_relay
+// out takes shown's too while device's request was never replaced. After a
+// replacement an answer, a yes or a no, without request is ambiguous
+// (false: nothing is sent), and one with it is sent as given.
+//
+// Stdin closing first (ans.eof) is errPairNoAnswer: nothing is sent.
+// A yes on a hub that names no request (shown.Request empty, a hub older
+// than this command) is errPairHubTooOld whatever the answer carries:
+// nothing could bind it to the request shown. A no still goes through.
+func pairConfirmRequest(device string, shown hubPairSAS, replaced bool, ans pairAnswer) (hub.ControlRequest, bool, error) {
+	req := hub.ControlRequest{Op: hub.OpConfirm, Device: device, Confirm: ans.confirm, Code: ans.code,
+		MovesToRelay: ans.movesToRelay, Request: ans.request}
+	switch {
+	case ans.eof:
+		return hub.ControlRequest{}, false, errPairNoAnswer
+	case !ans.confirm:
+		if req.Request == "" && shown.Request != "" {
+			if replaced {
+				return hub.ControlRequest{}, false, nil
+			}
+			req.Request = shown.Request
+		}
+		return req, true, nil
+	case shown.Request == "":
+		return hub.ControlRequest{}, false, errPairHubTooOld
+	case replaced:
+		return req, ans.request != "", nil
+	}
+	if req.Code == "" {
+		req.Code = shown.Code
+	}
+	if req.MovesToRelay == nil {
+		moves := shown.MovesToRelay
+		req.MovesToRelay = &moves
+	}
+	if req.Request == "" {
+		req.Request = shown.Request
+	}
+	return req, true, nil
+}
+
+// pairAnswer is the owner's answer: confirm, and the sas line answered (its
+// code, moves_to_relay and request; "" and nil when the answer left them
+// out). eof: stdin closed before any answer line.
+type pairAnswer struct {
+	eof          bool
+	confirm      bool
+	code         string
+	movesToRelay *bool
+	request      string
+}
+
+// readPairConfirm reads the owner's
+// {"confirm":true|false,"code":…,"moves_to_relay":…,"request":…} line
+// (all but confirm optional); anything else is a no, and stdin closing
+// first is eof (no answer).
+func readPairConfirm(in *bufio.Scanner) pairAnswer {
 	for in.Scan() {
 		line := strings.TrimSpace(in.Text())
 		if line == "" {
@@ -645,9 +828,9 @@ func readPairConfirm(in *bufio.Scanner) bool {
 		}
 		var c hubPairConfirm
 		if json.Unmarshal([]byte(line), &c) != nil || c.Confirm == nil {
-			return false
+			return pairAnswer{}
 		}
-		return *c.Confirm
+		return pairAnswer{confirm: *c.Confirm, code: c.Code, movesToRelay: c.MovesToRelay, request: c.Request}
 	}
-	return false
+	return pairAnswer{eof: true}
 }

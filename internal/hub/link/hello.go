@@ -6,8 +6,10 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,12 +29,27 @@ import (
 // reached, or the phone is linked already and keeps its link). Neither is set
 // when the hello changes nothing (the linked phone re-sent the code it used).
 type Pending struct {
-	DeviceID   string
-	Name       string
-	Code       string
+	DeviceID string
+	Name     string
+	Code     string
+	// Request names the waiting request (RequestID of its confirm nonce);
+	// Nonce is the link code it came in under (PendingLinks only).
+	Request    string
+	Nonce      string
 	ReceivedAt time.Time
 	Refused    string
 	Unanswered bool
+}
+
+// RequestID names one waiting link request for the owner's confirm: a short
+// hash of its confirm nonce, which a replacement request draws anew, so a
+// confirm naming it is bound to the request the owner was shown even when
+// a replacement drew the same four-digit code. It never reveals the nonce.
+func RequestID(confirmNonce []byte) string {
+	h := sha256.New()
+	h.Write([]byte("watchtower link request v1\x00"))
+	h.Write(confirmNonce)
+	return hex.EncodeToString(h.Sum(nil)[:8])
 }
 
 // openedHello is a hello opened and checked.
@@ -71,9 +88,11 @@ func (c *Center) HandleHello(zone, wireName string, env []byte) (Pending, error)
 // the participant sweep spares a linked shared phone's user. slot is true
 // for a hello read from a relay pairing slot (HandleHello): a saved request
 // is marked so in hub_meta relay_slot_links (state.MarkRelaySlotRequestTx),
-// one from CloudKit clears that mark. A code an
-// answering CloudKit close retired reads that close's refusal (retired),
-// not expired_code.
+// one from CloudKit clears that mark; its sas event's OverRelay is slot
+// with a relay device id in the hello (a CloudKit hello never is, even a
+// private one whose owner read came back empty). A code an answering
+// CloudKit close retired reads that close's refusal (retired), not
+// expired_code.
 func (c *Center) decideHello(opened openedHello, user string, slot bool) (Pending, error) {
 	c.mu.Lock()
 	defer c.unlock()
@@ -123,7 +142,7 @@ func (c *Center) decideHello(opened openedHello, user string, slot bool) (Pendin
 		switch saved {
 		case pendingUnchanged:
 			stored, _, err := pendingTx(tx, opened.device)
-			out.Code, out.ReceivedAt = stored.sas, stored.receivedAt
+			out.Code, out.ReceivedAt, out.Request = stored.sas, stored.receivedAt, RequestID(stored.confirmNonce)
 			return err
 		case pendingCapped:
 			out.Refused = wire.RefusedTooManyRequests
@@ -135,7 +154,7 @@ func (c *Center) decideHello(opened openedHello, user string, slot bool) (Pendin
 				return err
 			}
 		}
-		out.Code, waiting = sas, true
+		out.Code, out.Request, waiting = sas, RequestID(confirm), true
 		return nil
 	})
 	if err != nil {
@@ -144,7 +163,8 @@ func (c *Center) decideHello(opened openedHello, user string, slot bool) (Pendin
 	switch {
 	case waiting:
 		log.Printf("hub link: link request from phone %s waits for the owner", out.DeviceID)
-		c.emit(PairEvent{Kind: EventSAS, DeviceID: out.DeviceID, Name: out.Name, Code: out.Code, Nonce: opened.code.nonce})
+		c.emit(PairEvent{Kind: EventSAS, DeviceID: out.DeviceID, Name: out.Name, Code: out.Code, Request: out.Request,
+			OverRelay: slot && opened.relayID != "", Nonce: opened.code.nonce})
 		c.changed()
 	case out.Refused != "" && out.Unanswered:
 		log.Printf("hub link: hello from phone %s refused (%s), unanswered", out.DeviceID, out.Refused)
@@ -406,7 +426,8 @@ func (c *Center) PendingLinks() ([]Pending, error) {
 	}
 	out := make([]Pending, 0, len(list))
 	for _, p := range list {
-		out = append(out, Pending{DeviceID: strings.ToUpper(p.deviceID), Name: p.name, Code: p.sas, ReceivedAt: p.receivedAt})
+		out = append(out, Pending{DeviceID: strings.ToUpper(p.deviceID), Name: p.name, Code: p.sas,
+			Request: RequestID(p.confirmNonce), Nonce: p.linkNonce, ReceivedAt: p.receivedAt})
 	}
 	return out, nil
 }

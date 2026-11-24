@@ -644,3 +644,273 @@ func TestAnAbandonedPairStreamClosesItsCloudKitCode(t *testing.T) {
 		}
 	})
 }
+
+// withICloudPhone links an iCloud-routed phone into the hub dir before the
+// start (a startPairDesk edit).
+func withICloudPhone(t *testing.T) func(*Options) {
+	return func(o *Options) { linkSharedPhone(t, o.Dir, sharedPhoneID, "_colleague-a") }
+}
+
+// runtimeInto hands the started runtime to *h (a startPairDesk edit).
+func runtimeInto(h **hubRuntime) func(*Options) {
+	return func(o *Options) { o.started = func(rt *hubRuntime) { *h = rt } }
+}
+
+// slotSAS issues a code, sends a phone's hello through a Relay pairing
+// slot and reads the sas line the pairing stream gets. Anything else on
+// the stream fails the test at once; a sas that never comes fails it a
+// minute later on the bubble's clock.
+func slotSAS(t *testing.T, r *deskRig, c *ControlClient) (ControlAnswer, *hubtest.Phone) {
+	t.Helper()
+	phone, err := hubtest.FromLink(pairCode(t, c), r.fake, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := phone.Hello(transport.PairZone("slot1")); err != nil {
+		t.Fatal(err)
+	}
+	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: "slot1"}})
+	_ = c.SetReadDeadline(time.Now().Add(time.Minute))
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
+	a, err := c.Next()
+	if err != nil || a.Error != "" || a.Event != link.EventSAS {
+		t.Fatalf("waiting for the sas: %+v, %v", a, err)
+	}
+	return a, phone
+}
+
+// confirmAnswer sends the owner's confirm and reads its answer, skipping
+// pairing events.
+func confirmAnswer(t *testing.T, c *ControlClient, req ControlRequest) ControlAnswer {
+	t.Helper()
+	if err := c.Send(req); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(time.Minute))
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
+	for {
+		a, err := c.Next()
+		if err != nil {
+			t.Fatalf("waiting for the confirm's answer: %v", err)
+		}
+		if a.Event == "" && a.Op == OpConfirm {
+			return a
+		}
+	}
+}
+
+// #2191 review: a confirm names the code the owner was shown; a yes for a
+// code the phone's request no longer has is refused code_changed and keeps
+// the request; a confirm without a code takes the stream's latest, as
+// before.
+func TestAConfirmForAStaleCodeIsRefused(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, _, c := startPairDesk(t, transport.KindRelay)
+		sas, phone := slotSAS(t, r, c)
+		stale := "0000"
+		if sas.Code == stale {
+			stale = "1111"
+		}
+		a := confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: stale})
+		if a.Error != ErrClassCodeChanged {
+			t.Fatalf("a yes for a stale code: %+v", a)
+		}
+		// The code still holds but the line answered said another
+		// moves_to_relay (a replacement that kept its code).
+		flipped := !sas.MovesToRelay
+		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code, MovesToRelay: &flipped})
+		if a.Error != ErrClassCodeChanged {
+			t.Fatalf("a yes for another moves_to_relay: %+v", a)
+		}
+		// The code holds but the request named is not the one waiting.
+		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code,
+			Request: "0000000000000000"})
+		if sas.Request == "" || a.Error != ErrClassCodeChanged {
+			t.Fatalf("a yes for another request (sas request %q): %+v", sas.Request, a)
+		}
+		shown := sas.MovesToRelay
+		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code,
+			MovesToRelay: &shown, Request: sas.Request})
+		if !a.OK {
+			t.Fatalf("a yes for the code shown: %+v", a)
+		}
+	})
+}
+
+// Without a code the confirm is today's: the stream's latest code.
+func TestAConfirmWithoutACodeTakesTheStreamsCode(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, _, c := startPairDesk(t, transport.KindRelay)
+		_, phone := slotSAS(t, r, c)
+		if a := confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); !a.OK {
+			t.Fatalf("a yes without a code: %+v", a)
+		}
+	})
+}
+
+// #2191 integration review: each stream answers only the request it was
+// shown. The phone pairs through stream A, then again through stream B's
+// code (same device keys): the waiting request is B's now. A's answers —
+// naming B's code or request, naming nothing, or naming A's own old
+// request — never refuse or link B's request: a caller view that is not
+// A's last sas is code_changed, and A's own request that moved to B's code
+// is no_request (A's stream ends). B, answering a request id it was not
+// shown, gets code_changed; B's answer to its own request links.
+func TestAStreamAnswersOnlyItsOwnRequest(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, _, a := startPairDesk(t, transport.KindRelay)
+		sasA, phone := slotSAS(t, r, a)
+		b := r.dial()
+		t.Cleanup(func() { _ = b.Close() })
+		// The phone pairs through B's code; a new B code each time B's
+		// four digits happen to equal A's (1 in 10 000), a bounded number
+		// of times.
+		var sasB ControlAnswer
+		for attempt := 1; ; attempt++ {
+			if attempt > 5 {
+				t.Fatal("B's code equalled A's five times")
+			}
+			if err := phone.UseLink(pairCode(t, b)); err != nil {
+				t.Fatal(err)
+			}
+			slot := fmt.Sprintf("slotB%d", attempt)
+			if err := phone.Hello(transport.PairZone(slot)); err != nil {
+				t.Fatal(err)
+			}
+			r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: slot}})
+			_ = b.SetReadDeadline(time.Now().Add(time.Minute))
+			var err error
+			sasB, err = b.Next()
+			_ = b.SetReadDeadline(time.Time{})
+			if err != nil || sasB.Event != link.EventSAS || !strings.EqualFold(sasB.DeviceID, sasA.DeviceID) {
+				t.Fatalf("B's sas: %+v, %v", sasB, err)
+			}
+			if sasB.Code != sasA.Code {
+				break
+			}
+		}
+		device := phone.ID().String()
+		for _, tc := range []struct {
+			name string
+			on   *ControlClient
+			req  ControlRequest
+			want string
+		}{
+			{"A's yes with B's code", a, ControlRequest{Confirm: true, Code: sasB.Code}, ErrClassCodeChanged},
+			{"A's no with B's code", a, ControlRequest{Code: sasB.Code}, ErrClassCodeChanged},
+			{"A's no with B's request", a, ControlRequest{Request: sasB.Request}, ErrClassCodeChanged},
+			{"A's bare no", a, ControlRequest{}, ErrClassNoRequest},
+			{"A's no with its old request", a, ControlRequest{Request: sasA.Request}, ErrClassNoRequest},
+			{"A's yes to its old request", a, ControlRequest{Confirm: true, Code: sasA.Code, Request: sasA.Request}, ErrClassNoRequest},
+			{"B's no with a stale request", b, ControlRequest{Request: "0000000000000000"}, ErrClassCodeChanged},
+		} {
+			tc.req.Op, tc.req.Device = OpConfirm, device
+			if got := confirmAnswer(t, tc.on, tc.req); got.Error != tc.want {
+				t.Fatalf("%s: %+v, want %s", tc.name, got, tc.want)
+			}
+		}
+		// B's request waits untouched: B's yes to it links.
+		if got := confirmAnswer(t, b, ControlRequest{Op: OpConfirm, Device: device, Confirm: true, Code: sasB.Code,
+			Request: sasB.Request}); !got.OK {
+			t.Fatalf("B's yes to its own request: %+v", got)
+		}
+		// The phone finished on B: A's answer finds no request of its own.
+		if got := confirmAnswer(t, a, ControlRequest{Op: OpConfirm, Device: device}); got.Error != ErrClassNoRequest {
+			t.Fatalf("A's no after the phone linked through B: %+v", got)
+		}
+	})
+}
+
+// waitsOnStream tells a request still on the stream (a newer request
+// under its own code: code_changed, the owner answers again) from one on
+// another stream's code or gone (no_request ends the stream); a pending
+// list it cannot read counts as the stream's.
+func TestWaitsOnStream(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		var h *hubRuntime
+		r, _, c := startPairDesk(t, transport.KindRelay, runtimeInto(&h))
+		_, phone := slotSAS(t, r, c)
+		device := phone.ID().String()
+		pending, err := h.center.PendingLinks()
+		if err != nil || len(pending) != 1 || pending[0].Nonce == "" {
+			t.Fatalf("pending %+v, %v", pending, err)
+		}
+		own := &pairListener{nonces: []string{pending[0].Nonce}}
+		if !h.waitsOnStream(own, device) {
+			t.Error("a request under the stream's own code is not the stream's")
+		}
+		if h.waitsOnStream(&pairListener{nonces: []string{"another-code"}}, device) {
+			t.Error("a request under another stream's code is the stream's")
+		}
+		if h.waitsOnStream(own, "AAAAAAAA-0000-4000-8000-000000000001") {
+			t.Error("no request waiting counts as the stream's")
+		}
+		broken, err := state.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = broken.Close()
+		if !(&hubRuntime{center: link.NewCenter(link.Config{Store: broken})}).waitsOnStream(&pairListener{}, device) {
+			t.Error("an unreadable pending list is not the stream's")
+		}
+	})
+}
+
+// #2191 (Q6): the sas line says the Link moves the Mac to Relay exactly when
+// the phone paired through a Relay pairing slot, the hub runs on iCloud and
+// another linked phone has an iCloud route.
+func TestTheSASLineSaysWhenTheLinkMovesTheMacToRelay(t *testing.T) {
+	t.Run("a slot hello on iCloud with an iCloud phone", func(t *testing.T) {
+		bubble(t, func(t *testing.T) {
+			var h *hubRuntime
+			r, _, c := startPairDesk(t, transport.KindCloudKit, withICloudPhone(t), runtimeInto(&h))
+			sas, phone := slotSAS(t, r, c)
+			if !sas.MovesToRelay || !strings.EqualFold(sas.DeviceID, phone.ID().String()) {
+				t.Fatalf("sas %+v: want moves_to_relay", sas)
+			}
+			// The OverRelay guard alone: the same event without it moves
+			// nothing (that a CloudKit hello's sas never sets it is
+			// TestASASOverAPairingSlotSaysOverRelay's, in internal/hub/link).
+			if h.movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sas.DeviceID}) {
+				t.Fatal("a sas without OverRelay moves the Mac to Relay")
+			}
+			// The iCloud-routed phone relinking is not "another" phone.
+			if h.movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sharedPhoneID, OverRelay: true}) {
+				t.Fatal("the iCloud phone itself counts as another iCloud phone")
+			}
+			// An unreadable route list warns rather than stays silent.
+			broken, err := state.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = broken.Close()
+			if !(&hubRuntime{sw: h.sw, st: broken}).movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sas.DeviceID, OverRelay: true}) {
+				t.Fatal("a failed route read answers false")
+			}
+		})
+	})
+	t.Run("no other iCloud phone", func(t *testing.T) {
+		bubble(t, func(t *testing.T) {
+			r, _, c := startPairDesk(t, transport.KindCloudKit)
+			if sas, _ := slotSAS(t, r, c); sas.MovesToRelay {
+				t.Fatalf("sas %+v: nobody is cut off", sas)
+			}
+		})
+	})
+	t.Run("the hub on Relay", func(t *testing.T) {
+		bubble(t, func(t *testing.T) {
+			r, _, c := startPairDesk(t, transport.KindRelay, withICloudPhone(t))
+			if sas, _ := slotSAS(t, r, c); sas.MovesToRelay {
+				t.Fatalf("sas %+v: the hub is on Relay already", sas)
+			}
+		})
+	})
+}
+
+// A host without a switcher (one transport) never moves.
+func TestMovesToRelayWithoutASwitcherIsFalse(t *testing.T) {
+	h := &hubRuntime{}
+	if h.movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sharedPhoneID, OverRelay: true}) {
+		t.Fatal("a host without a switcher moves to Relay")
+	}
+}
