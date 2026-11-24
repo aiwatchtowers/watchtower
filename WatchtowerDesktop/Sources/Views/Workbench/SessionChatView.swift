@@ -41,6 +41,8 @@ struct SessionChatView: View {
     @State private var highlights = WorkchatHighlights()
     /// "Copied …" over the feed for a moment after a hash or command click.
     @State private var copiedNotice: String?
+    /// The session root's code index, held while the Workchat is on screen.
+    @State private var indexLease = WorkchatIndexLease()
     /// The messages this session sent to another session that still wait (`session_messages`, state `queued`).
     @State private var waitingMessages: [SessionMessage] = []
 
@@ -197,6 +199,10 @@ struct SessionChatView: View {
         }
         // The feed shows a sent line: its bubble leaves.
         .onChange(of: store.entries) { _, entries in workchat?.reconcile(with: entries) }
+        // The session root's code index runs while the Workchat is on screen: a bare file name resolves in it.
+        .onAppear { holdIndex(sessionCodeRoot) }
+        .onChange(of: sessionCodeRoot) { _, root in holdIndex(root) }
+        .onDisappear { indexLease.release() }
         // The main feed is polled only while it is on screen: an open
         // subagent stops it, and back at the root it is read once.
         .task(id: MainFollowKey(state: stateKind, root: path.isRoot)) {
@@ -434,31 +440,43 @@ struct SessionChatView: View {
 
     // MARK: - Highlighted spans
 
+    /// The session's code root, where the agent's paths resolve and open.
+    private var sessionCodeRoot: CodeRoot? {
+        vm.summaries.first { $0.id == projectID }.map { vm.codeRoot(sessionID: sessionID, project: $0.project) }
+    }
+
+    private func holdIndex(_ root: CodeRoot?) {
+        let center = appState.codeIndexCenter
+        indexLease.connect(show: { center.markShown(root: $0) }, hide: { center.markHidden(root: $0) })
+        indexLease.hold(root)
+    }
+
     /// The span click and path lookup the feed and a subagent's run share. The session's code root is worked out
-    /// once here, per feed build, never per span (review round 1). A miss is asked again once the dialog or the
-    /// root's file index changes.
+    /// once here, per feed build, never per span (review round 1). An answer is asked again once the dialog or the
+    /// root's file list changes (`filesRevision`).
     private func highlightHandlers() -> WorkchatHighlightHandlers {
-        let root = vm.summaries.first { $0.id == projectID }.map { vm.codeRoot(sessionID: sessionID, project: $0.project) }
+        let root = sessionCodeRoot
         let index = root.map { appState.codeIndexCenter.index(for: $0) }
-        let epoch = dialogEntries.count &* 1_000_003 &+ (index?.files.count ?? 0)
-        let (highlights, vm, sessionID, projectID) = (highlights, vm, sessionID, projectID)
+        let epoch = dialogEntries.count
+        let revision = index?.filesRevision ?? 0
+        let (highlights, vm, sessionID) = (highlights, vm, sessionID)
         return WorkchatHighlightHandlers(
-            open: { span in
-                switch highlights.action(for: span, root: root) {
+            open: { span, messageID in
+                switch highlights.action(for: span, messageID: messageID, root: root, indexFiles: index?.files ?? []) {
                 case let .showTarget(targetID):
                     vm.showTargetOnBoard(targetID, projectID: projectID)
                 case let .copy(text):
                     WorkchatFeed.copy(text)
                     copiedNotice = WorkchatHighlights.copiedNotice(text)
                 case let .openFile(file, root):
-                    Task { await vm.openSessionFile(file, root: root, sessionID: sessionID) }
+                    Task { await vm.openSessionFile(file, root: root, pane: .sessionChat(sessionID)) }
                 case .nothing:
                     NSSound.beep()
                 }
             },
             resolvesPath: { path, messageID in
                 guard let root else { return false }
-                return highlights.resolves(path, messageID: messageID, root: root, epoch: epoch,
+                return highlights.resolves(path, messageID: messageID, root: root, epoch: epoch, revision: revision,
                                            indexFiles: index?.files ?? [])
             }
         )

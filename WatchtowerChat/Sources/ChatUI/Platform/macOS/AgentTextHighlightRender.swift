@@ -48,21 +48,29 @@ enum AgentTextHighlightRender {
 
     static func highlighted(_ text: NSAttributedString, resolvesPath: (String) -> Bool) -> NSAttributedString {
         let found = scans.value(for: text, cost: { max($0.count, 1) }, build: { scan(text) })
-        let kept = kept(found, resolvesPath: resolvesPath)
-        guard !kept.isEmpty else { return text }
-        let paths = Set(kept.filter { $0.span.kind == .path }.map(\.span.text))
-        return memo.value(for: Key(text: text, resolvedPaths: paths), cost: { $0.length },
-                          build: { apply(kept, to: text) })
+        var resolved = Set<String>()
+        for item in found where item.span.kind == .path && !resolved.contains(item.span.text) {
+            if resolvesPath(item.span.text) { resolved.insert(item.span.text) }
+        }
+        return memo.value(for: Key(text: text, resolvedPaths: resolved), cost: { $0.length }, build: {
+            let kept = kept(found, resolved: resolved)
+            return kept.isEmpty ? text : apply(kept, to: text)
+        })
     }
 
     /// The paths that resolve, and the refs and hashes outside them: a candidate that does not resolve leaves a ref
-    /// inside it coloured (`#2201/T2`).
-    static func kept(_ found: [Found], resolvesPath: (String) -> Bool) -> [Found] {
-        let paths = found.filter { $0.span.kind == .path && resolvesPath($0.span.text) }
-        let others = found.filter { item in
-            item.span.kind != .path && !paths.contains { NSIntersectionRange($0.range, item.range).length > 0 }
+    /// inside it coloured (`#2201/T2`). One ordered pass over both lists (`found` is in text order).
+    static func kept(_ found: [Found], resolved: Set<String>) -> [Found] {
+        let paths = found.filter { $0.span.kind == .path && resolved.contains($0.span.text) }
+            .sorted { $0.range.location < $1.range.location }
+        var next = 0
+        var out = paths
+        for item in found.sorted(by: { $0.range.location < $1.range.location }) where item.span.kind != .path {
+            while next < paths.count, NSMaxRange(paths[next].range) <= item.range.location { next += 1 }
+            let overlaps = next < paths.count && paths[next].range.location < NSMaxRange(item.range)
+            if !overlaps { out.append(item) }
         }
-        return (paths + others).sorted { $0.range.location < $1.range.location }
+        return out.sorted { $0.range.location < $1.range.location }
     }
 
     /// What VoiceOver offers for a span, as the Workchat acts on it.

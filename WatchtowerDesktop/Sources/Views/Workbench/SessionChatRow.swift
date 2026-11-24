@@ -26,7 +26,7 @@ struct WorkchatFeed {
     /// An artifact card opens the viewer.
     var onOpenArtifact: (ChatArtifactContent) -> Void = { _ in }
     /// A click on a highlighted span of the agent's text (`WorkchatHighlights`); nil = the spans are only coloured.
-    var onHighlight: ((AgentTextHighlights.Span) -> Void)?
+    var onHighlight: ((AgentTextHighlights.Span, Int64) -> Void)?
     /// Whether a path in an agent message (by id) is a file of the session's folders: only such a path is coloured.
     var resolvesPath: ((String, Int64) -> Bool)?
 

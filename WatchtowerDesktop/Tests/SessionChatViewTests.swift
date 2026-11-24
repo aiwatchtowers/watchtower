@@ -143,12 +143,12 @@ final class SessionChatViewTests: XCTestCase {
         var feed = WorkchatFeed(entries: [SessionFeedEntry(id: "a", kind: "agent", text: "#12")],
                                 markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
         var opened: [AgentTextHighlights.Span] = []
-        feed.onHighlight = { opened.append($0) }
+        feed.onHighlight = { span, _ in opened.append(span) }
         feed.resolvesPath = { path, _ in path == "a/b.go" }
         let context = feed.context()
         XCTAssertTrue(context.highlightsAgentText)
         let span = AgentTextHighlights.spans(inPlain: "#12")[0]
-        context.partActions.openHighlight?(span)
+        context.partActions.openHighlight?(span, 1)
         XCTAssertEqual(opened, [span])
         XCTAssertEqual(context.partActions.resolvesPath?("a/b.go", 1), true)
         XCTAssertEqual(context.partActions.resolvesPath?("c.go", 1), false)
@@ -164,54 +164,110 @@ final class SessionChatViewTests: XCTestCase {
         AgentTextHighlights.Span(range: text.startIndex..<text.endIndex, kind: kind, text: text)
     }
 
-    /// A ref shows the target, a hash or a command is copied, a path opens only once its lookup found it — and a
-    /// click checks the file again (review round 1).
-    func testWorkchatHighlightActionsAndTheClickRecheck() async {
+    /// A ref shows the target, a hash or a command is copied, a path opens only once its lookup found it — for that
+    /// message — and a click looks it up afresh (review rounds 1–2).
+    func testWorkchatHighlightActionsAndTheClickLookup() async {
         let highlights = WorkchatHighlights()
-        highlights.lookUp = { path, _, _ in path == "a/b.go" ? "a/b.go" : nil }
-        var onDisk: Set<String> = ["a/b.go"]
-        highlights.recheck = { file, _ in onDisk.contains(file) ? file : nil }
+        let onDisk = LockedLog()
+        onDisk.append("a/b.go")
+        highlights.lookUp = { path, _, _ in onDisk.contains(path) ? path : nil }
         let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
-        XCTAssertEqual(highlights.action(for: span("#2188", .ref(2188)), root: root), .showTarget(2188))
-        XCTAssertEqual(highlights.action(for: span("67a59755a", .hash), root: root), .copy("67a59755a"))
-        XCTAssertEqual(highlights.action(for: span("make test", .command), root: root), .copy("make test"))
-        XCTAssertEqual(highlights.action(for: span("a/b.go", .path), root: root), .nothing, "not looked up yet")
+        func action(
+            _ text: String, _ kind: AgentTextHighlights.Kind, message: Int64 = 1, root: CodeRoot? = root
+        ) -> WorkchatHighlights.Action {
+            highlights.action(for: span(text, kind), messageID: message, root: root, indexFiles: [])
+        }
+        XCTAssertEqual(action("#2188", .ref(2188)), .showTarget(2188))
+        XCTAssertEqual(action("67a59755a", .hash), .copy("67a59755a"))
+        XCTAssertEqual(action("make test", .command), .copy("make test"))
+        XCTAssertEqual(action("a/b.go", .path), .nothing, "not looked up yet")
 
-        XCTAssertFalse(highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, indexFiles: []))
+        XCTAssertFalse(highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, revision: 0, indexFiles: []))
         await highlights.lookupsFinished()
-        XCTAssertTrue(highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, indexFiles: []))
-        XCTAssertEqual(highlights.action(for: span("a/b.go", .path), root: root), .openFile("a/b.go", root))
-        XCTAssertEqual(highlights.action(for: span("a/b.go", .path), root: nil), .nothing)
-        onDisk = []
-        XCTAssertEqual(highlights.action(for: span("a/b.go", .path), root: root), .nothing, "deleted since")
-        XCTAssertFalse(highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, indexFiles: []))
+        XCTAssertTrue(highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, revision: 0, indexFiles: []))
+        XCTAssertEqual(action("a/b.go", .path), .openFile("a/b.go", root))
+        XCTAssertEqual(action("a/b.go", .path, message: 2), .nothing, "keyed by message: no stale entry")
+        XCTAssertEqual(action("a/b.go", .path, root: nil), .nothing)
+        onDisk.remove("a/b.go")
+        XCTAssertEqual(action("a/b.go", .path), .nothing, "deleted since")
+        XCTAssertFalse(highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, revision: 0, indexFiles: []))
         XCTAssertEqual(WorkchatHighlights.copiedNotice("67a59755a"), "Copied 67a59755a")
     }
 
-    /// Answers are kept per message; a miss only for its epoch, so a file created later colours on the next entry.
-    func testWorkchatPathLookupsArePerMessageAndMissesExpire() async {
+    /// Answers are kept per message and per ask: the same ask is not looked up twice, a newer epoch or index
+    /// revision looks again — a miss can become a hit, a bare name's hit a miss once it is ambiguous.
+    func testWorkchatPathAnswersFollowTheDialogAndTheIndex() async {
         let highlights = WorkchatHighlights()
         let lookups = LockedLog()
         let created = LockedLog()
-        highlights.lookUp = { path, _, _ in
+        highlights.lookUp = { path, _, files in
             lookups.append(path)
-            return created.contains(path) ? path : nil
+            return path.contains("/") ? (created.contains(path) ? path : nil)
+                : WorkchatHighlights.uniqueBaseName(path, in: files)
         }
         let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
-        XCTAssertFalse(highlights.resolves("docs/x.md", messageID: 1, root: root, epoch: 5, indexFiles: []))
+        func resolves(_ path: String, message: Int64 = 1, epoch: Int, revision: Int, files: [String] = []) -> Bool {
+            highlights.resolves(path, messageID: message, root: root, epoch: epoch, revision: revision, indexFiles: files)
+        }
+        XCTAssertFalse(resolves("docs/x.md", epoch: 5, revision: 0))
         await highlights.lookupsFinished()
-        XCTAssertFalse(highlights.resolves("docs/x.md", messageID: 1, root: root, epoch: 5, indexFiles: []))
+        XCTAssertFalse(resolves("docs/x.md", epoch: 5, revision: 0))
         await highlights.lookupsFinished()
-        XCTAssertEqual(lookups.values, ["docs/x.md"], "a miss is kept for its epoch")
-
+        XCTAssertEqual(lookups.values, ["docs/x.md"], "one lookup per ask")
         created.append("docs/x.md")
-        XCTAssertFalse(highlights.resolves("docs/x.md", messageID: 1, root: root, epoch: 6, indexFiles: []))
+        XCTAssertFalse(resolves("docs/x.md", epoch: 6, revision: 0), "a new entry asks again")
         await highlights.lookupsFinished()
-        XCTAssertTrue(highlights.resolves("docs/x.md", messageID: 1, root: root, epoch: 6, indexFiles: []))
-        XCTAssertFalse(highlights.resolves("docs/x.md", messageID: 2, root: root, epoch: 6, indexFiles: []),
-                       "another message asks on its own")
+        XCTAssertTrue(resolves("docs/x.md", epoch: 6, revision: 0))
+
+        let one = ["Sources/A/Transport.swift"]
+        XCTAssertFalse(resolves("Transport.swift", epoch: 6, revision: 1, files: one))
         await highlights.lookupsFinished()
-        XCTAssertEqual(lookups.values, ["docs/x.md", "docs/x.md", "docs/x.md"])
+        XCTAssertTrue(resolves("Transport.swift", epoch: 6, revision: 1, files: one))
+        let two = one + ["Sources/B/Transport.swift"]
+        XCTAssertTrue(resolves("Transport.swift", epoch: 6, revision: 2, files: two), "the old answer stands meanwhile")
+        await highlights.lookupsFinished()
+        XCTAssertFalse(resolves("Transport.swift", epoch: 6, revision: 2, files: two), "ambiguous now: plain")
+        XCTAssertEqual(highlights.action(for: span("Transport.swift", .path), messageID: 1, root: root, indexFiles: two),
+                       .nothing)
+    }
+
+    /// A newer ask while a lookup runs is not dropped: the lookup runs again for it.
+    func testWorkchatSupersededLookupRunsAgain() async {
+        let highlights = WorkchatHighlights()
+        let lookups = LockedLog()
+        highlights.lookUp = { path, _, files in
+            lookups.append(path)
+            return WorkchatHighlights.uniqueBaseName(path, in: files)
+        }
+        let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
+        XCTAssertFalse(highlights.resolves("T.swift", messageID: 1, root: root, epoch: 0, revision: 0, indexFiles: []))
+        XCTAssertFalse(highlights.resolves("T.swift", messageID: 1, root: root, epoch: 0, revision: 1,
+                                           indexFiles: ["S/T.swift"]), "asked while the first still runs")
+        await highlights.lookupsFinished()
+        XCTAssertEqual(lookups.values.count, 2)
+        XCTAssertTrue(highlights.resolves("T.swift", messageID: 1, root: root, epoch: 0, revision: 1,
+                                          indexFiles: ["S/T.swift"]))
+    }
+
+    /// The Workchat shows its root to the index while on screen: every show balanced by one hide, a root change
+    /// moves the hold.
+    func testWorkchatIndexLeaseIsBalanced() {
+        let lease = WorkchatIndexLease()
+        var shown: [String] = []
+        var hidden: [String] = []
+        lease.connect(show: { shown.append($0.folder.lastPathComponent) },
+                      hide: { hidden.append($0.folder.lastPathComponent) })
+        let rootA = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
+        let rootB = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-b"))
+        lease.hold(rootA)
+        lease.hold(rootA)
+        lease.hold(rootB)
+        lease.release()
+        lease.release()
+        lease.hold(nil)
+        XCTAssertEqual(shown, ["wt-a", "wt-b"])
+        XCTAssertEqual(hidden, ["wt-a", "wt-b"])
+        XCTAssertNil(lease.held)
     }
 
     /// The live lookup: a relative or absolute in-root path by itself, a bare name only on a unique index hit.
@@ -519,4 +575,5 @@ private final class LockedLog: @unchecked Sendable {
     var values: [String] { lock.withLock { items } }
     func append(_ item: String) { lock.withLock { items.append(item) } }
     func contains(_ item: String) -> Bool { lock.withLock { items.contains(item) } }
+    func remove(_ item: String) { lock.withLock { items.removeAll { $0 == item } } }
 }

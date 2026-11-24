@@ -27,6 +27,18 @@ final class WorkbenchCodeIndexTests: XCTestCase {
         XCTAssertEqual(index.symbols(in: "a.swift").map(\.name), ["Buffer", "save"])
     }
 
+    /// A file joining or leaving bumps the revision; a re-index of a known file does not.
+    func testTheFilesRevisionFollowsMembership() {
+        let index = WorkbenchCodeIndex()
+        index.applyIndexLines([file("a.swift"), file("b.swift")], from: .update)
+        let afterAdd = index.filesRevision
+        XCTAssertGreaterThan(afterAdd, 0)
+        index.applyIndexLines([file("a.swift", [symbol("A", .class, "a.swift")])], from: .update)
+        XCTAssertEqual(index.filesRevision, afterAdd, "same files")
+        index.applyIndexLines([.deleted("b.swift"), file("c.swift")], from: .update)
+        XCTAssertGreaterThan(index.filesRevision, afterAdd, "a rename keeping the count still changes it")
+    }
+
     /// Ruling R31: go to definition searches text only in a file whose
     /// language the index does not read.
     func testTheDefinitionLanguageOfAFileAsTheCLIReportedIt() {

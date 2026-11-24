@@ -517,22 +517,25 @@ extension WorkbenchesViewModel {
     }
 
     /// A path clicked in a session's Workchat (spec 2026-11-24-workchat-polish §2): the file in a preview tab of the
-    /// session's root. In a split the Files pane goes beside that session's own pane — so the page's root is its,
-    /// and a split with another session on another worktree never shows the file in that one's root; a single pane
-    /// opens Files the way a FILES click does.
-    func openSessionFile(_ relPath: String, root: CodeRoot, sessionID: Int64) async {
+    /// session's root. In a split the Files pane goes beside `pane`, the Workchat it was clicked in — so the page's
+    /// session is that one, and a split with another session (or that session's report) never takes the chat's
+    /// place. A single pane opens Files the way a FILES click does. Either way the Files pane works in `root`, not
+    /// a FILES root chosen before.
+    func openSessionFile(_ relPath: String, root: CodeRoot, pane: WorkspacePane) async {
         await codeFiles.pullPending(root)
         codeFiles.open(relPath, root: root, preview: true)
         let projectID = root.workbenchID
         var updated = layout(projectID: projectID)
-        guard updated.isSplit,
-              let own = updated.visiblePanes.first(where: { WorkspaceLayout.sessionID(ofAny: $0) == sessionID }) else {
+        if updated.isSplit, updated.visiblePanes.contains(pane) {
+            beginSwitch(projectID: projectID)
+            updated.openBeside(.files, keeping: pane)
+            setLayout(updated, projectID: projectID)
+        } else {
             showFilesPane(projectID: projectID)
-            return
         }
-        beginSwitch(projectID: projectID)
-        updated.openBeside(.files, keeping: own)
-        setLayout(updated, projectID: projectID)
+        if let project = summaries.first(where: { $0.id == projectID })?.project {
+            selectFilesRoot(root, project: project)
+        }
     }
 
     /// Open Quickly's ↩ and ⌥↩ (spec §8.1): the file in a preview tab, the

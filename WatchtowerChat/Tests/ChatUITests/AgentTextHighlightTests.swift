@@ -124,13 +124,15 @@ final class AgentTextHighlightTests: XCTestCase {
         view.scheduleClick = { scheduled.append($0) }
         let span = AgentTextHighlights.spans(inPlain: "#2188")[0]
 
-        view.clickBegan()
+        view.clickBegan(clickCount: 1)
         view.clickEnded(span)
-        view.clickBegan() // the second click of a double click
+        view.clickBegan(clickCount: 2) // the second click of a double click
         try XCTUnwrap(scheduled.first).perform()
         XCTAssertEqual(opened, [], "a double click never opens")
 
+        view.clickBegan(clickCount: 1)
         view.clickEnded(span)
+        view.clickBegan(clickCount: 1) // a new single click elsewhere leaves the first to run
         try XCTUnwrap(scheduled.last).perform()
         XCTAssertEqual(opened, ["#2188"])
     }
@@ -174,7 +176,10 @@ final class AgentTextHighlightTests: XCTestCase {
     func testAFeedPassesItsFlagToThePartContext() {
         var actions = ChatPartActions()
         var opened: [AgentTextHighlights.Span] = []
-        actions.openHighlight = { opened.append($0) }
+        actions.openHighlight = { span, messageID in
+            XCTAssertEqual(messageID, 1)
+            opened.append(span)
+        }
         actions.resolvesPath = { path, messageID in path == "a/b.go" && messageID == 1 }
         let highlighting = AgentTextHighlighting(ChatPartContext(
             message: ChatFeed.Message(id: 1, role: "assistant", text: "", createdAt: .distantPast),

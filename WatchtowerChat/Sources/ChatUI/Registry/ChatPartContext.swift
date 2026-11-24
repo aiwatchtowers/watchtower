@@ -31,9 +31,9 @@ public struct ChatPartActions {
     public var offersContinue = true
     /// Whether a reply shows its sources pill; off for a chat with no sources list to open (embedded chats).
     public var showsSources = true
-    /// A highlighted span of the agent's text was clicked (`ChatFeedContext.highlightsAgentText`): a ref, a hash, a
-    /// path or a command.
-    public var openHighlight: ((AgentTextHighlights.Span) -> Void)?
+    /// A highlighted span of the agent's message (by id) was clicked (`ChatFeedContext.highlightsAgentText`): a ref,
+    /// a hash, a path or a command.
+    public var openHighlight: ((_ span: AgentTextHighlights.Span, _ messageID: Int64) -> Void)?
     /// Whether a path candidate in the agent's message (by id) is a file of the session's folders; only one that is
     /// gets its colour. It may answer later (an async lookup): the screen re-renders when it lands. Nil colours no
     /// path.

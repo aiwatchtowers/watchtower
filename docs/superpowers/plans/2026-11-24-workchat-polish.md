@@ -71,7 +71,7 @@ Depends on: none
 **Interfaces:**
 - Produces: `public enum SyntaxTint { static let opacity = 0.7; static let ref, hash, path, command: Color }` (accent, `.purple`, `.orange`, `.green`, each `.opacity(opacity)`).
 - Produces: `public enum AgentTextHighlights { public enum Kind: Sendable, Equatable { case ref(Int), hash, path, command }; public struct Span: Equatable, Sendable { let range: Range<String.Index>; let kind: Kind; let text: String }; public static func spans(inPlain text: String) -> [Span]; public static func commandSpan(inCode code: String) -> Span? }` — `path` spans are candidates; resolution happens in the app.
-- Produces: `ChatFeedContext.highlightsAgentText: Bool = false`; `ChatPartActions.openHighlight: ((AgentTextHighlights.Span) -> Void)?`; `ChatPartActions.resolvesPath: ((String) -> Bool)?`.
+- Produces: `ChatFeedContext.highlightsAgentText: Bool = false`; `ChatPartActions.openHighlight: ((_ span: AgentTextHighlights.Span, _ messageID: Int64) -> Void)?`; `ChatPartActions.resolvesPath: ((_ path: String, _ messageID: Int64) -> Bool)?` (per message: the Desktop resolves asynchronously — `WorkchatHighlights`, bare names through the session root's code index the Workchat holds — and re-renders when an answer lands; changed in the T2 review rounds).
 
 - [ ] **Step 1: Failing scanner tests** (table-driven, `make chattext-test`):
   - `"Round 3 of #2188 is ready"` → one `.ref(2188)` on `#2188`.

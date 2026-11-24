@@ -61,6 +61,9 @@ package final class WorkbenchCodeIndex {
     package private(set) var rulesError: String?
     /// Every file, in the order the CLI first reported it.
     package private(set) var files: [String] = []
+    /// Bumped whenever a file joins or leaves `files` (not on a symbol-only re-index): a reader that keyed an answer
+    /// to the file list (the Workchat's base-name lookup) asks again on a change.
+    package private(set) var filesRevision = 0
     /// By entry id (stable while the file stays).
     private var entries: [Int: Entry] = [:]
     @ObservationIgnored private var position: [String: Int] = [:]
@@ -162,6 +165,7 @@ package final class WorkbenchCodeIndex {
                 symbols: symbols, symbolSlots: symbolSlots(symbols, entry: id)
             )
             files.append(result.file)
+            filesRevision += 1
         }
         for symbol in symbols { definitions[symbol.name, default: []].insert(result.file) }
     }
@@ -192,6 +196,7 @@ package final class WorkbenchCodeIndex {
             ([entry.nameSlot, entry.pathSlot] + entry.symbolSlots.filter { $0 >= 0 }).forEach { corpus.killSlot($0) }
         }
         files.removeAll { doomed.contains($0) }
+        filesRevision += 1
         if corpus.deadCount > max(4096, corpus.slotCount / 2) { rebuildCorpus() }
     }
 

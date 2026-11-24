@@ -37,6 +37,6 @@ struct AgentTextHighlighting {
         let messageID = context.message.id
         let resolves = context.actions.resolvesPath
         resolvesPath = { path in resolves?(path, messageID) ?? false }
-        open = context.actions.openHighlight
+        open = context.actions.openHighlight.map { open in { span in open(span, messageID) } }
     }
 }

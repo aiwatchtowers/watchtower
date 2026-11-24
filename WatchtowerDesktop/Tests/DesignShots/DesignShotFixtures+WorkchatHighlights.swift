@@ -10,7 +10,8 @@ import WatchtowerCore
 /// `workchat-polish-real-04-agent-text-highlights` beside the mockup's `workchat-polish-04-agent-text-highlights`, the
 /// same four paragraphs drawn by ChatUI's feed with `WorkchatFeed.context()`. The paths resolve for real
 /// (`WorkchatHighlights`' live lookup) in a scratch folder: the bare `CloudKitTransport+LinkDirect.swift` through the
-/// file index on a unique base-name hit, `internal/sessionhost/prompt_state.go` on disk.
+/// root's code index (a `WorkbenchCodeIndex` fed the folder's files, as `CodeIndexCenter` feeds it) on a unique
+/// base-name hit, `internal/sessionhost/prompt_state.go` on disk.
 @MainActor
 enum WorkchatHighlightShotFixtures {
     static let shots: [DesignShot] = [
@@ -33,7 +34,7 @@ enum WorkchatHighlightShotFixtures {
     internal/sessionhost/prompt_state.go.
     """
 
-    static let indexFiles = [
+    static let folderFiles = [
         "WatchtowerKit/Sources/WatchtowerSync/CloudKitTransport+LinkDirect.swift",
         "internal/sessionhost/prompt_state.go"
     ]
@@ -41,28 +42,33 @@ enum WorkchatHighlightShotFixtures {
     /// The scratch folder with the two files, the lookups landed, then the feed.
     private static func prepared() async throws -> AnyView {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("workchat-highlights-shot")
-        for file in indexFiles {
+        for file in folderFiles {
             let url = folder.appendingPathComponent(file)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try "x".write(to: url, atomically: true, encoding: .utf8)
         }
         let root = CodeRoot(workbenchID: 1, worktree: folder)
+        let index = WorkbenchCodeIndex()
+        index.applyIndexLines(folderFiles.map { .file(CodeIndexFileResult(file: $0, lang: "", symbols: [])) },
+                              from: .fullRun)
         let highlights = WorkchatHighlights()
         let messageID = WorkchatFeedAdapter.messageID("a")
         for span in AgentTextHighlights.spans(inPlain: agentText) where span.kind == .path {
-            _ = highlights.resolves(span.text, messageID: messageID, root: root, epoch: 0, indexFiles: indexFiles)
+            _ = highlights.resolves(span.text, messageID: messageID, root: root, epoch: 1,
+                                    revision: index.filesRevision, indexFiles: index.files)
         }
         await highlights.lookupsFinished()
-        return AnyView(feed(highlights, root: root))
+        return AnyView(feed(highlights, root: root, index: index))
     }
 
-    private static func feed(_ highlights: WorkchatHighlights, root: CodeRoot) -> some View {
+    private static func feed(_ highlights: WorkchatHighlights, root: CodeRoot, index: WorkbenchCodeIndex) -> some View {
         let entries = [SessionFeedEntry(id: "a", kind: "agent", text: agentText)]
         var workchatFeed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
         workchatFeed.resolvesPath = { path, messageID in
-            highlights.resolves(path, messageID: messageID, root: root, epoch: 0, indexFiles: indexFiles)
+            highlights.resolves(path, messageID: messageID, root: root, epoch: 1, revision: index.filesRevision,
+                                indexFiles: index.files)
         }
-        workchatFeed.onHighlight = { _ in }
+        workchatFeed.onHighlight = { _, _ in }
         var context = workchatFeed.context()
         var follow = ChatFeedFollow(conversationID: 1)
         follow.anchorsBottom = true

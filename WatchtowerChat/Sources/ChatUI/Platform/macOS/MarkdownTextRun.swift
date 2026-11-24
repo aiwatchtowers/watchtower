@@ -574,7 +574,7 @@ class MarkdownRunTextView: NSTextView {
     /// Selection first: AppKit tracks the click or drag until the mouse goes up. A span's action runs only for a
     /// completed plain single click that selected nothing and went up on the same span (`HighlightClick.fires`).
     override func mouseDown(with event: NSEvent) {
-        clickBegan()
+        clickBegan(clickCount: event.clickCount)
         let down = highlight(atWindowPoint: event.locationInWindow)
         super.mouseDown(with: event)
         guard let down, let window else { return }
@@ -584,8 +584,10 @@ class MarkdownRunTextView: NSTextView {
         if fires { clickEnded(down.0) }
     }
 
-    /// A new click went down: a single click still waiting (the first of a double click) is dropped.
-    func clickBegan() {
+    /// A click went down: when it continues a multi-click (the second of a double click), the single click still
+    /// waiting is dropped. A new single click leaves it to run.
+    func clickBegan(clickCount: Int) {
+        guard clickCount > 1 else { return }
         pendingClick?.cancel()
         pendingClick = nil
     }
