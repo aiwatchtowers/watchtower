@@ -668,4 +668,103 @@ final class OwnerAskKeyNavigationTests: XCTestCase {
         XCTAssertFalse(window.performKeyEquivalent(with: try commandReturn(window)))
         XCTAssertEqual(presses, 1, "offered as a press, which takes nothing with ⌘")
     }
+
+    // MARK: - Not clear? (spec 2026-11-24)
+
+    /// Wires the "Not clear?" chat into `vm` and opens `ask`'s: its hidden
+    /// first turn waits on the returned service until the test finishes it.
+    private func explaining(_ vm: WorkbenchesViewModel, _ ask: OwnerAsk) async -> ScriptedAIService {
+        let ai = ScriptedAIService()
+        let (writes, _) = FakeChatTower.writes(pool)
+        let pool: DatabasePool = pool
+        vm.asks.chats = EmbeddedChatCenter(gate: EmbeddedStreamGate(limit: 3)) { spec, gate in
+            EmbeddedChatEngine(spec: spec,
+                               store: DatabaseEmbeddedChatStore(dbPool: pool, writes: writes,
+                                                                conversationID: spec.key.conversationID ?? 0),
+                               aiService: ai, gate: gate)
+        }
+        vm.asks.chatWrites = writes
+        vm.asks.explainConfigProvider = { "claude" }
+        vm.asks.explainCatalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        await vm.asks.openExplain(ask)
+        // Its hidden turn is under way, so the test's `finish()` has a call to end.
+        await vm.asks.explainEngine(for: ask)?.started()
+        XCTAssertEqual(ai.calls.count, 1)
+        return ai
+    }
+
+    /// While the chat covers the question the drawer's bare keys are off
+    /// and ⌘↩ answers nothing; Back gives them back.
+    func testKeysOffWhileExplaining() async throws {
+        let id = try await insert("question", payload: Self.twoQuestions)
+        let vm = activeDrawer(try makeVM())
+        let ask = try await loaded(vm, id)
+        let box = CursorBox()
+        let ai = await explaining(vm, ask)
+        defer { ai.finish() }
+        XCTAssertTrue(vm.asks.isExplaining(id))
+        let keys = drawerKeys(vm, ask, box)
+
+        for press in [digit("j"), digit("k"), digit("1"), digit("2"), OwnerAskKeyMap.Press(key: .tab),
+                      OwnerAskKeyMap.Press(key: .returnKey)] {
+            XCTAssertFalse(keys.press(press), "\(press.key)")
+        }
+        XCTAssertNil(box.cursor)
+        XCTAssertNil(box.field)
+        XCTAssertEqual(vm.asks.drafts.askDraft(for: id).picks, [:])
+        var answered = 0
+        XCTAssertNil(keys.answerKey { _ in answered += 1 }, "⌘↩ goes to no answer button")
+
+        vm.asks.closeExplain(id)
+        XCTAssertTrue(keys.press(digit("1")), "back on the question")
+        let answerKey = try XCTUnwrap(keys.answerKey { _ in answered += 1 })
+        answerKey(false)
+        XCTAssertEqual(answered, 1)
+    }
+
+    /// ⌘[ stays the Workbench menu's Back to Workbenches under the chat.
+    func testCommandBracketNotTakenWhileExplaining() async throws {
+        let id = try await insert("question", payload: Self.twoQuestions)
+        let vm = activeDrawer(try makeVM())
+        let ask = try await loaded(vm, id)
+        let ai = await explaining(vm, ask)
+        defer { ai.finish() }
+        let bracket = OwnerAskKeyMap.Press(characters: "[", keyCode: 0x21, shift: false, otherModifiers: true, isRepeat: false)
+        XCTAssertFalse(drawerKeys(vm, ask, CursorBox()).press(bracket))
+    }
+
+    /// Opening the chat asks the drawer to drop its field focus until the
+    /// composer has the keyboard: no key reaches the hidden note field.
+    func testOpeningMovesFocusToComposer() async throws {
+        let id = try await insert("question", payload: Self.twoQuestions)
+        let vm = activeDrawer(try makeVM())
+        let ask = try await loaded(vm, id)
+        XCTAssertFalse(vm.asks.explainWantsComposerFocus(id))
+        let ai = await explaining(vm, ask)
+        defer { ai.finish() }
+        XCTAssertTrue(vm.asks.explainWantsComposerFocus(id))
+        vm.asks.explainComposerTookFocus(id)
+        XCTAssertFalse(vm.asks.explainWantsComposerFocus(id))
+
+        await vm.asks.openExplain(ask)
+        XCTAssertTrue(vm.asks.explainWantsComposerFocus(id), "each open moves the keyboard")
+        vm.asks.closeExplain(id)
+        XCTAssertFalse(vm.asks.explainWantsComposerFocus(id), "Back drops the request")
+    }
+
+    /// The question's picks and note draft are as they were after the chat.
+    func testQuestionStateSurvivesChat() async throws {
+        let id = try await insert("question", payload: Self.twoQuestions)
+        let vm = activeDrawer(try makeVM())
+        let ask = try await loaded(vm, id)
+        XCTAssertTrue(drawerKeys(vm, ask, CursorBox()).press(digit("2")))
+        vm.asks.editDraft(id) { $0.note = "half a thought" }
+        let before = vm.asks.drafts.askDraft(for: id)
+        let ai = await explaining(vm, ask)
+        defer { ai.finish() }
+        vm.asks.closeExplain(id)
+        XCTAssertEqual(vm.asks.drafts.askDraft(for: id), before)
+        XCTAssertEqual(before.picks["a"]?.labels, ["No"])
+        XCTAssertEqual(before.note, "half a thought")
+    }
 }

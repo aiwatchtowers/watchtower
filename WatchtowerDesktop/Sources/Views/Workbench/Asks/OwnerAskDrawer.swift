@@ -52,6 +52,18 @@ enum OwnerAskDrawerLayout {
     }
 }
 
+/// The drawer's body under its header (spec 2026-11-24 "The chat view"):
+/// the question view, and over it the "Not clear?" chat while it is shown.
+/// The question is hidden under the chat, never removed: its scroll
+/// position and the answer bar's state survive.
+enum OwnerAskDrawerExplainLayers {
+    enum Layer { case question, chat }
+
+    static func layers(explaining: Bool) -> [(layer: Layer, visible: Bool)] {
+        explaining ? [(.question, false), (.chat, true)] : [(.question, true)]
+    }
+}
+
 /// Lays an ask drawer beside `workspace` (spec 2026-10-03 Part 8): a
 /// session's terminal, or the whole workspace for an ask filed outside the
 /// app. The drawer is resizable from its leading edge (its width kept by
@@ -192,10 +204,12 @@ struct OwnerAskDrawer: View {
         ScrollViewReader { proxy in
             content
                 .background(OwnerAskKeyCatcher(
-                    onPress: { [asks, projectID = ask.projectID] press in
-                        // Esc in an ask opened from a closed list: back to it (#1713).
+                    onPress: { [asks, ask] press in
                         if press.key == .escape {
-                            return asks.escapeInDrawer(projectID: projectID, otherModifiers: press.otherModifiers,
+                            // Esc outside the chat's composer: back to the question.
+                            if asks.isExplaining(ask.id) { return escapeFromExplain(press) }
+                            // Esc in an ask opened from a closed list: back to it (#1713).
+                            return asks.escapeInDrawer(projectID: ask.projectID, otherModifiers: press.otherModifiers,
                                                        isRepeat: press.isRepeat)
                         }
                         return keys.press(press)
@@ -205,7 +219,7 @@ struct OwnerAskDrawer: View {
                     // Back to a closed list keeps the keyboard in the drawer (#1713).
                     canHandBack: { [asks, projectID = ask.projectID] in asks.drawerIsEmpty(projectID: projectID) },
                     loan: asks.keyboardLoan(projectID: ask.projectID),
-                    onKey: pressAnswerKey
+                    onKey: keys.answerKey(pressAnswerKey)
                 ))
                 .onChange(of: cursor) { _, _ in
                     if let stop = keys.shownStop { withAnimation { proxy.scrollTo(stop) } }
@@ -223,6 +237,20 @@ struct OwnerAskDrawer: View {
             fieldFocus = nil
             commentStep = nil
         }
+        // The chat opened: no field of the question keeps a focus request.
+        .onChange(of: asks.explainWantsComposerFocus(ask.id)) { _, wants in
+            if wants { fieldFocus = nil }
+        }
+    }
+
+    /// The key catcher's Esc while the chat is shown: it reaches the catcher
+    /// only when the composer does not have the keyboard.
+    private func escapeFromExplain(_ press: OwnerAskKeyMap.Press) -> Bool {
+        guard asks.drawerKeysActive.contains(ask.projectID), !press.otherModifiers, !press.isRepeat,
+              AskExplainPresentation.escapeLeavesChat(composerFocused: false, draft: asks.explainEngine(for: ask)?.draft ?? "")
+        else { return false }
+        closeExplain()
+        return true
     }
 
     private var content: some View {
@@ -232,6 +260,32 @@ struct OwnerAskDrawer: View {
             }
             OwnerAskDrawerHeader(vm: vm, ask: ask)
             Divider()
+            // The question stays in the tree under the chat, hidden: its
+            // scroll and the answer bar's state survive (spec 2026-11-24).
+            ZStack {
+                ForEach(OwnerAskDrawerExplainLayers.layers(explaining: asks.isExplaining(ask.id)), id: \.layer) { entry in
+                    layer(entry.layer)
+                        .opacity(entry.visible ? 1 : 0)
+                        .disabled(!entry.visible)
+                        .allowsHitTesting(entry.visible)
+                        .accessibilityHidden(!entry.visible)
+                }
+            }
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    @ViewBuilder
+    private func layer(_ layer: OwnerAskDrawerExplainLayers.Layer) -> some View {
+        switch layer {
+        case .question: questionLayer
+        case .chat: AskExplainPane(asks: asks, ask: ask, onBack: closeExplain)
+        }
+    }
+
+    /// The ask's body and its answer bar.
+    private var questionLayer: some View {
+        VStack(spacing: 0) {
             if ask.kind == .review {
                 reviewLayout
             } else {
@@ -239,6 +293,7 @@ struct OwnerAskDrawer: View {
                     VStack(alignment: .leading, spacing: 14) {
                         topSections
                         kindBody
+                        AskExplainEntry(ask: ask, hasCLI: asks.chats != nil, action: openExplain)
                         if takesNote { noteView }
                     }
                     .padding(14)
@@ -254,7 +309,21 @@ struct OwnerAskDrawer: View {
                 statusLine: OwnerAskPresentation.askStatusLine(ask, replacedBy: asks.replacements[ask.projectID]?[ask.id])
             )
         }
-        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    /// **Not clear?**: the keyboard leaves the question's fields before the
+    /// chat covers them; its composer takes it when it shows.
+    private func openExplain() {
+        fieldFocus = nil
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        let (asks, ask) = (asks, ask)
+        Task { await asks.openExplain(ask) }
+    }
+
+    /// **Back to question** (or Esc): the drawer's keys work again.
+    private func closeExplain() {
+        asks.closeExplain(ask.id)
+        leaveField()
     }
 
     /// The notice, the agent's header card and the question card.

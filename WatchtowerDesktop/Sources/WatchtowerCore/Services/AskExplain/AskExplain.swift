@@ -34,4 +34,19 @@ package enum AskExplainPresentation {
     package static func showsEntry(kind: OwnerAskKind, hasCLI: Bool) -> Bool {
         hasCLI && (kind == .question || kind == .check)
     }
+
+    /// Whether an Esc leaves the chat for the question: always, unless a
+    /// focused composer holds text. The composer's own Esc is the focused
+    /// one; any other reaches the drawer's key catcher.
+    package static func escapeLeavesChat(composerFocused: Bool, draft: String) -> Bool {
+        !composerFocused || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The line the feed shows while a turn has no words on screen yet:
+    /// waiting for a free slot, or the explanation on its way. nil once any
+    /// text shows (a follow-up's own rows say it) or nothing runs.
+    package static func waitingLine(isQueued: Bool, isBusy: Bool, showsText: Bool) -> String? {
+        guard isBusy, !showsText else { return nil }
+        return isQueued ? AskExplainCopy.queued : AskExplainCopy.explaining
+    }
 }

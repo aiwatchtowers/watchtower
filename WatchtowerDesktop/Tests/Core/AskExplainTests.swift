@@ -113,4 +113,28 @@ final class AskExplainTests: XCTestCase {
         XCTAssertEqual(shown.name, "Ask explanations")
         XCTAssertEqual(shown.group, "Workbench")
     }
+
+    /// Esc leaves the chat unless a focused composer holds text: the
+    /// composer's own Esc reaches only its `onEscape` (focused), any other
+    /// Esc reaches the drawer's key catcher (not focused).
+    func testEscRules() {
+        XCTAssertTrue(AskExplainPresentation.escapeLeavesChat(composerFocused: false, draft: ""))
+        XCTAssertTrue(AskExplainPresentation.escapeLeavesChat(composerFocused: false, draft: "text"))
+        XCTAssertTrue(AskExplainPresentation.escapeLeavesChat(composerFocused: true, draft: ""))
+        XCTAssertTrue(AskExplainPresentation.escapeLeavesChat(composerFocused: true, draft: " \n"), "blank is empty")
+        XCTAssertFalse(AskExplainPresentation.escapeLeavesChat(composerFocused: true, draft: "text"))
+    }
+
+    /// Before a reply has any words: queued behind other chats, or the
+    /// explanation on its way; nothing once text shows or nothing runs.
+    func testWaitingLine() {
+        XCTAssertEqual(AskExplainPresentation.waitingLine(isQueued: true, isBusy: true, showsText: false),
+                       AskExplainCopy.queued)
+        XCTAssertEqual(AskExplainPresentation.waitingLine(isQueued: false, isBusy: true, showsText: false),
+                       AskExplainCopy.explaining)
+        XCTAssertNil(AskExplainPresentation.waitingLine(isQueued: false, isBusy: true, showsText: true))
+        XCTAssertNil(AskExplainPresentation.waitingLine(isQueued: true, isBusy: true, showsText: true),
+                     "a queued follow-up shows in the feed and the composer")
+        XCTAssertNil(AskExplainPresentation.waitingLine(isQueued: false, isBusy: false, showsText: false))
+    }
 }

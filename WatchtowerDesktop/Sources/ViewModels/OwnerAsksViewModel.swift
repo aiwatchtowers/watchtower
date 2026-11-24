@@ -252,6 +252,10 @@ final class OwnerAsksViewModel {
     /// Asks whose `openExplain` is running, claimed before its first await:
     /// a second open meanwhile starts no second hidden turn.
     @ObservationIgnored private var explainStarting: Set<Int64> = []
+    /// Asks whose chat was opened and whose composer has not taken the
+    /// keyboard yet: their drawer drops its field focus meanwhile, so no key
+    /// reaches the hidden question's fields.
+    private var explainFocusPending: Set<Int64> = []
     /// The app's embedded chats, set only where a CLI can run the assistant
     /// (AppState); nil: no "Not clear?" chat.
     @ObservationIgnored var chats: EmbeddedChatCenter?
@@ -728,6 +732,7 @@ final class OwnerAsksViewModel {
     func openExplain(_ ask: OwnerAsk) async {
         guard chats != nil, AskExplainPresentation.showsEntry(kind: ask.kind, hasCLI: true) else { return }
         explainOpen.insert(ask.id)
+        explainFocusPending.insert(ask.id)
         explainProjects[ask.id] = ask.projectID
         explainErrors[ask.id] = nil
         guard explainStarting.insert(ask.id).inserted else { return }
@@ -753,7 +758,19 @@ final class OwnerAsksViewModel {
     /// Back to the question: the chat (and a running turn) stays in `chats`.
     func closeExplain(_ askID: Int64) {
         explainOpen.remove(askID)
+        explainFocusPending.remove(askID)
         explainProjects[askID] = nil
+    }
+
+    /// Whether `askID`'s chat was opened and its composer has not taken the
+    /// keyboard yet: the drawer drops its field focus meanwhile.
+    func explainWantsComposerFocus(_ askID: Int64) -> Bool {
+        explainFocusPending.contains(askID)
+    }
+
+    /// The chat's composer was shown with the keyboard.
+    func explainComposerTookFocus(_ askID: Int64) {
+        explainFocusPending.remove(askID)
     }
 
     /// The ask's explain chat as the center holds it; nil until its
