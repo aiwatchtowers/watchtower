@@ -36,7 +36,15 @@ final class AskExplainFixture {
                                 defaults: defaults)
         vm.chats = center
         vm.chatWrites = writes
+        catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        vm.explainCatalog = catalog
+        vm.explainConfigProvider = { [weak self] in self?.configProvider }
     }
+
+    /// The fixture catalog's rows (claude reads folders, ollama none).
+    let catalog: AIModelCatalog
+    /// config.yaml's `ai.provider` as the explain turns read it.
+    var configProvider: String? = "claude"
 
     func cleanup() {
         TestDatabase.cleanup(path: path)
@@ -76,7 +84,8 @@ final class AskExplainSurfaceTests: XCTestCase {
     func testSpecShape() throws {
         let ask = try fx.insertAsk()
         let spec = AskExplainSurface.spec(ask: ask, conversationID: 7, folder: "/tmp/acme-explain",
-                                          target: (title: "Feature", intent: "Ship it"))
+                                          target: (title: "Feature", intent: "Ship it"),
+                                          configProvider: { "claude" }, catalog: fx.catalog)
         XCTAssertEqual(spec.key.contextType, "owner_ask_explain")
         XCTAssertEqual(spec.key.contextID, "\(fx.projectID):\(ask.id)")
         XCTAssertEqual(spec.key.conversationID, 7)
@@ -90,6 +99,31 @@ final class AskExplainSurfaceTests: XCTestCase {
         XCTAssertEqual(spec.systemPrompt(),
                        AskExplainPrompt.system(ask: ask, target: (title: "Feature", intent: "Ship it")))
         XCTAssertEqual(spec.emptyHint, AskExplainCopy.emptyHint)
+    }
+
+    /// `ai query` refuses `--read-folder` for a provider without file tools:
+    /// ollama answers from the ask alone; an unread catalog gives no folder.
+    func testFolderlessProviderGetsNoReadFolder() throws {
+        let ask = try fx.insertAsk()
+        let ollama = AskExplainSurface.spec(ask: ask, conversationID: 7, folder: "/tmp/acme-explain", target: nil,
+                                            configProvider: { "ollama" }, catalog: fx.catalog)
+        XCTAssertNil(ollama.runOptions().readFolder)
+        XCTAssertEqual(ollama.runOptions().purpose, AskExplainKey.purpose)
+        let codex = AskExplainSurface.spec(ask: ask, conversationID: 7, folder: "/tmp/acme-explain", target: nil,
+                                           configProvider: { "codex" }, catalog: fx.catalog)
+        XCTAssertEqual(codex.runOptions().readFolder, "/tmp/acme-explain")
+        let unread = AskExplainSurface.spec(ask: ask, conversationID: 7, folder: "/tmp/acme-explain", target: nil,
+                                            configProvider: { "claude" }, catalog: AIModelCatalog(providers: []))
+        XCTAssertNil(unread.runOptions().readFolder)
+    }
+
+    func testOllamaTurnRunsWithoutAFolder() async throws {
+        let ask = try fx.insertAsk()
+        fx.configProvider = "ollama"
+        await fx.vm.openExplain(ask)
+        await fx.vm.explainEngine(for: ask)?.started()
+        XCTAssertEqual(fx.ai.calls.count, 1)
+        XCTAssertNil(fx.ai.calls.first?.readFolder)
     }
 
     func testSameKeySameConversation() async throws {

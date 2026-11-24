@@ -13,9 +13,12 @@ import WatchtowerCore
 ///   `context_id = '<workbench>:<ask>'` (`AskExplainKey`), found or created
 ///   with Go's `chat.new` (`reuse: true`), so two windows opening the same
 ///   ask get one conversation.
-/// - The config's provider at its strong tier, reading the workbench folder
-///   (`ai query --read-folder`, read only), `--purpose ask.explain` for the
-///   usage ledger.
+/// - The config's provider at its strong tier, `--purpose ask.explain` for
+///   the usage ledger. It reads the workbench folder (`ai query
+///   --read-folder`, read only) only when its capability row reads folders,
+///   as `CodeQuestionSurface` does: `ai query` refuses the flag for a
+///   provider without file tools (ollama), which then answers from the ask
+///   alone (the prompt says so: "If you cannot…").
 /// - The system prompt carries the ask as fenced data (`AskExplainPrompt`).
 @MainActor
 enum AskExplainSurface {
@@ -31,10 +34,15 @@ enum AskExplainSurface {
         ask: OwnerAsk,
         conversationID: Int64,
         folder: String,
-        target: (title: String, intent: String)?
+        target: (title: String, intent: String)?,
+        configProvider: @escaping @MainActor () -> String? = { ConfigService().aiProvider },
+        catalog: AIModelCatalog = .shared
     ) -> ChatSurfaceSpec {
+        // Read when each turn starts: the provider the turn runs on decides.
         let runOptions = { @MainActor () -> ChatRunOptions in
-            ChatRunOptions(readFolder: folder.isEmpty ? nil : folder, purpose: AskExplainKey.purpose)
+            let provider = AIProvider.fromConfig(configProvider())
+            let reads = !folder.isEmpty && catalog.capabilities(for: provider.rawValue).readsFolder
+            return ChatRunOptions(readFolder: reads ? folder : nil, purpose: AskExplainKey.purpose)
         }
         return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: AskExplainKey.contextType,

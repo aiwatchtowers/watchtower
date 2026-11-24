@@ -315,24 +315,37 @@ package final class EmbeddedChatEngine {
         start(request)
     }
 
-    /// A reopened chat whose latest reply ended `partial` (the app quit
-    /// mid-turn) or in a retryable `error` before this engine ran a turn
-    /// (spec 2026-11-24 "The first message"): Retry is offered for it,
-    /// rerunning the owner row just before it, or `hiddenPrompt` when the
-    /// reply had none (a hidden first turn). Nothing changes once a turn ran
-    /// here, while one is busy, or when the latest reply completed.
+    /// A reopened chat whose latest reply ended `partial` or in an `error`
+    /// before this engine ran a turn (spec 2026-11-24 "The first message"):
+    /// Retry is offered for it when its error code is retryable (the
+    /// engine's own rule: a `quota_exhausted` partial never replays,
+    /// provider-fallback's no-replay contract), rerunning the nearest owner
+    /// row before it, or `hiddenPrompt` when there is none (a hidden first
+    /// turn). Nothing changes once a turn ran here, while one is busy, or
+    /// when the latest reply completed.
+    ///
+    /// A `partial` with no code is offered Retry: the stored row cannot tell
+    /// an app quit (`finishAsPartial`) from the owner's Stop — both are
+    /// finished `partial` with no code.
     package func offerRetryOfStoredReply(hiddenPrompt: String) {
-        guard !isBusy, lastRequest == nil, !canRetry, let last = messages.last?.message, last.isAssistant else { return }
-        switch last.status {
-        case "partial": break
-        case "error" where ChatErrorPresentation.isRetryable(last.errorCode): break
-        default: return
-        }
-        let before = messages.dropLast().last?.message
-        let prompt = before.flatMap { $0.isUser ? $0.text : nil } ?? hiddenPrompt
-        lastRequest = TurnRequest(ownerText: nil, basePrompt: prompt, carriedFollowUps: [],
+        guard !isBusy, lastRequest == nil, !canRetry, let last = messages.last?.message, last.isAssistant,
+              last.status == "partial" || last.status == "error",
+              ChatErrorPresentation.isRetryable(last.errorCode) else { return }
+        let owner = messages.dropLast().last { $0.message.isUser }?.message
+        lastRequest = TurnRequest(ownerText: nil, basePrompt: owner?.text ?? hiddenPrompt, carriedFollowUps: [],
                                   previousOwnerMessageAt: nil)
         canRetry = true
+    }
+
+    /// The chat's first turn, hidden (no owner row), started only when the
+    /// history was read and holds no row and no turn is busy: a chat whose
+    /// history could not be read never gets a first turn on top of replies
+    /// it did not see. True when the turn was handed on.
+    @discardableResult
+    package func startFirstTurnIfEmpty(hidden prompt: String) -> Bool {
+        guard !isBusy, historyLoaded(), messages.isEmpty else { return false }
+        start(TurnRequest(ownerText: nil, basePrompt: prompt, carriedFollowUps: [], previousOwnerMessageAt: nil))
+        return true
     }
 
     /// Returns once the turn being started has its rows written and its
