@@ -35,6 +35,9 @@ package final class SessionFeedStore: ObservableObject {
     @Published package private(set) var live: SessionFeedLive?
     @Published package private(set) var liveError: String?
     @Published package private(set) var liveLoaded = false
+    /// Each Claude Code conversation's transcript directory, as the CLI read it (`transcript_dirs`): Open output on
+    /// an agent-finished row reads an agent's output only from that project.
+    @Published package private(set) var transcriptDirs: [String: String] = [:]
     private var liveGeneration = 0
     /// Only the selected child: preserve expected resume across Retry or a
     /// foreground task restart without starting any additional observer.
@@ -138,6 +141,7 @@ package final class SessionFeedStore: ObservableObject {
             trace?.mark(.decode)
             merge(payload.entries)
             mergeSubagents(payload.entries.filter { $0.kind == "subagent" } + payload.subagents)
+            mergeTranscriptDirs(payload.transcriptDirs)
             // Only a tail read prints `before`; an `--after` read leaves it.
             if tailRead, !heldEarlierPage { setBefore(payload.before) }
             cursor = payload.cursor
@@ -187,6 +191,7 @@ package final class SessionFeedStore: ObservableObject {
             let payload = try Self.decode(data)
             let added = prepend(payload.entries)
             mergeSubagents(payload.entries.filter { $0.kind == "subagent" } + payload.subagents)
+            mergeTranscriptDirs(payload.transcriptDirs)
             heldEarlierPage = true
             setBefore(payload.before)
             return WorkchatFeedAdapter.dialog(added).count
@@ -367,6 +372,13 @@ package final class SessionFeedStore: ObservableObject {
 
     private static func decode(_ data: Data) throws -> SessionFeedPayload {
         try JSONDecoder().decode(SessionFeedPayload.self, from: data)
+    }
+
+    /// A read's directories win; a conversation it no longer lists keeps the one read before.
+    private func mergeTranscriptDirs(_ dirs: [String: String]) {
+        guard !dirs.isEmpty else { return }
+        let merged = transcriptDirs.merging(dirs) { _, new in new }
+        if merged != transcriptDirs { transcriptDirs = merged }
     }
 
     private func merge(_ incoming: [SessionFeedEntry]) {

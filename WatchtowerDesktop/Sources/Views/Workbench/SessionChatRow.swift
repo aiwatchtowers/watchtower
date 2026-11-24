@@ -25,8 +25,11 @@ struct WorkchatFeed {
     var answerPending = false
     /// An artifact card opens the viewer.
     var onOpenArtifact: (ChatArtifactContent) -> Void = { _ in }
-    /// The directory of the session's Claude Code transcript: an agent's output opens from its `subagents/` there.
-    var transcriptProjectDir: String?
+    /// Each Claude Code conversation's transcript directory (`SessionFeedStore.transcriptDirs`): an agent's output
+    /// opens from its `subagents/` there; a conversation not listed reveals it in Finder.
+    var transcriptDirs: [String: String] = [:]
+    /// The conversation of rows that carry none: a subagent's run takes its parent's.
+    var parentConversation: String?
     /// A click on a highlighted span of the agent's text (`WorkchatHighlights`); nil = the spans are only coloured.
     var onHighlight: ((AgentTextHighlights.Span, Int64) -> Void)?
     /// Whether a path in an agent message (by id) is a file of the session's folders: only such a path is coloured.
@@ -36,6 +39,13 @@ struct WorkchatFeed {
     static func copy(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    /// Whose output a row's Open output reads: the row's own conversation (after /clear or a resume, an older task's
+    /// output is in its own session's temp dir), else the parent's, and the project the feed read it from.
+    func outputSource(_ entry: SessionFeedEntry) -> (claudeSessionID: String?, projectDir: String?) {
+        let session = entry.conversation.isEmpty ? parentConversation : entry.conversation
+        return (session, session.flatMap { transcriptDirs[$0] })
     }
 
     var messages: [ChatFeed.Message] { WorkchatFeedAdapter.messages(entries) }
@@ -86,18 +96,17 @@ struct WorkchatFeed {
             }
         }
         let (markdown, expanded, toggle) = (markdown, expandedEvents, onToggle)
-        let (openArtifact, projectDir) = (onOpenArtifact, transcriptProjectDir)
+        let (openArtifact, feed) = (onOpenArtifact, self)
         context.systemRow = { message in
             guard let entry = byID[message.id] else { return AnyView(EmptyView()) }
+            let source = feed.outputSource(entry)
             return AnyView(
                 SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry), expanded: expanded.contains(entry.id),
-                               outputProjectDir: projectDir,
+                               outputSession: source.claudeSessionID, outputProjectDir: source.projectDir,
                                onToggle: { toggle(entry.id) },
                                onOpenOutput: { path in
-                                   // The row's own conversation: after /clear or a resume, an older task's output
-                                   // is in its own session's temp dir.
-                                   AgentFinishedRow.openOutput(path, claudeSessionID: entry.conversation,
-                                                               projectDir: projectDir, openArtifact: openArtifact)
+                                   AgentFinishedRow.openOutput(path, claudeSessionID: source.claudeSessionID,
+                                                               projectDir: source.projectDir, openArtifact: openArtifact)
                                })
                 .equatable()
             )
@@ -116,7 +125,9 @@ struct SessionChatRow: View, Equatable {
     let blocks: [MarkdownBlock]
     /// An event's body is shown (events only).
     var expanded = false
-    /// Where Open output reads an agent's transcript (part of `==`, so a late value re-renders the row).
+    /// Whose output Open output reads and the project of its agents' transcripts (part of `==`, so a late value
+    /// re-renders the row).
+    var outputSession: String?
     var outputProjectDir: String?
     var onToggle: (() -> Void)?
     /// Open output on a task's row (`AgentFinishedRow`); nil hides it.
@@ -124,7 +135,7 @@ struct SessionChatRow: View, Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.entry == rhs.entry && lhs.blocks == rhs.blocks && lhs.expanded == rhs.expanded
-            && lhs.outputProjectDir == rhs.outputProjectDir
+            && lhs.outputSession == rhs.outputSession && lhs.outputProjectDir == rhs.outputProjectDir
     }
 
     /// Text the owner wrote (directly or through Watchtower) keeps its line

@@ -44,7 +44,7 @@ package enum TaskOutputFile {
     }
 
     /// Reads `path` for the viewer when it resolves inside the session's temp dir under one of `bases`, or inside
-    /// `<projectDir>/<session id>/subagents/` when `projectDir` (the directory of the session's transcript) is a
+    /// `<projectDir>/<session id>/subagents/` when `projectDir` (the directory the feed read the conversation's transcript from) is a
     /// project of `claudeDir`'s `projects` — both compared fully resolved, so a linked `projects` still matches.
     package static func read(
         _ path: String,

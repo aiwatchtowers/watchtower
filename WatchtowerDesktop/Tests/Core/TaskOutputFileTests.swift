@@ -81,8 +81,12 @@ final class TaskOutputFileTests: XCTestCase {
     }
 
     func testSameSessionUnderAnotherProjectIsNotRead() throws {
+        // The same session id has transcripts under both projects; the read is bound to `-p`.
+        try FileManager.default.createSymbolicLink(atPath: "\(sessionDir)/tasks/p1.output",
+                                                   withDestinationPath: try transcript(session: sid, id: "p1"))
         try FileManager.default.createSymbolicLink(atPath: "\(sessionDir)/tasks/q1.output",
                                                    withDestinationPath: try transcript(session: sid, id: "q1", project: "-q"))
+        XCTAssertEqual(read("\(sessionDir)/tasks/p1.output"), .text("{\"a\":1}\n", cut: false))
         XCTAssertEqual(read("\(sessionDir)/tasks/q1.output"), .reveal)
     }
 

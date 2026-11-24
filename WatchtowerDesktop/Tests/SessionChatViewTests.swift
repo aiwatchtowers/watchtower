@@ -51,6 +51,21 @@ final class SessionChatViewTests: XCTestCase {
                           SessionChatRow(entry: event(), blocks: [], expanded: true))
     }
 
+    /// Open output reads the row's own conversation in the project the feed read it from (a worktree's for an older
+    /// conversation); a row without one (a subagent's run) takes the parent's; an unlisted one has no project.
+    func testOutputSourceIsTheRowsConversationAndItsProject() {
+        var feed = WorkchatFeed(entries: [], markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
+        feed.transcriptDirs = ["c1": "/p/-repo", "c2": "/p/-repo-wt"]
+        let older = SessionFeedEntry(id: "t1", kind: "event", conversation: "c2")
+        XCTAssertTrue(feed.outputSource(older) == ("c2", "/p/-repo-wt"))
+        XCTAssertTrue(feed.outputSource(SessionFeedEntry(id: "t2", kind: "event", conversation: "c3")) == ("c3", nil))
+        let inSubagent = SessionFeedEntry(id: "t3", kind: "event")
+        XCTAssertTrue(feed.outputSource(inSubagent) == (nil, nil))
+        feed.parentConversation = "c1"
+        XCTAssertTrue(feed.outputSource(inSubagent) == ("c1", "/p/-repo"))
+        XCTAssertTrue(feed.outputSource(older) == ("c2", "/p/-repo-wt"), "a row's own conversation wins")
+    }
+
     func testEventRowCollapsedByDefault() throws {
         let entry = event()
         let blocks = MarkdownDocument.parse(entry.text)

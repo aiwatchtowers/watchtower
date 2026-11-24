@@ -102,6 +102,24 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[1], ["workbench", "session-feed", "--session", "7", "--json", "--after", "c1"])
     }
 
+    /// `transcript_dirs` (Open output's project per conversation): kept across reads, a later read's value wins,
+    /// a read without it (an older CLI, a Codex session) leaves what was read.
+    func testTranscriptDirsAreKeptPerConversation() async {
+        let first = payload(entries: entry("m0", "owner")).replacingOccurrences(
+            of: #""unknown_records":{}"#, with: #""unknown_records":{},"transcript_dirs":{"c1":"/p/-a","c2":"/p/-a"}"#)
+        let second = payload(cursor: "c2", entries: entry("m1", "agent")).replacingOccurrences(
+            of: #""unknown_records":{}"#, with: #""unknown_records":{},"transcript_dirs":{"c2":"/p/-a-wt"}"#)
+        let runner = FakeRunner([.success(first), .success(second), .success(payload(cursor: "c3"))])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        XCTAssertEqual(store.transcriptDirs, [:])
+        await store.refresh()
+        XCTAssertEqual(store.transcriptDirs, ["c1": "/p/-a", "c2": "/p/-a"])
+        await store.refresh()
+        XCTAssertEqual(store.transcriptDirs, ["c1": "/p/-a", "c2": "/p/-a-wt"])
+        await store.refresh()
+        XCTAssertEqual(store.transcriptDirs, ["c1": "/p/-a", "c2": "/p/-a-wt"])
+    }
+
     // MARK: Tail read and earlier pages (#2065 Task 8)
 
     func testFirstReadIsATailRead() async {

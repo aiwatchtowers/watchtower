@@ -286,11 +286,14 @@ package struct SessionFeedPayload: Decodable, Sendable {
     /// A `--tail` read's page start: the id to pass as `--before` for the
     /// page before it; "" when absent (nothing earlier, or not a tail read).
     package var before: String
+    /// Each Claude Code conversation's transcript directory (the folder's or a worktree's project); empty from a
+    /// `--subagent` read, a Codex session or an older CLI.
+    package var transcriptDirs: [String: String]
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case cursor, entries, subagents, activity, live, before
-        case liveOK = "live_ok", liveError = "live_error"
+        case liveOK = "live_ok", liveError = "live_error", transcriptDirs = "transcript_dirs"
     }
 
     package init(from decoder: Decoder) throws {
@@ -304,5 +307,6 @@ package struct SessionFeedPayload: Decodable, Sendable {
         liveOK = try c.decodeIfPresent(Bool.self, forKey: .liveOK) ?? false
         liveError = try c.decodeIfPresent(String.self, forKey: .liveError)
         before = try c.decodeIfPresent(String.self, forKey: .before) ?? ""
+        transcriptDirs = try c.decodeIfPresent([String: String].self, forKey: .transcriptDirs) ?? [:]
     }
 }
