@@ -34,11 +34,14 @@ enum AskExplainSurface {
     /// the folder its filing session was started in, else its document's
     /// folder (`doc_folder_id`), else the home folder. Only a live folder of
     /// the ask's own workbench counts — a removed folder, or one that moved to
-    /// another bench, falls back to the home folder. Read at each open.
+    /// another bench, falls back to the home folder. A session being deleted
+    /// (PROJ-17) counts as gone. Read at each open.
     nonisolated static func readFolder(_ db: Database, ask: OwnerAsk, homeFolder: String) throws -> String {
         let sessionFolderID = try ask.sessionID.flatMap {
-            try Int64.fetchOne(db, sql: "SELECT workbench_folder_id FROM terminal_sessions WHERE id = ?",
-                               arguments: [$0])
+            try Int64.fetchOne(db, sql: """
+                SELECT workbench_folder_id FROM terminal_sessions
+                WHERE id = ? AND delete_requested_at IS NULL
+                """, arguments: [$0])
         }
         let live = try WorkbenchFolderQueries.folders(db, workbenchID: ask.projectID, withRemoved: false)
         for id in [sessionFolderID, ask.docFolderID].compactMap({ $0 }) {
