@@ -261,24 +261,27 @@ func (idleBridge) Running() bool                 { return false }
 func (idleBridge) Launches() uint64              { return 0 }
 func (idleBridge) LastLaunch() time.Time         { return time.Time{} }
 
-// An unreadable iCloud account past the bridge's startup grace is unusable:
-// a Mac with a connected relay issues a relay code — whether its bridge
-// runs (the rig's, launched long ago) or never launched at all.
+// An unreadable iCloud account, or the Mac's iCloud user not read, past the
+// bridge's startup grace is unusable: a Mac with a connected relay issues a
+// relay code — whether its bridge runs (the rig's, launched long ago) or
+// never launched at all.
 func TestPairWithAnUnreadableAccountPastTheBridgeGraceFallsBackToARelayCode(t *testing.T) {
 	for _, tc := range []struct {
 		name string
+		op   string
 		edit []func(*Options)
 	}{
-		{"running", nil},
-		{"never launched", []func(*Options){func(o *Options) {
+		{"running", "account_status", nil},
+		{"never launched", "account_status", []func(*Options){func(o *Options) {
 			o.Desktop.supervise = func(cloudkit.Config) bridgeRunner { return idleBridge{} }
 		}}},
+		{"owner unread", "owner_user", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bubble(t, func(t *testing.T) {
 				r, ck, c := startPairDesk(t, transport.KindCloudKit, tc.edit...)
 				time.Sleep(bridgeStartGrace)
-				ck.failNext("account_status", 1000)
+				ck.failNext(tc.op, 1000)
 				pairRelayCode(t, r, ck, c)
 			})
 		})
@@ -419,7 +422,9 @@ func TestRelayCodeFallbackOnlyForUnusableICloud(t *testing.T) {
 			clockBridge{last: past.Add(-time.Second)}, past, unreadable, true},
 		{"unreadable, never launched", relay, false, clockBridge{}, past, unreadable, true},
 		{"unreadable, no bridge", relay, false, nil, past, unreadable, true},
-		{"owner unknown", relay, false, nil, past, link.ErrOwnerUnknown, false},
+		{"owner unknown just after the start", relay, false, nil, start.Add(bridgeStartGrace - time.Second),
+			link.ErrOwnerUnknown, false},
+		{"owner unknown past the grace", relay, false, nil, past, link.ErrOwnerUnknown, true},
 		{"account changed", relay, false, nil, past, fmt.Errorf("w: %w", link.ErrAccountChanged), false},
 		{"failed", relay, false, nil, past, errors.New("link: storing the code: disk full"), false},
 		{"no relay", nil, false, nil, past, acct(transport.AccountNoAccount), false},
