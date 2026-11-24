@@ -1822,11 +1822,10 @@ final class AppState {
             terminalCenter: terminalCenter, agentStates: agentStates, lineDelivery: lineDelivery,
             sessionControl: makeSessionControl(dbPool: dbPool, agentStates: agentStates, lineDelivery: lineDelivery)
         )
-        vm.attachmentStore = WorkchatAttachmentStore(
-            root: URL(fileURLWithPath: dbPool.path).deletingLastPathComponent()
-                .appendingPathComponent("workchat-attachments", isDirectory: true)
-        )
+        vm.attachmentStore = WorkchatAttachmentStore(root: URL(fileURLWithPath: dbPool.path).deletingLastPathComponent()
+            .appendingPathComponent("workchat-attachments", isDirectory: true))
         vm.tower = screenTower
+        wireAskExplain(vm.asks, hasCLI: cliRunner != nil)
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() } // Settings → Workbench → Default agent (#399, D1)
         vm.goSessionStart = cliRunner == nil ? nil : GoSessionStartWait() // Go starts new sessions (Go hub 3 Task 8)
         vm.managedPolicy = { [managedPolicy] in managedPolicy.policy }

@@ -236,6 +236,26 @@ final class OwnerAsksViewModel {
     @ObservationIgnored private(set) var roomySessions: Set<Int64> = []
     /// The drawer takes the whole session pane; closing it resets this.
     var drawerExpanded = false
+    /// Asks whose drawer shows the "Not clear?" chat in place of the question
+    /// (spec 2026-11-24 "The chat view"): per ask, in memory only; closing
+    /// the drawer forgets it, the chat itself is kept (D5).
+    private(set) var explainOpen: Set<Int64> = []
+    /// Each opened explain chat's surface by ask id, once its conversation is
+    /// known: the engine lives in `chats` by its key.
+    private var explainSpecs: [Int64: ChatSurfaceSpec] = [:]
+    /// Why an explain chat could not be opened (its conversation or the
+    /// workbench could not be read), by ask id; cleared on the next open.
+    private(set) var explainErrors: [Int64: String] = [:]
+    /// The workbench of each ask in `explainOpen`, so a drawer's close
+    /// forgets its asks' mode only.
+    @ObservationIgnored private var explainProjects: [Int64: Int64] = [:]
+    /// Asks whose `openExplain` is running, claimed before its first await:
+    /// a second open meanwhile starts no second hidden turn.
+    @ObservationIgnored private var explainStarting: Set<Int64> = []
+    /// The app's embedded chats, set only where a CLI can run the assistant
+    /// (AppState); nil: no "Not clear?" chat.
+    @ObservationIgnored var chats: EmbeddedChatCenter?
+    @ObservationIgnored var chatWrites: ChatWrites = .notReady
     /// A (or ⌃⌘A) on the workbench page (board #412): that workbench's
     /// stack gives its oldest card the keyboard once its
     /// `OwnerAskStackSection` shows it (`takeStackKeyboardRequest`).
@@ -682,6 +702,69 @@ final class OwnerAsksViewModel {
         leaveClosedList(projectID: projectID)
         drawerKeysActive.remove(projectID)
         drawerExpanded = false
+        for (askID, project) in explainProjects where project == projectID { closeExplain(askID) }
+    }
+
+    // MARK: - Not clear? (spec 2026-11-24)
+
+    func isExplaining(_ askID: Int64) -> Bool {
+        explainOpen.contains(askID)
+    }
+
+    /// Shows `ask`'s explain chat: finds or creates its conversation, then
+    /// starts the hidden first turn when the chat has no message yet, no turn
+    /// is busy and no other open of this ask is under way. A chat whose last
+    /// reply ended partial or in an error offers Retry instead (never a
+    /// second hidden turn on its own). Nothing without a CLI, or for a kind
+    /// the entry does not show on.
+    func openExplain(_ ask: OwnerAsk) async {
+        guard let chats, AskExplainPresentation.showsEntry(kind: ask.kind, hasCLI: true) else { return }
+        explainOpen.insert(ask.id)
+        explainProjects[ask.id] = ask.projectID
+        explainErrors[ask.id] = nil
+        guard explainStarting.insert(ask.id).inserted else { return }
+        defer { explainStarting.remove(ask.id) }
+        let spec: ChatSurfaceSpec
+        do {
+            spec = try await explainSpec(ask)
+        } catch {
+            NSLog("OwnerAsksViewModel: opening the explain chat of ask %lld: %@", ask.id, error.localizedDescription)
+            explainErrors[ask.id] = error.localizedDescription
+            return
+        }
+        explainSpecs[ask.id] = spec
+        let engine = chats.engine(for: spec)
+        engine.offerRetryOfStoredReply(hiddenPrompt: AskExplainPrompt.firstTurn)
+        // Back pressed while the conversation was found: no turn on its own.
+        guard explainOpen.contains(ask.id), engine.messages.isEmpty, !engine.isBusy else { return }
+        engine.sendHidden(AskExplainPrompt.firstTurn)
+    }
+
+    /// Back to the question: the chat (and a running turn) stays in `chats`.
+    func closeExplain(_ askID: Int64) {
+        explainOpen.remove(askID)
+        explainProjects[askID] = nil
+    }
+
+    /// The ask's explain chat; nil until its conversation is known, or
+    /// without a CLI. An engine the center let go of while idle is made
+    /// again from the same surface (its history reloads; no turn starts).
+    func explainEngine(for ask: OwnerAsk) -> EmbeddedChatEngine? {
+        guard let chats, let spec = explainSpecs[ask.id] else { return nil }
+        return chats.loaded(spec.key) ?? chats.engine(for: spec)
+    }
+
+    /// The ask's surface: its conversation, the workbench folder and the
+    /// ask's target, read once per open.
+    private func explainSpec(_ ask: OwnerAsk) async throws -> ChatSurfaceSpec {
+        let conversationID = try await AskExplainSurface.conversationID(ask: ask, dbPool: dbPool, writes: chatWrites)
+        let (folder, target) = try await dbPool.read { db -> (String, Target?) in
+            let folder = try WorkbenchQueries.fetch(db, id: ask.projectID)?.folderPath ?? ""
+            let target = try ask.targetID.flatMap { try TargetQueries.fetchByID(db, id: Int($0)) }
+            return (folder, target)
+        }
+        return AskExplainSurface.spec(ask: ask, conversationID: conversationID, folder: folder,
+                                      target: target.map { (title: $0.text, intent: $0.intent) })
     }
 
     /// The ask the workbench's drawer shows: open, or as last read once

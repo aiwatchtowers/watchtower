@@ -315,6 +315,26 @@ package final class EmbeddedChatEngine {
         start(request)
     }
 
+    /// A reopened chat whose latest reply ended `partial` (the app quit
+    /// mid-turn) or in a retryable `error` before this engine ran a turn
+    /// (spec 2026-11-24 "The first message"): Retry is offered for it,
+    /// rerunning the owner row just before it, or `hiddenPrompt` when the
+    /// reply had none (a hidden first turn). Nothing changes once a turn ran
+    /// here, while one is busy, or when the latest reply completed.
+    package func offerRetryOfStoredReply(hiddenPrompt: String) {
+        guard !isBusy, lastRequest == nil, !canRetry, let last = messages.last?.message, last.isAssistant else { return }
+        switch last.status {
+        case "partial": break
+        case "error" where ChatErrorPresentation.isRetryable(last.errorCode): break
+        default: return
+        }
+        let before = messages.dropLast().last?.message
+        let prompt = before.flatMap { $0.isUser ? $0.text : nil } ?? hiddenPrompt
+        lastRequest = TurnRequest(ownerText: nil, basePrompt: prompt, carriedFollowUps: [],
+                                  previousOwnerMessageAt: nil)
+        canRetry = true
+    }
+
     /// Returns once the turn being started has its rows written and its
     /// process started (or could not start): `isStreaming` then says which.
     package func started() async {

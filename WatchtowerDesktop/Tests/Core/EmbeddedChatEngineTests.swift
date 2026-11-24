@@ -1314,3 +1314,49 @@ extension EmbeddedChatEngineTests {
         }
     }
 }
+
+extension EmbeddedChatEngineTests {
+    /// A reopened chat whose stored latest reply ended partial (a quit) or in
+    /// a retryable error offers Retry, rerunning the owner row before it or
+    /// the hidden prompt when it had none (spec 2026-11-24 "The first message").
+    func testStoredPartialReplyOffersRetryOfTheHiddenPrompt() async throws {
+        let conversationID = self.conversationID
+        try await pool.write { db in
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "assistant",
+                                                   text: "Half", status: "partial")
+        }
+        let engine = makeEngine()
+        XCTAssertFalse(engine.canRetry)
+        engine.offerRetryOfStoredReply(hiddenPrompt: "EXPLAIN")
+        XCTAssertTrue(engine.canRetry)
+        engine.retry()
+        await engine.started()
+        XCTAssertTrue(ownTurn(try XCTUnwrap(ai.calls.last?.prompt)).hasSuffix("EXPLAIN"))
+        XCTAssertNil(ai.calls.last?.persist?.ownerText, "no owner row is written again")
+    }
+
+    func testStoredErrorReplyRetriesTheOwnerRowBeforeIt() async throws {
+        let conversationID = self.conversationID
+        try await pool.write { db in
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "user", text: "Why?")
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "assistant",
+                                                   text: "", status: "error")
+        }
+        let engine = makeEngine()
+        engine.offerRetryOfStoredReply(hiddenPrompt: "EXPLAIN")
+        XCTAssertTrue(engine.canRetry)
+        engine.retry()
+        await engine.started()
+        XCTAssertTrue(ownTurn(try XCTUnwrap(ai.calls.last?.prompt)).hasSuffix("Why?"))
+    }
+
+    func testCompletedReplyOffersNoRetry() async throws {
+        let conversationID = self.conversationID
+        try await pool.write { db in
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "assistant", text: "Done")
+        }
+        let engine = makeEngine()
+        engine.offerRetryOfStoredReply(hiddenPrompt: "EXPLAIN")
+        XCTAssertFalse(engine.canRetry)
+    }
+}
