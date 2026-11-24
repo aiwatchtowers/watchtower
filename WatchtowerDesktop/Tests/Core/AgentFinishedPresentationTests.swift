@@ -46,6 +46,15 @@ final class AgentFinishedPresentationTests: XCTestCase {
         XCTAssertEqual(p.glyph, "stop")
     }
 
+    func testStoppedCommandWithExitZeroIsNotSuccess() {
+        for status in ["killed", "stopped"] {
+            let p = AgentFinishedPresentation(task: SessionFeedTask(status: status, kind: "command", exitCode: 0),
+                                              fallbackTitle: "")
+            XCTAssertEqual(p.tone, .neutral, status)
+            XCTAssertEqual(p.glyph, "stop", status)
+        }
+    }
+
     func testCommand() {
         let task = SessionFeedTask(taskID: "b1", status: "completed",
                                    summary: #"Background command "Run full Go test suite" completed (exit code 0)"#,

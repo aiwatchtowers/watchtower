@@ -20,6 +20,14 @@ final class ChatArtifactMarkdownTests: XCTestCase {
                        [.code(language: nil, code: "x\n```\n[link](https://example.com)")])
     }
 
+    func testRunTooLongForAnyFenceIsIndentedCode() {
+        let ticks = String(repeating: "`", count: ChatArtifactActions.maxFence)
+        let content = "a\n\(ticks)\n# not a heading\n[link](https://example.com)"
+        XCTAssertEqual(MarkdownDocument.parse(code(content, language: "text")), [.code(language: nil, code: content)])
+        let longest = String(repeating: "`", count: ChatArtifactActions.maxFence - 2)
+        XCTAssertEqual(MarkdownDocument.parse(code("b\n\(longest)")), [.code(language: nil, code: "b\n\(longest)")])
+    }
+
     func testOtherKindsAreUntouched() {
         let draft = ArtifactDraft(key: "k", kind: "document", title: "t", meta: [:], content: "```", isComplete: true)
         XCTAssertEqual(ChatArtifactActions.markdown(draft), "```")
