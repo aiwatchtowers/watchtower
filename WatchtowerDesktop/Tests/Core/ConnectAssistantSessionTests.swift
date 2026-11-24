@@ -536,7 +536,14 @@ final class ConnectAssistantSessionTests: XCTestCase {
         XCTAssertEqual(session.presentation.actions, [.cancel, .checkBrowser])
         XCTAssertFalse(answerProbe(#"[{"id":"b1"}]"#, call: turn + 1), "a late answer is never read")
         XCTAssertEqual(session.mode, .words)
-        XCTAssertEqual(ai.calls.count, turn + 2, "no follow-up turn")
+        // Follow-ups wait for the open turn: end it and read what goes out.
+        ai.emit(.text("Continuing in words."), call: turn)
+        ai.finish(call: turn)
+        await ai.untilCalls(turn + 3)
+        let followUp = ai.calls[turn + 2]
+        XCTAssertTrue(followUp.prompt.contains(ConnectBrowserProbe.lostFollowUp))
+        XCTAssertFalse(followUp.prompt.contains(ConnectBrowserProbe.foundFollowUp), "a timed-out check finds nothing")
+        XCTAssertEqual(followUp.connectArgs?.last, "words")
     }
 
     /// Cancel while the probe waits wins over the timeout: the probe ends

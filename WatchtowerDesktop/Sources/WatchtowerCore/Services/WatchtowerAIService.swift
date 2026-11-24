@@ -505,9 +505,10 @@ extension WatchtowerAIService {
 
 /// The `ai query` child of one stream. `terminate()` is sticky: one that
 /// lands before `launch` (the consumer stopped while the CLI was looked up)
-/// keeps the process from starting at all, so nothing runs on unread. Launch
-/// and terminate take the same lock, so neither slips between the other's
-/// check and act.
+/// keeps the process from starting at all, and one that lands while it is
+/// starting stops it as soon as it runs, so nothing runs on unread. The lock
+/// guards the flag and the process only; `run()` and `terminate()` of the
+/// child are called outside it, so a cancel never waits on a launch.
 final class WatchtowerProcessHandle: @unchecked Sendable {
     private var process: Process?
     private var terminated = false
@@ -515,17 +516,22 @@ final class WatchtowerProcessHandle: @unchecked Sendable {
 
     /// Runs `process` unless the handle was terminated first; false then.
     func launch(_ process: Process) throws -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        guard !terminated else { return false }
+        guard !lock.withLock({ terminated }) else { return false }
         try process.run()
-        self.process = process
+        let stoppedMeanwhile = lock.withLock {
+            self.process = process
+            return terminated
+        }
+        if stoppedMeanwhile { process.terminate() }
         return true
     }
 
     func terminate() {
-        lock.lock(); defer { lock.unlock() }
-        terminated = true
-        if let process, process.isRunning { process.terminate() }
+        let running = lock.withLock {
+            terminated = true
+            return process
+        }
+        if let running, running.isRunning { running.terminate() }
     }
 }
 
