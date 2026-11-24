@@ -83,7 +83,7 @@ var (
 
 // queryPurposes are the --purpose values ai query accepts: embedded chats
 // whose turns the usage ledger shows apart from the plain chat.
-var queryPurposes = map[string]bool{"spec_review.discuss": true, "review.reviewer": true, tuning.ChatPurpose: true}
+var queryPurposes = map[string]bool{"spec_review.discuss": true, "review.reviewer": true, "ask.explain": true, tuning.ChatPurpose: true}
 
 var aiCmd = &cobra.Command{
 	Use:   "ai",
@@ -200,7 +200,7 @@ func init() {
 	aiQueryCmd.Flags().BoolVar(&aiFlagPersist, "persist", false,
 		"save the turn's rows here (an embedded chat): needs --events v2, --conversation and --turn; owner_text rides --prompt-stdin")
 	aiQueryCmd.Flags().StringVar(&aiFlagPurpose, "purpose", "",
-		"record this query's LLM calls under this usage purpose (spec_review.discuss, review.reviewer, tuning.chat); exit 2 on any other value")
+		"record this query's LLM calls under this usage purpose (spec_review.discuss, review.reviewer, ask.explain, tuning.chat); exit 2 on any other value")
 }
 
 // queryContext tags ctx with the --purpose value for the LLM usage ledger.

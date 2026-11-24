@@ -10,7 +10,7 @@ import (
 )
 
 func TestAIQueryPurpose_TagsContext(t *testing.T) {
-	for _, purpose := range []string{"spec_review.discuss", "review.reviewer"} {
+	for _, purpose := range []string{"spec_review.discuss", "review.reviewer", "ask.explain"} {
 		ctx, err := queryContext(context.Background(), purpose)
 		if err != nil {
 			t.Fatalf("queryContext(%s): %v", purpose, err)

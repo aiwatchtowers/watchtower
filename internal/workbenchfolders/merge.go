@@ -409,8 +409,8 @@ func reKeyChats(ctx context.Context, tx *sql.Tx, m *merger) error {
 		return err //nolint:wrapcheck // Merge names the step
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET context_id = ? || substr(context_id, length(?) + 1)
-		WHERE context_type IN ('code_question', ?) AND substr(context_id, 1, length(?)) = ?`,
-		into, from, db.SpecReviewThreadContextType, from, from); err != nil {
+		WHERE context_type IN ('code_question', ?, ?) AND substr(context_id, 1, length(?)) = ?`,
+		into, from, db.SpecReviewThreadContextType, db.AskExplainContextType, from, from); err != nil {
 		return err //nolint:wrapcheck // Merge names the step
 	}
 	// A branch name never holds a colon (git refuses one): a rest with a
