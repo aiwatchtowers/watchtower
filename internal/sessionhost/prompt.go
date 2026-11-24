@@ -44,7 +44,7 @@ func (p *promptState) ownerInput(b []byte, prof Profile) {
 		}
 	case keyEdit:
 		if p.pendingReturn && !p.ownerReturnInPause {
-			p.draft.inexact = true
+			p.draft.setInexact()
 		}
 	case keyIgnored, keyNeutral:
 	}
@@ -56,6 +56,12 @@ func (p *promptState) ownerInput(b []byte, prof Profile) {
 // held over (held(prompt_has_text)).
 func (p *promptState) holdsText() bool {
 	return p.draft.holdsText() || p.pendingReturn || p.leftTyped
+}
+
+// pasted is a delivery's line pasted at the cursor (its bracketed payload):
+// what precedes the cursor is now that line's end (draftModel.appPasted).
+func (p *promptState) pasted(payload []byte) {
+	p.draft.appPasted(pasteEndsInBackslash(payload))
 }
 
 // beginPause marks a pasted line waiting out its pause before its Return.
@@ -76,6 +82,10 @@ func (p *promptState) endPause() (ownerReturned bool) {
 // leaveTyped marks a delivered line left in the prompt without its Return:
 // the next line must not submit it with its own.
 func (p *promptState) leaveTyped() {
-	p.draft.inexact = true
+	p.draft.setInexact()
 	p.leftTyped = true
 }
+
+// appSubmitted is the delivery's own Return after its pause, into a prompt
+// that held nothing else: the prompt is empty again.
+func (p *promptState) appSubmitted() { p.draft = draftModel{} }

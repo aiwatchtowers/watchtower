@@ -15,17 +15,23 @@ final class FakeHostDeliveryDraftFixtureTests: XCTestCase {
             let exact: Bool
             let holds: Bool
         }
+        struct App: Decodable {
+            let after: Int
+            let line: String
+            let pause: Bool
+        }
         struct Case: Decodable {
             let name: String
             let profile: String
             let keys: [String]
             let dialog: Bool
+            let app: App?
             let expect: Expect
         }
         let cases: [Case]
     }
 
-    func testTheFakeHostReadsKeysByTheSharedTable() throws {
+    func testTheFakeHostReadsKeysByTheSharedTable() async throws {
         let url = URL(fileURLWithPath: #filePath) // …/WatchtowerDesktop/Tests/<this file>
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -42,12 +48,36 @@ final class FakeHostDeliveryDraftFixtureTests: XCTestCase {
             default: .unidentified
             }
             host.dialog = { c.dialog }
-            for key in c.keys {
-                host.ownerInput(Array(key.utf8))
-            }
-            XCTAssertEqual(host.draft.count, c.expect.count, "\(c.name): count")
-            XCTAssertEqual(host.draft.exact, c.expect.exact, "\(c.name): exact")
-            XCTAssertEqual(host.draft.holdsText, c.expect.holds, "\(c.name): holds")
+            let draft = await Self.run(c, on: host)
+            XCTAssertEqual(draft.count, c.expect.count, "\(c.name): count")
+            XCTAssertEqual(draft.exact, c.expect.exact, "\(c.name): exact")
+            XCTAssertEqual(draft.holdsText, c.expect.holds, "\(c.name): holds")
         }
+    }
+
+    /// Feeds the case's keys; its app line goes through `deliver` after
+    /// `app.after` of them — left typed (no `submitIf`), or in its pause,
+    /// the rest of the keys typed during it. The draft after the last key.
+    private static func run(_ c: Fixture.Case, on host: FakeHostDelivery) async -> DraftModel {
+        let type = { (keys: ArraySlice<String>) in keys.forEach { host.ownerInput(Array($0.utf8)) } }
+        guard let app = c.app else {
+            type(c.keys[...])
+            return host.draft
+        }
+        type(c.keys[..<app.after])
+        let rest = c.keys[app.after...]
+        var draft = host.draft
+        host.pause = { _ in
+            type(rest)
+            draft = host.draft
+        }
+        _ = await host.deliver(SessionDeliverLine(text: app.line, submitIf: app.pause)) {
+            DeliverCheckReply(fresh: false, canSubmit: false)
+        }
+        if !app.pause {
+            type(rest)
+            draft = host.draft
+        }
+        return draft
     }
 }

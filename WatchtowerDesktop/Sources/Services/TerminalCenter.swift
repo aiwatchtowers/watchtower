@@ -582,6 +582,7 @@ final class TerminalCenter {
             clipboardHints.remove(sessionID)
             pasteHints.remove(sessionID)
             process.sendInput(bytes)
+            drafts[sessionID, default: DraftModel()].appPasted(endingInBackslash: DraftModel.pasteEndsInBackslash(bytes))
             return .sent
         case let .clipboard(text):
             copyToClipboard(text)
@@ -681,6 +682,7 @@ final class TerminalCenter {
         switch afterPause(sessionID, run: run, fresh: fresh, canSubmit: canSubmit) {
         case .pressReturn:
             process.sendInput(inputProfile(sessionID).submit)
+            drafts[sessionID] = nil // the line went: the prompt is empty
             return .submitted
         case .ownerSent:
             logWithheld(sessionID, "the owner pressed Return during the pause")
@@ -831,7 +833,7 @@ final class TerminalCenter {
         case .typed:
             // The line sits in the prompt unsubmitted: the app's own
             // pre-checks see it (the host's `left_typed` event says so too).
-            if processes[sessionID] === process { leaveDraftInexact(sessionID) }
+            if processes[sessionID] === process { hostLeftTyped(sessionID, line) }
             return .pasted
         case let .held(reason):
             logWithheld(sessionID, "held by the session host (\(reason))")
@@ -851,7 +853,7 @@ final class TerminalCenter {
             // not. Never "no session": the owner checks and presses Return.
             logWithheld(sessionID, "the delivery's connection ended before the host answered")
             if processes[sessionID] === process {
-                leaveDraftInexact(sessionID)
+                hostLeftTyped(sessionID, line)
                 pasteHints.insert(sessionID)
             }
             return .mayBeTyped
@@ -868,7 +870,7 @@ final class TerminalCenter {
             clipboardHints.remove(sessionID)
             dropPasteHint(sessionID)
         case .leftTyped:
-            leaveDraftInexact(sessionID)
+            hostLeftTyped(sessionID, nil) // any client's line, the hub's too
             if event.besideText { sharedPrompts.insert(sessionID) }
             // An ask's answer shows its own bar (`answerHints`).
             if answerHints[sessionID] == nil { pasteHints.insert(sessionID) }
@@ -927,35 +929,14 @@ final class TerminalCenter {
 
     /// A line of the app's own may sit in the prompt: only a submit empties it.
     private func leaveDraftInexact(_ sessionID: Int64) {
-        drafts[sessionID, default: DraftModel()].exact = false
+        drafts[sessionID, default: DraftModel()].markInexact()
     }
 
-    /// What the hint over a session holding an ask's answer says.
-    enum AnswerHint: Equatable {
-        /// Pasted, not submitted (a permission prompt appeared during the
-        /// pause): press Return.
-        case typed
-        /// On the clipboard: paste it, then press Return.
-        case copied
-        /// Held while the agent waits on a permission prompt; it goes once
-        /// the prompt is answered.
-        case held
-        /// Held so long (`OwnerAsksViewModel.stillHeldAfter`) with no change
-        /// that the pane says it still waits and that Dismiss leaves it for
-        /// the session's brief.
-        case stillHeld
-        /// Held while another answer is going to the same session; it goes
-        /// right after that one.
-        case queued
-
-        /// Waiting for its delivery: the owner's input keeps it, and its
-        /// Dismiss cancels the delivery.
-        var isHeld: Bool {
-            switch self {
-            case .held, .stillHeld, .queued: true
-            case .typed, .copied: false
-            }
-        }
+    /// The host left `line` typed, or may have (`DraftModel.hostLeftTyped`); nil:
+    /// a line of any client's, its text unknown here (the host's model has its `\`).
+    private func hostLeftTyped(_ sessionID: Int64, _ line: SessionDeliverLine?) {
+        let endsInBackslash = line.map(Self.lineEndsInBackslash) ?? false
+        drafts[sessionID, default: DraftModel()].hostLeftTyped(endingInBackslash: endsInBackslash)
     }
 
     /// An ask's answer line is waiting in or for a running session: its pane
@@ -973,22 +954,26 @@ final class TerminalCenter {
     /// answer's hint turns into "press Return" (the paste was the first step); a
     /// typed one has done its job; a held one waits for its delivery.
     private func ownerInput(_ sessionID: Int64, _ bytes: [UInt8]) {
-        var draft = drafts[sessionID] ?? DraftModel()
-        let before = draft
+        // Taken out of `drafts` and compared by its length only, so the run's
+        // buffer has one owner and a key appends to it in place, never copies it.
+        var draft = drafts.removeValue(forKey: sessionID) ?? DraftModel()
+        let before = (draft.count, draft.exact, draft.holdsText)
         let inPause = runs[sessionID].map { pendingReturns.contains($0) && !ownerReturnsInPause.contains($0) } ?? false // line unsent
-        switch draft.feed(bytes, profile: inputProfile(sessionID), dialog: inputAnswersDialog(sessionID)) {
+        let key = draft.feed(bytes, profile: inputProfile(sessionID), dialog: inputAnswersDialog(sessionID))
+        switch key {
         case .ignored:
-            return
+            break
         case .submit:
             sharedPrompts.remove(sessionID)
             if inPause, let run = runs[sessionID] { ownerReturnsInPause.insert(run) }
         case .edit where inPause:
-            draft.exact = false
+            draft.markInexact()
         case .edit, .neutral:
             break
         }
         drafts[sessionID] = draft == DraftModel() ? nil : draft
-        if draft != before { onDraftChanged?(sessionID) }
+        guard key != .ignored else { return }
+        if (draft.count, draft.exact, draft.holdsText) != before { onDraftChanged?(sessionID) }
         switch answerHints[sessionID] {
         case nil, .held?, .stillHeld?, .queued?: break
         case .copied?: answerHints[sessionID] = .typed

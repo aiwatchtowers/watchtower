@@ -24,7 +24,7 @@ import (
 // empties it and Shift+Tab changes nothing. Everything else — cursor and
 // word-edit keys, Ctrl+U (in 2.1.331 it erases only the last screen row of a
 // wrapped draft), Esc, Tab, a line break (Option+Return `ESC CR` too), a
-// multi-line paste, the owner's Ctrl+C (it interrupts a working turn and
+// multi-line paste, a paste with an escape in its text, the owner's Ctrl+C (it interrupts a working turn and
 // keeps the text, spec C11) and any key under a profile without ExactDraft —
 // makes it inexact: from then on only a submit (or the app's clear) empties
 // it. An inexact draft, an open paste and a partial escape sequence always
@@ -44,10 +44,15 @@ type draftModel struct {
 	// escKey: esc is a lone ESC that ended its write, already read as the
 	// Esc key; only `[` or `O` next makes it the start of a sequence.
 	escKey bool
-	// run: the characters typed since the draft was empty or its cursor
-	// last became unknown — `\` for a backslash, `.` for anything else — so
-	// a Backspace knows whether the character then before the cursor is `\`.
+	// run: the characters typed since the draft was empty, the app's own
+	// paste or the cursor last became unknown — `\` for a backslash, `.`
+	// for anything else — so a Backspace knows whether the character then
+	// before the cursor is `\`. Kept only under a profile with ExactDraft,
+	// the only one whose Backspace reads it.
 	run []byte
+	// appLine: a line the app pasted, which count leaves out (a delivery in
+	// its pause), precedes the run: a Backspace past the run reaches it.
+	appLine bool
 }
 
 // draftKey is what one fed chunk was.
@@ -81,6 +86,22 @@ func (d *draftModel) holdsText() bool {
 // empty and exact, whatever the draft was.
 func (d *draftModel) clearedByApp() { *d = draftModel{} }
 
+// appPasted is a delivery's own line pasted at the cursor, ending in `\`
+// or not: the character before the cursor is then the line's last, and the
+// run starts again behind it. The caller decides what the paste does to the
+// count (left typed: inexact; in its pause: the pause holds the prompt).
+func (d *draftModel) appPasted(endsInBackslash bool) {
+	d.run = nil
+	d.backslash = endsInBackslash
+	d.appLine = true
+}
+
+// pasteEndsInBackslash reports whether a bracketed paste payload's text ends
+// in `\`.
+func pasteEndsInBackslash(payload []byte) bool {
+	return bytes.HasSuffix(payload, []byte("\\"+escPasteEnd))
+}
+
 // feed reads one chunk of the owner's input. Input while a dialog is up
 // changes nothing (it answers the dialog).
 func (d *draftModel) feed(b []byte, prof Profile, dialog bool) draftKey {
@@ -94,12 +115,12 @@ func (d *draftModel) feed(b []byte, prof Profile, dialog bool) draftKey {
 		}
 		switch {
 		case d.inPaste:
-			d.pasteByte(c)
+			d.pasteByte(c, prof)
 			edited = true
 		case d.esc != "" || c == 0x1B:
 			edited = d.escapeByte(c, i == len(b)-1) || edited
 		case c == 0x0D && i == len(b)-1 && !d.backslash && bytes.Equal(prof.Submit, []byte{0x0D}):
-			*d = draftModel{run: d.run[:0]}
+			*d = draftModel{} // a fresh run: a long one's buffer goes
 			submitted = true
 		default:
 			d.keyByte(c, prof)
@@ -149,6 +170,12 @@ func (d *draftModel) escapeByte(c byte, last bool) bool {
 		d.setInexact()
 	default:
 		d.setInexact() // a cursor or word-edit key, Esc then a key, Option+key
+		if seq[len(seq)-1] == '\\' {
+			// Option+`\`, or Esc then `[\` / `O\` typed one key per write
+			// (the reassembly cannot tell them apart): a `\` may be before
+			// the cursor.
+			d.backslash = true
+		}
 	}
 	return true
 }
@@ -170,8 +197,9 @@ func escapeComplete(s string) bool {
 
 // pasteByte takes one byte inside a paste: the end bracket is matched as it
 // streams in (a new ESC restarts the match); every other byte, a broken
-// match's included, is the paste's text.
-func (d *draftModel) pasteByte(c byte) {
+// match's included, is the paste's text. An escape inside the text may show
+// wider or narrower than its bytes: a broken match makes the draft inexact.
+func (d *draftModel) pasteByte(c byte, prof Profile) {
 	if d.esc != "" {
 		if next := d.esc + string(c); strings.HasPrefix(escPasteEnd, next) {
 			d.esc = next
@@ -183,20 +211,21 @@ func (d *draftModel) pasteByte(c byte) {
 		seen := d.esc
 		d.esc = ""
 		for i := range len(seen) {
-			d.pasteText(seen[i])
+			d.pasteText(seen[i], prof)
 		}
+		d.setInexact()
 	}
 	if c == 0x1B {
 		d.esc = "\x1b"
 		return
 	}
-	d.pasteText(c)
+	d.pasteText(c, prof)
 }
 
 // pasteText takes one byte of a paste's text: it counts as typed, but a
 // line break in it makes the draft inexact.
-func (d *draftModel) pasteText(c byte) {
-	d.addRune(c)
+func (d *draftModel) pasteText(c byte, prof Profile) {
+	d.addRune(c, prof)
 	if c == 0x0D || c == 0x0A {
 		d.backslash = false
 		d.setInexact()
@@ -215,7 +244,7 @@ func (d *draftModel) keyByte(c byte, prof Profile) {
 	case c < 0x20: // Ctrl+C, Ctrl+U, Tab, Ctrl+A/E/W/K, …
 		d.setInexact()
 	default:
-		d.addRune(c)
+		d.addRune(c, prof)
 	}
 }
 
@@ -223,7 +252,7 @@ func (d *draftModel) keyByte(c byte, prof Profile) {
 // may not erase one character: what precedes the cursor is unknown (read
 // as `\`: a Return holds). Otherwise it takes a rune off an exact draft, and
 // the character then before the cursor is the run's last, none in an exact
-// empty draft, else unknown.
+// empty draft with no line of the app's before it, else unknown.
 func (d *draftModel) erase(prof Profile) {
 	if !prof.ExactDraft {
 		d.backslash = true
@@ -239,7 +268,7 @@ func (d *draftModel) erase(prof Profile) {
 	switch {
 	case len(d.run) > 0:
 		d.backslash = d.run[len(d.run)-1] == '\\'
-	case !d.inexact && d.count == 0:
+	case !d.inexact && d.count == 0 && !d.appLine:
 		d.backslash = false
 	default:
 		d.backslash = true
@@ -248,23 +277,26 @@ func (d *draftModel) erase(prof Profile) {
 
 // addRune counts printable input: every byte but a UTF-8 continuation byte
 // (a paste's control characters count too — never fewer than the prompt
-// shows), and keeps the run and the pending `\`.
-func (d *draftModel) addRune(c byte) {
+// shows), and keeps the pending `\` and, under ExactDraft, the run.
+func (d *draftModel) addRune(c byte, prof Profile) {
 	if c >= 0x80 && c < 0xC0 {
 		return
 	}
 	d.count++
 	d.backslash = c == '\\'
-	if d.backslash {
+	switch {
+	case !prof.ExactDraft:
+	case d.backslash:
 		d.run = append(d.run, '\\')
-	} else {
+	default:
 		d.run = append(d.run, '.')
 	}
 }
 
 // setInexact gives up the length and the cursor: from now on only a submit
-// empties it, and the run starts again.
+// empties it, and the run starts again (a fresh one: a long run's buffer
+// goes).
 func (d *draftModel) setInexact() {
 	d.inexact = true
-	d.run = d.run[:0]
+	d.run = nil
 }

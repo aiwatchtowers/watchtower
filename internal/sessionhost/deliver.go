@@ -198,6 +198,7 @@ func (s *Server) runDelivery(c *conn, req DeliverReq, replies <-chan DeliverChec
 		return DeliveredMsg{Outcome: OutcomeHeld, Reason: HeldPromptHasText}
 	}
 	pause := !besideText && req.SubmitIf
+	sess.prompt.pasted(payload)
 	if pause {
 		sess.prompt.beginPause()
 	} else {
@@ -296,6 +297,7 @@ func (s *Server) afterPause(sess *session, req DeliverReq, reply DeliverCheckRep
 		sess.event(EventLeftTyped, besideText)
 		return DeliveredMsg{Outcome: OutcomeTyped, Reason: reason}
 	}
+	sess.prompt.appSubmitted()
 	sess.mu.Unlock()
 	if _, err := sess.ptmx.Write(sess.profile.Submit); err != nil {
 		return DeliveredMsg{Outcome: OutcomeNoSession}

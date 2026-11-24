@@ -227,7 +227,12 @@ func TestDraftFixture(t *testing.T) {
 			Profile string   `json:"profile"`
 			Keys    []string `json:"keys"`
 			Dialog  bool     `json:"dialog"`
-			Expect  struct {
+			App     *struct {
+				After int    `json:"after"`
+				Line  string `json:"line"`
+				Pause bool   `json:"pause"`
+			} `json:"app"`
+			Expect struct {
 				Count int  `json:"count"`
 				Exact bool `json:"exact"`
 				Holds bool `json:"holds"`
@@ -242,10 +247,21 @@ func TestDraftFixture(t *testing.T) {
 	}
 	for _, c := range fx.Cases {
 		prof := ProfileFor(c.Profile)
-		var d draftModel
-		for _, k := range c.Keys {
-			d.feed([]byte(k), prof, c.Dialog)
+		p := promptState{dialog: c.Dialog}
+		for i := 0; i <= len(c.Keys); i++ {
+			if c.App != nil && c.App.After == i {
+				p.pasted(PastePayload(c.App.Line))
+				if c.App.Pause {
+					p.beginPause()
+				} else {
+					p.leaveTyped()
+				}
+			}
+			if i < len(c.Keys) {
+				p.ownerInput([]byte(c.Keys[i]), prof)
+			}
 		}
+		d := p.draft
 		if d.count != c.Expect.Count || d.inexact == c.Expect.Exact || d.holdsText() != c.Expect.Holds {
 			t.Errorf("%s: {count %d, exact %v, holds %v}, want %+v", c.Name, d.count, !d.inexact, d.holdsText(), c.Expect)
 		}
@@ -368,5 +384,85 @@ func TestDraftLongPasteIsLinear(t *testing.T) {
 	short, long := allocs(100<<10), allocs(200<<10)
 	if long > short+4 {
 		t.Fatalf("allocations: %v for 100 KiB, %v for 200 KiB — not linear", short, long)
+	}
+}
+
+// Review round 4: a line the delivery left typed beside the owner's draft
+// moves the cursor past the owner's run. The owner had `a\`, the delivery
+// pasted `\x`; a Backspace leaves `a\\` in the prompt, so the owner's Return
+// is a line break and a phone line is still held.
+func TestPromptState_LineLeftTypedRestartsTheRun(t *testing.T) {
+	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	cl := st.hub()
+	held := st.req("y")
+	held.HoldIfPromptText = true
+
+	st.desktop.typeChunks([]byte("a"), []byte(`\`))
+	beside := st.req(`\x`)
+	wantOutcome(t, st.deliver(cl, beside, noCheck(t)), OutcomeTyped, TypedBesideText)
+	st.desktop.typeChunks([]byte{0x7F}, []byte{0x0D})
+	wantOutcome(t, st.deliver(cl, held, noCheck(t)), OutcomeHeld, HeldPromptHasText)
+}
+
+// Review round 4: a line in its pause that ends in `\` turns the owner's
+// Return during the pause into a line break, so it did not send the line;
+// a Backspace there reaches the line, so what precedes the cursor is
+// unknown and the next Return is no submit either.
+func TestPromptState_LineInPauseSetsTheBackslash(t *testing.T) {
+	prof := ProfileFor("claude")
+	var p promptState
+	p.pasted(PastePayload(`x\`))
+	p.beginPause()
+	p.ownerInput([]byte{0x0D}, prof)
+	if p.ownerReturnInPause || !p.draft.holdsText() {
+		t.Fatalf("the owner's Return after a pasted `\\` read as a submit: %+v", p)
+	}
+
+	p = promptState{}
+	p.pasted(PastePayload(`\x`))
+	p.beginPause()
+	p.ownerInput([]byte{0x7F, 0x0D}, prof)
+	if p.ownerReturnInPause || !p.draft.holdsText() {
+		t.Fatalf("Backspace then Return into a pasted `\\x` read as a submit: %+v", p)
+	}
+
+	// The delivery's own Return empties the prompt.
+	p = promptState{}
+	p.pasted(PastePayload(`x\`))
+	p.beginPause()
+	p.endPause()
+	p.appSubmitted()
+	if p.holdsText() || p.draft.backslash || p.draft.appLine {
+		t.Fatalf("after the delivery's Return = %+v", p.draft)
+	}
+}
+
+// Review round 4: only a profile with ExactDraft reads the run (its
+// Backspace), so Codex and an unidentified agent keep none; a submit and an
+// inexact turn drop a long run's buffer.
+func TestDraftRunIsKeptOnlyWhereRead(t *testing.T) {
+	long := []byte(strings.Repeat("x", 4096))
+	for _, agent := range []string{"codex", ""} {
+		var d draftModel
+		d.feed(long, ProfileFor(agent), false)
+		if d.run != nil {
+			t.Errorf("%q: run of %d kept", agent, len(d.run))
+		}
+	}
+
+	prof := ProfileFor("claude")
+	var d draftModel
+	d.feed(long, prof, false)
+	if len(d.run) != len(long) {
+		t.Fatalf("claude: run %d, want %d", len(d.run), len(long))
+	}
+	d.feed([]byte{0x0D}, prof, false)
+	if d.run != nil {
+		t.Fatalf("after a submit the run keeps a buffer of %d", cap(d.run))
+	}
+	d.feed(long, prof, false)
+	d.feed([]byte{'\t'}, prof, false)
+	if d.run != nil {
+		t.Fatalf("after an inexact key the run keeps a buffer of %d", cap(d.run))
 	}
 }

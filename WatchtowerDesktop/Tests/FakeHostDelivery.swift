@@ -14,8 +14,10 @@ import WatchtowerCore
 /// prompt held nothing before or during the pause. The owner's keys
 /// (`ownerInput`) feed the host's draft model (`DraftModel`, the shared key
 /// table of `draft_cases.json`): typed text holds a line, an erased one no
-/// longer does; their Return during the pause sent the line. A relaunch (`newRun`) during the
-/// pause is no session.
+/// longer does; their Return during the pause sent the line. A pasted line
+/// restarts the draft's run and sets its `\` (`appPasted`), as the host's
+/// `promptState.pasted` does. A relaunch (`newRun`) during the pause is no
+/// session.
 @MainActor
 final class FakeHostDelivery {
     private(set) var lines: [SessionDeliverLine] = []
@@ -73,7 +75,10 @@ final class FakeHostDelivery {
             draft = DraftModel()
             if pausing > 0 { ownerReturnedInPause = true }
         case .edit:
-            if pausing > 0 { textDuringPause = true }
+            if pausing > 0 {
+                textDuringPause = true
+                draft.markInexact() // the key reached the line in its pause
+            }
         case .ignored, .neutral:
             break
         }
@@ -95,6 +100,7 @@ final class FakeHostDelivery {
             keepingFormatCharacters: line.keepFormat
         ) {
             write(bytes)
+            draft.appPasted(endingInBackslash: DraftModel.pasteEndsInBackslash(bytes))
         }
         send(.pasted)
         guard line.submitIf, !besideText else {
@@ -119,6 +125,7 @@ final class FakeHostDelivery {
             return leaveTyped(besideText: textDuringPause)
         }
         write([0x0D])
+        draft = DraftModel()
         send(.submitted)
         return .submitted
     }
@@ -137,6 +144,7 @@ final class FakeHostDelivery {
 
     private func leaveTyped(besideText: Bool) -> DeliverOutcome {
         leftTyped = true
+        draft.markInexact()
         send(.leftTyped, besideText: besideText)
         return .typed
     }

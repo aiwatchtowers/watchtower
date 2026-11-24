@@ -2,7 +2,7 @@ import XCTest
 import AppKit
 import GRDB
 @testable import WatchtowerDesktop
-import WatchtowerCore
+@testable import WatchtowerCore
 import WatchtowerTestSupport
 
 @MainActor
@@ -1174,6 +1174,61 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(sessions[0].inputs.last, [0x1B])
         XCTAssertNil(center.drafts[s.id])
         XCTAssertFalse(center.promptHoldsText(s.id))
+    }
+
+    /// Review round 4: a line pasted in its pause that ends in `\` turns the
+    /// owner's Return during the pause into a line break: it did not send the
+    /// line, so no "sent" and the prompt still holds text.
+    func testTheOwnersReturnAfterAPastedBackslashIsALineBreak() async throws {
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+        onSleep = { [weak self] in self?.sessions[0].onOwnerInput?([0x0D]) }
+
+        let delivery = await center.deliver("x\\", sessionID: s.id) { true }
+
+        XCTAssertEqual(delivery, .pasted)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x\\")], "no Return of ours over the line break")
+        XCTAssertTrue(center.promptHoldsText(s.id))
+    }
+
+    /// Review round 4: a line the host left typed beside the owner's `a\`
+    /// restarts the mirror's run. The host pasted `\x`; a Backspace leaves
+    /// `a\\`, so the owner's Return is a line break and the prompt holds text.
+    func testALineLeftTypedRestartsTheMirrorsRun() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].onOwnerInput?(Array("a".utf8))
+        sessions[0].onOwnerInput?(Array("\\".utf8))
+
+        // The host leaves it typed (the session's state does not allow a Return).
+        let delivery = await center.deliver("\\x", sessionID: s.id) { false }
+
+        XCTAssertEqual(delivery, .pasted)
+        sessions[0].onOwnerInput?([0x7F])
+        sessions[0].onOwnerInput?([0x0D])
+        XCTAssertTrue(center.promptHoldsText(s.id), "the Return after `a\\\\` is a line break")
+    }
+
+    /// Review round 4: the owner's keys append to the mirror's run in place —
+    /// the center keeps no copy of the draft beside it — and a profile whose
+    /// Backspace never reads the run keeps none.
+    func testTheMirrorsRunIsKeptOnlyWhereRead() throws {
+        let center = makeCenter()
+        let claude = try row()
+        let shell = try row(kind: .shell)
+        center.start(claude, fresh: true)
+        center.start(shell, fresh: true)
+        for _ in 0..<200 {
+            sessions[0].onOwnerInput?(Array("x".utf8))
+            sessions[1].onOwnerInput?(Array("x".utf8))
+        }
+
+        XCTAssertEqual(center.drafts[claude.id]?.count, 200)
+        XCTAssertEqual(center.drafts[claude.id]?.runLength, 200)
+        XCTAssertEqual(center.drafts[shell.id]?.count, 200)
+        XCTAssertEqual(center.drafts[shell.id]?.runLength, 0, "an unidentified agent's draft keeps no run")
     }
 
     func testTheOwnersReturnDuringThePauseSkipsOurs() async throws {

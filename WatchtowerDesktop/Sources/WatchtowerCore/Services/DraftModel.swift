@@ -16,7 +16,7 @@
 /// empties it and Shift+Tab changes nothing. Everything else — cursor and
 /// word-edit keys, Ctrl+U (in 2.1.331 it erases only the last screen row of a
 /// wrapped draft), Esc, Tab, a line break (Option+Return `ESC CR` too), a
-/// multi-line paste, the owner's Ctrl+C (it interrupts a working turn and
+/// multi-line paste, a paste with an escape in its text, the owner's Ctrl+C (it interrupts a working turn and
 /// keeps the text, spec C11) and any key under a profile without
 /// `exactDraft` — makes it inexact: from then on only a submit (or the app's
 /// clear) empties it. An inexact draft, an open paste and a partial escape
@@ -36,10 +36,15 @@ package struct DraftModel: Equatable, Sendable {
     /// `esc` is a lone ESC that ended its write, already read as the Esc
     /// key; only `[` or `O` next makes it the start of a sequence.
     private var escKey = false
-    /// The characters typed since the draft was empty or its cursor last
-    /// became unknown — whether each is a backslash — so a Backspace knows
-    /// whether the character then before the cursor is `\`.
+    /// The characters typed since the draft was empty, the app's own paste
+    /// or the cursor last became unknown — whether each is a backslash — so
+    /// a Backspace knows whether the character then before the cursor is
+    /// `\`. Kept only under a profile with `exactDraft`, the only one whose
+    /// Backspace reads it.
     private var run: [Bool] = []
+    /// A line the app pasted, which `count` leaves out (a delivery in its
+    /// pause), precedes the run: a Backspace past the run reaches it.
+    private var appLine = false
 
     /// What one fed chunk was.
     package enum Key: Equatable, Sendable {
@@ -65,6 +70,41 @@ package struct DraftModel: Equatable, Sendable {
     /// and exact, whatever the draft was.
     package mutating func clearedByApp() { self = Self() }
 
+    /// A delivery's own line pasted at the cursor, ending in `\` or not:
+    /// the character before the cursor is then the line's last, and the run
+    /// starts again behind it. The caller decides what the paste does to
+    /// the count (left typed: `markInexact`; in its pause: the pause holds
+    /// the prompt).
+    package mutating func appPasted(endingInBackslash: Bool) {
+        run = []
+        backslash = endingInBackslash
+        appLine = true
+    }
+
+    /// The session host left a delivery's line typed, at a moment the Mac
+    /// does not know against the owner's keys: inexact, and a `\` either
+    /// left before the cursor stays possible.
+    package mutating func hostLeftTyped(endingInBackslash: Bool) {
+        let possibleBackslash = backslash || endingInBackslash
+        appPasted(endingInBackslash: possibleBackslash)
+        setInexact()
+    }
+
+    /// Gives up the length and the cursor (a line left typed, a key into a
+    /// line in its pause): only a submit empties the draft from now on.
+    package mutating func markInexact() { setInexact() }
+
+    /// Whether a bracketed paste payload's text ends in `\`.
+    package static func pasteEndsInBackslash(_ payload: [UInt8]) -> Bool {
+        payload.count > pasteEnd.count && payload.suffix(pasteEnd.count).elementsEqual(pasteEnd)
+            && payload[payload.count - pasteEnd.count - 1] == UInt8(ascii: "\\")
+    }
+
+    /// The run's length, for the tests that pin where it is kept.
+    var runLength: Int { run.count }
+    /// The run's buffer, for the tests that pin that a long one goes.
+    var runCapacity: Int { run.capacity }
+
     /// Reads one chunk of the owner's input. Input while a permission
     /// dialog is up changes nothing (it answers the dialog).
     @discardableResult
@@ -78,7 +118,7 @@ package struct DraftModel: Equatable, Sendable {
                 escKey = false
             }
             if inPaste {
-                pasteByte(byte)
+                pasteByte(byte, profile: profile)
                 edited = true
             } else if !esc.isEmpty || byte == 0x1B {
                 edited = escapeByte(byte, last: index == bytes.count - 1) || edited
@@ -129,6 +169,12 @@ package struct DraftModel: Equatable, Sendable {
             setInexact()
         default:
             setInexact() // a cursor or word-edit key, Esc then a key, Option+key
+            if seq.last == UInt8(ascii: "\\") {
+                // Option+`\`, or Esc then `[\` / `O\` typed one key per
+                // write (the reassembly cannot tell them apart): a `\` may
+                // be before the cursor.
+                backslash = true
+            }
         }
         return true
     }
@@ -146,8 +192,10 @@ package struct DraftModel: Equatable, Sendable {
 
     /// One byte inside a paste: the end bracket is matched as it streams in
     /// (a new ESC restarts the match); every other byte, a broken match's
-    /// included, is the paste's text.
-    private mutating func pasteByte(_ byte: UInt8) {
+    /// included, is the paste's text. An escape inside the text may show
+    /// wider or narrower than its bytes: a broken match makes the draft
+    /// inexact.
+    private mutating func pasteByte(_ byte: UInt8, profile: AgentInputProfile) {
         if !esc.isEmpty {
             let next = esc + [byte]
             if Self.pasteEnd.starts(with: next) {
@@ -157,19 +205,20 @@ package struct DraftModel: Equatable, Sendable {
             }
             let seen = esc
             esc = []
-            seen.forEach { pasteText($0) }
+            seen.forEach { pasteText($0, profile: profile) }
+            setInexact()
         }
         if byte == 0x1B {
             esc = [0x1B]
             return
         }
-        pasteText(byte)
+        pasteText(byte, profile: profile)
     }
 
     /// One byte of a paste's text: it counts as typed, but a line break in
     /// it makes the draft inexact.
-    private mutating func pasteText(_ byte: UInt8) {
-        addCharacter(byte)
+    private mutating func pasteText(_ byte: UInt8, profile: AgentInputProfile) {
+        addCharacter(byte, profile: profile)
         if byte == 0x0D || byte == 0x0A {
             backslash = false
             setInexact()
@@ -188,7 +237,7 @@ package struct DraftModel: Equatable, Sendable {
         case ..<0x20: // Ctrl+C, Ctrl+U, Tab, Ctrl+A/E/W/K, …
             setInexact()
         default:
-            addCharacter(byte)
+            addCharacter(byte, profile: profile)
         }
     }
 
@@ -196,7 +245,8 @@ package struct DraftModel: Equatable, Sendable {
     /// not erase one character: what precedes the cursor is unknown (read as
     /// `\`: a Return holds). Otherwise it takes a character off an exact
     /// draft, and the character then before the cursor is the run's last,
-    /// none in an exact empty draft, else unknown.
+    /// none in an exact empty draft with no line of the app's before it,
+    /// else unknown.
     private mutating func erase(profile: AgentInputProfile) {
         guard profile.exactDraft else {
             backslash = true
@@ -208,24 +258,25 @@ package struct DraftModel: Equatable, Sendable {
         if let last = run.last {
             backslash = last
         } else {
-            backslash = !(exact && count == 0) // swiftlint:disable:this empty_count
+            backslash = !(exact && count == 0 && !appLine) // swiftlint:disable:this empty_count
         }
     }
 
     /// Counts printable input — every byte but a UTF-8 continuation byte (a
     /// paste's control characters count too: never fewer than the prompt
-    /// shows) — and keeps the run and the pending `\`.
-    private mutating func addCharacter(_ byte: UInt8) {
+    /// shows) — and keeps the pending `\` and, under `exactDraft`, the run.
+    private mutating func addCharacter(_ byte: UInt8, profile: AgentInputProfile) {
         guard !(0x80..<0xC0).contains(byte) else { return }
         count += 1
         backslash = byte == UInt8(ascii: "\\")
-        run.append(backslash)
+        if profile.exactDraft { run.append(backslash) }
     }
 
     /// Gives up the length and the cursor: from now on only a submit
-    /// empties it, and the run starts again.
+    /// empties it, and the run starts again (a fresh one: a long run's
+    /// buffer goes).
     private mutating func setInexact() {
         exact = false
-        run.removeAll(keepingCapacity: true)
+        run = []
     }
 }
