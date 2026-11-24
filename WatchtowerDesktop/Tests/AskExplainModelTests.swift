@@ -239,6 +239,57 @@ final class AskExplainModelTests: XCTestCase {
         XCTAssertTrue(fx.ai.calls.isEmpty)
     }
 
+    /// A reopen hands the kept engine the surface read now: its prompt
+    /// carries the target's new intent; nothing is sent.
+    func testReopenRefreshesTheKeptEnginesPrompt() async throws {
+        let projectID = fx.projectID
+        let targetID = try await fx.pool.write { db in
+            let id = try TestDatabase.insertWorkbenchTarget(db, projectID: projectID, text: "Feature")
+            try db.execute(sql: "UPDATE targets SET intent = 'Old intent' WHERE id = ?", arguments: [id])
+            return id
+        }
+        let ask = try fx.insertAsk(targetID: targetID)
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await finishTurn(engine)
+        XCTAssertTrue(engine.spec.systemPrompt().contains("Old intent"))
+
+        try await fx.pool.write { db in
+            try db.execute(sql: "UPDATE targets SET intent = 'New intent' WHERE id = ?", arguments: [targetID])
+        }
+        fx.vm.closeExplain(ask.id)
+        await fx.vm.openExplain(ask)
+        XCTAssertTrue(fx.vm.explainEngine(for: ask) === engine, "the same engine and history")
+        XCTAssertTrue(engine.spec.systemPrompt().contains("New intent"))
+        XCTAssertFalse(engine.spec.systemPrompt().contains("Old intent"))
+        XCTAssertFalse(engine.isBusy)
+        XCTAssertEqual(fx.ai.calls.count, 1, "no turn on reopen")
+    }
+
+    /// The workbench went after the chat was opened once: the reopen says
+    /// so, and the old chat is neither served nor made again.
+    func testWorkbenchGoneAfterAnOpenDropsTheChat() async throws {
+        let ask = try fx.insertAsk()
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await finishTurn(engine)
+        fx.vm.closeExplain(ask.id)
+
+        let projectID = fx.projectID
+        try await fx.pool.write { db in
+            try db.execute(sql: "DELETE FROM owner_asks WHERE project_id = ?", arguments: [projectID])
+            try db.execute(sql: "DELETE FROM workbench_folders WHERE workbench_id = ?", arguments: [projectID])
+            try db.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [projectID])
+        }
+        fx.center.release(engine.spec.key)
+        await fx.vm.openExplain(ask)
+        XCTAssertEqual(fx.vm.explainErrors[ask.id], "This workbench no longer exists.")
+        XCTAssertNil(fx.vm.explainEngine(for: ask))
+        XCTAssertNil(fx.vm.ensureExplainEngine(ask), "nothing is made again")
+        XCTAssertNil(fx.center.loaded(engine.spec.key))
+        XCTAssertEqual(fx.ai.calls.count, 1)
+    }
+
     func testReviewAskOpensNoChat() async throws {
         let review = try fx.insertAsk(kind: "review")
         await fx.vm.openExplain(review)

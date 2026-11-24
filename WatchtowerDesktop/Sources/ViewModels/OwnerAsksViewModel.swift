@@ -737,6 +737,8 @@ final class OwnerAsksViewModel {
         } catch {
             NSLog("OwnerAsksViewModel: opening the explain chat of ask %lld: %@", ask.id, error.localizedDescription)
             explainErrors[ask.id] = error.localizedDescription
+            // A gone workbench took its chat along: never served or made again.
+            if error is ExplainWorkbenchGone { explainSpecs[ask.id] = nil }
             return
         }
         guard let engine = ensureExplainEngine(ask) else { return }
@@ -772,8 +774,11 @@ final class OwnerAsksViewModel {
     @discardableResult
     func ensureExplainEngine(_ ask: OwnerAsk) -> EmbeddedChatEngine? {
         guard let chats, let spec = explainSpecs[ask.id] else { return nil }
-        if let loaded = chats.loaded(spec.key) { return loaded }
+        let kept = chats.loaded(spec.key) != nil
+        // A kept engine takes the surface read on this open (its prompt
+        // follows the ask's target as it is now); its history stays.
         let engine = chats.engine(for: spec)
+        if kept { return engine }
         engine.offerRetryOfStoredReply(hiddenPrompt: AskExplainPrompt.firstTurn)
         explainBuilds[ask.id, default: 0] += 1
         return engine
