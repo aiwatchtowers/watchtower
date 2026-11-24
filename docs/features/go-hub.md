@@ -481,7 +481,9 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   (`hubRuntime.cloudKitCodes`: the switch on CloudKit and the bridge's `transport.Shares`) `OpPair` issues a CloudKit
   code (`link.Center.IssueCloudKit`: v4, `transport: cloudkit`, `transports: ["cloudkit","relay"]`, the container,
   the Mac's iCloud user, the share URLs, the relay identity kept), so the phone links where the hub publishes; on
-  the relay, and on a headless host, it issues a relay code (`Issue`). Until #1127 every code was a relay code, and
+  the relay, and on a headless host, it issues a relay code (`Issue`). Every code also carries `relay_switch: true`
+  (#2191; older Macs never send it, unsigned like the rest of the code): this Mac moves itself to Relay once a
+  paying phone links over a pairing slot (`switcher.checkRelayLink`, `hub_meta.relay_slot_links`). Until #1127 every code was a relay code, and
   a paying phone that scanned one on a CloudKit Mac linked through a pairing slot onto the relay, where the hub
   wrote no heartbeat, so the phone showed the Mac offline. The share calls run outside the supervisor's `hubMu`,
   the hub held by its wait group (stop cancels and waits for them); the `qr` and `waiting` events reach the pair

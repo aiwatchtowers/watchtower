@@ -75,6 +75,9 @@ func (c *Center) issue(ck *cloudKitFields, token string) (wire.LinkPayload, stri
 		RelayDeviceID: c.host.RelayDeviceID,
 		RelayAuthPub:  c.host.RelayAuthPub,
 		Transports:    append([]string(nil), c.host.Transports...),
+		// This Mac moves itself to Relay when a paying phone links over a
+		// pairing slot (switcher.checkRelayLink); wire.LinkPayload.
+		RelaySwitch: true,
 	}
 	if ck != nil {
 		p.Container, p.OwnerUser, p.DataShare, p.RelayShare = ck.container, ck.ownerUser, ck.dataShare, ck.relayShare
