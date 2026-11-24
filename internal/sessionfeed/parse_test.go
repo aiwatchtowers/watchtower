@@ -422,3 +422,14 @@ func TestNoticeTask_ExitCodeAnchoredToEnd(t *testing.T) {
 	require.NotNil(t, res.Entries[0].Task.ExitCode)
 	assert.Equal(t, 3, *res.Entries[0].Task.ExitCode)
 }
+
+func TestNoticeTask_ResultQuotingWholeNotification(t *testing.T) {
+	quoted := "<task-notification>\n<task-id>zz</task-id>\n<status>failed</status>\n</task-notification>"
+	n := strings.Replace(agentNotice, `This agent's report was delivered to you as a message from "aaea0001".`, "It printed: "+quoted, 1)
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, "aaea0001", res.Entries[0].Task.TaskID)
+	assert.Equal(t, "completed", res.Entries[0].Task.Status)
+	assert.Equal(t, "It printed: "+quoted, res.Entries[0].Task.Result)
+	assert.Equal(t, 43545, res.Entries[0].Task.Tokens)
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -398,6 +399,42 @@ var taskReportBoilerplate = []string{
 	"This agent\u2019s report was delivered to you as a message",
 }
 
+// taskChildren consumes the children of a notification from rest up to its
+// closing tag, which it takes after the last child (a result may quote a whole
+// notification, so a child's close is tried at each occurrence until the rest
+// parses).
+func taskChildren(rest string, kids map[string]string) (map[string]string, bool) {
+	rest = strings.TrimSpace(rest)
+	if strings.HasPrefix(rest, taskClose) {
+		return kids, true
+	}
+	if rest == "" || rest[0] != '<' {
+		return nil, false
+	}
+	gt := strings.IndexByte(rest, '>')
+	if gt < 2 {
+		return nil, false
+	}
+	name := rest[1:gt]
+	closeTag := "</" + name + ">"
+	body := rest[gt+1:]
+	for off := 0; ; {
+		i := strings.Index(body[off:], closeTag)
+		if i < 0 {
+			return nil, false
+		}
+		i += off
+		next := maps.Clone(kids)
+		if _, dup := next[name]; !dup {
+			next[name] = strings.TrimSpace(body[:i])
+		}
+		if got, ok := taskChildren(body[i+len(closeTag):], next); ok {
+			return got, true
+		}
+		off = i + len(closeTag)
+	}
+}
+
 const (
 	taskOpen  = "<task-notification>"
 	taskClose = "</task-notification>"
@@ -408,36 +445,8 @@ const (
 // "read the output file" line, is ignored). Every child must close with its
 // own element name; a truncated or mismatched notification yields nil.
 func parseTaskNotification(text string) *TaskRef {
-	end := strings.Index(text, taskClose)
-	if end < 0 {
-		return nil
-	}
-	rest := text[len(taskOpen):end]
-	kids := map[string]string{}
-	for {
-		rest = strings.TrimSpace(rest)
-		if rest == "" {
-			break
-		}
-		if rest[0] != '<' {
-			return nil
-		}
-		gt := strings.IndexByte(rest, '>')
-		if gt < 2 {
-			return nil
-		}
-		name := rest[1:gt]
-		closeTag := "</" + name + ">"
-		i := strings.Index(rest[gt+1:], closeTag)
-		if i < 0 {
-			return nil
-		}
-		if _, dup := kids[name]; !dup {
-			kids[name] = strings.TrimSpace(rest[gt+1 : gt+1+i])
-		}
-		rest = rest[gt+1+i+len(closeTag):]
-	}
-	if len(kids) == 0 {
+	kids, ok := taskChildren(text[len(taskOpen):], map[string]string{})
+	if !ok || len(kids) == 0 {
 		return nil
 	}
 	usage := kids["usage"]

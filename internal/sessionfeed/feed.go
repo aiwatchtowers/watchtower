@@ -1,6 +1,9 @@
 package sessionfeed
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -84,7 +87,8 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 			feed.Subagents = append(feed.Subagents, e)
 		}
 	}
-	read := false // an earlier conversation counts as read
+	handbacks := map[string][]handback{} // sidecar path -> handbacks, read once per Build
+	read := false                        // an earlier conversation counts as read
 	for i, c := range convs {
 		if afterIdx >= 0 && i < afterIdx {
 			addSubagents(subagentMarkers(c), false)
@@ -104,7 +108,7 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 			continue
 		}
 		ResolveSubagents(strings.TrimSuffix(c.Path, ".jsonl"), res.Entries)
-		fillTaskResults(strings.TrimSuffix(c.Path, ".jsonl"), res.Entries)
+		fillTaskResults(strings.TrimSuffix(c.Path, ".jsonl"), res.Entries, handbacks)
 		addSubagents(res.Entries, true)
 		addSubagents(subagentMarkers(c), false)
 		if read && start == 0 {
@@ -128,7 +132,7 @@ const maxTaskResultRunes = 600
 // read from its sidecar transcript (the meta file names the agent by
 // tool_use_id). Without a handback the result stays "": the parent's tool
 // result is a launch notice, never a report.
-func fillTaskResults(sessionDir string, entries []Entry) {
+func fillTaskResults(sessionDir string, entries []Entry, cache map[string][]handback) {
 	var metas map[string]subagentMeta
 	for i := range entries {
 		t := entries[i].Task
@@ -143,12 +147,73 @@ func fillTaskResults(sessionDir string, entries []Entry) {
 			continue
 		}
 		path := filepath.Join(sessionDir, "subagents", "agent-"+m.agentID+".jsonl")
-		res, err := ParseSubagent(path, "")
-		if err != nil || len(res.Entries) == 0 {
+		hbs, seen := cache[path]
+		if !seen {
+			hbs = scanHandbacks(path)
+			cache[path] = hbs
+		}
+		// A resumed agent hands back more than once: the notification takes
+		// the latest handback made at or before it.
+		for j := len(hbs) - 1; j >= 0; j-- {
+			if hbs[j].at.IsZero() || entries[i].At.IsZero() || !hbs[j].at.After(entries[i].At) {
+				t.Result = clipRunes(firstParagraph(hbs[j].text), maxTaskResultRunes)
+				break
+			}
+		}
+	}
+}
+
+// handback is one SubagentHandback message of a sidecar transcript.
+type handback struct {
+	at   time.Time
+	text string
+}
+
+// openSidecar opens a subagent transcript; a seam for tests that count opens.
+var openSidecar = os.Open
+
+// scanHandbacks lists the SubagentHandback messages of a subagent transcript
+// in file order, decoding only the lines that name the tool. An unreadable or
+// non-regular file has none.
+func scanHandbacks(path string) []handback {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		return nil
+	}
+	f, err := openSidecar(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	var out []handback
+	br := bufio.NewReaderSize(f, 64<<10)
+	for {
+		raw, _, complete, _ := agentfiles.NextLine(br, maxLineBytes)
+		if !complete {
+			return out
+		}
+		if raw == nil || !bytes.Contains(raw, []byte(handbackTool)) {
 			continue
 		}
-		if last := res.Entries[len(res.Entries)-1]; last.ID == "report" {
-			t.Result = clipRunes(firstParagraph(last.Text), maxTaskResultRunes)
+		var rec record
+		if json.Unmarshal(raw, &rec) != nil || rec.Type != "assistant" {
+			continue
+		}
+		var blocks []block
+		if json.Unmarshal(rec.Message.Content, &blocks) != nil {
+			continue
+		}
+		at, _ := time.Parse(time.RFC3339Nano, rec.Timestamp)
+		for _, b := range blocks {
+			if b.Type != "tool_use" || b.Name != handbackTool {
+				continue
+			}
+			var in struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(b.Input, &in) == nil && strings.TrimSpace(in.Message) != "" {
+				out = append(out, handback{at: at, text: in.Message})
+			}
 		}
 	}
 }
