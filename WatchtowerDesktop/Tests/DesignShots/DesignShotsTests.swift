@@ -278,6 +278,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(WatchmanTuningShotFixtures.shots)
     }
 
+    /// The "Not clear?" on an ask spec's mockups (#2355).
+    func testAskExplainShotsRender() throws {
+        try renderShots(AskExplainMockShotFixtures.shots)
+    }
+
     /// The company setup screens spec's mockups (#1887).
     func testCompanySetupShotsRender() throws {
         try renderShots(CompanySetupShotFixtures.shots)
