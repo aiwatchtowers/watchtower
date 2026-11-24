@@ -373,7 +373,8 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   waits. A phone newly admitted while the hub was already vouched (a new `relay_admitted_at` stamp, or
   `SLOT_ADDED`) makes the refused zones due at once and kicks a link upkeep (`retryZonesNow`, #1761: a phone that
   named its relay id had its mailbox, and its `transport_switch`, read a minute late); the failure count stays, so a
-  refusal after that waits the doubled time.
+  refusal after that waits the doubled time. A refusal by design while the hub is unvouched (`FORBIDDEN` on the zone,
+  `HUB_NOT_VOUCHED`) is not logged; any other failure logs once per streak (#2192).
 - **Session host under a service manager** (PROJ-20 amended for Linux, ask #827): socket dir `/run/user/<uid>` or
   `<data root>/.run` (see Linux behaviour); on Linux `sessionhost.Ensure` always starts the host as the transient unit
   `watchtower-session-host` (`systemd-run --user --collect --quiet --property=UMask=0077`, `--setenv` of `PATH` and the
@@ -565,7 +566,10 @@ privacy page says so.
   active transport, the publisher publishes nothing and no mailbox pass or share sweep runs. A desktop host on the relay
   goes on publishing there; only CloudKit's mailbox (the switch's standby poll) waits. The next read that finds the
   account available releases it: one full diff and one pass. An account not read yet holds nothing (the bridge
-  starts after the hub, so each pass reads it again until a first answer). While
+  starts after the hub, so each pass reads it again until a first answer). The reads log once per run of failures
+  (again on a class change, and once when an answer ends it); before the first answer a read that finds no bridge
+  listening is silent until the second `houseEvery` tick after the bridge's launch (a relaunch starts that over;
+  a dropped connection logs at once) (#2192). While
   CloudKit is the active transport the status reads `state: paused`, `reason: no_icloud` (the Swift hub showed itself
   unavailable, "No iCloud account is signed in"): `hub status` adds a line saying so and Settings → Mobile shows
   "Paused until iCloud is available on this Mac. It goes on by itself." above the account's own line. On the relay

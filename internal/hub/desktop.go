@@ -88,6 +88,7 @@ func (d *Desktop) launcher(dir string) func(ctx context.Context) (*os.Process, e
 type bridgeRunner interface {
 	Run(ctx context.Context) error
 	Running() bool
+	Launches() uint64
 }
 
 // supervisor is the bridge's supervisor over c.
