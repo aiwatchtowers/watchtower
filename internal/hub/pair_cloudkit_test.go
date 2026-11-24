@@ -762,21 +762,32 @@ func TestAStreamAnswersOnlyItsOwnRequest(t *testing.T) {
 		sasA, phone := slotSAS(t, r, a)
 		b := r.dial()
 		t.Cleanup(func() { _ = b.Close() })
-		if err := phone.UseLink(pairCode(t, b)); err != nil {
-			t.Fatal(err)
-		}
-		if err := phone.Hello(transport.PairZone("slot2")); err != nil {
-			t.Fatal(err)
-		}
-		r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: "slot2"}})
-		_ = b.SetReadDeadline(time.Now().Add(time.Minute))
-		sasB, err := b.Next()
-		_ = b.SetReadDeadline(time.Time{})
-		if err != nil || sasB.Event != link.EventSAS || !strings.EqualFold(sasB.DeviceID, sasA.DeviceID) {
-			t.Fatalf("B's sas: %+v, %v", sasB, err)
-		}
-		if sasB.Code == sasA.Code {
-			t.Skip("B's code collided with A's by chance (1 in 10 000)")
+		// The phone pairs through B's code; a new B code each time B's
+		// four digits happen to equal A's (1 in 10 000), a bounded number
+		// of times.
+		var sasB ControlAnswer
+		for attempt := 1; ; attempt++ {
+			if attempt > 5 {
+				t.Fatal("B's code equalled A's five times")
+			}
+			if err := phone.UseLink(pairCode(t, b)); err != nil {
+				t.Fatal(err)
+			}
+			slot := fmt.Sprintf("slotB%d", attempt)
+			if err := phone.Hello(transport.PairZone(slot)); err != nil {
+				t.Fatal(err)
+			}
+			r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: slot}})
+			_ = b.SetReadDeadline(time.Now().Add(time.Minute))
+			var err error
+			sasB, err = b.Next()
+			_ = b.SetReadDeadline(time.Time{})
+			if err != nil || sasB.Event != link.EventSAS || !strings.EqualFold(sasB.DeviceID, sasA.DeviceID) {
+				t.Fatalf("B's sas: %+v, %v", sasB, err)
+			}
+			if sasB.Code != sasA.Code {
+				break
+			}
 		}
 		device := phone.ID().String()
 		for _, tc := range []struct {
@@ -802,6 +813,45 @@ func TestAStreamAnswersOnlyItsOwnRequest(t *testing.T) {
 		if got := confirmAnswer(t, b, ControlRequest{Op: OpConfirm, Device: device, Confirm: true, Code: sasB.Code,
 			Request: sasB.Request}); !got.OK {
 			t.Fatalf("B's yes to its own request: %+v", got)
+		}
+		// The phone finished on B: A's answer finds no request of its own.
+		if got := confirmAnswer(t, a, ControlRequest{Op: OpConfirm, Device: device}); got.Error != ErrClassNoRequest {
+			t.Fatalf("A's no after the phone linked through B: %+v", got)
+		}
+	})
+}
+
+// waitsOnStream tells a request still on the stream (a newer request
+// under its own code: code_changed, the owner answers again) from one on
+// another stream's code or gone (no_request ends the stream); a pending
+// list it cannot read counts as the stream's.
+func TestWaitsOnStream(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		var h *hubRuntime
+		r, _, c := startPairDesk(t, transport.KindRelay, runtimeInto(&h))
+		_, phone := slotSAS(t, r, c)
+		device := phone.ID().String()
+		pending, err := h.center.PendingLinks()
+		if err != nil || len(pending) != 1 || pending[0].Nonce == "" {
+			t.Fatalf("pending %+v, %v", pending, err)
+		}
+		own := &pairListener{nonces: []string{pending[0].Nonce}}
+		if !h.waitsOnStream(own, device) {
+			t.Error("a request under the stream's own code is not the stream's")
+		}
+		if h.waitsOnStream(&pairListener{nonces: []string{"another-code"}}, device) {
+			t.Error("a request under another stream's code is the stream's")
+		}
+		if h.waitsOnStream(own, "AAAAAAAA-0000-4000-8000-000000000001") {
+			t.Error("no request waiting counts as the stream's")
+		}
+		broken, err := state.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = broken.Close()
+		if !(&hubRuntime{center: link.NewCenter(link.Config{Store: broken})}).waitsOnStream(&pairListener{}, device) {
+			t.Error("an unreadable pending list is not the stream's")
 		}
 	})
 }

@@ -597,11 +597,12 @@ type pairRead struct {
 // line it answers ({"confirm":…,"code":…,"moves_to_relay":…,"request":…}
 // on stdin), and the hub refuses it, a yes or a no, code_changed when the
 // request moved on. Only while a single request was printed may a yes
-// leave them out (that line stands in); after a replacement a yes without
-// request is ambiguous. Either way the current sas line is printed again
-// and the owner answers again. A request that moved to another pairing
-// stream ends this one (no_request: refused expired_code); stdin closing
-// before an answer ends it with nothing sent (errPairNoAnswer).
+// leave them out (that line stands in); after a replacement an answer, a
+// yes or a no, without request is ambiguous. Either way the current sas
+// line is printed again and the owner answers again. A request that moved
+// to another pairing stream, or is gone from the hub, ends this one
+// (no_request: refused expired_code); stdin closing without an answer ends
+// it with no answer sent (errPairNoAnswer).
 func pairStream(cmd *cobra.Command, c *hub.ControlClient) error {
 	done := make(chan struct{})
 	defer close(done)
@@ -755,17 +756,18 @@ func pairStream(cmd *cobra.Command, c *hub.ControlClient) error {
 // could name the request shown.
 var errPairHubTooOld = errors.New("the hub is out of date: restart Watchtower, then link again")
 
-// errPairNoAnswer ends a pairing whose stdin closed before the owner
-// answered: nothing is confirmed or refused (the request waits until it
-// expires).
-var errPairNoAnswer = errors.New("no answer: the pairing was left without confirming or refusing")
+// errPairNoAnswer ends a pairing whose stdin closed without sending an
+// answer: no confirm is sent. The stream's end still abandons its code as
+// any closed stream does (a CloudKit code's waiting phones are refused
+// not_confirmed).
+var errPairNoAnswer = errors.New("stdin closed without sending an answer")
 
 // pairConfirmRequest is the confirm for the owner's answer ans to device,
 // whose last printed sas line is shown. An answer that leaves the request
 // out is bound to shown's; a yes that leaves the code or moves_to_relay
 // out takes shown's too while device's request was never replaced. After a
-// replacement a yes without request is ambiguous (false: nothing is sent),
-// and one with it is sent as given.
+// replacement an answer, a yes or a no, without request is ambiguous
+// (false: nothing is sent), and one with it is sent as given.
 //
 // Stdin closing first (ans.eof) is errPairNoAnswer: nothing is sent.
 // A yes on a hub that names no request (shown.Request empty, a hub older
@@ -778,7 +780,10 @@ func pairConfirmRequest(device string, shown hubPairSAS, replaced bool, ans pair
 	case ans.eof:
 		return hub.ControlRequest{}, false, errPairNoAnswer
 	case !ans.confirm:
-		if req.Request == "" {
+		if req.Request == "" && shown.Request != "" {
+			if replaced {
+				return hub.ControlRequest{}, false, nil
+			}
 			req.Request = shown.Request
 		}
 		return req, true, nil

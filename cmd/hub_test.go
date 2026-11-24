@@ -1258,6 +1258,11 @@ func TestHubPairStreamReprintsAReplacedRequest(t *testing.T) {
 	p.answer(`{"confirm":true,"code":"1111","moves_to_relay":true}`)
 	assert.Equal(t, second, pairLine(t, lines, f), "an ambiguous yes prints the current line again")
 
+	// A bare no after a replacement is just as ambiguous: it could be the
+	// answer to the earlier line.
+	p.answer(`{"confirm":false}`)
+	assert.Equal(t, second, pairLine(t, lines, f), "an ambiguous no prints the current line again")
+
 	// The Mac's yes: every key of the last line printed.
 	p.answer(macAnswer(t, second))
 	yes := true

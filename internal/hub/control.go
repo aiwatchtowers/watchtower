@@ -984,9 +984,11 @@ func (h *hubRuntime) confirm(r ControlRequest, pl *pairListener) ControlAnswer {
 	return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device)}
 }
 
-// waitsOnStream: device's waiting request came in under one of pl's codes.
-// Unreadable, or no request waiting, counts as pl's (the answer stays
-// code_changed).
+// waitsOnStream: device's waiting request came in under one of pl's codes
+// (a newer request on this stream: the answer stays code_changed, the
+// owner answers again). No request waiting (the phone finished or was
+// refused elsewhere) is not pl's: no_request ends the stream. Unreadable
+// counts as pl's.
 func (h *hubRuntime) waitsOnStream(pl *pairListener, device string) bool {
 	pending, err := h.center.PendingLinks()
 	if err != nil {
@@ -997,7 +999,7 @@ func (h *hubRuntime) waitsOnStream(pl *pairListener, device string) bool {
 			return pl.owns(p.Nonce)
 		}
 	}
-	return true
+	return false
 }
 
 // LinkErrClass maps a link error to its answer class (the CLI's offline
