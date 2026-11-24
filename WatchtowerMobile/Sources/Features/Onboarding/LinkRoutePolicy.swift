@@ -94,10 +94,11 @@ enum LinkRoutePolicy {
         code.transport == .relay || (code.transport == nil && !code.offersCloudKit && code.offersRelay)
     }
 
-    /// Whether a code offers a Relay pairing: a coherent relay identity, and `relay` in its `transports` when it
-    /// lists them. Every further condition on the code (a capability the Mac declares) joins here.
+    /// Whether a code whose hub is on iCloud offers a Relay pairing: a coherent relay identity, `relay` in its
+    /// `transports` when it lists them, and `relay_switch` (ask #1827): only a Mac that moves itself to Relay after
+    /// such a pairing says so. An older Mac's code lacks it and links over iCloud, as before #2191.
     static func offersRelay(_ code: LinkPayload) -> Bool {
-        code.offersRelay && (code.transports.map { $0.contains("relay") } ?? true)
+        code.offersRelay && (code.transports.map { $0.contains("relay") } ?? true) && code.switchesToRelay
     }
 
     /// The paying check over the relay's account state. Only `.updateRequired` keeps its meaning; every other

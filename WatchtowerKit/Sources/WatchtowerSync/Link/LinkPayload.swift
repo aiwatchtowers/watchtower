@@ -77,6 +77,16 @@ public struct LinkPayload: Codable, Equatable, Sendable {
     public let relayDeviceID: String?
     /// v4: the hub's `relay_auth` public key, base64url of 32 bytes.
     public let relayAuthPub: String?
+    // Optional on purpose: an absent key must stay absent when the code is written back (the sorted-key bytes the
+    // Go hub wrote).
+    // swiftlint:disable discouraged_optional_boolean
+    /// v4, optional `relay_switch`: true when the hub moves itself to Relay after a phone links over a pairing slot
+    /// (#2191). Older Macs never send it; nil (absent, or not a boolean) reads as false.
+    public let relaySwitch: Bool?
+    // swiftlint:enable discouraged_optional_boolean
+
+    /// The hub switches itself to Relay after a Relay pairing (`relay_switch: true`).
+    public var switchesToRelay: Bool { relaySwitch == true }
 
     /// The code can link over iCloud: v3, or v4 with a container and an owner.
     public var offersCloudKit: Bool { v < 4 || (container != nil && ownerUser != nil) }
@@ -103,6 +113,7 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         case transports
         case relayDeviceID = "relay_device_id"
         case relayAuthPub = "relay_auth_pub"
+        case relaySwitch = "relay_switch"
     }
 
     public init(
@@ -121,7 +132,9 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         transport: TransportKind? = nil,
         transports: [String]? = nil,
         relayDeviceID: String? = nil,
-        relayAuthPub: String? = nil
+        relayAuthPub: String? = nil,
+        // swiftlint:disable:next discouraged_optional_boolean
+        relaySwitch: Bool? = nil
     ) {
         self.v = v
         self.container = container
@@ -139,6 +152,7 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         self.transports = transports
         self.relayDeviceID = relayDeviceID
         self.relayAuthPub = relayAuthPub
+        self.relaySwitch = relaySwitch
     }
 
     /// Throws `DecodingError.dataCorrupted` for a hub key that is not base64url of exactly 32 bytes, or is all zero (a small-order point).
@@ -172,7 +186,9 @@ public struct LinkPayload: Codable, Equatable, Sendable {
             transport: try values.decodeIfPresent(String.self, forKey: .transport).flatMap(TransportKind.init(rawValue:)),
             transports: try values.decodeIfPresent([String].self, forKey: .transports),
             relayDeviceID: try values.decodeIfPresent(String.self, forKey: .relayDeviceID),
-            relayAuthPub: try values.decodeIfPresent(String.self, forKey: .relayAuthPub)
+            relayAuthPub: try values.decodeIfPresent(String.self, forKey: .relayAuthPub),
+            // Tolerant: a value that is not a boolean reads as absent, never fails the code.
+            relaySwitch: try? values.decodeIfPresent(Bool.self, forKey: .relaySwitch)
         )
     }
 

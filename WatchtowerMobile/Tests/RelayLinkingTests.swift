@@ -412,6 +412,19 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(container.accountAsks, 2, "one iCloud check (availability, identity), reused by the link")
     }
 
+    /// An older Mac's iCloud code (no `relay_switch`, ask #1827) on a paying phone links over iCloud without asking
+    /// the relay anything.
+    func testAnOlderMacsICloudCodeOnAPayingPhoneLinksOverICloud() async throws {
+        let payload = mac.code(hubID: hub, macName: "Work Mac", owner: owner, now: clock.now(), transport: .cloudKit, relaySwitch: false)
+        let model = makeModel()
+
+        await link(payload, model: model)
+
+        XCTAssertEqual(model.phase, .linked(macName: "Work Mac"))
+        XCTAssertEqual(host.linkedCalls.last?.record.route, .cloudKit(.private))
+        XCTAssertTrue(relay.ops.isEmpty, "no paying check, no slot")
+    }
+
     /// Every slot taken and iCloud signed out: the slots screen, where a slot can be freed (review round 2).
     func testACloudKitCodeWithEverySlotTakenAndNoICloudShowsTheSlotsScreen() async throws {
         relay.slots = ["m1", "m2", "m3"]

@@ -282,6 +282,27 @@ final class LinkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(entitlementAsked, 0)
     }
 
+    /// An older Mac's code (relay in `transports`, no `relay_switch`, ask #1827) links over iCloud as before #2191 and
+    /// never asks the relay: that Mac would not move itself to Relay after the pairing. A hub already on Relay is
+    /// unaffected; a current Mac's code (`relay_switch: true`) goes over Relay on a paying phone.
+    func testAnOlderMacsICloudCodeWithoutRelaySwitchLinksOverICloud() async {
+        for transport in [TransportKind.cloudKit, nil] {
+            let older = mac.code(hubID: hub, macName: "Work Mac", owner: "_owner-acme", now: now, transport: transport, relaySwitch: false)
+            XCTAssertEqual(older.transports ?? ["cloudkit", "relay"], ["cloudkit", "relay"])
+            let (route, asked, entitlementAsked) = await decide(older, relay: available, entitled: true, paying: .success(true))
+            XCTAssertEqual(route, .cloudKit, "\(String(describing: transport))")
+            XCTAssertEqual(asked, 0, "an older Mac's code never asks the paying check")
+            XCTAssertEqual(entitlementAsked, 0)
+        }
+        let switching = mac.code(hubID: hub, macName: "Work Mac", owner: "_owner-acme", now: now, transport: .cloudKit, relaySwitch: true)
+        let (current, asked, _) = await decide(switching, relay: available, entitled: false, paying: .success(true))
+        XCTAssertEqual(current, .relay(mac: mac.deviceID, authPub: mac.authPub))
+        XCTAssertEqual(asked, 1)
+        let onRelay = mac.code(hubID: hub, macName: "Work Mac", owner: "_owner-acme", now: now, transport: .relay, relaySwitch: false)
+        let (relayRoute, _, _) = await decide(onRelay, relay: available, entitled: false, paying: .success(true))
+        XCTAssertEqual(relayRoute, .relay(mac: mac.deviceID, authPub: mac.authPub), "a hub on Relay needs no relay_switch")
+    }
+
     func testUpdateRequiredOnACloudKitCodeIsUpdateApp() async {
         let (route, _, _) = await decide(code(.cloudKit), relay: available, entitled: false, paying: .failure(.updateRequired))
         XCTAssertEqual(route, .refuse(.updateApp))

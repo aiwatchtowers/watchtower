@@ -349,6 +349,7 @@ struct RelayTestMac {
 
     /// A v4 code for `hubID`: iCloud fields when `cloudKit`, this Mac's relay identity, `transport` as given.
     /// `transports` overrides the list derived from `transport` and `cloudKit` (`.some(nil)` drops it).
+    /// `relaySwitch`: a current Mac sends `relay_switch: true` on every code; false is an older Mac's code (no key).
     func code(
         hubID: String,
         macName: String,
@@ -358,7 +359,8 @@ struct RelayTestMac {
         cloudKit: Bool = true,
         issuedAgo: TimeInterval = 10,
         identity: Bool = true,
-        transports: [String]?? = .none
+        transports: [String]?? = .none,
+        relaySwitch: Bool = true
     ) -> LinkPayload {
         let iat = Int64(now.timeIntervalSince1970 - issuedAgo)
         return LinkPayload(
@@ -375,7 +377,8 @@ struct RelayTestMac {
             transport: transport,
             transports: transports ?? (transport == nil ? nil : (cloudKit ? ["cloudkit", "relay"] : ["relay"])),
             relayDeviceID: identity ? deviceID : nil,
-            relayAuthPub: identity ? authPubText : nil
+            relayAuthPub: identity ? authPubText : nil,
+            relaySwitch: relaySwitch ? true : nil
         )
     }
 }
