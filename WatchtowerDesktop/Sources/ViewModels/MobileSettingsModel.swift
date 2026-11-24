@@ -321,12 +321,15 @@ final class MobileSettingsModel {
         }
     }
 
-    /// The view's `.task`, keyed on its window being on screen: reads now and
-    /// then every `refreshInterval` (5 s while the hub starts) until the task
-    /// is cancelled. A hidden or closed window closes an open pairing.
-    func windowVisibility(_ visible: Bool) async {
-        guard visible else {
-            pairingDismissed()
+    /// The view's `.task`, keyed on the window's presence: reads now and then
+    /// every `refreshInterval` (5 s while the hub starts) until the task is
+    /// cancelled. A covered window only stops the reads: its pairing sheet
+    /// stays open, since closing the stream closes the code and the phone
+    /// scanning it is told it expired. A closed or ordered-out window closes
+    /// an open pairing.
+    func windowVisibility(_ presence: WindowPresence) async {
+        guard presence == .onScreen else {
+            if presence == .gone { pairingDismissed() }
             return
         }
         while !Task.isCancelled {

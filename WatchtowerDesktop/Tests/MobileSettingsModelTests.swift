@@ -702,7 +702,7 @@ final class MobileSettingsModelTests: XCTestCase {
             if await sleeps.count >= 2 { withUnsafeCurrentTask { $0?.cancel() } }
         }
         let model = makeModel(sleep: twice)
-        await Task { await model.windowVisibility(true) }.value
+        await Task { await model.windowVisibility(.onScreen) }.value
         let recorded = await sleeps.all
         XCTAssertEqual(recorded, [Model.refreshInterval, Model.refreshInterval])
         XCTAssertEqual(cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count, 2)
@@ -714,7 +714,7 @@ final class MobileSettingsModelTests: XCTestCase {
             withUnsafeCurrentTask { $0?.cancel() }
         }
         let starting = makeModel(sleep: once)
-        await Task { await starting.windowVisibility(true) }.value
+        await Task { await starting.windowVisibility(.onScreen) }.value
         let first = await fast.all
         XCTAssertEqual(first, [Model.startingRefreshInterval], "5 s while the hub starts")
     }
@@ -734,8 +734,8 @@ final class MobileSettingsModelTests: XCTestCase {
         await sheet?.start()
         XCTAssertEqual(streamer.sessions.count, 1)
 
-        await model.windowVisibility(false)
-        XCTAssertNil(model.pairing, "a hidden window closes the pairing")
+        await model.windowVisibility(.gone)
+        XCTAssertNil(model.pairing, "a closed or ordered-out window closes the pairing")
         XCTAssertTrue(streamer.sessions[0].stopped)
 
         model.linkPhone()
@@ -744,6 +744,89 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertNil(model.pairing, "turning Mobile off closes the pairing")
         XCTAssertTrue(streamer.sessions[1].stopped)
         XCTAssertEqual(Model.linkTitle, "Link a phone…")
+    }
+
+    /// #2188: a covered Settings window (another app in front, another Space,
+    /// the display asleep) must not close the code the phone is scanning.
+    func testACoveredWindowKeepsThePairingAndOnlyStopsThePolling() async {
+        runningWith()
+        let streamer = FakePairStreamer()
+        let once: @Sendable (Duration) async -> Void = { _ in withUnsafeCurrentTask { $0?.cancel() } }
+        let model = makeModel(streamer: streamer, sleep: once)
+        await model.load()
+        model.linkPhone()
+        defer { model.pairingDismissed() }
+        await model.pairing?.start()
+        let reads = cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count
+
+        await model.windowVisibility(.occluded)
+        XCTAssertNotNil(model.pairing, "a covered window leaves the sheet open")
+        XCTAssertFalse(streamer.sessions[0].stopped, "the stream, and so the code, stays open")
+        XCTAssertEqual(cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count, reads, "no read while covered")
+
+        await Task { await model.windowVisibility(.onScreen) }.value
+        XCTAssertGreaterThan(cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count, reads, "back on screen the reads resume")
+        XCTAssertNotNil(model.pairing, "and the open pairing is untouched")
+        XCTAssertFalse(streamer.sessions[0].stopped)
+    }
+
+    /// The reader boundary (#2188): a window that was never shown reads as gone,
+    /// `willClose` reports gone, an app hide/unhide re-evaluates, and a removed
+    /// view stops reporting.
+    func testWindowVisibilityViewReportsFromWindowNotifications() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let view = WindowVisibilityView()
+        var reports: [WindowPresence] = []
+        view.onChange = { reports.append($0) }
+        window.contentView = view
+        XCTAssertEqual(reports, [.gone], "a window that was never ordered in is not on screen")
+
+        NotificationCenter.default.post(name: NSApplication.didHideNotification, object: nil)
+        NotificationCenter.default.post(name: NSApplication.didUnhideNotification, object: nil)
+        XCTAssertEqual(reports.count, 3, "each app hide/unhide re-evaluates")
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        XCTAssertEqual(reports.last, .gone)
+        XCTAssertEqual(reports.count, 4)
+
+        view.stopObserving()
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        XCTAssertEqual(reports.count, 4, "a stopped view reports nothing")
+    }
+
+    /// A visible window that is then ordered out posts no notification but
+    /// `isVisible` (KVO); `willClose` reports gone although the window still
+    /// reads visible.
+    func testWindowVisibilityViewFollowsIsVisibleAndWillClose() {
+        let window = StubVisibilityWindow()
+        let view = WindowVisibilityView()
+        var reports: [WindowPresence] = []
+        view.onChange = { reports.append($0) }
+        window.shown = true
+        window.contentView = view
+        XCTAssertEqual(reports, [.occluded], "visible but not in the occlusion state: covered, not gone")
+
+        window.shown = false
+        XCTAssertEqual(reports.last, .gone, "ordered out while covered: only the isVisible KVO tells")
+
+        window.shown = true
+        XCTAssertEqual(reports.last, .occluded)
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        XCTAssertEqual(reports.last, .gone, "closing reports gone while the window still reads visible")
+        view.stopObserving()
+    }
+
+    func testTheTabLeavingTheScreenClosesThePairing() async {
+        runningWith()
+        let streamer = FakePairStreamer()
+        let model = makeModel(streamer: streamer)
+        await model.load()
+        model.linkPhone()
+        await model.pairing?.start()
+        model.disappeared()
+        XCTAssertNil(model.pairing)
+        XCTAssertTrue(streamer.sessions[0].stopped)
     }
 
     // MARK: - Relay indicators (go hub plan 4 Task 8)
@@ -1112,4 +1195,19 @@ private actor SleepLog {
     private(set) var all: [Duration] = []
     var count: Int { all.count }
     func add(_ duration: Duration) { all.append(duration) }
+}
+
+/// A window never ordered in whose `isVisible` the test controls.
+private final class StubVisibilityWindow: NSWindow {
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        isReleasedWhenClosed = false
+    }
+
+    var shown = false {
+        willSet { willChangeValue(forKey: "visible") }
+        didSet { didChangeValue(forKey: "visible") }
+    }
+
+    override var isVisible: Bool { shown }
 }
