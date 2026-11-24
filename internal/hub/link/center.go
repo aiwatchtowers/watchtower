@@ -344,7 +344,9 @@ func (c *Center) unlink(device string, stands func(*sql.Tx) error) error {
 	}
 	if removed {
 		if shared {
-			c.sweepSoon() // its participant goes at the next pass, as in Swift
+			// Its participant goes at the next pass, as in Swift — after an
+			// answer grace still running (up to Sweep.AnswerGrace): sweepSoon.
+			c.sweepSoon()
 		}
 		log.Printf("hub link: phone %s unlinked, epoch rotated", strings.ToUpper(device))
 		c.changed()
@@ -467,7 +469,7 @@ func (c *Center) Sweep() error {
 }
 
 func (c *Center) refusedEvent(p pendingDevice, reason string) {
-	c.emit(PairEvent{Kind: EventRefused, DeviceID: p.deviceID, Name: p.name, Reason: reason})
+	c.emit(PairEvent{Kind: EventRefused, DeviceID: p.deviceID, Name: p.name, Reason: reason, Nonce: p.linkNonce})
 	c.changed()
 }
 
@@ -501,6 +503,9 @@ func removeDevice(tx *sql.Tx, device string, at time.Time) (bool, error) {
 	}
 	// The offer went with the row; its per-epoch relay keys go too.
 	if err := state.ClearDeviceKX(tx, device); err != nil {
+		return false, err
+	}
+	if err := state.ForgetRelaySlotTx(tx, device); err != nil {
 		return false, err
 	}
 	if agreement != nil {

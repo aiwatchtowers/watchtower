@@ -64,6 +64,27 @@ extension CloudKitTransport {
         return true
     }
 
+    /// A call outside the engine about `recordID` failed (the link flow's direct read or save, #2189): the throttle
+    /// codes throttle as `applyThrottle` does, a `.serviceUnavailable` naming a retry-after waits it out too, and a
+    /// zone gone unlinks the phone role as a fetch does, and a `quotaExceeded` pauses as an engine send's does. A
+    /// `.partialFailure` is judged by the record's own error, as the conditional writes' path reads it.
+    func applyDirectCallFailure(_ thrown: CKError, recordID: CKRecord.ID) {
+        let error = thrown.code == .partialFailure
+            ? (thrown.partialErrorsByItemID?[recordID] as? CKError) ?? thrown
+            : thrown
+        if !managesZones, Self.zoneGoneCodes.contains(error.code) {
+            emitUnlinked(reason: "zone not found on a direct call")
+            return
+        }
+        if error.code == .quotaExceeded {
+            applySendFailures([error])
+            return
+        }
+        if applyThrottle(from: [error]) { return }
+        guard error.code == .serviceUnavailable, let retryAfter = error.retryAfterSeconds else { return }
+        throttle(retryAfter: retryAfter)
+    }
+
     /// Waits `retryAfter` (the server's `CKErrorRetryAfterKey`) or the
     /// default backoff — 5 s, doubling to a 120 s cap — then sends again.
     private func throttle(retryAfter: TimeInterval?) {
@@ -76,7 +97,13 @@ extension CloudKitTransport {
         }
         let start = now()
         if throttledSince == nil { throttledSince = start }
-        throttledUntil = start.addingTimeInterval(delay)
+        let deadline = start.addingTimeInterval(delay)
+        if let throttledUntil, throttledUntil >= deadline {
+            // A longer throttle stands: it is kept, and so is the retry waiting for it.
+            logger.notice("CloudKit throttled sync; a longer wait already stands")
+            return
+        }
+        throttledUntil = deadline
         logger.notice("CloudKit throttled sync; retrying in \(delay, privacy: .public) s")
         retryTask?.cancel()
         retryTask = Task { [weak self, sleep] in
@@ -103,6 +130,14 @@ extension CloudKitTransport {
             return
         }
         await resend()
+    }
+
+    /// A request that began when `throttledUntil` was `throttleAtStart` succeeded: the throttling stretch and its
+    /// backoff end, unless another request (the engine's, a direct call's) installed a newer throttle while this one
+    /// ran. A throttle that elapsed meanwhile (nil now) is no newer one: the stretch ends too.
+    func clearThrottle(ifStill throttleAtStart: Date?) {
+        guard throttledUntil == nil || throttledUntil == throttleAtStart else { return }
+        clearThrottle()
     }
 
     /// A request succeeded: the throttling stretch and its backoff end.

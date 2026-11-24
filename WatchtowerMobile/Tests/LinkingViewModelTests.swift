@@ -18,7 +18,7 @@ private let fifth = "F1F70000-0000-4000-8000-000000000005"
 /// database, a scripted Mac, the wipe), a fake clock and the real LinkStore.
 @MainActor
 final class LinkingViewModelTests: XCTestCase {
-    private let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
     /// The test pairing's phone: the hello and the keyboxes name its key-derived id (D7).
     private let identity = DeviceIdentity(
         deviceID: TestE2E.deviceID.uuidString, name: "Colleague A's iPhone", model: "iPhone", appVersion: "1.0"
@@ -30,8 +30,8 @@ final class LinkingViewModelTests: XCTestCase {
     private var log: LinkEventLog!
     private var container: FakeLinkAccess!
     private(set) var host: FakeLinkHost!
-    private var clock: FakeLinkClock!
-    private var defaults: UserDefaults!
+    private(set) var clock: FakeLinkClock!
+    private(set) var defaults: UserDefaults!
     /// The phone's Keychain stand-in: the test pairing's identity, no hub linked yet.
     private(set) var keyStore: InMemoryPhoneKeyStore!
 
@@ -46,7 +46,7 @@ final class LinkingViewModelTests: XCTestCase {
         defaults = try makeDefaults()
     }
 
-    private func makeModel() -> LinkingViewModel {
+    func makeModel() -> LinkingViewModel {
         let model = LinkingViewModel(
             access: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: clock
         )
@@ -83,7 +83,7 @@ final class LinkingViewModelTests: XCTestCase {
     }
 
     /// `grant` as a value, for the scripted Mac's closures.
-    private var grantMaker: (_ hubID: String, _ linked: Bool, _ refused: LinkRefusal?) -> DeviceGrant {
+    var grantMaker: (_ hubID: String, _ linked: Bool, _ refused: LinkRefusal?) -> DeviceGrant {
         let identity = identity
         let start = start
         let clock = clock

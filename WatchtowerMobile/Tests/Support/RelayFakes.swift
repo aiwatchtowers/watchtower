@@ -158,6 +158,8 @@ final class FakeRelayOps: RelayLinkOps, @unchecked Sendable {
         var parking: Set<String> = []
         var parked: [String: [CheckedContinuation<Void, Never>]] = [:]
         var proofs = 0
+        var entitled = false
+        var entitlementAsks = 0
     }
 
     /// The next calls of `op` wait until `release(op)` (an op still running when the screen is shot).
@@ -211,6 +213,21 @@ final class FakeRelayOps: RelayLinkOps, @unchecked Sendable {
         get { lock.withLock { state.paying } }
         set { lock.withLock { state.paying = newValue } }
     }
+    /// What `holdsRelayEntitlement` answers: whether the device holds a current Relay entitlement.
+    var entitled: Bool {
+        get { lock.withLock { state.entitled } }
+        set { lock.withLock { state.entitled = newValue } }
+    }
+    /// How many times the entitlement was read.
+    var entitlementAsks: Int { lock.withLock { state.entitlementAsks } }
+
+    func holdsRelayEntitlement() async -> Bool {
+        lock.withLock {
+            state.entitlementAsks += 1
+            return state.entitled
+        }
+    }
+
     /// The next promote applies (the Mac in slots) and then throws `error`: the answer lost.
     func losePromoteAnswer(_ error: any Error) {
         lock.withLock { state.promoteAppliesThenThrows = error }
@@ -245,6 +262,7 @@ final class FakeRelayOps: RelayLinkOps, @unchecked Sendable {
     }
 
     func open(mac: String) async throws -> (slot: String, expiresAt: Date) {
+        await waitIfParked("open")
         try call("open", mac)
         let now = clock.now()
         return try lock.withLock {
@@ -330,6 +348,8 @@ struct RelayTestMac {
     var authPubText: String { WireBytes.base64URL(authPub) }
 
     /// A v4 code for `hubID`: iCloud fields when `cloudKit`, this Mac's relay identity, `transport` as given.
+    /// `transports` overrides the list derived from `transport` and `cloudKit` (`.some(nil)` drops it).
+    /// `relaySwitch`: a current Mac sends `relay_switch: true` on every code; false is an older Mac's code (no key).
     func code(
         hubID: String,
         macName: String,
@@ -338,7 +358,9 @@ struct RelayTestMac {
         transport: TransportKind?,
         cloudKit: Bool = true,
         issuedAgo: TimeInterval = 10,
-        identity: Bool = true
+        identity: Bool = true,
+        transports: [String]?? = .none,
+        relaySwitch: Bool = true
     ) -> LinkPayload {
         let iat = Int64(now.timeIntervalSince1970 - issuedAgo)
         return LinkPayload(
@@ -353,9 +375,10 @@ struct RelayTestMac {
             hubSigningKey: WireBytes.base64URL(TestE2E.hubSigningKey.publicKey.rawRepresentation),
             hubAgreementKey: WireBytes.base64URL(TestE2E.hubAgreementKey.publicKey.rawRepresentation),
             transport: transport,
-            transports: transport == nil ? nil : (cloudKit ? ["cloudkit", "relay"] : ["relay"]),
+            transports: transports ?? (transport == nil ? nil : (cloudKit ? ["cloudkit", "relay"] : ["relay"])),
             relayDeviceID: identity ? deviceID : nil,
-            relayAuthPub: identity ? authPubText : nil
+            relayAuthPub: identity ? authPubText : nil,
+            relaySwitch: relaySwitch ? true : nil
         )
     }
 }

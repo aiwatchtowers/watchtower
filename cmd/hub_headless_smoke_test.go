@@ -229,10 +229,19 @@ func (s *smoke) pair() *hubtest.Phone {
 		defer close(lines)
 		sc := bufio.NewScanner(stdout)
 		for sc.Scan() {
-			var m map[string]string
-			if json.Unmarshal(sc.Bytes(), &m) == nil {
-				lines <- m
+			// Values in their text form (the sas line's moves_to_relay is a
+			// JSON bool); a line that is not a JSON object is handed on as
+			// unparsed, never dropped.
+			var raw map[string]any
+			if json.Unmarshal(sc.Bytes(), &raw) != nil {
+				lines <- map[string]string{"event": "unparsed", "line": sc.Text()}
+				continue
 			}
+			m := make(map[string]string, len(raw))
+			for k, v := range raw {
+				m[k] = fmt.Sprint(v)
+			}
+			lines <- m
 		}
 	}()
 	next := func(event string) map[string]string {
@@ -246,6 +255,9 @@ func (s *smoke) pair() *hubtest.Phone {
 				}
 				if m["event"] == "refused" {
 					t.Fatalf("hub pair refused: %s", m["reason"])
+				}
+				if m["event"] == "unparsed" {
+					t.Fatalf("hub pair printed a line that is not JSON: %s", m["line"])
 				}
 				if m["event"] == event {
 					return m
@@ -280,6 +292,11 @@ func (s *smoke) pair() *hubtest.Phone {
 	sas := next("sas")
 	if sas["device_id"] != phone.ID().String() {
 		t.Fatalf("sas for %s, want %s", sas["device_id"], phone.ID())
+	}
+	// A headless hub never moves to Relay (it is on it); the line names
+	// the waiting request.
+	if sas["moves_to_relay"] != "false" || sas["request"] == "" {
+		t.Fatalf("sas %v: want moves_to_relay false and a request", sas)
 	}
 	var awaiting wire.Keybox
 	s.eventually("the awaiting keybox", func() bool {
