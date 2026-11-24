@@ -150,9 +150,10 @@ type ControlRequest struct {
 	// the phone says otherwise (a replacement that kept its code).
 	MovesToRelay *bool `json:"moves_to_relay,omitempty"`
 	// Request (confirm, optional) is the request id of the sas line the
-	// owner answered: a yes or a no is refused code_changed, inside the
-	// link's own transaction, when the phone's waiting request is another
-	// one (a no without it refuses whichever request waits).
+	// owner answered. Code, MovesToRelay and Request, when given, must be
+	// this stream's last sas for the phone, else the answer (a yes or a
+	// no) is refused code_changed; the hub binds every answer to that sas's
+	// request id in the link's own transaction (hubRuntime.confirm).
 	Request      string          `json:"request,omitempty"`
 	Upload       string          `json:"upload,omitempty"`
 	TranscriptID *int64          `json:"transcript_id,omitempty"`
@@ -362,6 +363,7 @@ func (p *pairListener) owns(nonce string) bool {
 type pairShown struct {
 	code         string
 	movesToRelay bool
+	request      string
 }
 
 func (p *pairListener) code(device string) (pairShown, bool) {
@@ -413,7 +415,7 @@ func (s *supervisor) broadcast(ev link.PairEvent) {
 			if p.codes == nil {
 				p.codes = map[string]pairShown{}
 			}
-			p.codes[strings.ToUpper(ev.DeviceID)] = pairShown{code: ev.Code, movesToRelay: ev.MovesToRelay}
+			p.codes[strings.ToUpper(ev.DeviceID)] = pairShown{code: ev.Code, movesToRelay: ev.MovesToRelay, request: ev.Request}
 		}
 		p.mu.Unlock()
 		if shown == nil {
@@ -941,35 +943,61 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		h.kick(h.passKick)
 		return ControlAnswer{OK: true}
 	case OpConfirm:
-		if pl == nil || r.Device == "" {
-			return ControlAnswer{Error: ErrClassNoCode}
-		}
-		latest, ok := pl.code(r.Device)
-		if !ok {
-			return ControlAnswer{Error: ErrClassNoCode}
-		}
-		code := latest.code
-		if r.Confirm {
-			// What the owner saw; a no refuses whichever request waits.
-			if r.Code != "" {
-				code = r.Code
-			}
-			if r.MovesToRelay != nil && *r.MovesToRelay != latest.movesToRelay {
-				return ControlAnswer{Error: ErrClassCodeChanged}
-			}
-		}
-		if err := h.center.ConfirmRequest(r.Device, code, r.Request, r.Confirm); err != nil {
-			return ControlAnswer{Error: LinkErrClass(err)}
-		}
-		h.afterConfirm(r.Device)
-		if r.Confirm {
-			// The code is used (afterConfirm closes it CloseUsed) or was
-			// expired or used meanwhile: the stream's end closes nothing.
-			pl.ckNonce = ""
-		}
-		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device)}
+		return h.confirm(r, pl)
 	}
 	return ControlAnswer{Error: ErrClassBadRequest}
+}
+
+// confirm is the owner's answer r on pairing stream pl, bound to the
+// stream's own last sas for the phone (pl.code): a code, request or
+// moves_to_relay the caller names that is not that sas's is another
+// request (code_changed), and the link center checks the stream's request
+// id, never only the caller's, in the transaction that links or refuses.
+// A request that moved to another stream's code (the phone paired again
+// through it) is no longer this stream's: no_request, which ends the
+// stream, rather than code_changed, which asks the owner again. Neither
+// refuses or links anything.
+func (h *hubRuntime) confirm(r ControlRequest, pl *pairListener) ControlAnswer {
+	if pl == nil || r.Device == "" {
+		return ControlAnswer{Error: ErrClassNoCode}
+	}
+	shown, ok := pl.code(r.Device)
+	if !ok {
+		return ControlAnswer{Error: ErrClassNoCode}
+	}
+	if r.Code != "" && r.Code != shown.code || r.Request != "" && r.Request != shown.request ||
+		r.MovesToRelay != nil && *r.MovesToRelay != shown.movesToRelay {
+		return ControlAnswer{Error: ErrClassCodeChanged}
+	}
+	if err := h.center.ConfirmRequest(r.Device, shown.code, shown.request, r.Confirm); err != nil {
+		if errors.Is(err, link.ErrCodeChanged) && !h.waitsOnStream(pl, r.Device) {
+			return ControlAnswer{Error: ErrClassNoRequest}
+		}
+		return ControlAnswer{Error: LinkErrClass(err)}
+	}
+	h.afterConfirm(r.Device)
+	if r.Confirm {
+		// The code is used (afterConfirm closes it CloseUsed) or was
+		// expired or used meanwhile: the stream's end closes nothing.
+		pl.ckNonce = ""
+	}
+	return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device)}
+}
+
+// waitsOnStream: device's waiting request came in under one of pl's codes.
+// Unreadable, or no request waiting, counts as pl's (the answer stays
+// code_changed).
+func (h *hubRuntime) waitsOnStream(pl *pairListener, device string) bool {
+	pending, err := h.center.PendingLinks()
+	if err != nil {
+		return true
+	}
+	for _, p := range pending {
+		if strings.EqualFold(p.DeviceID, device) {
+			return pl.owns(p.Nonce)
+		}
+	}
+	return true
 }
 
 // LinkErrClass maps a link error to its answer class (the CLI's offline

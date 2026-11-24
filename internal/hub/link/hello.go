@@ -31,8 +31,10 @@ type Pending struct {
 	DeviceID string
 	Name     string
 	Code     string
-	// Request names the waiting request (RequestID of its confirm nonce).
+	// Request names the waiting request (RequestID of its confirm nonce);
+	// Nonce is the link code it came in under (PendingLinks only).
 	Request    string
+	Nonce      string
 	ReceivedAt time.Time
 	Refused    string
 	Unanswered bool
@@ -418,7 +420,7 @@ func (c *Center) PendingLinks() ([]Pending, error) {
 	out := make([]Pending, 0, len(list))
 	for _, p := range list {
 		out = append(out, Pending{DeviceID: strings.ToUpper(p.deviceID), Name: p.name, Code: p.sas,
-			Request: RequestID(p.confirmNonce), ReceivedAt: p.receivedAt})
+			Request: RequestID(p.confirmNonce), Nonce: p.linkNonce, ReceivedAt: p.receivedAt})
 	}
 	return out, nil
 }

@@ -1033,6 +1033,7 @@ func TestHubPairStreamEvents(t *testing.T) {
 		dir := hubShortDir(t)
 		_, before := fakePairOpening(t, time.Now().Add(10*time.Minute), "acme phone")
 		before[len(before)-1].MovesToRelay = true
+		before[len(before)-1].Request = "r1"
 		f := startFakePairHub(t, dir, before, []hub.ControlAnswer{{Event: link.EventLinked, DeviceID: fakePairDevice}})
 		p := startPair(t)
 		p.next(t) // qr
@@ -1046,6 +1047,7 @@ func TestHubPairStreamEvents(t *testing.T) {
 		assert.Equal(t, "4827", req.Code, "the confirm names the code printed")
 		require.NotNil(t, req.MovesToRelay)
 		assert.True(t, *req.MovesToRelay, "the confirm names the moves_to_relay printed")
+		assert.Equal(t, "r1", req.Request, "the confirm names the request printed")
 		assert.Equal(t, "linked", p.next(t)["event"])
 		require.NoError(t, p.wait(t))
 	})
@@ -1278,18 +1280,24 @@ func TestHubPairStreamANewNameIsNoReplacement(t *testing.T) {
 }
 
 // A running hub older than the command sends sas lines without a request
-// id: after a replacement no yes could name the request, so the pairing
-// ends with an error rather than asking forever, and nothing is confirmed.
+// id: no yes could be bound to the request shown, so a yes ends the pairing
+// with an error, whether or not the request was replaced, and nothing is
+// confirmed. A no still goes through.
 func TestHubPairStreamFailsClosedOnAnOldHub(t *testing.T) {
-	// Even a yes that carries a request id of its own: the line shown has
-	// none, so nothing could bind the yes to it.
-	for name, yes := range map[string]string{
-		"no request":   `{"confirm":true,"code":"2222","moves_to_relay":false,"request":""}`,
-		"some request": `{"confirm":true,"code":"2222","moves_to_relay":false,"request":"r2"}`,
+	for name, tc := range map[string]struct {
+		replaced bool
+		yes      string
+	}{
+		// Even a yes that carries a request id of its own: the line shown
+		// has none.
+		"one line":             {false, `{"confirm":true}`},
+		"replaced, no request": {true, `{"confirm":true,"code":"2222","moves_to_relay":false,"request":""}`},
+		"replaced, a request":  {true, `{"confirm":true,"code":"2222","moves_to_relay":false,"request":"r2"}`},
+		"one line, a request":  {false, `{"confirm":true,"code":"1111","moves_to_relay":false,"request":"r1"}`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f, p, lines := startOldHubReplacement(t)
-			p.answer(yes)
+			f, p, lines := startOldHubPair(t, tc.replaced)
+			p.answer(tc.yes)
 			select {
 			case m, open := <-lines:
 				if open {
@@ -1299,17 +1307,11 @@ func TestHubPairStreamFailsClosedOnAnOldHub(t *testing.T) {
 				t.Fatalf("a confirm reached the old hub: %+v", r)
 			}
 			require.ErrorIs(t, p.wait(t), errPairHubTooOld)
-			<-f.eof // every request the CLI sent is in f.got
-			select {
-			case r := <-f.got:
-				t.Fatalf("a confirm reached the old hub: %+v", r)
-			default:
-			}
+			assertNothingMoreSent(t, f)
 		})
 	}
-	// A no still reaches the hub.
 	t.Run("no", func(t *testing.T) {
-		f, p, lines := startOldHubReplacement(t)
+		f, p, lines := startOldHubPair(t, true)
 		p.answer(`{"confirm":false}`)
 		assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice}, scriptedGot(t, f, lines))
 		pairSend(t, p, f, hub.ControlAnswer{Op: hub.OpConfirm, OK: true, DeviceID: fakePairDevice})
@@ -1319,9 +1321,22 @@ func TestHubPairStreamFailsClosedOnAnOldHub(t *testing.T) {
 	})
 }
 
-// startOldHubReplacement opens a pairing stream to a scripted hub that
-// sends no request ids, up to a replacement's sas line.
-func startOldHubReplacement(t *testing.T) (*scriptedPairHub, *pairRun, <-chan map[string]any) {
+// assertNothingMoreSent waits until the CLI hung up on the scripted hub and
+// every request it sent was read, then checks none is left unread.
+func assertNothingMoreSent(t *testing.T, f *scriptedPairHub) {
+	t.Helper()
+	<-f.eof
+	select {
+	case r := <-f.got:
+		t.Fatalf("a request reached the hub: %+v", r)
+	default:
+	}
+}
+
+// startOldHubPair opens a pairing stream to a scripted hub that sends no
+// request ids, up to the phone's sas line (code 1111) or, replaced, up to
+// the replacement's (code 2222).
+func startOldHubPair(t *testing.T, replaced bool) (*scriptedPairHub, *pairRun, <-chan map[string]any) {
 	t.Helper()
 	dir := hubShortDir(t)
 	f := startScriptedPairHub(t, dir)
@@ -1331,11 +1346,63 @@ func startOldHubReplacement(t *testing.T) (*scriptedPairHub, *pairRun, <-chan ma
 	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventQR, URL: testLinkURL(t), ExpiresAt: &exp})
 	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventWaiting})
 	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventSAS, DeviceID: fakePairDevice, Name: "acme phone", Code: "1111"})
-	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventSAS, DeviceID: fakePairDevice, Name: "acme phone", Code: "2222"})
-	for _, want := range []string{"qr", "waiting", "sas", "sas"} {
-		assert.Equal(t, want, pairLine(t, lines, f)["event"])
+	want := []string{"qr", "waiting", "sas"}
+	if replaced {
+		pairSend(t, p, f, hub.ControlAnswer{Event: link.EventSAS, DeviceID: fakePairDevice, Name: "acme phone", Code: "2222"})
+		want = append(want, "sas")
+	}
+	for _, w := range want {
+		assert.Equal(t, w, pairLine(t, lines, f)["event"])
 	}
 	return f, p, lines
+}
+
+// The phone's request moved to another pairing stream (it paired again
+// through that stream's code): the hub answers no_request, and the stream
+// ends refused expired_code instead of asking again.
+func TestHubPairStreamEndsWhenTheRequestMovedToAnotherStream(t *testing.T) {
+	f, p, lines, first := startScriptedPair(t)
+	p.answer(macAnswer(t, first))
+	no := false
+	assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Confirm: true, Code: "1111",
+		MovesToRelay: &no, Request: "r1"}, scriptedGot(t, f, lines))
+	pairSend(t, p, f, hub.ControlAnswer{Op: hub.OpConfirm, Error: hub.ErrClassNoRequest})
+	assert.Equal(t, map[string]any{"event": "refused", "reason": wire.RefusedExpiredCode}, pairLine(t, lines, f))
+	require.NoError(t, p.wait(t))
+	assertNothingMoreSent(t, f)
+}
+
+// A bare no is bound to the line shown: it names that line's request, so a
+// newer request (another window's) is never refused by it.
+func TestHubPairStreamABareNoNamesTheRequestShown(t *testing.T) {
+	f, p, lines, _ := startScriptedPair(t)
+	p.answer(`{"confirm":false}`)
+	assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Request: "r1"}, scriptedGot(t, f, lines))
+	pairSend(t, p, f, hub.ControlAnswer{Op: hub.OpConfirm, OK: true, DeviceID: fakePairDevice})
+	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventRefused, DeviceID: fakePairDevice, Reason: wire.RefusedNotConfirmed})
+	assert.Equal(t, map[string]any{"event": "refused", "reason": wire.RefusedNotConfirmed}, pairLine(t, lines, f))
+	require.NoError(t, p.wait(t))
+}
+
+// Stdin closing is no answer: after a code_changed the CLI asks again, and
+// stdin closing then ends the run with nothing more sent, no refusal.
+func TestHubPairStreamStdinClosingRefusesNothing(t *testing.T) {
+	f, p, lines, first := startScriptedPair(t)
+	p.answer(macAnswer(t, first))
+	scriptedGot(t, f, lines)
+	pairSend(t, p, f, hub.ControlAnswer{Op: hub.OpConfirm, Error: hub.ErrClassCodeChanged})
+	assert.Equal(t, first, pairLine(t, lines, f), "code_changed prints the line again")
+	require.NoError(t, p.in.Close())
+	select {
+	case m, open := <-lines:
+		if open {
+			t.Fatalf("a line after stdin closed: %v", m)
+		}
+	case r := <-f.got:
+		t.Fatalf("stdin closing sent %+v", r)
+	}
+	require.ErrorIs(t, p.wait(t), errPairNoAnswer)
+	assertNothingMoreSent(t, f)
 }
 
 // countStateOpens counts direct sidecar opens for writing until the test ends.

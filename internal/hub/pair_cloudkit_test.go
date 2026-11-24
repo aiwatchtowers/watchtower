@@ -748,6 +748,64 @@ func TestAConfirmWithoutACodeTakesTheStreamsCode(t *testing.T) {
 	})
 }
 
+// #2191 integration review: each stream answers only the request it was
+// shown. The phone pairs through stream A, then again through stream B's
+// code (same device keys): the waiting request is B's now. A's answers —
+// naming B's code or request, naming nothing, or naming A's own old
+// request — never refuse or link B's request: a caller view that is not
+// A's last sas is code_changed, and A's own request that moved to B's code
+// is no_request (A's stream ends). B, answering a request id it was not
+// shown, gets code_changed; B's answer to its own request links.
+func TestAStreamAnswersOnlyItsOwnRequest(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, _, a := startPairDesk(t, transport.KindRelay)
+		sasA, phone := slotSAS(t, r, a)
+		b := r.dial()
+		t.Cleanup(func() { _ = b.Close() })
+		if err := phone.UseLink(pairCode(t, b)); err != nil {
+			t.Fatal(err)
+		}
+		if err := phone.Hello(transport.PairZone("slot2")); err != nil {
+			t.Fatal(err)
+		}
+		r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: "slot2"}})
+		_ = b.SetReadDeadline(time.Now().Add(time.Minute))
+		sasB, err := b.Next()
+		_ = b.SetReadDeadline(time.Time{})
+		if err != nil || sasB.Event != link.EventSAS || !strings.EqualFold(sasB.DeviceID, sasA.DeviceID) {
+			t.Fatalf("B's sas: %+v, %v", sasB, err)
+		}
+		if sasB.Code == sasA.Code {
+			t.Skip("B's code collided with A's by chance (1 in 10 000)")
+		}
+		device := phone.ID().String()
+		for _, tc := range []struct {
+			name string
+			on   *ControlClient
+			req  ControlRequest
+			want string
+		}{
+			{"A's yes with B's code", a, ControlRequest{Confirm: true, Code: sasB.Code}, ErrClassCodeChanged},
+			{"A's no with B's code", a, ControlRequest{Code: sasB.Code}, ErrClassCodeChanged},
+			{"A's no with B's request", a, ControlRequest{Request: sasB.Request}, ErrClassCodeChanged},
+			{"A's bare no", a, ControlRequest{}, ErrClassNoRequest},
+			{"A's no with its old request", a, ControlRequest{Request: sasA.Request}, ErrClassNoRequest},
+			{"A's yes to its old request", a, ControlRequest{Confirm: true, Code: sasA.Code, Request: sasA.Request}, ErrClassNoRequest},
+			{"B's no with a stale request", b, ControlRequest{Request: "0000000000000000"}, ErrClassCodeChanged},
+		} {
+			tc.req.Op, tc.req.Device = OpConfirm, device
+			if got := confirmAnswer(t, tc.on, tc.req); got.Error != tc.want {
+				t.Fatalf("%s: %+v, want %s", tc.name, got, tc.want)
+			}
+		}
+		// B's request waits untouched: B's yes to it links.
+		if got := confirmAnswer(t, b, ControlRequest{Op: OpConfirm, Device: device, Confirm: true, Code: sasB.Code,
+			Request: sasB.Request}); !got.OK {
+			t.Fatalf("B's yes to its own request: %+v", got)
+		}
+	})
+}
+
 // #2191 (Q6): the sas line says the Link moves the Mac to Relay exactly when
 // the phone paired through a Relay pairing slot, the hub runs on iCloud and
 // another linked phone has an iCloud route.

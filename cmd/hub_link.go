@@ -132,8 +132,8 @@ type (
 		Confirm *bool `json:"confirm"`
 		// Code, MovesToRelay and Request are the sas line answered
 		// (optional while one sas line was printed; a yes after a
-		// replacement needs Request): the hub refuses a yes code_changed
-		// when the request moved on (#2191).
+		// replacement needs Request): the hub refuses a yes or a no
+		// code_changed when the request moved on (#2191).
 		Code         string `json:"code,omitempty"`
 		MovesToRelay *bool  `json:"moves_to_relay,omitempty"`
 		Request      string `json:"request,omitempty"`
@@ -593,13 +593,15 @@ type pairRead struct {
 // pairStream narrates the pairing on c as JSON lines and hands the owner's
 // stdin answer to the hub. The stream is read while the owner decides: a
 // sas line is printed again whenever the request of the phone on screen is
-// replaced (a new request, code or moves_to_relay). A yes names the line
-// it answers ({"confirm":true,"code":…,"moves_to_relay":…,"request":…} on
-// stdin), and the hub refuses it code_changed when the request moved on.
-// Only while a single request was printed may a yes leave them out (that
-// line stands in); after a replacement a yes without request is ambiguous.
-// Either way the current sas line is printed again and the owner answers
-// again.
+// replaced (a new request, code or moves_to_relay). An answer names the
+// line it answers ({"confirm":…,"code":…,"moves_to_relay":…,"request":…}
+// on stdin), and the hub refuses it, a yes or a no, code_changed when the
+// request moved on. Only while a single request was printed may a yes
+// leave them out (that line stands in); after a replacement a yes without
+// request is ambiguous. Either way the current sas line is printed again
+// and the owner answers again. A request that moved to another pairing
+// stream ends this one (no_request: refused expired_code); stdin closing
+// before an answer ends it with nothing sent (errPairNoAnswer).
 func pairStream(cmd *cobra.Command, c *hub.ControlClient) error {
 	done := make(chan struct{})
 	defer close(done)
@@ -753,23 +755,34 @@ func pairStream(cmd *cobra.Command, c *hub.ControlClient) error {
 // could name the request shown.
 var errPairHubTooOld = errors.New("the hub is out of date: restart Watchtower, then link again")
 
+// errPairNoAnswer ends a pairing whose stdin closed before the owner
+// answered: nothing is confirmed or refused (the request waits until it
+// expires).
+var errPairNoAnswer = errors.New("no answer: the pairing was left without confirming or refusing")
+
 // pairConfirmRequest is the confirm for the owner's answer ans to device,
-// whose last printed sas line is shown. A yes that leaves the code,
-// moves_to_relay or request out takes shown's while device's request was
-// never replaced; after a replacement a yes without request is ambiguous
-// (false: nothing is sent), and one with it is sent as given.
+// whose last printed sas line is shown. An answer that leaves the request
+// out is bound to shown's; a yes that leaves the code or moves_to_relay
+// out takes shown's too while device's request was never replaced. After a
+// replacement a yes without request is ambiguous (false: nothing is sent),
+// and one with it is sent as given.
 //
-// A yes after a replacement on a hub that names no request (shown.Request
-// empty, a hub older than this command) is errPairHubTooOld whatever the
-// answer carries: nothing could bind it to the request shown. A no still
-// goes through.
+// Stdin closing first (ans.eof) is errPairNoAnswer: nothing is sent.
+// A yes on a hub that names no request (shown.Request empty, a hub older
+// than this command) is errPairHubTooOld whatever the answer carries:
+// nothing could bind it to the request shown. A no still goes through.
 func pairConfirmRequest(device string, shown hubPairSAS, replaced bool, ans pairAnswer) (hub.ControlRequest, bool, error) {
 	req := hub.ControlRequest{Op: hub.OpConfirm, Device: device, Confirm: ans.confirm, Code: ans.code,
 		MovesToRelay: ans.movesToRelay, Request: ans.request}
 	switch {
+	case ans.eof:
+		return hub.ControlRequest{}, false, errPairNoAnswer
 	case !ans.confirm:
+		if req.Request == "" {
+			req.Request = shown.Request
+		}
 		return req, true, nil
-	case replaced && shown.Request == "":
+	case shown.Request == "":
 		return hub.ControlRequest{}, false, errPairHubTooOld
 	case replaced:
 		return req, ans.request != "", nil
@@ -788,8 +801,10 @@ func pairConfirmRequest(device string, shown hubPairSAS, replaced bool, ans pair
 }
 
 // pairAnswer is the owner's answer: confirm, and the sas line answered (its
-// code and moves_to_relay; "" and nil when the answer left them out).
+// code, moves_to_relay and request; "" and nil when the answer left them
+// out). eof: stdin closed before any answer line.
 type pairAnswer struct {
+	eof          bool
 	confirm      bool
 	code         string
 	movesToRelay *bool
@@ -798,7 +813,8 @@ type pairAnswer struct {
 
 // readPairConfirm reads the owner's
 // {"confirm":true|false,"code":…,"moves_to_relay":…,"request":…} line
-// (all but confirm optional); anything else, or stdin closing, is a no.
+// (all but confirm optional); anything else is a no, and stdin closing
+// first is eof (no answer).
 func readPairConfirm(in *bufio.Scanner) pairAnswer {
 	for in.Scan() {
 		line := strings.TrimSpace(in.Text())
@@ -811,5 +827,5 @@ func readPairConfirm(in *bufio.Scanner) pairAnswer {
 		}
 		return pairAnswer{confirm: *c.Confirm, code: c.Code, movesToRelay: c.MovesToRelay, request: c.Request}
 	}
-	return pairAnswer{}
+	return pairAnswer{eof: true}
 }
