@@ -58,23 +58,31 @@ extension TerminalCenter {
                                      keepingFormatCharacters: keepingFormatCharacters, delay: delay,
                                      refresh: refresh, submitIf: canSubmit)
         }
-        let keysAtStart = ownerKeys[sessionID, default: 0]
+        var line = SessionDeliverLine(
+            id: "mac-\(UUID().uuidString)", text: text, keepLineBreaks: keepingLineBreaks,
+            keepFormat: keepingFormatCharacters, settle: delay, submitIf: false, holdIfPromptText: holdIfPromptText
+        )
+        let id = line.id
+        ownLines[id] = OwnLine(sessionID: sessionID, keysAtStart: ownerKeys[sessionID, default: 0])
         delivering[sessionID, default: 0] += 1
-        deliveryKeys[sessionID] = deliveryKeys[sessionID] ?? keysAtStart
         defer {
             delivering[sessionID, default: 1] -= 1
-            if delivering[sessionID] == 0 { (delivering[sessionID], deliveryKeys[sessionID]) = (nil, nil) }
+            if delivering[sessionID] == 0 { delivering[sessionID] = nil }
         }
         // The next delivery replaces the bars of the last one.
         clipboardHints.remove(sessionID)
         dropPasteHint(sessionID)
         answerHints[sessionID] = nil
-        let submitIf = canSubmit()
-        if !submitIf { logWithheld(sessionID, "the session's state, before the paste") }
-        let line = SessionDeliverLine(
-            text: text, keepLineBreaks: keepingLineBreaks, keepFormat: keepingFormatCharacters,
-            settle: delay, submitIf: submitIf, holdIfPromptText: holdIfPromptText
-        )
+        let endsInBackslash = Self.lineEndsInBackslash(line)
+        if !canSubmit() {
+            logWithheld(sessionID, "the session's state, before the paste")
+        } else if endsInBackslash {
+            // Never asked for, so a host that would still press it (an older
+            // v2 one, adopted across an update) leaves the line typed too.
+            logWithheld(sessionID, "the line ends in a backslash: a Return would be a line break")
+        } else {
+            line.submitIf = true
+        }
         let outcome = await process.deliver(line) { [weak self] in
             let fresh = await refresh()
             let reply = DeliverCheckReply(
@@ -83,13 +91,12 @@ extension TerminalCenter {
             if !reply.fresh { self?.logWithheld(sessionID, "the state read after the pause failed") }
             return reply
         }
+        let sameRun = processes[sessionID] === process
+        ownLineReplied(id, sessionID: sessionID, outcome: outcome, sameRun: sameRun, endsInBackslash: endsInBackslash)
         switch outcome {
         case .submitted:
             return .submitted
         case .typed:
-            // The line sits in the prompt unsubmitted: the app's own
-            // pre-checks see it (the host's `left_typed` event says so too).
-            if processes[sessionID] === process { hostLeftTyped(sessionID, line, keysAtStart: keysAtStart) }
             return .pasted
         case let .held(reason):
             logWithheld(sessionID, "held by the session host (\(reason))")
@@ -108,15 +115,25 @@ extension TerminalCenter {
             // The host had the line; it may sit in the prompt, Return or
             // not. Never "no session": the owner checks and presses Return.
             logWithheld(sessionID, "the delivery's connection ended before the host answered")
-            if processes[sessionID] === process {
-                // No `left_typed` event may follow: after the owner's keys the `\` is unknown.
-                let known = ownerKeys[sessionID, default: 0] == keysAtStart ? line : nil
-                hostLeftTyped(sessionID, known, keysAtStart: keysAtStart)
-                pasteHints.insert(sessionID)
-            }
+            if sameRun { pasteHints.insert(sessionID) }
             return .mayBeTyped
         case .noSession:
             return .noSession
+        }
+    }
+
+    /// The host's reply to the app's own line `id`. A line that sits (or may sit) in the
+    /// prompt unsubmitted goes into the mirror from this reply or its `left_typed` event,
+    /// whichever came first (an interrupted one's event may never come: its entry goes with
+    /// the run, or with a host that names no line); any other outcome ends the entry.
+    private func ownLineReplied(
+        _ id: String, sessionID: Int64, outcome: DeliverOutcome, sameRun: Bool, endsInBackslash: Bool
+    ) {
+        switch outcome {
+        case .typed where sameRun, .interrupted where sameRun:
+            lineLeftTyped(sessionID, id: id, endsInBackslash: endsInBackslash)
+        case .typed, .interrupted, .submitted, .held, .noPasteMode, .noSession:
+            ownLines[id] = nil
         }
     }
 
@@ -125,15 +142,21 @@ extension TerminalCenter {
     func deliveryEvent(_ sessionID: Int64, _ event: SessionHostDeliveryEvent) {
         switch event.kind {
         case .pasted:
+            if pastedKeys[sessionID] == nil { pastedKeys[sessionID] = ownerKeys[sessionID, default: 0] }
             clipboardHints.remove(sessionID)
             dropPasteHint(sessionID)
         case .leftTyped:
-            hostLeftTyped(sessionID, nil, keysAtStart: deliveryKeys[sessionID]) // any client's line
+            if event.id == nil {
+                // A host before the id: no event will name the app's lines.
+                ownLines = ownLines.filter { $0.value.sessionID != sessionID || !$0.value.applied }
+            }
+            lineLeftTyped(sessionID, id: event.id, endsInBackslash: event.endsInBackslash)
+            pastedKeys[sessionID] = nil
             if event.besideText { sharedPrompts.insert(sessionID) }
             // An ask's answer shows its own bar (`answerHints`).
             if answerHints[sessionID] == nil { pasteHints.insert(sessionID) }
         case .submitted:
-            break
+            pastedKeys[sessionID] = nil
         }
     }
 
@@ -183,6 +206,8 @@ extension TerminalCenter {
     func clearPromptDraft(_ sessionID: Int64) {
         drafts[sessionID] = nil
         sharedPrompts.remove(sessionID)
+        pastedKeys[sessionID] = nil
+        ownLines = ownLines.filter { $0.value.sessionID != sessionID }
     }
 
     /// A line of the app's own may sit in the prompt: only a submit empties it.
@@ -190,15 +215,36 @@ extension TerminalCenter {
         drafts[sessionID, default: DraftModel()].markInexact()
     }
 
-    /// The host left `line` typed, or may have (`DraftModel.hostLeftTyped`). `keysAtStart`: the
-    /// owner's key count when the app's delivery began; keys since make the `\` stale. A reply
-    /// sets its line's `\` unless stale (then the keys and the event did); a `left_typed` event
-    /// (nil, no text) keeps the state during the app's own delivery with no keys since (its
-    /// reply has the line), and else makes a `\` possible (another client's line).
-    func hostLeftTyped(_ sessionID: Int64, _ line: SessionDeliverLine?, keysAtStart: Int? = nil) {
-        let fresh = keysAtStart == ownerKeys[sessionID, default: 0]
-        let endsInBackslash = if let line { fresh && Self.lineEndsInBackslash(line) } else { !fresh }
-        drafts[sessionID, default: DraftModel()].hostLeftTyped(endingInBackslash: endsInBackslash)
+    /// One of the app's own v2 deliveries (`ownLines`): the owner's key count when it began
+    /// and whether its `left_typed` event or its reply already put its line in the mirror.
+    struct OwnLine: Equatable {
+        let sessionID: Int64
+        let keysAtStart: Int
+        var applied = false
+    }
+
+    /// The host left a line typed, or may have (`DraftModel.hostLeftTyped`), from its
+    /// `left_typed` event or, for the app's own line (`id` in `ownLines`), its reply: the first
+    /// of the two applies it, the second nothing, in either order. `endsInBackslash`: the line's
+    /// own (nil, a host before the flag: unknown). An owner's key since the line's delivery
+    /// began (the app's own) or since its `pasted` event (another client's; none known: any)
+    /// may have landed after the paste, and the mirror read it without the line before the
+    /// cursor: the `\` is then unknown too. Unknown reads as a `\` (a Return holds).
+    func lineLeftTyped(_ sessionID: Int64, id: String?, endsInBackslash: Bool?) { // swiftlint:disable:this discouraged_optional_boolean
+        let anchor: Int?
+        if let id, var own = ownLines[id] {
+            guard !own.applied else {
+                ownLines[id] = nil
+                return
+            }
+            own.applied = true
+            ownLines[id] = own
+            anchor = own.keysAtStart
+        } else {
+            anchor = pastedKeys[sessionID]
+        }
+        let fresh = anchor == ownerKeys[sessionID, default: 0]
+        drafts[sessionID, default: DraftModel()].hostLeftTyped(endingInBackslash: !fresh || (endsInBackslash ?? true))
     }
 
     /// An ask's answer line is waiting in or for a running session: its pane
@@ -241,6 +287,36 @@ extension TerminalCenter {
         case nil, .held?, .stillHeld?, .queued?: break
         case .copied?: answerHints[sessionID] = .typed
         case .typed?: answerHints[sessionID] = nil
+        }
+    }
+}
+
+extension TerminalCenter {
+    /// The session's terminal prompt line as its screen shows it now (the
+    /// cursor's row, the prompt box's borders dropped), for the Workchat's
+    /// held line (spec 2026-11-24-workchat-polish §6.3). Display only: the
+    /// prompt state is the draft model's. nil without a terminal or a line.
+    func promptPreview(sessionID: Int64) -> String? {
+        guard let view = processes[sessionID]?.view as? PalettedTerminalView else { return nil }
+        return Self.promptPreview(row: view.cursorRowText())
+    }
+
+    /// `row` without the prompt box's borders and the spaces around them.
+    nonisolated static func promptPreview(row: String) -> String? {
+        let border = CharacterSet(charactersIn: "│┃╭╮╰╯─━").union(.whitespaces)
+        let text = row.trimmingCharacters(in: border)
+        return text.isEmpty ? nil : text
+    }
+}
+
+extension PalettedTerminalView {
+    /// The text of the cursor's screen row.
+    func cursorRowText() -> String {
+        let terminal = getTerminal()
+        guard let line = terminal.getLine(row: terminal.getCursorLocation().y) else { return "" }
+        return (0..<line.count).reduce(into: "") { text, col in
+            let cell = line[col]
+            if cell.getCharacter() != "\u{0}" { text.append(terminal.getCharacter(for: cell)) }
         }
     }
 }

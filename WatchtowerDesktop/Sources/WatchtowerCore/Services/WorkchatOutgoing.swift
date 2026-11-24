@@ -19,6 +19,17 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
         case notSent
     }
 
+    /// Why a queued line waits: the reason its check held it
+    /// (`SessionControl.LineHold`) — the spec's hold captions (§6.3).
+    package enum HoldReason: Equatable, Sendable {
+        /// A permission prompt is up: the owner answers it in the terminal.
+        case needsApproval
+        /// The agent works, or turns to the line just submitted.
+        case agentBusy
+        /// The terminal prompt holds text not submitted.
+        case promptHasText
+    }
+
     package let id: UUID
     /// What goes to the terminal: the typed text with its paste tokens expanded, then the attachment paths.
     package let text: String
@@ -35,6 +46,9 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     /// Submitted while the agent worked: the agent reads it at its next
     /// step, so its echo can come long after delivery (no `echoWindow`).
     package var sentWhileBusy: Bool
+    /// Why it waits while `queued`; nil: not known (another line goes first,
+    /// or no check said yet).
+    package var holdReason: HoldReason?
 
     package init(
         id: UUID,
@@ -60,17 +74,37 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     /// bubble shows the send time. `working`: the session's agent works now;
     /// `holdsUntilIdle`: a queued line waits for the agent to stop
     /// (`WorkchatModel.holdsUntilIdle`), otherwise only for a prompt, the
-    /// owner's typing or the settle after the previous line.
+    /// owner's typing or the settle after the previous line. A queued line's
+    /// `holdReason` says why it waits (its actions go on a row of their own).
     package static func caption(
-        state: State, working: Bool, holdsUntilIdle: Bool, sentWhileBusy: Bool = false
+        state: State,
+        working: Bool,
+        holdsUntilIdle: Bool,
+        sentWhileBusy: Bool = false,
+        holdReason: HoldReason? = nil
     ) -> String? {
         switch state {
+        case .queued where holdReason != nil: holdCaption(holdReason, working: working, holdsUntilIdle: holdsUntilIdle)
         case .sending: "Sending…"
         case .queued: holdsUntilIdle ? "Queued · sends when the agent stops ·" : "Queued · sends in a moment ·"
         case .typed: "Typed into the terminal, not sent: press Return there ·"
         case .copied: "Copied to the clipboard: the terminal does not accept pasted text ·"
         case .notSent: "Not sent: the session ended"
         case .sent: sentWhileBusy && working ? "Queued · the agent reads it at its next step" : nil
+        }
+    }
+
+    /// A held line's actions (spec §6.3): Send together for one held for the
+    /// prompt's text, Cancel for any queued line.
+    package static let sendTogether = "Send together"
+    package static let cancel = "Cancel"
+
+    private static func holdCaption(_ reason: HoldReason?, working: Bool, holdsUntilIdle: Bool) -> String? {
+        switch reason {
+        case .needsApproval?: "Waiting: answer the permission prompt in the terminal"
+        case .agentBusy?: working && holdsUntilIdle ? "Queued · sends when the agent stops" : "Queued · sends in a moment"
+        case .promptHasText?: "Waiting: the terminal prompt holds text"
+        case nil: nil
         }
     }
 

@@ -66,12 +66,15 @@ final class WorkchatModelTests: XCTestCase {
         )
     }
 
-    private func makeModel(_ sessionID: Int64, control: (any WorkchatControl)? = nil) throws -> WorkchatModel {
+    private func makeModel(
+        _ sessionID: Int64, control: (any WorkchatControl)? = nil, promptPreview: @escaping (Int64) -> String? = { _ in nil }
+    ) throws -> WorkchatModel {
         let clock = try XCTUnwrap(clock)
         let control = try control ?? makeControl()
         return WorkchatModel(
             sessionID: sessionID, control: control, lineDelivery: delivery,
-            attachmentStore: WorkchatAttachmentStore(root: folder.appendingPathComponent("att")), kind: { .claude }, now: { clock.now }
+            attachmentStore: WorkchatAttachmentStore(root: folder.appendingPathComponent("att")), kind: { .claude },
+            now: { clock.now }, promptPreview: promptPreview
         )
     }
 
@@ -582,6 +585,114 @@ final class WorkchatModelTests: XCTestCase {
         await delivery.deliverHeld()
         XCTAssertEqual(model.outgoing.first?.state, .queued, "still held while the draft is there")
         XCTAssertFalse(typedText.contains("Run the linter"))
+    }
+
+    /// Spec §6.3: a held line says why it waits — the check that held it.
+    func testHeldLineCarriesItsHoldReason() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let model = try makeModel(session)
+        model.draft = "Approve first"
+        await model.send()
+        XCTAssertEqual(model.outgoing.first?.holdReason, .needsApproval)
+
+        setState(session, .stopped)
+        processes[0].onOwnerInput?(Array("fix the".utf8))
+        await delivery.deliverHeld()
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+        XCTAssertEqual(model.outgoing.first?.holdReason, .promptHasText)
+
+        processes[0].onOwnerInput?(Array("\r".utf8))
+        await delivery.deliverHeld()
+        XCTAssertEqual(model.outgoing.first?.state, .sent)
+        XCTAssertNil(model.outgoing.first?.holdReason, "a line that went waits for nothing")
+    }
+
+    /// Spec §6.3: the prompt's line shows under a line held for its text,
+    /// as the screen shows it; nothing for another hold or no line.
+    func testHoldPreviewInCaption() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        processes[0].onOwnerInput?(Array("look at the window test again".utf8))
+        var preview: String? = "> look at the window test again "
+        let model = try makeModel(session) { _ in preview }
+        model.draft = "Run the gate."
+        await model.send()
+        let id = try XCTUnwrap(model.outgoing.first?.id)
+
+        XCTAssertEqual(model.outgoing.first?.holdReason, .promptHasText)
+        XCTAssertEqual(model.holdPreview(for: id), "> look at the window test again")
+        preview = nil
+        XCTAssertNil(model.holdPreview(for: id), "no line on screen: the caption alone")
+        preview = "   "
+        XCTAssertNil(model.holdPreview(for: id))
+        XCTAssertEqual(TerminalCenter.promptPreview(row: "│ > look at it        │"), "> look at it")
+        XCTAssertNil(TerminalCenter.promptPreview(row: "╰──────╯"))
+
+        setState(session, .needsApproval)
+        await delivery.deliverHeld()
+        preview = "> look"
+        XCTAssertNil(model.holdPreview(for: id), "held for the permission prompt, not the text")
+    }
+
+    /// Spec §6.3: Send together types the held line beside the prompt's
+    /// text without a Return of the app's; the owner's one Return sends both.
+    func testSendTogether() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        processes[0].host.tracksDrafts = true
+        processes[0].onOwnerInput?(Array("fix the".utf8))
+        let model = try makeModel(session)
+        model.draft = "Run the linter"
+        await model.send()
+        let id = try XCTUnwrap(model.outgoing.first?.id)
+        XCTAssertEqual(model.outgoing.first?.holdReason, .promptHasText)
+
+        await model.sendTogether(id)
+
+        XCTAssertEqual(model.outgoing.first?.state, .typed)
+        XCTAssertTrue(typedText.contains("Run the linter"), "pasted beside the owner's text")
+        XCTAssertFalse(processes[0].inputs.contains([0x0D]), "no Return of the app's over the owner's text")
+        XCTAssertTrue(delivery.heldKeys(sessionID: session).isEmpty)
+        XCTAssertTrue(center.sharedPrompts.contains(session), "the pane says one Return sends both")
+        processes[0].onOwnerInput?([0x0D])
+        XCTAssertFalse(center.promptHoldsText(session), "the owner's one Return sent them")
+    }
+
+    /// Send together is only for a line held for the prompt's text: a line
+    /// held for a permission prompt stays held.
+    func testSendTogetherIgnoresOtherHolds() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let model = try makeModel(session)
+        model.draft = "Wait for it"
+        await model.send()
+        let id = try XCTUnwrap(model.outgoing.first?.id)
+
+        await model.sendTogether(id)
+
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+        XCTAssertEqual(delivery.heldKeys(sessionID: session), [.workchat(id)])
+        XCTAssertEqual(typedText, "")
+    }
+
+    /// Failure and races: a line held for the prompt's text whose session
+    /// ends is not sent, its text back in the field.
+    func testHeldThenSessionGone() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        processes[0].onOwnerInput?(Array("fix the".utf8))
+        let model = try makeModel(session)
+        model.draft = "Run the linter"
+        await model.send()
+        XCTAssertEqual(model.outgoing.first?.holdReason, .promptHasText)
+
+        processes[0].onExit?(0)
+        await delivery.deliverHeld()
+
+        XCTAssertEqual(model.outgoing.first?.state, .notSent)
+        XCTAssertNil(model.outgoing.first?.holdReason)
+        XCTAssertEqual(model.draft, "Run the linter", "back in the field")
     }
 
     func testCancelDropsHeldLine() async throws {

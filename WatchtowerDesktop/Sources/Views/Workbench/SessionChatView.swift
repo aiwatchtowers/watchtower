@@ -533,6 +533,8 @@ struct SessionChatView: View {
                     line: line,
                     working: working,
                     holdsUntilIdle: workchat.holdsUntilIdle,
+                    holdPreview: workchat.holdPreview(for: line.id),
+                    onSendTogether: { Task { await workchat.sendTogether(line.id) } },
                     onCancel: { workchat.cancel(line.id) },
                     onShowTerminal: showInTerminal
                 )

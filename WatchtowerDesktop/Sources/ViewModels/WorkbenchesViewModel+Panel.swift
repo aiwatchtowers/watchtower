@@ -422,10 +422,12 @@ extension WorkbenchesViewModel {
         if let model = workchatModels[sessionID] { return model }
         guard let sessionControl else { return nil }
         let model = WorkchatModel(
-            sessionID: sessionID, control: sessionControl, lineDelivery: lineDelivery, attachmentStore: attachmentStore
-        ) { [weak self] in
-            self?.terminalSessions.values.lazy.flatMap { $0 }.first { $0.id == sessionID }?.kind
-        }
+            sessionID: sessionID, control: sessionControl, lineDelivery: lineDelivery, attachmentStore: attachmentStore,
+            kind: { [weak self] in
+                self?.terminalSessions.values.lazy.flatMap { $0 }.first { $0.id == sessionID }?.kind
+            },
+            promptPreview: { [weak self] in self?.terminalCenter?.promptPreview(sessionID: $0) }
+        )
         workchatModels[sessionID] = model
         return model
     }

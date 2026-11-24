@@ -89,6 +89,9 @@ final class WorkchatModel {
     var holdsUntilIdle: Bool { agent.map { !caps($0).takesLineWhileWorking } ?? true }
     /// The session capability rows (`AgentSessionCaps.of`; tests swap them).
     @ObservationIgnored private let caps: (AgentKind) -> AgentSessionCaps
+    /// The session's terminal prompt line as its screen shows it (`TerminalCenter.promptPreview`):
+    /// shown under a line held for the prompt's text, never read to decide anything.
+    @ObservationIgnored private let promptPreview: (Int64) -> String?
     /// The session's agent; nil for a shell or a kind not known yet.
     var agent: AgentKind? { kind()?.agent }
     /// Feed entries that stood for a line already: one echo, one line.
@@ -107,10 +110,12 @@ final class WorkchatModel {
         attachmentStore: WorkchatAttachmentStore? = nil,
         kind: @escaping @MainActor () -> TerminalSession.Kind?,
         now: @escaping () -> Date = Date.init,
-        caps: @escaping (AgentKind) -> AgentSessionCaps = AgentSessionCaps.of
+        caps: @escaping (AgentKind) -> AgentSessionCaps = AgentSessionCaps.of,
+        promptPreview: @escaping (Int64) -> String? = { _ in nil }
     ) {
         self.sessionID = sessionID
         self.caps = caps
+        self.promptPreview = promptPreview
         self.attachmentStore = attachmentStore
         self.kind = kind
         self.control = control
@@ -193,18 +198,69 @@ final class WorkchatModel {
         outgoing.append(WorkchatOutgoing(
             id: id, text: text, sentAt: now(), state: .sending, typedText: typed, attachmentPaths: paths
         ))
+        await go(id, text: text, besideText: false)
+    }
+
+    /// One delivery of the line `id` through `SessionLineDelivery`, held and retried
+    /// there; its check's hold reason goes on the bubble. `besideText`: the prompt's
+    /// text does not hold it (Send together) — the host types it beside that text,
+    /// without a Return, and the owner's one Return sends both (`sharedPrompts`).
+    private func go(_ id: UUID, text: String, besideText: Bool) async {
         let delivery = await lineDelivery.deliverLine(
             text, key: .workchat(id), sessionID: sessionID,
             gate: { [weak self, weak control] in
                 // Read at each try: a held line goes once the kind is known.
-                Self.gate((self?.holdsUntilIdle ?? true) ? control?.lineCheck($0) : control?.workchatLineCheck($0))
+                Self.gate((self?.holdsUntilIdle ?? true) ? control?.lineCheck($0) : control?.workchatLineCheck($0),
+                          besideText: besideText)
             },
             onHeldEvent: { [weak self] event in
-                guard case let .tried(delivery) = event else { return }
-                self?.settle(id, delivery)
+                switch event {
+                case .awaitingApproval: self?.setHoldReason(id, .needsApproval)
+                case let .tried(delivery): self?.settle(id, delivery)
+                }
             }
         )
         settle(id, delivery)
+    }
+
+    private func setHoldReason(_ id: UUID, _ reason: WorkchatOutgoing.HoldReason?) {
+        guard let index = outgoing.firstIndex(where: { $0.id == id }) else { return }
+        outgoing[index].holdReason = reason
+    }
+
+    /// Why a held line waits, by the session's check now (the one that held it,
+    /// or the permission prompt read before it); nil when it would go (a
+    /// failed state read held it).
+    private func holdReason() -> WorkchatOutgoing.HoldReason? {
+        switch holdsUntilIdle ? control.lineCheck(sessionID) : control.workchatLineCheck(sessionID) {
+        case .hold(.needsApproval): .needsApproval
+        case .hold(.agentBusy): .agentBusy
+        case .hold(.promptHasText): .promptHasText
+        case .go, .sessionGone: nil
+        }
+    }
+
+    /// The terminal prompt's line under a line held for its text (spec §6.3); nil
+    /// for any other line or when the screen shows none.
+    func holdPreview(for id: UUID) -> String? {
+        guard let line = outgoing.first(where: { $0.id == id }), line.state == .queued,
+              line.holdReason == .promptHasText else { return nil }
+        let preview = promptPreview(sessionID)?.trimmingCharacters(in: .whitespaces)
+        return preview?.isEmpty == false ? preview : nil
+    }
+
+    /// Send together (spec §6.3): a line held for the prompt's text goes now,
+    /// typed beside that text without a Return — the owner's Return in the
+    /// terminal sends both. Every other hold (a permission prompt, a busy
+    /// agent) still holds it.
+    func sendTogether(_ id: UUID) async {
+        guard let line = outgoing.first(where: { $0.id == id }), line.state == .queued,
+              line.holdReason == .promptHasText,
+              !lineDelivery.dropHeld(sessionID: sessionID, where: { $0 == .workchat(id) }).isEmpty,
+              let index = outgoing.firstIndex(where: { $0.id == id }) else { return }
+        outgoing[index].state = .sending
+        outgoing[index].holdReason = nil
+        await go(id, text: line.text, besideText: true)
     }
 
     // MARK: - Attachments
@@ -486,9 +542,12 @@ final class WorkchatModel {
         }
     }
 
-    nonisolated private static func gate(_ check: SessionControl.LineCheck?) -> SessionLineDelivery.GateAnswer {
+    nonisolated private static func gate(
+        _ check: SessionControl.LineCheck?, besideText: Bool
+    ) -> SessionLineDelivery.GateAnswer {
         switch check {
         case .go: .go
+        case .hold(.promptHasText) where besideText: .go
         case .hold: .hold
         case .sessionGone, nil: .drop
         }
@@ -506,6 +565,8 @@ final class WorkchatModel {
         case .noSession: .notSent
         }
         outgoing[index].state = state
+        // A line behind another (`.queued`) or on its way has no reason of its own.
+        outgoing[index].holdReason = delivery == .held ? holdReason() : nil
         if state == .sent, !holdsUntilIdle { outgoing[index].sentWhileBusy = control.isWorking(sessionID) }
         switch state {
         case .sent, .typed, .copied:

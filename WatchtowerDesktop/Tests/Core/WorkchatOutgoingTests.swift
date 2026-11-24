@@ -62,6 +62,25 @@ final class WorkchatOutgoingTests: XCTestCase {
         XCTAssertFalse(WorkchatOutgoing.matches(undated, line: sent), "no time, no match")
     }
 
+    /// Spec §6.3: a queued line's caption says why it waits; the hold reason
+    /// counts only while it is queued.
+    func testHoldCaptionsSayWhyTheLineWaits() {
+        func caption(_ reason: WorkchatOutgoing.HoldReason, working: Bool = false, holds: Bool = false) -> String? {
+            WorkchatOutgoing.caption(state: .queued, working: working, holdsUntilIdle: holds, holdReason: reason)
+        }
+        XCTAssertEqual(caption(.needsApproval), "Waiting: answer the permission prompt in the terminal")
+        XCTAssertEqual(caption(.agentBusy), "Queued · sends in a moment")
+        XCTAssertEqual(caption(.agentBusy, working: true), "Queued · sends in a moment", "an agent that takes the line")
+        XCTAssertEqual(caption(.agentBusy, working: true, holds: true), "Queued · sends when the agent stops")
+        XCTAssertEqual(caption(.promptHasText), "Waiting: the terminal prompt holds text")
+        XCTAssertEqual(caption(.promptHasText, working: true), "Waiting: the terminal prompt holds text")
+        XCTAssertEqual(WorkchatOutgoing.caption(state: .typed, working: false, holdsUntilIdle: false,
+                                                holdReason: .promptHasText),
+                       "Typed into the terminal, not sent: press Return there ·", "only a queued line")
+        XCTAssertEqual(WorkchatOutgoing.sendTogether, "Send together")
+        XCTAssertEqual(WorkchatOutgoing.cancel, "Cancel")
+    }
+
     /// Each state's caption under the line (#2065 moved them out of the view):
     /// nil where the bubble shows the send time.
     func testCaptionStrings() {

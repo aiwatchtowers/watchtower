@@ -132,6 +132,7 @@ While the agent works, the line reads **This turn · N steps** with the step tha
 - **Stop says A permission prompt is open — answer it on the card or in the terminal.** Esc would answer the prompt, so Stop holds back. Use the card or the terminal.
 - **Could not read the permission prompt.** Watchtower could not read its database, so no card shows. Answer in the terminal; the next session update tries again.
 - **No permission card, but the session says Needs approval.** Only prompts the agent's hooks report get a card. Answer in the terminal.
+- **Your line says Waiting: the terminal prompt holds text.** Unsent text sits in the terminal, shown under the caption. Send or erase it and the line goes; **Send together** pastes it beside that text, and your next Return there sends both.
 - **The session opened in the terminal.** It is new, or you last showed it there.
 
 ## Related

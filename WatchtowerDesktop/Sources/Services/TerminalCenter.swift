@@ -115,6 +115,10 @@ extension TerminalSessionProcess {
 /// One line for the session host to type (`TerminalSessionProcess.deliver`),
 /// without the host's row, run and launch, which the process adds.
 struct SessionDeliverLine: Equatable {
+    /// The request's id (`DeliverRequest.id`): the app's own, unique among
+    /// the host's clients, so the host's `left_typed` event names it. Empty:
+    /// the client numbers it.
+    var id = ""
     let text: String
     var keepLineBreaks = false
     var keepFormat = false
@@ -122,7 +126,7 @@ struct SessionDeliverLine: Equatable {
     /// (`AgentInputProfile.pasteSettle`).
     var settle: Duration?
     /// The caller's pre-check: false only pastes.
-    let submitIf: Bool
+    var submitIf: Bool
     /// Hold the line, nothing written, while the prompt holds text.
     var holdIfPromptText = false
 }
@@ -196,10 +200,14 @@ final class TerminalCenter {
     @ObservationIgnored var drafts: [Int64: DraftModel] = [:]
     /// The session's draft model changed through the owner's keys.
     @ObservationIgnored var onDraftChanged: ((Int64) -> Void)?
-    /// How many of the owner's key chunks each session's draft model read (`hostLeftTyped`).
+    /// How many of the owner's key chunks each session's draft model read (`lineLeftTyped`).
     @ObservationIgnored var ownerKeys: [Int64: Int] = [:]
-    /// `ownerKeys` when the app's own deliveries now in flight began (`delivering`).
-    @ObservationIgnored var deliveryKeys: [Int64: Int] = [:]
+    /// The app's own v2 deliveries, by request id, until both their `left_typed`
+    /// event and their reply are in, or they end otherwise (`OwnLine`).
+    @ObservationIgnored var ownLines: [String: OwnLine] = [:]
+    /// `ownerKeys` at the session's first `pasted` event since its last `left_typed` or
+    /// `submitted`: keys since may have reached another client's line (`lineLeftTyped`).
+    @ObservationIgnored var pastedKeys: [Int64: Int] = [:]
     /// Sessions whose prompt holds a line the host left without its Return
     /// next to other text not submitted (its `left_typed` event with
     /// `beside_text`, board #380). The pane's "press Return" bar says the
@@ -1265,6 +1273,7 @@ final class TerminalCenter {
         startedAt[sessionID] = nil
         runs[sessionID] = nil
         clearPromptDraft(sessionID)
+        ownerKeys[sessionID] = nil
         sentPromptHints[sessionID] = nil
         clipboardHints.remove(sessionID)
         pasteHints.remove(sessionID)
