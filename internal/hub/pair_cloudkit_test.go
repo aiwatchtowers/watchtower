@@ -318,7 +318,7 @@ func TestARelayCodeRefusesTheReplacedPhoneOnlyOnItsSASStream(t *testing.T) {
 }
 
 // Two pairing streams at once: A asks for a code, then B. A is shown neither
-// B's qr nor the SAS of B's phone, and B's phone links through B alone.
+// B's qr nor the SAS of B's phone; B is shown its phone's SAS.
 func TestTwoPairStreamsSeeOnlyTheirOwnCodes(t *testing.T) {
 	bubble(t, func(t *testing.T) {
 		r, ck, a := startPairDesk(t, transport.KindCloudKit)

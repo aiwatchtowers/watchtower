@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"path/filepath"
 	"slices"
@@ -129,8 +130,8 @@ func TestDesktopWatchHearsPairStepsWithoutCodes(t *testing.T) {
 // the other's SAS. An earlier code's refusal reaches only the stream that
 // asked for that code.
 func TestPairStreamsSeeOnlyTheirOwnCodes(t *testing.T) {
-	a := &pairListener{token: "stream-a", queue: make(chan ControlAnswer, 8), codes: map[string]string{}, nonces: map[string]bool{}}
-	b := &pairListener{token: "stream-b", queue: make(chan ControlAnswer, 8), codes: map[string]string{}, nonces: map[string]bool{}}
+	a := &pairListener{token: "stream-a", queue: make(chan ControlAnswer, 8), codes: map[string]string{}}
+	b := &pairListener{token: "stream-b", queue: make(chan ControlAnswer, 8), codes: map[string]string{}}
 	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{a: true, b: true}, watches: map[*pairListener]bool{}}
 	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/a", Nonce: "na", Token: "stream-a"})
 	s.broadcast(link.PairEvent{Kind: link.EventWaiting, Nonce: "na", Token: "stream-a"})
@@ -157,6 +158,41 @@ func TestPairStreamsSeeOnlyTheirOwnCodes(t *testing.T) {
 	}
 	if _, ok := a.code("BBBB"); ok {
 		t.Error("A recorded B's SAS")
+	}
+}
+
+// A pairing stream whose queue is full is dropped (removed, its connection
+// closed) without holding back another stream of the same code, which gets
+// every event. In a bubble: a send that blocked instead would deadlock it.
+func TestAFullPairingStreamIsDroppedAndTheOtherGetsEveryEvent(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		conn, peer := net.Pipe()
+		t.Cleanup(func() { _ = peer.Close() })
+		full := &pairListener{token: "stream-full", queue: make(chan ControlAnswer, 1), w: &answerWriter{c: conn}}
+		other := &pairListener{token: "stream-other", queue: make(chan ControlAnswer, 4)}
+		full.addNonce("n")
+		other.addNonce("n")
+		s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{full: true, other: true}, watches: map[*pairListener]bool{}}
+		s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "AAAA", Code: "1234", Nonce: "n"})
+		s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedNotConfirmed, Nonce: "n"})
+		if s.pairs[full] || !full.w.dropped.Load() {
+			t.Fatalf("the full stream was kept (in pairs %v, dropped %v)", s.pairs[full], full.w.dropped.Load())
+		}
+		if len(other.queue) != 2 {
+			t.Fatalf("the other stream got %d events, want 2", len(other.queue))
+		}
+	})
+}
+
+// A stream keeps the nonces of its newest link.KeptCodes codes only: the
+// center keeps no older code.
+func TestAStreamKeepsItsNewestCodesOnly(t *testing.T) {
+	p := &pairListener{}
+	for i := range link.KeptCodes + 1 {
+		p.addNonce(fmt.Sprintf("n%d", i))
+	}
+	if p.owns("n0") || !p.owns(fmt.Sprintf("n%d", link.KeptCodes)) || len(p.nonces) != link.KeptCodes {
+		t.Fatalf("nonces %v: want the newest %d", p.nonces, link.KeptCodes)
 	}
 }
 

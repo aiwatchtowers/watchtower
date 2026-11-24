@@ -306,8 +306,18 @@ type pairListener struct {
 	mu    sync.Mutex
 	codes map[string]string
 	// nonces are the codes this stream was given (their qr carried its
-	// token): it is shown only those codes' events (broadcast).
-	nonces map[string]bool
+	// token), oldest first, at most link.KeptCodes (the center keeps no
+	// more): it is shown only those codes' events (broadcast).
+	nonces []string
+}
+
+// addNonce records a code this stream was given, dropping the oldest past
+// link.KeptCodes. p.mu held.
+func (p *pairListener) addNonce(nonce string) {
+	p.nonces = append(p.nonces, nonce)
+	if n := len(p.nonces); n > link.KeptCodes {
+		p.nonces = p.nonces[n-link.KeptCodes:]
+	}
 }
 
 // streamToken is p's token, "" for no stream (an issue no stream asked for).
@@ -322,7 +332,12 @@ func (p *pairListener) streamToken() string {
 func (p *pairListener) owns(nonce string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.nonces[nonce]
+	for _, n := range p.nonces {
+		if n == nonce {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *pairListener) code(device string) (string, bool) {
@@ -368,10 +383,7 @@ func (s *supervisor) broadcast(ev link.PairEvent) {
 		p.mu.Lock()
 		switch {
 		case ev.Kind == link.EventQR && ev.Nonce != "":
-			if p.nonces == nil {
-				p.nonces = map[string]bool{}
-			}
-			p.nonces[ev.Nonce] = true
+			p.addNonce(ev.Nonce)
 		case ev.Kind == link.EventSAS:
 			if p.codes == nil {
 				p.codes = map[string]string{}
@@ -468,7 +480,7 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 	// its own goroutine writes its queue.
 	stream := func() *pairListener {
 		p := &pairListener{w: w, queue: make(chan ControlAnswer, s.o.pairQueue), codes: map[string]string{},
-			nonces: map[string]bool{}, token: "stream-" + strconv.FormatUint(s.pairSeq.Add(1), 10)}
+			token: "stream-" + strconv.FormatUint(s.pairSeq.Add(1), 10)}
 		pumping.Add(1)
 		go func() {
 			defer pumping.Done()
