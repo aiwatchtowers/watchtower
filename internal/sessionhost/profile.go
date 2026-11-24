@@ -53,7 +53,10 @@ func ProfileFor(agent string) Profile {
 // Shift+Tab (IsShiftTab), which leaves the prompt as it was. When
 // unsure the input counts as a draft, which costs the owner a Return of
 // their own, never a line submitted with theirs. Twin of
-// TerminalCenter.isSubmit.
+// TerminalCenter.isSubmit. The prompt state reads keys through the draft
+// model (draft.go), byte by byte; this whole-chunk reading is kept as the
+// rule the PROJ-12 guards pin (TestIsSubmitPerProfile,
+// TestProj12_ShiftTabKeepsTheDraftState) and the model must agree with.
 func IsSubmit(b []byte, backslashBefore bool, p Profile) bool {
 	if len(p.Newline) > 0 && bytes.HasSuffix(b, p.Newline) {
 		return false

@@ -5,37 +5,47 @@
 ///
 /// Input is decoded strictly in byte order, its parser state kept across
 /// chunks (an escape sequence or a bracketed paste may span several writes):
-/// a key's effect is decided at the byte where it occurs. Only keys whose
-/// effect on the prompt is certain keep it exact: printable characters and a
-/// single-line bracketed paste add theirs, Backspace takes one, a submitting
-/// Return empties it and Shift+Tab changes nothing. Everything else — cursor
-/// and word-edit keys, Ctrl+U (in Claude Code 2.1.331 it erases only the last
-/// screen row of a wrapped draft), Esc, Tab, a line break, a multi-line
-/// paste, the owner's Ctrl+C (it interrupts a working turn and keeps the
-/// text, spec C11) and any key under a profile without `exactDraft` — makes
-/// it inexact: from then on only a submit (or the app's clear) empties it.
-/// An inexact draft, an open paste and a partial escape sequence always hold
-/// text, so an unknown prompt holds a line as before (PROJ-16, PROJ-23).
+/// a key's effect is decided at the byte where it occurs. A write ending in a
+/// lone ESC is the Esc key (inexact) unless the next write goes on with `[`
+/// or `O`, which reassembles the sequence; Esc then Return as two writes
+/// stays Esc and a submit, as the PROJ-12 guards pin.
+/// Only keys whose effect on the prompt is certain keep it exact: printable
+/// characters and a single-line bracketed paste add theirs, Backspace takes
+/// one (Claude Code's profile only, `exactDraft`), a submitting Return (a CR
+/// ending its write; Claude Code 2.1.331 submits `text\r` written at once)
+/// empties it and Shift+Tab changes nothing. Everything else — cursor and
+/// word-edit keys, Ctrl+U (in 2.1.331 it erases only the last screen row of a
+/// wrapped draft), Esc, Tab, a line break (Option+Return `ESC CR` too), a
+/// multi-line paste, the owner's Ctrl+C (it interrupts a working turn and
+/// keeps the text, spec C11) and any key under a profile without
+/// `exactDraft` — makes it inexact: from then on only a submit (or the app's
+/// clear) empties it. An inexact draft, an open paste and a partial escape
+/// sequence always hold text, so an unknown prompt holds a line as before
+/// (PROJ-16, PROJ-23).
 package struct DraftModel: Equatable, Sendable {
     package var count = 0
     package var exact = true
-    /// The last printable input was `\`, with only escape sequences or
-    /// paste brackets since: a Return there is a line break.
+    /// The character before the cursor is (or may be) `\`: a Return there is
+    /// a line break.
     private var backslash = false
     /// A bracketed paste began and its end bracket has not come.
     private var inPaste = false
-    /// An escape sequence begun in an earlier chunk, not yet complete.
+    /// An escape sequence begun and not yet complete (outside a paste), or
+    /// the part of the paste's end bracket seen so far (inside one).
     private var esc: [UInt8] = []
-    /// While exact, one entry per character of the draft — whether it is a
-    /// backslash — so an erase knows whether the draft then ends in `\`.
-    private var shape: [Bool] = []
+    /// `esc` is a lone ESC that ended its write, already read as the Esc
+    /// key; only `[` or `O` next makes it the start of a sequence.
+    private var escKey = false
+    /// The characters typed since the draft was empty or its cursor last
+    /// became unknown — whether each is a backslash — so a Backspace knows
+    /// whether the character then before the cursor is `\`.
+    private var run: [Bool] = []
 
     /// What one fed chunk was.
     package enum Key: Equatable, Sendable {
         /// Empty, or input into a permission dialog.
         case ignored
-        /// A submitting Return (a CR ending the chunk, outside a paste or an
-        /// escape sequence and not after `\`).
+        /// A submitting Return.
         case submit
         /// Only Shift+Tab, a mode switch.
         case neutral
@@ -63,23 +73,26 @@ package struct DraftModel: Equatable, Sendable {
         var edited = false
         var submitted = false
         for (index, byte) in bytes.enumerated() {
-            let last = index == bytes.count - 1
-            if !esc.isEmpty || byte == 0x1B {
-                edited = escapeByte(byte, last: last) || edited
-            } else if inPaste {
+            if escKey, byte != UInt8(ascii: "["), byte != UInt8(ascii: "O") {
+                esc = [] // it was the Esc key
+                escKey = false
+            }
+            if inPaste {
                 pasteByte(byte)
                 edited = true
-            } else if byte == 0x0D, last, !backslash, profile.submit == [0x0D] {
+            } else if !esc.isEmpty || byte == 0x1B {
+                edited = escapeByte(byte, last: index == bytes.count - 1) || edited
+            } else if byte == 0x0D, index == bytes.count - 1, !backslash, profile.submit == [0x0D] {
                 self = Self()
                 submitted = true
             } else {
-                keyByte(byte)
+                keyByte(byte, profile: profile)
                 edited = true
             }
         }
         if submitted { return .submit }
         if !edited, esc.isEmpty { return .neutral } // a sequence still open may be any key
-        if !profile.exactDraft { setInexact() }
+        if !profile.exactDraft { exact = false } // the cursor is where it was: run stays
         return .edit
     }
 
@@ -87,34 +100,35 @@ package struct DraftModel: Equatable, Sendable {
     private static let pasteEnd: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E] // ESC[201~
     private static let shiftTab: [UInt8] = [0x1B, 0x5B, 0x5A] // ESC[Z
 
-    /// A byte of an escape sequence (or the ESC that starts one): whether
-    /// the key it completed may have changed the text — false for Shift+Tab
-    /// and while the sequence is still open. A lone ESC ending a chunk
-    /// outside a paste is the Esc key.
+    /// A byte of an escape sequence outside a paste (or the ESC that starts
+    /// one): whether the key it completed may have changed the text — false
+    /// for Shift+Tab and while the sequence is open. An ESC ending its write
+    /// is the Esc key until a later write goes on with it.
     private mutating func escapeByte(_ byte: UInt8, last: Bool) -> Bool {
         if esc.isEmpty {
-            if last, !inPaste {
-                setInexact() // the Esc key
+            esc = [0x1B]
+            if last {
+                escKey = true
+                setInexact()
                 return true
             }
-            esc = [0x1B]
             return false
         }
         esc.append(byte)
+        escKey = false
         guard Self.escapeComplete(esc) else { return false }
         let seq = esc
         esc = []
         switch seq {
-        case Self.pasteEnd where inPaste:
-            inPaste = false
-        case _ where inPaste:
-            setInexact() // an escape inside pasted text: of unknown width
         case Self.pasteStart:
             inPaste = true
         case Self.shiftTab:
             return false
+        case [0x1B, 0x0D], [0x1B, 0x0A]: // Option+Return: a line break
+            backslash = false
+            setInexact()
         default:
-            setInexact() // a cursor or word-edit key, Option+key, Option+Return
+            setInexact() // a cursor or word-edit key, Esc then a key, Option+key
         }
         return true
     }
@@ -130,9 +144,31 @@ package struct DraftModel: Equatable, Sendable {
         }
     }
 
+    /// One byte inside a paste: the end bracket is matched as it streams in
+    /// (a new ESC restarts the match); every other byte, a broken match's
+    /// included, is the paste's text.
+    private mutating func pasteByte(_ byte: UInt8) {
+        if !esc.isEmpty {
+            let next = esc + [byte]
+            if Self.pasteEnd.starts(with: next) {
+                esc = next == Self.pasteEnd ? [] : next
+                if esc.isEmpty { inPaste = false }
+                return
+            }
+            let seen = esc
+            esc = []
+            seen.forEach { pasteText($0) }
+        }
+        if byte == 0x1B {
+            esc = [0x1B]
+            return
+        }
+        pasteText(byte)
+    }
+
     /// One byte of a paste's text: it counts as typed, but a line break in
     /// it makes the draft inexact.
-    private mutating func pasteByte(_ byte: UInt8) {
+    private mutating func pasteText(_ byte: UInt8) {
         addCharacter(byte)
         if byte == 0x0D || byte == 0x0A {
             backslash = false
@@ -142,14 +178,10 @@ package struct DraftModel: Equatable, Sendable {
 
     /// One typed byte outside a paste and an escape sequence that is no
     /// submit.
-    private mutating func keyByte(_ byte: UInt8) {
+    private mutating func keyByte(_ byte: UInt8, profile: AgentInputProfile) {
         switch byte {
         case 0x7F, 0x08: // Backspace, Ctrl+H
-            if exact, count > 0 { // swiftlint:disable:this empty_count
-                count -= 1
-                shape.removeLast()
-                backslash = shape.last == true
-            }
+            erase(profile: profile)
         case 0x0D, 0x0A: // a line break: `\` then Return, Ctrl+J, a CR mid-chunk
             backslash = false
             setInexact()
@@ -160,22 +192,40 @@ package struct DraftModel: Equatable, Sendable {
         }
     }
 
-    /// Counts printable input — every byte but a UTF-8 continuation byte (a
-    /// paste's control characters count too: never fewer than the prompt
-    /// shows) — and keeps the pending `\`.
-    private mutating func addCharacter(_ byte: UInt8) {
-        if (0x80..<0xC0).contains(byte) {
-            backslash = false
+    /// One Backspace. Under a profile without `exactDraft` the program may
+    /// not erase one character: what precedes the cursor is unknown (read as
+    /// `\`: a Return holds). Otherwise it takes a character off an exact
+    /// draft, and the character then before the cursor is the run's last,
+    /// none in an exact empty draft, else unknown.
+    private mutating func erase(profile: AgentInputProfile) {
+        guard profile.exactDraft else {
+            backslash = true
+            setInexact()
             return
         }
-        count += 1
-        backslash = byte == UInt8(ascii: "\\")
-        if exact { shape.append(backslash) }
+        if !run.isEmpty { run.removeLast() }
+        if exact, count > 0 { count -= 1 } // swiftlint:disable:this empty_count
+        if let last = run.last {
+            backslash = last
+        } else {
+            backslash = !(exact && count == 0) // swiftlint:disable:this empty_count
+        }
     }
 
-    /// Gives up the length: from now on only a submit empties it.
+    /// Counts printable input — every byte but a UTF-8 continuation byte (a
+    /// paste's control characters count too: never fewer than the prompt
+    /// shows) — and keeps the run and the pending `\`.
+    private mutating func addCharacter(_ byte: UInt8) {
+        guard !(0x80..<0xC0).contains(byte) else { return }
+        count += 1
+        backslash = byte == UInt8(ascii: "\\")
+        run.append(backslash)
+    }
+
+    /// Gives up the length and the cursor: from now on only a submit
+    /// empties it, and the run starts again.
     private mutating func setInexact() {
         exact = false
-        shape = []
+        run.removeAll(keepingCapacity: true)
     }
 }

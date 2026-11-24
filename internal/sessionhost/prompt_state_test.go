@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -258,7 +259,7 @@ func TestDraftClearedByApp(t *testing.T) {
 	d.feed([]byte("ab\\"), ProfileFor("claude"), false)
 	d.feed([]byte("\x1b[D"), ProfileFor("claude"), false)
 	d.clearedByApp()
-	if d != (draftModel{}) || d.holdsText() {
+	if d.count != 0 || d.inexact || d.backslash || d.inPaste || d.esc != "" || len(d.run) != 0 || d.holdsText() {
 		t.Fatalf("after clearedByApp = %+v", d)
 	}
 }
@@ -315,7 +316,7 @@ func TestPromptState_NewRunEmpty(t *testing.T) {
 	next.mu.Lock()
 	got := next.prompt
 	next.mu.Unlock()
-	if got != (promptState{}) || got.holdsText() {
+	if got.draft.count != 0 || got.draft.inexact || got.draft.run != nil || got.holdsText() {
 		t.Fatalf("a new run's prompt = %+v", got)
 	}
 }
@@ -343,5 +344,29 @@ func TestPromptState_OwnerReturnInPauseKeepsTheNextDraftExact(t *testing.T) {
 	}
 	if !p.endPause() || p.holdsText() {
 		t.Fatal("the owner's Return in the pause no longer sends the line, or the prompt still holds")
+	}
+}
+
+// Review round 3: a long single-line paste is read in linear time — the
+// run grows by appending, never by copying itself — so the allocations of
+// a paste twice as long stay within a few of the shorter one's (counted,
+// never timed).
+func TestDraftLongPasteIsLinear(t *testing.T) {
+	allocs := func(n int) float64 {
+		chunk := []byte(strings.Repeat("x", n))
+		return testing.AllocsPerRun(3, func() {
+			var d draftModel
+			prof := ProfileFor("claude")
+			d.feed([]byte(escPasteStart), prof, false)
+			d.feed(chunk, prof, false)
+			d.feed([]byte(escPasteEnd), prof, false)
+			if d.count != n || d.inexact {
+				t.Fatalf("paste of %d = %+v", n, d.count)
+			}
+		})
+	}
+	short, long := allocs(100<<10), allocs(200<<10)
+	if long > short+4 {
+		t.Fatalf("allocations: %v for 100 KiB, %v for 200 KiB — not linear", short, long)
 	}
 }
