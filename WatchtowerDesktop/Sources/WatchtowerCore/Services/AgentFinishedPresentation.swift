@@ -5,8 +5,9 @@ import Foundation
 /// (`finished · 9 tools · 43.5k tokens · 1m 29s`); expanded, the result and the ids. Claude Code's boilerplate never
 /// shows: the Go feed already dropped it from `result`.
 package struct AgentFinishedPresentation: Equatable, Sendable {
-    /// The glyph's colour, through the design kit's `Tone` in the view.
-    package enum Tone: Equatable, Sendable { case success, failure, neutral }
+    /// How the task ended, the glyph's colour (the design kit's `Tone` in the view). `neutral`: stopped, or no status
+    /// and no exit code to tell.
+    package enum Outcome: Equatable, Sendable { case success, failure, neutral }
 
     package static let resultLabel = "RESULT"
     package static let openOutputTitle = "Open output"
@@ -18,7 +19,7 @@ package struct AgentFinishedPresentation: Equatable, Sendable {
     /// The agent's name (`#N` refs in it are coloured by the view, C8), or "Background command · <name>".
     package let title: String
     package let meta: String
-    package let tone: Tone
+    package let tone: Outcome
     /// An SF Symbol name.
     package let glyph: String
     /// A background command: the row is caption-sized, its meta on the title's line.
@@ -38,15 +39,15 @@ package struct AgentFinishedPresentation: Equatable, Sendable {
         }
         if task.status == "failed" || (task.exitCode ?? 0) != 0 {
             tone = .failure
-        } else if task.status == "killed" || task.status == "stopped" {
-            tone = .neutral
-        } else {
+        } else if task.status == "completed" || task.exitCode == 0 {
             tone = .success
+        } else {
+            tone = .neutral
         }
         glyph = switch tone {
         case .success: "checkmark"
         case .failure: "xmark"
-        case .neutral: "stop"
+        case .neutral: task.status == "killed" || task.status == "stopped" ? "stop" : "minus"
         }
         meta = Self.meta(task, isCommand: isCommand)
         let report = task.result.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -54,17 +55,6 @@ package struct AgentFinishedPresentation: Equatable, Sendable {
         details = [task.taskID.isEmpty ? nil : "task \(Self.cut(task.taskID))",
                    task.toolUseID.isEmpty ? nil : Self.cut(task.toolUseID)]
             .compactMap(\.self).joined(separator: " · ")
-    }
-
-    /// Whether Open output shows `path` in the read-only viewer: only a file under the session's own Claude Code temp
-    /// dir (`/tmp/claude-<uid>/<project>/<session id>/…`, `/private/tmp` too). Anything else is revealed in Finder.
-    /// Lexical: a `.` or `..` component never counts as inside.
-    package static func outputOpensInViewer(_ path: String, claudeSessionID: String?, uid: uid_t = getuid()) -> Bool {
-        guard let claudeSessionID, !claudeSessionID.isEmpty, path.hasPrefix("/") else { return false }
-        var parts = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        guard !parts.contains(where: { $0 == "." || $0 == ".." }) else { return false }
-        if parts.first == "private" { parts.removeFirst() }
-        return parts.count >= 5 && parts[0] == "tmp" && parts[1] == "claude-\(uid)" && parts[3] == claudeSessionID
     }
 
     /// The text between the summary's first and last double quote (`Agent "Verify review #1" finished`).
@@ -93,7 +83,8 @@ package struct AgentFinishedPresentation: Equatable, Sendable {
 
     private static func statusWord(_ status: String) -> String {
         switch status {
-        case "", "completed": "finished"
+        case "completed": "finished"
+        case "": "ended"
         case "killed", "stopped": "stopped"
         default: status
         }

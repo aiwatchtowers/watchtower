@@ -87,8 +87,8 @@ final class TokenTests: XCTestCase {
     func testPaneWidths() {
         XCTAssertEqual(
             [PaneWidth.sideListMin, PaneWidth.sideListIdeal, PaneWidth.sideListMax,
-             PaneWidth.detailMin, PaneWidth.narrowPage, PaneWidth.gridCardMin],
-            [170, 220, 360, 260, 420, 240]
+             PaneWidth.detailMin, PaneWidth.narrowPage, PaneWidth.gridCardMin, PaneWidth.noticeColumn],
+            [170, 220, 360, 260, 420, 240, 480]
         )
     }
 

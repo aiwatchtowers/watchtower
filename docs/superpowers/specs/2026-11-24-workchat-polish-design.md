@@ -129,8 +129,9 @@ forever after the owner typed into the terminal prompt and erased it.
   1.2k tokens · 12s`; command → `exit 0 · 3m 34s`) and the status tone (✓ success, ✕
   failure through `Tone`, glyph only, caption size for a command); `SessionChatRow.eventLine` draws it when `task`
   is set, else today's line (teammate messages unchanged).
-- Open output opens the file in the code viewer read-only when it is under the session's
-  temp dir, else reveals it in Finder; Details shows the ids as `.caption2 .tertiary`.
+- Open output opens the file read-only in the chat's artifact viewer (its first 256 KB) when
+  it resolves, symlinks followed, inside the session's temp dir, else reveals it in Finder;
+  Details shows the ids as `.caption2 .tertiary`.
 
 ### §4 Clipboard paste
 

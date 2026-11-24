@@ -3,7 +3,7 @@ import Foundation
 import XCTest
 
 /// The quiet "agent finished" row of the Workchat (spec 2026-11-24-workchat-polish §3, D4): its title, meta line,
-/// tone, result and ids, and where Open output opens the file.
+/// tone, result and ids.
 final class AgentFinishedPresentationTests: XCTestCase {
     private func agent(
         status: String = "completed",
@@ -112,21 +112,17 @@ final class AgentFinishedPresentationTests: XCTestCase {
         XCTAssertEqual(AgentFinishedPresentation.untitled, "Agent")
     }
 
-    func testOutputOpensInViewerOnlyUnderTheSessionTempDir() {
-        let sid = "5f1c2d3e-0000-4000-8000-00000000abcd"
-        let file = "/private/tmp/claude-501/-Users-x-proj/\(sid)/tasks/a1.output"
-        XCTAssertTrue(AgentFinishedPresentation.outputOpensInViewer(file, claudeSessionID: sid, uid: 501))
-        XCTAssertTrue(AgentFinishedPresentation.outputOpensInViewer("/tmp/claude-501/-p/\(sid)/tasks/a1.output",
-                                                                    claudeSessionID: sid, uid: 501))
-        // Another session's dir, another user's, an unknown session, a path walking out, a file elsewhere.
-        XCTAssertFalse(AgentFinishedPresentation.outputOpensInViewer(file, claudeSessionID: "other", uid: 501))
-        XCTAssertFalse(AgentFinishedPresentation.outputOpensInViewer(file, claudeSessionID: sid, uid: 502))
-        XCTAssertFalse(AgentFinishedPresentation.outputOpensInViewer(file, claudeSessionID: nil, uid: 501))
-        XCTAssertFalse(AgentFinishedPresentation.outputOpensInViewer(file, claudeSessionID: "", uid: 501))
-        XCTAssertFalse(AgentFinishedPresentation.outputOpensInViewer(
-            "/private/tmp/claude-501/-p/\(sid)/../../../../etc/passwd", claudeSessionID: sid, uid: 501))
-        XCTAssertFalse(AgentFinishedPresentation.outputOpensInViewer("/Users/x/out.txt", claudeSessionID: sid, uid: 501))
-        XCTAssertFalse(AgentFinishedPresentation.outputOpensInViewer("tasks/a1.output", claudeSessionID: sid, uid: 501))
+    func testUnknownOutcomeIsNeutral() {
+        let p = AgentFinishedPresentation(task: SessionFeedTask(summary: #"Agent "X" ended"#, kind: "agent"),
+                                          fallbackTitle: "")
+        XCTAssertEqual(p.meta, "ended")
+        XCTAssertEqual(p.tone, .neutral)
+        XCTAssertEqual(p.glyph, "minus")
+        let command = AgentFinishedPresentation(task: SessionFeedTask(kind: "command"), fallbackTitle: "")
+        XCTAssertEqual(command.meta, "ended")
+        XCTAssertEqual(command.tone, .neutral)
+        let exited = AgentFinishedPresentation(task: SessionFeedTask(kind: "command", exitCode: 0), fallbackTitle: "")
+        XCTAssertEqual(exited.tone, .success)
     }
 
     // MARK: - Decoding

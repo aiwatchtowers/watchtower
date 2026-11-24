@@ -44,7 +44,7 @@ struct AgentFinishedRow: View {
             .buttonStyle(.plain)
             if expanded { expandedBody }
         }
-        .frame(maxWidth: 480, alignment: .leading)
+        .frame(maxWidth: PaneWidth.noticeColumn, alignment: .leading)
         .frame(maxWidth: .infinity)
     }
 
@@ -111,7 +111,7 @@ struct AgentFinishedRow: View {
         .padding(.bottom, Spacing.small)
     }
 
-    static func tint(_ tone: AgentFinishedPresentation.Tone) -> Color {
+    static func tint(_ tone: AgentFinishedPresentation.Outcome) -> Color {
         switch tone {
         case .success: Tone.success
         case .failure: Tone.error
@@ -129,50 +129,34 @@ struct AgentFinishedRow: View {
         return text
     }
 
-    /// The result's inline Markdown (`code`, emphasis); the plain text when it does not parse.
+    /// The result's inline Markdown (`code`, emphasis), a link of a disallowed scheme left as plain text; the plain
+    /// text when it does not parse.
     static func inlineMarkdown(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+        let parsed = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
+        return AllowedURLSchemes.strippingDisallowedLinks(parsed)
     }
 
     // MARK: - Open output
 
-    /// The most of an output file the viewer shows; the rest is cut (an agent's output is its whole transcript).
-    nonisolated static let outputLimit = 256 * 1024
-
-    /// Open output: a file under the session's Claude Code temp dir opens read-only in the chat's code viewer, any
-    /// other is revealed in Finder; a file that is gone beeps.
+    /// Open output: a file that resolves inside the session's Claude Code temp dir (`TaskOutputFile`) opens read-only
+    /// in the chat's artifact viewer (its first 256 KB, as code), any other is revealed in Finder; a file that is gone
+    /// or unreadable beeps. `claudeSessionID` is the row's own conversation, not the pane's latest.
     static func openOutput(_ path: String, claudeSessionID: String?, openArtifact: @escaping (ChatArtifactContent) -> Void) {
-        let url = URL(fileURLWithPath: path)
-        guard AgentFinishedPresentation.outputOpensInViewer(path, claudeSessionID: claudeSessionID) else {
-            if FileManager.default.fileExists(atPath: path) {
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            } else {
+        Task {
+            let outcome = await Task.detached(priority: .userInitiated) {
+                TaskOutputFile.read(path, claudeSessionID: claudeSessionID)
+            }.value
+            switch outcome {
+            case let .text(text, cut):
+                openArtifact(ChatArtifactContent(key: "task-output:\(path)", kind: "code",
+                                                 title: URL(fileURLWithPath: path).lastPathComponent,
+                                                 content: text, contentCut: cut))
+            case .reveal where FileManager.default.fileExists(atPath: path):
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+            case .reveal, .unreadable:
                 NSSound.beep()
             }
-            return
         }
-        Task {
-            let read = await Task.detached(priority: .userInitiated) { readOutput(url) }.value
-            guard let read else { NSSound.beep(); return }
-            openArtifact(ChatArtifactContent(key: "task-output:\(path)", kind: "code", title: url.lastPathComponent,
-                                             content: read.text, contentCut: read.cut))
-        }
-    }
-
-    /// The file's first `outputLimit` bytes as text, and whether there was more; nil when it cannot be read.
-    nonisolated static func readOutput(_ url: URL) -> (text: String, cut: Bool)? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-        let data: Data
-        do {
-            data = try handle.read(upToCount: outputLimit + 1) ?? Data()
-        } catch {
-            return nil
-        }
-        let cut = data.count > outputLimit
-        // Lossy on purpose: the cut can split a character.
-        // swiftlint:disable:next optional_data_string_conversion
-        return (String(decoding: data.prefix(outputLimit), as: UTF8.self), cut)
     }
 }

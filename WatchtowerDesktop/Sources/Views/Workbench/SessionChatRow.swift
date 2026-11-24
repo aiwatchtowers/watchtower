@@ -25,8 +25,6 @@ struct WorkchatFeed {
     var answerPending = false
     /// An artifact card opens the viewer.
     var onOpenArtifact: (ChatArtifactContent) -> Void = { _ in }
-    /// The session's Claude Code id: a task's output under its temp dir opens in the viewer (`AgentFinishedRow`).
-    var claudeSessionID: String?
     /// A click on a highlighted span of the agent's text (`WorkchatHighlights`); nil = the spans are only coloured.
     var onHighlight: ((AgentTextHighlights.Span, Int64) -> Void)?
     /// Whether a path in an agent message (by id) is a file of the session's folders: only such a path is coloured.
@@ -86,14 +84,16 @@ struct WorkchatFeed {
             }
         }
         let (markdown, expanded, toggle) = (markdown, expandedEvents, onToggle)
-        let (claudeSessionID, openArtifact) = (claudeSessionID, onOpenArtifact)
+        let openArtifact = onOpenArtifact
         context.systemRow = { message in
             guard let entry = byID[message.id] else { return AnyView(EmptyView()) }
             return AnyView(
                 SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry), expanded: expanded.contains(entry.id),
                                onToggle: { toggle(entry.id) },
                                onOpenOutput: { path in
-                                   AgentFinishedRow.openOutput(path, claudeSessionID: claudeSessionID,
+                                   // The row's own conversation: after /clear or a resume, an older task's output
+                                   // is in its own session's temp dir.
+                                   AgentFinishedRow.openOutput(path, claudeSessionID: entry.conversation,
                                                                openArtifact: openArtifact)
                                })
                 .equatable()

@@ -22,7 +22,7 @@ Workchat is a session's second mode. It shows the same session in the same place
 
 Each session opens in the mode you last showed it in. A new session always opens in the terminal, because a fresh agent may stop at a trust or login prompt only the terminal shows.
 
-Claude Code's own notices show as quiet lines instead of as your messages. When a helper agent or a background command finishes, its line shows a green ✓ or a red ✕, the agent's name and how it went, such as `finished · 9 tools · 43.5k tokens · 1m 29s` or `exit 0 · 3m 34s`. Click it for the agent's result, **Open output** and **Details** (the task's ids). A message from another session is one grey line; click it for the details.
+Claude Code's own notices show as quiet lines instead of as your messages. When a helper agent or a background command finishes, its line shows a green ✓ when it worked, a red ✕ when it failed or a grey mark when it was stopped, the agent's name and how it went, such as `finished · 9 tools · 43.5k tokens · 1m 29s` or `exit 0 · 3m 34s`. Click it for the agent's result, **Open output** and **Details** (the task's ids). A message from another session is one grey line; click it for the details.
 
 Once the session ends, the field gives way to **Session finished. The history stays readable.** You can still scroll, and the agents button under it still opens finished subagents.
 
