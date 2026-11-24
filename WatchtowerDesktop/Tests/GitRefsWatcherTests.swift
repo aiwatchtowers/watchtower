@@ -162,7 +162,7 @@ final class GitRefsWatcherTests: XCTestCase {
         // The callback ignores the stream argument.
         let stream = try XCTUnwrap(OpaquePointer(bitPattern: 1))
         let cfPaths = paths as CFArray
-        try withExtendedLifetime(cfPaths) {
+        try withExtendedLifetime((relay, cfPaths)) {
             try flags.withUnsafeBufferPointer { flagBuffer in
                 try ids.withUnsafeBufferPointer { idBuffer in
                     GitRefsWatcher.streamCallback(stream, info, paths.count,
@@ -183,7 +183,7 @@ final class GitRefsWatcherTests: XCTestCase {
 
     /// Per-file events (the header's paths are files), the first change at
     /// once, a rescan when `.git` is replaced, paths the callback can read.
-    func testTheStreamReportsFilesAndRootChanges() {
+    func testTheStreamFlags() {
         let flags = GitRefsWatcher.streamFlags
         for flag in [kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagNoDefer,
                      kFSEventStreamCreateFlagWatchRoot, kFSEventStreamCreateFlagUseCFTypes] {
@@ -204,14 +204,14 @@ final class GitRefsWatcherTests: XCTestCase {
         XCTAssertEqual(changes, [GitRefsChange(mayMoveWorktrees: true)])
     }
 
-    /// One call per batch: a ref whose lock and final name land in two
-    /// batches calls twice, and only the folder's own HEAD leaves the other
-    /// worktrees alone. `latency` is what coalesces batches.
+    /// One call per notifying batch, however many relevant paths it holds;
+    /// two batches call twice (`latency` is what coalesces them), and a
+    /// batch of only the folder's own HEAD leaves the other worktrees alone.
     func testEachNotifyingBatchIsOneCall() throws {
         var changes: [GitRefsChange] = []
         let watcher = watch { changes.append($0) }
+        try deliver(watcher, ["HEAD", "refs/heads/x", "packed-refs"])
         try deliver(watcher, ["refs/heads/x.lock"])
-        try deliver(watcher, ["refs/heads/x"])
         try deliver(watcher, ["HEAD"])
         XCTAssertEqual(changes, [GitRefsChange(mayMoveWorktrees: true), GitRefsChange(mayMoveWorktrees: false)])
     }
