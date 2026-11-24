@@ -93,6 +93,31 @@ final class WorkchatOutgoingTests: XCTestCase {
         XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the /x/1.png"), line: sent))
         XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the [Image #1]"), line: sent))
         XCTAssertFalse(WorkchatOutgoing.matches(owner("fix the"), line: sent), "no file in it")
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the \"/x/1.png\""), line: sent), "quoted")
+    }
+
+    /// Fix round 3 (codex M1): the path must be a whole token, and an image
+    /// marker counts only for a line that sent an image.
+    func testAFilesOnlyLineSentTogetherNeedsItsWholePath() {
+        var pdf = WorkchatOutgoing(
+            id: UUID(), text: "/tmp/report.pdf", sentAt: sentAt, state: .typed, typedText: "",
+            attachmentPaths: ["/tmp/report.pdf"]
+        )
+        pdf.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("review /tmp/report.pdf"), line: pdf))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("review /tmp/report.pdf now"), line: pdf))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("review /tmp/report.pdf.bak"), line: pdf), "a longer path")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("review x/tmp/report.pdf"), line: pdf))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("look at [image]"), line: pdf), "no image was sent")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("look at [Image #1]"), line: pdf))
+
+        var spaced = WorkchatOutgoing(
+            id: UUID(), text: "\"/x/a b.png\"", sentAt: sentAt, state: .typed, typedText: "",
+            attachmentPaths: ["/x/a b.png"]
+        )
+        spaced.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("see \"/x/a b.png\""), line: spaced))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("see [image]"), line: spaced), "an image was sent")
     }
 
     /// Spec §6.3: a queued line's caption says why it waits; the hold reason

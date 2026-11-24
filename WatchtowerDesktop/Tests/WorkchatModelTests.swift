@@ -137,7 +137,30 @@ final class WorkchatModelTests: XCTestCase {
         func wait() async {
             guard !reached else { return }
             reached = true
+            settle(parked: true)
             await withCheckedContinuation { continuation = $0 }
+        }
+
+        /// Whoever awaits `parked()`, and how it ended (`nil`: not yet).
+        private var parkWaiter: CheckedContinuation<Bool, Never>?
+        private var parkOutcome: Bool? // swiftlint:disable:this discouraged_optional_boolean
+
+        /// True once a call parks here; false when the work that should
+        /// park ends first (`ended`). No yield count and no clock bound it:
+        /// one of the two always comes.
+        func parked() async -> Bool {
+            if let parkOutcome { return parkOutcome }
+            return await withCheckedContinuation { parkWaiter = $0 }
+        }
+
+        /// The work meant to park here is over.
+        func ended() { settle(parked: false) }
+
+        private func settle(parked: Bool) {
+            guard parkOutcome == nil else { return }
+            parkOutcome = parked
+            parkWaiter?.resume(returning: parked)
+            parkWaiter = nil
         }
 
         func release() {
@@ -724,8 +747,15 @@ final class WorkchatModelTests: XCTestCase {
 
         let gate = Gate()
         delivery.refreshStates = { await gate.wait(); return true }
-        let sweep = Task { await delivery.deliverHeld() }
-        await gate.untilReached()
+        let lines = try XCTUnwrap(delivery)
+        let sweep = Task {
+            await lines.deliverHeld()
+            gate.ended()
+        }
+        guard await gate.parked() else {
+            XCTFail("the sweep never reached its state read")
+            return
+        }
         await model.sendTogether(second)
         XCTAssertEqual(model.outgoing.last?.state, .queued, "behind the first, which is on its way")
         gate.release()

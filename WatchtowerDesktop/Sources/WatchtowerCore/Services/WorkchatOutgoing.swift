@@ -120,7 +120,7 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     /// (a "/name args" line equals the parser's slash entry), dated at or after sentAt.
     /// Matched on `text`, the expanded line the transcript records (#2065 §6), not on the tokenized `typedText`.
     /// A line sent together with the prompt's text matches an entry from its Send together on that ends with
-    /// it (one with only files: an entry that holds one of them).
+    /// it (one with only files: an entry that holds one of its paths whole, or an image marker when it sent an image).
     package static func matches(_ entry: SessionFeedEntry, line: Self) -> Bool {
         guard entry.kind == "owner", let at = entry.at, at >= line.sentAt else { return false }
         // Claude Code records a pasted image path as "[Image #N]"; the feed
@@ -131,8 +131,36 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
                withoutImageMarkers(withoutPaths(line.text, line.attachmentPaths)))
         guard let together = line.sentTogetherAt else { return recorded == sent }
         guard at >= together else { return false }
-        // Files only: what the stripping took out of the entry was the line's paths or image markers.
-        return sent.isEmpty ? recorded != collapsed(entry.text) : recorded.hasSuffix(sent)
+        return sent.isEmpty ? holdsFile(of: line, in: entry.text) : recorded.hasSuffix(sent)
+    }
+
+    /// Whether `text` holds one of the line's paths as a whole token (quoted or not, bounded by whitespace, a
+    /// quote or the ends), or — when the line sent an image — an image marker.
+    private static func holdsFile(of line: Self, in text: String) -> Bool {
+        if line.attachmentPaths.contains(where: { holdsToken(text, path: $0) }) { return true }
+        guard line.attachmentPaths.contains(where: isImagePath),
+              let imageMarker else { return false }
+        return imageMarker.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    private static func holdsToken(_ text: String, path: String) -> Bool {
+        let bound: (Character) -> Bool = { $0.isWhitespace || $0 == "\"" || $0 == "'" }
+        for form in Set([quoted(path), "\"\(path)\"", path]) {
+            var from = text.startIndex
+            while let found = text.range(of: form, range: from..<text.endIndex) {
+                let before = found.lowerBound == text.startIndex || bound(text[text.index(before: found.lowerBound)])
+                let after = found.upperBound == text.endIndex || bound(text[found.upperBound])
+                if before, after { return true }
+                from = text.index(after: found.lowerBound)
+            }
+        }
+        return false
+    }
+
+    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "bmp"]
+
+    private static func isImagePath(_ path: String) -> Bool {
+        imageExtensions.contains((path as NSString).pathExtension.lowercased())
     }
 
     /// A path as it goes into a line: one with a space, a double quote or a backslash in double quotes, with `\`
