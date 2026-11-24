@@ -26,7 +26,7 @@
 2. **⌘V with a screenshot while the composer is not first responder** — the menu item validates against the composer only when it is focused; pasting into the feed must do nothing. Test in T5 (`validate` returns false for a view that is not first responder is AppKit's; assert our override never enables paste without `onPasteData`).
 3. **A `#N` inside a URL or a Markdown heading, a hash-like word (`deadbeef` all letters), a path that does not resolve** — no highlight. Tests in T2's scanner table.
 4. **A task notification from an older Claude Code with no `<usage>`** — the row still draws with title and status; meta omits missing parts. Test in T3 and T4.
-5. **Clear and send clicked twice fast, or while a hook flips the agent to Working** — one Ctrl+C at most, none while working. Tests in T7 with a fake clock and a fake control.
+5. **Clear and send clicked twice fast, or while a hook flips the agent to Working** — one Ctrl+C at most, none while working. Tests in T7: host `clear_too_soon` with fake `now`, Mac once-per-line and working refusal.
 
 ---
 
@@ -155,6 +155,7 @@ Depends on: none
   - `testScreenshotPasteIsEnabledAndAttaches` (PNG only) → validate `true`; `onInlinePaste` gets `.image`. Expected today: validate `false` (the confirmed cause).
   - `testFinderFilePasteAttaches` (a `public.file-url` + filename string, as Finder writes) → `onAttachFiles` gets the URL. Record the observed failure and its cause in spec §4.
   - `testNoPasteDataKeepsStockValidation`: without `onPasteData`, a PNG-only pasteboard validates `false`.
+  - `testImageSaveFailureShowsErrorAndInsertsNothing`: through the same menu path, with a `WorkchatModel` whose attachment store fails to write → `attachmentError` is set, the field's text is unchanged, no token inserted.
 - [ ] **Step 2:** `make test-swift FILTER=PastingTextViewTests` → the first two FAIL.
 - [ ] **Step 3:** Add image types (`public.png`, `public.tiff`, `public.jpeg`, `public.heic`), `public.file-url` and `com.adobe.pdf` to `readablePasteboardTypes` when `onPasteData != nil`; enable paste in `validateUserInterfaceItem` when the pasteboard holds one of them; fix the Finder-file cause found in Step 1. The private pasteboard property (`pasteboard`) is used in validation too.
 - [ ] **Step 4:** Paperclip menu "Paste …" item from `ComposerPasteMenu.title`, computed when the menu opens (user action), disabled on `nil`; `WorkchatComposerTests` cover the four titles.
@@ -175,17 +176,18 @@ Depends on: none
 - Modify: `docs/inventory/workbench.md` (PROJ-16/23 wording: the draft model; change-log line, ask #1757)
 
 **Interfaces:**
-- Produces Go: `type draftModel struct{ count int; exact bool }`, `func (d *draftModel) feed(b []byte, prof Profile, dialog bool)`, `func (d draftModel) holdsText() bool` (`count > 0 || !exact`), `func (d *draftModel) clearedByApp()` (`{0,true}`); `promptState` embeds it; `holdsText()` keeps its name and callers.
-- Produces Swift: `package struct DraftModel: Equatable, Sendable { var count = 0; var exact = true; mutating func feed(_ bytes: [UInt8], profile: TerminalInputProfile, dialog: Bool); var holdsText: Bool; mutating func clearedByApp() }`; `TerminalCenter.draftChanged: AsyncStream<Int64>` (session id) or an `@Observable` counter the line delivery observes.
+- Produces Go: `type draftModel struct{ count int; exact bool }`, `func (d *draftModel) feed(b []byte, prof Profile, dialog bool)` (no idle input: the owner's Ctrl+C sets `exact = false`; only the app's `clear_first` delivery, Task 7, empties via `clearedByApp`), `func (d draftModel) holdsText() bool` (`count > 0 || !exact`), `func (d *draftModel) clearedByApp()` (`{0,true}`); `promptState` embeds it; `holdsText()` keeps its name and callers.
+- Produces Swift: `package struct DraftModel: Equatable, Sendable { var count = 0; var exact = true; mutating func feed(_ bytes: [UInt8], profile: AgentInputProfile, dialog: Bool); var holdsText: Bool; mutating func clearedByApp() }`; `TerminalCenter.draftChanged: AsyncStream<Int64>` (session id) or an `@Observable` counter the line delivery observes.
 - Fixture rows: `{"name","profile","keys":[base64 or escaped bytes…],"dialog":false,"expect":{"count":N,"exact":B,"holds":B}}`.
 
-- [ ] **Step 1: Write `draft_cases.json`** with at least: `type-abc` (3,exact,holds); `type-then-backspace-all` (0,exact,free); `backspace-on-empty` (0,exact,free); `ctrl-u-single-line` (0,exact,free); `ctrl-u-multi-line` (exact=false,holds); `left-then-backspace-all` (exact=false,holds); `option-backspace` (exact=false,holds); `esc` (exact=false,holds); `submit-return` (0,exact,free); `shift-tab` (unchanged); `bracketed-paste-5-runes` (5); `utf8-cyrillic-3-runes` (3); `ctrl-c-idle-nonempty` (0,exact,free); `dialog-y` with dialog=true (unchanged); `codex-profile-any-key` (exact=false).
+- [ ] **Step 1: Write `draft_cases.json`** with at least: `type-abc` (3,exact,holds); `type-then-backspace-all` (0,exact,free); `backspace-on-empty` (0,exact,free); `ctrl-u-single-line` (0,exact,free); `ctrl-u-multi-line` (exact=false,holds); `left-then-backspace-all` (exact=false,holds); `option-backspace` (exact=false,holds); `esc` (exact=false,holds); `submit-return` (0,exact,free); `shift-tab` (unchanged); `bracketed-paste-5-runes` (5); `utf8-cyrillic-3-runes` (3); `ctrl-c-owner` (exact=false,holds); `dialog-y` with dialog=true (unchanged); `codex-profile-any-key` (exact=false).
 - [ ] **Step 2:** Go `TestDraftFixture` and Swift `DraftModelFixtureTests` read the file (Swift path as in `TerminalPasteFixtureTests`) → FAIL.
 - [ ] **Step 3:** Implement both from the table (spec §6.1). A delivery's own paste and `left_typed` set `exact = false` (as the old flag's set). Fake `FakeHostDelivery` uses `DraftModel`.
 - [ ] **Step 4: Re-check on change.** Go: when `holdsText` flips to false, the host re-tries its held `hold_if_prompt_text` deliveries (phone lines, agent messages). Swift: `SessionLineDelivery` re-runs `lineCheck`/`workchatLineCheck` for lines held with `.promptHasText` on `draftChanged`. Tests: `TestPromptState_ReleaseRetriesHeld` (Go, fake deliverer), `SessionLineDeliveryTests.testHeldAnswerGoesWhenDraftErased`.
 - [ ] **Step 5: Guards.** Run `go test ./internal/sessionhost ./internal/sessionmsg/... ./internal/sessionline` (PROJ-23 guards must stay green unchanged) and add `TestProj23_ErasedDraftReleases`. `make test-swift FILTER='SessionControlTests|SessionLineDeliveryTests|ComposerDeliverTests|OwnerAsksViewModelTests|DraftModelFixtureTests'` → PASS.
-- [ ] **Step 6:** Inventory wording edit (no guard relaxed: unknown still holds).
-- [ ] **Step 7: Commit** `fix(workbench): erased terminal draft no longer holds lines (#2201)`.
+- [ ] **Step 6: Reset on restart.** Go: a new run's `promptState` is `{0,true}` (`TestPromptState_NewRunEmpty`). Swift: adopting a run on re-attach resets the mirror (`TerminalCenter` test `testReattachResetsDraft`, through the existing reattach test seam).
+- [ ] **Step 7:** Inventory wording edit (no guard relaxed: unknown still holds).
+- [ ] **Step 8: Commit** `fix(workbench): erased terminal draft no longer holds lines (#2201)`.
 
 ### Task 7: Hold captions and actions
 
@@ -193,27 +195,35 @@ Depends on: Task 6
 
 **Files:**
 - Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/WorkchatOutgoing.swift` (`State.queued(reason:)` or a `holdReason` field; captions)
-- Modify: `WatchtowerDesktop/Sources/ViewModels/WorkchatModel.swift` (`clearAndSend(_:)`, `sendTogether(_:)`), `WatchtowerDesktop/Sources/Services/TerminalCenter.swift` (`sendClear(sessionID:) -> Bool`, Ctrl+C `0x03`, 3 s guard), `WatchtowerDesktop/Sources/Views/Workbench/WorkchatComposer.swift` (`WorkchatOutgoingBubble` actions)
+- Modify: `internal/sessionhost/deliver.go` (`DeliverRequest.ClearFirst`, `held(clear_too_soon)`), `internal/sessionhost/server.go` (`Options.now`, per-session `lastClear`), `WatchtowerDesktop/Sources/WatchtowerCore/Services/SessionHost/SessionHostMessages.swift` (`clearFirst` → `clear_first`)
+- Modify: `WatchtowerDesktop/Sources/ViewModels/WorkchatModel.swift` (`clearAndSend(_:)`, `sendTogether(_:)`, `holdPreview(for:)`), `WatchtowerDesktop/Sources/Services/TerminalCenter.swift` (pass `clearFirst`; mirror `clearedByApp` on the reported delivery; `promptPreview`), `WatchtowerDesktop/Tests/FakeHostDelivery.swift` (honours `clearFirst`), `WatchtowerDesktop/Sources/Views/Workbench/WorkchatComposer.swift` (`WorkchatOutgoingBubble` actions)
+- Test: `internal/sessionhost/deliver_test.go`
 - Test: `WatchtowerDesktop/Tests/Core/WorkchatOutgoingTests.swift`, `WatchtowerDesktop/Tests/WorkchatModelTests.swift`
 - Modify: `docs/guide/features/workbench/sessions.md` (Workchat: held lines, Clear and send, paste), `docs/features/session-chat-feed.md`
 
 **Interfaces:**
-- Consumes: `SessionControl.LineHold`, `DraftModel.clearedByApp()` via `TerminalCenter`.
-- Produces: `WorkchatOutgoing.holdReason: SessionControl.LineHold?`; `WorkchatOutgoing.caption(state:working:holdsUntilIdle:sentWhileBusy:holdReason:)`; `WorkchatModel.canClearAndSend(_ id: UUID) -> Bool`; `TerminalCenter.promptPreview(sessionID:) -> String?` (last prompt line from the terminal buffer, display only).
+- Consumes: `SessionControl.LineHold`; T6's `draftModel.clearedByApp()` (Go, called by the host) and `DraftModel.clearedByApp()` (Swift mirror).
+- Produces Go: `DeliverRequest.ClearFirst bool` (`json:"clear_first,omitempty"`); `Options.now func() time.Time` (default `time.Now`); hold reason `"clear_too_soon"`; `clearWindow = 3 * time.Second`; `Profile.ClearSettle` (Claude Code: 400 ms, cap 1 s).
+- Produces Swift: `WorkchatOutgoing.holdReason: SessionControl.LineHold?`; `WorkchatOutgoing.caption(state:working:holdsUntilIdle:sentWhileBusy:holdReason:)`; `WorkchatModel.canClearAndSend(_ id: UUID) -> Bool`; `WorkchatModel.holdPreview(for id: UUID) -> String?` fed by an injected `promptPreview: (Int64) -> String?` (in the app `TerminalCenter.promptPreview(sessionID:)`, the last prompt line of the terminal buffer, display only).
 
 - [ ] **Step 1: Failing tests** (`WorkchatOutgoingTests`): `.needsApproval` → `"Waiting: answer the permission prompt in the terminal"`; `.agentBusy` → `"Queued · sends in a moment"`; `.promptHasText` → `"Waiting: the terminal prompt holds text"`.
-- [ ] **Step 2: Failing tests** (`WorkchatModelTests`, fake control + fake clock):
-  - `testClearAndSendIdle`: held `.promptHasText`, idle → exactly one `0x03` sent, draft `clearedByApp`, then the line delivered after the redraw signal.
-  - `testClearAndSendRefusedWhenWorking`: status flips to Working before the click → no `0x03`, line stays held, `canClearAndSend == false`.
+- [ ] **Step 2: Failing Go tests** (`deliver_test.go`, fake `now` and `settle`, a fake pty capturing writes):
+  - `TestDeliver_ClearFirst_InexactDraft`: draft `{3,false}`, `ClearFirst` → writes `0x03`, then the paste and Return; `holdsText()` false after.
+  - `TestDeliver_ClearFirst_TooSoon`: two `ClearFirst` deliveries 1 s apart (fake `now`) → second `held(clear_too_soon)`, one `0x03` total; at 3.1 s → allowed.
+  - `TestDeliver_ClearFirst_DialogDuringPause`: a dialog hint arrives during the clear pause → `held_dialog`, no paste.
+  - `TestDeliver_ClearFirst_Interrupted`: connection ends after the `0x03` → `interrupted`, no second `0x03`.
+- [ ] **Step 3: Failing Swift tests** (`WorkchatModelTests` with `FakeHostDelivery` and a fake `SessionControl`):
+  - `testClearAndSendIdle`: held `.promptHasText`, idle → one delivery with `clearFirst == true`; the mirror's draft is `{0,true}` after it reports `submitted`.
+  - `testClearAndSendRefusedWhenWorking`: status flips to Working before the click → no delivery, line stays held, `canClearAndSend == false`.
   - `testClearAndSendOncePerLine`: second call for the same line → no-op.
-  - `testNoSecondCtrlCWithin3s`: two held lines, two clicks 1 s apart (fake clock) → one `0x03`; at 3.1 s → allowed.
-  - `testClearAndSendGivesUpAfter1s`: no redraw within 1 s (fake clock) → line held, caption unchanged.
+  - `testClearTooSoonKeepsHeld`: the fake host answers `held(clear_too_soon)` → line stays held, caption unchanged.
+  - `testHoldPreviewInCaption`: injected `promptPreview` returns `"> look at the window test again"` → `holdPreview(for:)` returns it; nil preview → nil (caption only).
   - `testSendTogether`: uses the beside-text delivery (`sharedPrompts`), one Return.
   - `testHeldThenSessionGone`: → `.notSent`, text back in the field.
-- [ ] **Step 3:** `make test-swift FILTER='WorkchatOutgoingTests|WorkchatModelTests'` → FAIL; implement; → PASS.
-- [ ] **Step 4:** Bubble per mock 08/09: grey caption, prompt preview in monospace `.secondary`, text buttons (`KitQuietButtonStyle`); Clear hidden while working.
-- [ ] **Step 5:** Guide page edit (follow `docs/guide/WRITING.md`); `go test ./docs/guide`.
-- [ ] **Step 6: Commit** `feat(workchat): say why a line waits, Clear and send (#2201)`.
+- [ ] **Step 4:** `go test ./internal/sessionhost -run TestDeliver_ClearFirst` and `make test-swift FILTER='WorkchatOutgoingTests|WorkchatModelTests|SessionLineDeliveryTests'` → FAIL; implement; → PASS. PROJ-12/16/23 guards (`go test ./internal/sessionhost ./internal/sessionmsg/...`) stay green.
+- [ ] **Step 5:** Bubble per mock 08/09: grey caption, prompt preview in monospace `.secondary`, text buttons (`KitQuietButtonStyle`); Clear hidden while working.
+- [ ] **Step 6:** Guide page edit (follow `docs/guide/WRITING.md`); `go test ./docs/guide`.
+- [ ] **Step 7: Commit** `feat(workchat): say why a line waits, Clear and send (#2201)`.
 
 ### Task 8: Snapshots against the mock, docs summary
 
@@ -223,6 +233,6 @@ Depends on: Tasks 1–7
 - Modify: `WatchtowerDesktop/Tests/DesignShots/` (real-view shots for the 12 states beside the mock ones)
 - Modify: `docs/features/README.md` (one-paragraph summary update), `CLAUDE.md` only if a new feature note was added (none planned)
 
-- [ ] **Step 1:** Add real-view `DesignShot`s for states 01–12 (`workchat-polish-real-NN`), render light/dark, compare each to its mock PNG; list differences; fix the view or, where the mock was wrong, note it in the spec's Mockups section.
+- [ ] **Step 1:** Add real-view `DesignShot`s for states 01–12 (`workchat-polish-real-NN`), render light/dark, compare each to its mock PNG; list differences and fix the view. A difference the implementer believes the approved mock got wrong is not decided in the spec: the controller files it to the owner (`ask_owner` question with both PNGs) and the view matches the mock until the owner answers.
 - [ ] **Step 2:** Update `docs/features/README.md` session-chat-feed summary with: steps collapsed, `SyntaxTint`/`AgentTextHighlights`, `task` object, paste types, `DraftModel`.
 - [ ] **Step 3: Commit** `docs(workchat): polish shots and summary (#2201)`.

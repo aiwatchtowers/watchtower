@@ -15,6 +15,7 @@ Board: #2201. Approved design: [`docs/design/mockups/workchat-polish/`](../../de
 | C1 | Highlighting covers `#N` refs, commit hashes, file paths, commands; verdict words and durations are not coloured | author's call, from D3 (v2 dropped them) |
 | C2 | Highlighting is Workchat-only (a `ChatFeedContext` flag); the AI chat and the phone are unchanged in v1 | author's call |
 | C3 | The prompt-empty fix is a per-agent "draft length" model in both twins (Mac `TerminalCenter`, Go `sessionhost.promptState`, test fake `FakeHostDelivery`), not screen scraping. **Narrower than the v2 mockup's "read the line off the screen":** an erase releases the line when it was a Backspace or Ctrl+U erase of a draft typed straight (no cursor keys); after cursor or word-edit keys the line stays held as today, and the hold caption's actions are the way out | author's call, §6.1 — the owner confirms it by approving this spec |
+| C9 | The app's clear is a host delivery flag (`clear_first`), not a Mac-side keystroke: the host owns the prompt state | author's call, plan review ask #1761 |
 | C4 | "Clear and send" is one Ctrl+C (the v2 mockup said Ctrl+U: in Claude Code Ctrl+U only clears the current line before the cursor, Ctrl+C clears the whole input), offered only while the agent is idle; while it works only "Send together" and Cancel | author's call, §6.3 (Ctrl+C interrupts a working agent) |
 | C5 | The expanded steps list stays above the live line (as today), not below it as the HTML drew | author's call, mock shots |
 | C6 | A pasted screenshot is an inline `Image #N` token (the #2065 paste tokens), not the HTML's thumbnail chip; only Finder files are chips | owner's earlier D7 of `2026-11-19-workchat-agents-and-progress-design.md` ("pastes go inline as tokens, as in Claude Code"); the v2 chip contradicted it |
@@ -165,8 +166,9 @@ host holds the same line for `hold_if_prompt_text`.
    - Backspace subtracts 1 (floor 0) while `exact`;
    - Ctrl+U while `exact` and the draft holds no line break sets `{0, true}` (the cursor
      is at the end, so it clears the whole line);
-   - a submitting Return, and Ctrl+C on a non-empty draft while the agent is idle (Claude
-     Code clears the input), set `{0, true}`;
+   - a submitting Return sets `{0, true}`; the owner's own Ctrl+C sets `exact = false`
+     (whether it cleared the input depends on the agent's state, which the model does
+     not see — the safe side);
    - any other cursor or word-edit key (arrows, Home/End, Ctrl+A/E/W/K, Ctrl+U on a
      multi-line draft, Option+Backspace, Esc) sets `exact = false`: from then on only a
      submit or a clear empties it.
@@ -191,15 +193,20 @@ host holds the same line for `hold_if_prompt_text`.
    terminal", `agentBusy` (a line just submitted) → "Queued · sends in a moment", and
    `promptHasText` → "Waiting: the terminal prompt holds text", plus the prompt's last line when the
    Mac terminal buffer can show it (read-only display, never a decision). Actions:
-   - **Clear and send** (idle only): one Ctrl+C into the session, wait for the next
-     prompt redraw (≤ 1 s, else give up and leave the line held), then the line. The
-     app's own Ctrl+C sets the draft model to `{0, true}` whatever its state (exact or
-     not), so the held line is released by it and never waits for a second clear. The
-     action runs at most once per held line (the button disappears after the click), and
-     the app never sends a Ctrl+C within 3 s of its previous one to the same session — so
-     a Ctrl+C that landed on an already empty prompt (Claude Code then arms "press again
-     to exit") can never be followed by a second one from the app. Test: a fake clock and
-     a fake session assert one Ctrl+C per line and none inside the 3 s window.
+   - **Clear and send** (idle only, checked by the Mac's `workchatLineCheck` right
+     before): the line goes to the session host as a delivery with a new flag
+     `clear_first`. The host — the authority on the prompt — does it atomically under
+     its session lock: refuse with `held(clear_too_soon)` if it sent a clear to this
+     session less than 3 s ago (`Options.now`, injectable); write one Ctrl+C (`0x03`);
+     wait the profile's clear pause (≤ 1 s, through the injectable `Options.settle`);
+     set the draft model to `{0, true}` (`clearedByApp`, whatever its state); then the
+     normal paste + Return path. A dialog that came up meanwhile still holds it
+     (`held_dialog`). The Mac mirror applies `clearedByApp` when the host reports the
+     delivery. The action runs at most once per held line (the button disappears after
+     the click), so a Ctrl+C that landed on an already empty prompt (Claude Code then
+     arms "press again to exit") is never followed by a second one from the app. Tests:
+     Go with fake `now`/`settle` (one `0x03`, none inside 3 s, released after an inexact
+     draft); Swift with `FakeHostDelivery`.
    - **Send together**: the existing beside-text delivery (`sharedPrompts`), the line
      pasted after the draft with one Return.
    - **Cancel**: as today.
@@ -223,10 +230,11 @@ the pane's presentation, with tests.
 - **Clear and send, agent starts working between check and Ctrl+C:** the action
   re-checks `isIdle` right before the Ctrl+C and refuses (line stays held, button
   disabled). Test with a fake `SessionControl`.
-- **Clear and send, prompt never redraws:** after 1 s the line stays held, caption
-  unchanged. Test with a fake clock (no wall time).
+- **Clear and send, the host restarts between the Ctrl+C and the paste:** the delivery
+  ends `interrupted` → the existing "may be typed" path; no second Ctrl+C is sent.
+  Go test with a fake deliverer.
 - **Restart:** a relaunched run starts `{0, true}` (as today's empty flag). The Mac
-  mirror resets on re-attach.
+  mirror resets to `{0, true}` when it adopts a run on re-attach. Tests in T6.
 - **Paste of an image the save fails for:** `attachmentError` shown, nothing inserted
   (existing path); test through the menu path.
 - **Highlight path no longer exists:** the click shows the code viewer's "file not
