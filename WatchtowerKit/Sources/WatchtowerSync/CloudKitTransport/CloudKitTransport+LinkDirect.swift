@@ -13,6 +13,10 @@ public enum DirectCallRefusal: Error, Equatable, Sendable {
     case noResult
     /// The iCloud quota is exceeded (`isPaused`): no save goes out until `resume()`. Reads still do.
     case paused
+    /// The transport was stopped (`stop()`): no request goes out.
+    case stopped
+    /// The build has no iCloud entitlement: no request goes out, and no `CKDatabase` is built.
+    case noEntitlement
 }
 
 /// The phone's link flow outside `CKSyncEngine` (#2189): its keybox read by name and its hello saved at once, so
@@ -54,10 +58,10 @@ extension CloudKitTransport {
     /// Throws what CloudKit threw.
     public func saveDirectly(_ record: CloudRecord) async throws {
         let throttleAtStart = throttledUntil
-        let database = conditionalDatabase()
         do {
             try await Self.saveDirectly(record, scope: scope, hubID: zones.hubID) { ck in
                 try await self.checkDirectSaveAllowed()
+                let database = await self.conditionalDatabase()
                 self.energy?.record(.sendBatch)
                 do {
                     let (saves, _) = try await database.modify(saving: [ck], deleting: [])
@@ -90,6 +94,8 @@ extension CloudKitTransport {
     }
 
     private func checkDirectCallAllowed() throws {
+        if isStopped { throw DirectCallRefusal.stopped }
+        guard entitlementCheck() else { throw DirectCallRefusal.noEntitlement }
         if isUnlinked { throw DirectCallRefusal.unlinked }
         if let throttledUntil, now() < throttledUntil { throw DirectCallRefusal.throttled }
     }

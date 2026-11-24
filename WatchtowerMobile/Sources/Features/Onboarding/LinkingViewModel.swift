@@ -704,7 +704,9 @@ final class LinkingViewModel {
                         if pending.helloSent { resend = nil }
                     }
                     if let keybox,
-                       await answer(keybox, pending: pending, code: code, deviceID: deviceID, mailboxRead: mailboxRead) {
+                       await answer(
+                           keybox, pending: pending, code: code, deviceID: deviceID, mailboxRead: mailboxRead,
+                           fromServer: source == .server) {
                         return
                     }
                 case .unavailable(let reason) where !Task.isCancelled:
@@ -761,9 +763,10 @@ final class LinkingViewModel {
     /// differs from the baseline. A waiting keybox counts by the link code it names instead: an unchanged re-send of
     /// this QR keeps the Mac's request (equal to the baseline) and still gives the code; one left from an earlier
     /// code never does.
-    /// `mailboxRead`: the keybox is the replica's after a fetch that read the data zone and the mailbox.
+    /// `mailboxRead`: the keybox is the replica's after a fetch that read the data zone and the mailbox. `fromServer`:
+    /// it is the server's copy, so a link it shows completes through `completionKeybox`.
     private func answer(
-        _ keybox: Keybox, pending: PendingLink, code: PairingCode, deviceID: String, mailboxRead: Bool
+        _ keybox: Keybox, pending: PendingLink, code: PairingCode, deviceID: String, mailboxRead: Bool, fromServer: Bool
     ) async -> Bool {
         let grant = keybox.grant
         if pending.differsFromBaseline(grant), grant.linkRefused != nil {
@@ -784,6 +787,11 @@ final class LinkingViewModel {
                 await complete(pending, keys: boxKeys, linkedAt: grant.linkedAt)
                 return true
             }
+            // A replica poll whose fetch did not read the mailbox: the next poll's fetch may.
+            guard fromServer else {
+                Self.logger.notice("linked, the mailbox not read yet: still waiting")
+                return false
+            }
             // An iCloud link completes only from the replica's copy after one fetch that read the data zone and the
             // mailbox (`completionKeybox`: the R4 relay check in `complete` sees a waiting control, and the ordered
             // actions), whichever source showed it; the linked keybox lands through `ReplicaStore`'s rollback checks. A
@@ -791,7 +799,8 @@ final class LinkingViewModel {
             // skips those marks: a replayed older copy (from whoever holds the storage) can at most end or stall this
             // scan, which the storage can do anyway by withholding the Mac's answer, so the impact is denial of service
             // only, and no key or link comes from such a copy.
-            guard case .read(let replica?) = await host?.completionKeybox(hubID: grant.hubID, deviceID: deviceID),
+            guard let completion = await host?.completionKeybox(hubID: grant.hubID, deviceID: deviceID),
+                  completion.mailboxCovered, case .read(let replica?) = completion.read,
                   replica.grant.hubID == grant.hubID, Self.answersAsLinked(replica.grant, pending), let boxKeys = replica.keys
             else {
                 Self.logger.notice("linked, not in the replica with the mailbox read yet: still waiting")
@@ -820,8 +829,9 @@ final class LinkingViewModel {
     }
 
     /// One poll's keybox read from `source`, and whether it is the replica's after a fetch that read the mailbox: an
-    /// iCloud link's replica poll reads it that way (`completionKeybox`), so a link it shows completes from it; a Relay
-    /// pairing's reads its slot (`fetchKeybox`).
+    /// iCloud link's replica poll reads through `completionKeybox` (the data zone is enough for a waiting keybox or a
+    /// refusal; a link completes from it only with the mailbox read); a Relay pairing's reads its slot
+    /// (`fetchKeybox`), or its stored copy when that fetch failed.
     private func readKeybox(
         hubID: String, deviceID: String, from source: KeyboxSource, pending: PendingLink
     ) async -> (read: KeyboxRead, mailboxRead: Bool) {
@@ -830,9 +840,14 @@ final class LinkingViewModel {
         case .server:
             return (await host.serverKeybox(hubID: hubID, deviceID: deviceID), false)
         case .replica where pending.relaySlot == nil:
-            return (await host.completionKeybox(hubID: hubID, deviceID: deviceID), true)
+            let read = await host.completionKeybox(hubID: hubID, deviceID: deviceID)
+            return (read.read, read.mailboxCovered)
         case .replica:
-            return (await host.fetchKeybox(hubID: hubID, deviceID: deviceID), false)
+            // A Relay pairing whose fetch of the slot failed still reads the answer its replica already holds (the
+            // relay socket or the launch pull may have applied it), as before #2189; the baseline alone needs a fetch.
+            let fetched = await host.fetchKeybox(hubID: hubID, deviceID: deviceID)
+            guard case .unavailable = fetched, !Task.isCancelled else { return (fetched, false) }
+            return (.read(await host.storedKeybox(hubID: hubID, deviceID: deviceID)), false)
         }
     }
 

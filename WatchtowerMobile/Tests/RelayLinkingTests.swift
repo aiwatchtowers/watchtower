@@ -184,6 +184,18 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertTrue(try keysHeld())
     }
 
+    /// A Relay pairing whose fetches of the slot fail once the hello is out still takes the linked keybox already
+    /// applied to its replica (the relay socket, the launch pull), as before #2189.
+    func testARelayPairingWhoseFetchesFailStillTakesTheStoredAnswer() async throws {
+        host.failsFetchesAfterWrite = true
+        let model = makeModel()
+
+        await link(relayCode(), model: model)
+
+        XCTAssertEqual(model.phase, .linked(macName: "build-box"))
+        XCTAssertTrue(try keysHeld())
+    }
+
     func testTheHelloCarriesThePhonesRelayDeviceID() async throws {
         await link(relayCode(), model: makeModel())
 

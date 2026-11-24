@@ -993,19 +993,20 @@ extension AppRoot: LinkHost {
     }
 
     func fetchKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
-        await fetchedKeybox(hubID: hubID, deviceID: deviceID, mailbox: false)
+        await fetchedKeybox(hubID: hubID, deviceID: deviceID, mailbox: false).read
     }
 
-    func completionKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
+    func completionKeybox(hubID: String, deviceID: String) async -> (read: KeyboxRead, mailboxCovered: Bool) {
         await fetchedKeybox(hubID: hubID, deviceID: deviceID, mailbox: true)
     }
 
-    /// One fetch that read the zones it needs (a pull skipped by a throttle or cut short does not count: the replica's
-    /// copy would read as an absence), then the replica's keybox.
-    private func fetchedKeybox(hubID: String, deviceID: String, mailbox: Bool) async -> KeyboxRead {
-        guard let session = env.session(hubID) else { return .unavailable(reason: "no session") }
-        guard await session.refreshForLink(mailbox: mailbox) else { return .unavailable(reason: "the fetch did not read the zone") }
-        return await replicaKeybox(session, deviceID: deviceID)
+    /// One fetch that read the data zone (a pull skipped by a throttle or cut short does not count: the replica's copy
+    /// would read as an absence), then the replica's keybox, and whether it read the mailbox too.
+    private func fetchedKeybox(hubID: String, deviceID: String, mailbox: Bool) async -> (read: KeyboxRead, mailboxCovered: Bool) {
+        guard let session = env.session(hubID) else { return (.unavailable(reason: "no session"), false) }
+        let covered = await session.refreshForLink(mailbox: mailbox)
+        guard covered.data else { return (.unavailable(reason: "the fetch did not read the zone"), false) }
+        return (await replicaKeybox(session, deviceID: deviceID), covered.mailbox)
     }
 
     func serverKeybox(hubID: String, deviceID: String) async -> KeyboxRead {

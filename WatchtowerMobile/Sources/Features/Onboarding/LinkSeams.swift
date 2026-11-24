@@ -123,9 +123,10 @@ protocol LinkHost: AnyObject {
     /// (`device_grant-<device_id>`, the epoch keys included). `.unavailable` when no session runs, the fetch failed
     /// (`HubSession.refresh` false) or the replica's copy did not open: never a guessed absence.
     func fetchKeybox(hubID: String, deviceID: String) async -> KeyboxRead
-    /// `fetchKeybox` for a completing link: its fetch must also have read the relay zone (the mailbox), so the R4
-    /// `hub_on_relay` check sees a waiting control (#2189).
-    func completionKeybox(hubID: String, deviceID: String) async -> KeyboxRead
+    /// `fetchKeybox`, and whether its fetch also read the relay zone (the mailbox): a link completes only from a read
+    /// that did, so the R4 `hub_on_relay` check sees a waiting control (#2189); a waiting keybox or a refusal needs
+    /// the data zone only.
+    func completionKeybox(hubID: String, deviceID: String) async -> (read: KeyboxRead, mailboxCovered: Bool)
     /// `hubID`'s keybox as its replica holds it, without a fetch.
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox?
     /// `hubID`'s keybox as the server holds it now (#2189): one read of `keybox-<DEVICE_ID>` by its fixed name,

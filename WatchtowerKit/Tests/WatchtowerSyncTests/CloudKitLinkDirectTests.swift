@@ -263,6 +263,40 @@ final class CloudKitLinkDirectTests: XCTestCase {
         XCTAssertEqual(database.fetches.count, 1, "a read still goes out")
     }
 
+    /// A stopped transport, or a build without the iCloud entitlement, makes no direct request.
+    func testAStoppedOrUnentitledTransportMakesNoDirectRequest() async throws {
+        let (stopped, stoppedDatabase, _) = try make()
+        await stopped.stop()
+        await assertRefused(stopped, stoppedDatabase, .stopped)
+
+        let database = FakeConditionalDatabase()
+        let unentitled = CloudKitTransport.conditionalTesting(store: try .inMemory(), database: database, entitled: false)
+        await assertRefused(unentitled, database, .noEntitlement)
+    }
+
+    private func assertRefused(
+        _ transport: CloudKitTransport,
+        _ database: FakeConditionalDatabase,
+        _ refusal: DirectCallRefusal,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        do {
+            _ = try await transport.serverRecord(named: "keybox-DEVICE", in: .data)
+            XCTFail("expected \(refusal)", file: file, line: line)
+        } catch {
+            XCTAssertEqual(error as? DirectCallRefusal, refusal, file: file, line: line)
+        }
+        do {
+            try await transport.saveDirectly(record("hello-DEVICE", zone: .relay, payload: "new"))
+            XCTFail("expected \(refusal)", file: file, line: line)
+        } catch {
+            XCTAssertEqual(error as? DirectCallRefusal, refusal, file: file, line: line)
+        }
+        XCTAssertTrue(database.fetches.isEmpty, "no read went out", file: file, line: line)
+        XCTAssertTrue(database.calls.isEmpty, "no save went out", file: file, line: line)
+    }
+
     func testAServiceOutageWithoutRetryAfterDoesNotThrottle() async throws {
         let (transport, database, _) = try make()
         database.fetchFailures = [CKError(.serviceUnavailable)]

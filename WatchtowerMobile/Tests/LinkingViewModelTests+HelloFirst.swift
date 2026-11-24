@@ -499,35 +499,81 @@ extension LinkingViewModelTests {
 
     /// The fetch counts only when it polled the zones it needed to their end (a throttled or cut pull returns
     /// normally): the data zone for a baseline or a poll, and the mailbox too for a completing link.
-    func testALinkFetchCountsOnlyWhenItReadTheZonesItNeeds() {
+    func testALinkFetchCoversOnlyTheZonesItPolledToTheirEnd() {
         let before = HubSession.LinkFetchCounts(data: 3, relay: 5)
         let dataOnly = HubSession.LinkFetchCounts(data: 4, relay: 5)
         let both = HubSession.LinkFetchCounts(data: 4, relay: 6)
-        XCTAssertFalse(HubSession.linkFetchMoved(before: before, after: before, mailbox: false), "a skipped pull")
-        XCTAssertTrue(HubSession.linkFetchMoved(before: before, after: dataOnly, mailbox: false))
-        XCTAssertFalse(HubSession.linkFetchMoved(before: before, after: dataOnly, mailbox: true), "the mailbox not read")
-        XCTAssertTrue(HubSession.linkFetchMoved(before: before, after: both, mailbox: true))
-
-        XCTAssertFalse(HubSession.linkFetchCompleted(refreshed: false, moved: true, unlinked: false))
-        XCTAssertFalse(HubSession.linkFetchCompleted(refreshed: true, moved: false, unlinked: false))
-        XCTAssertTrue(HubSession.linkFetchCompleted(refreshed: true, moved: true, unlinked: false))
-        XCTAssertFalse(
-            HubSession.linkFetchCompleted(refreshed: true, moved: true, unlinked: true),
-            "the data zone polled, then the relay zone's zoneNotFound unlinked the transport")
+        typealias Coverage = HubSession.LinkFetchCoverage
+        XCTAssertEqual(
+            HubSession.linkFetchCoverage(refreshed: true, before: before, after: before), Coverage(data: false, mailbox: false),
+            "a skipped pull")
+        XCTAssertEqual(
+            HubSession.linkFetchCoverage(refreshed: true, before: before, after: dataOnly), Coverage(data: true, mailbox: false),
+            "the mailbox not read")
+        XCTAssertEqual(
+            HubSession.linkFetchCoverage(refreshed: true, before: before, after: both), Coverage(data: true, mailbox: true))
+        XCTAssertEqual(
+            HubSession.linkFetchCoverage(refreshed: false, before: before, after: both), Coverage(data: false, mailbox: false),
+            "a failed fetch")
+        XCTAssertEqual(
+            Coverage(data: true, mailbox: false).adding(Coverage(data: false, mailbox: true)), Coverage(data: true, mailbox: true))
     }
 
     /// A fetch that joined a pull already past the zones moves no count: one more fetch is judged, unless the
     /// transport is throttled or unlinked (then the first one stands, unavailable).
     func testALinkFetchThatMovedNoPollTriesOneMorePull() {
-        XCTAssertTrue(HubSession.linkFetchNeedsSecondPull(refreshed: true, moved: false, unlinked: false, throttled: false))
+        typealias Coverage = HubSession.LinkFetchCoverage
+        let none = Coverage(data: false, mailbox: false)
+        let dataOnly = Coverage(data: true, mailbox: false)
+        XCTAssertTrue(HubSession.linkFetchNeedsSecondPull(covered: none, mailbox: false, unlinked: false, throttled: false))
         XCTAssertFalse(
-            HubSession.linkFetchNeedsSecondPull(refreshed: true, moved: true, unlinked: false, throttled: false), "it read them")
+            HubSession.linkFetchNeedsSecondPull(covered: dataOnly, mailbox: false, unlinked: false, throttled: false), "read it")
+        XCTAssertTrue(
+            HubSession.linkFetchNeedsSecondPull(covered: dataOnly, mailbox: true, unlinked: false, throttled: false),
+            "the mailbox still needed")
         XCTAssertFalse(
-            HubSession.linkFetchNeedsSecondPull(refreshed: true, moved: false, unlinked: false, throttled: true), "throttled")
+            HubSession.linkFetchNeedsSecondPull(covered: none, mailbox: false, unlinked: false, throttled: true), "throttled")
         XCTAssertFalse(
-            HubSession.linkFetchNeedsSecondPull(refreshed: true, moved: false, unlinked: true, throttled: false), "unlinked")
-        XCTAssertFalse(
-            HubSession.linkFetchNeedsSecondPull(refreshed: false, moved: false, unlinked: false, throttled: false), "failed")
+            HubSession.linkFetchNeedsSecondPull(covered: none, mailbox: false, unlinked: true, throttled: false), "unlinked")
+    }
+
+    /// An iCloud replica poll whose fetch read the data zone but not the mailbox (a `zoneBusy` on the relay zone) still
+    /// shows the Mac's waiting keybox and its code; only completing needs the mailbox.
+    func testAReplicaPollWithoutTheMailboxStillShowsTheCode() async throws {
+        host.serverReadFails = true
+        host.mailboxUncovered = true
+        let payload = code()
+        let tag = try TestPhone.linkCodeTag(payload)
+        let decided = start
+        host.mac = { writes in
+            guard writes.contains(where: { $0.linkNonce == payload.nonce }) else { return nil }
+            return DeviceGrant(
+                deviceID: TestE2E.deviceID.uuidString, hubID: helloAcme, name: "iPhone", scope: .private, linked: false,
+                typingAllowed: false, startSessionsAllowed: true, decidedAt: decided, awaitingConfirmation: true,
+                confirmNonce: TestPhone.confirmNonceText, linkCodeTag: tag)
+        }
+        clock.parked = true
+        let model = makeModel()
+        let flow = Task { await model.open(payload.url()) }
+
+        try await poll({ model.linkCode != nil }, "the four-digit code shows")
+        XCTAssertTrue(model.macSeesPhone)
+        flow.cancel()
+        await flow.value
+    }
+
+    /// The same poll takes a link only once a fetch read the mailbox too.
+    func testAReplicaPollWithoutTheMailboxNeverCompletes() async throws {
+        host.serverReadFails = true
+        host.mailboxUncovered = true
+        let payload = code()
+        macLinks(payload)
+        let model = makeModel()
+
+        await model.open(payload.url())
+
+        XCTAssertEqual(model.phase, .failed(.noAnswer))
+        XCTAssertTrue(host.linkedCalls.isEmpty)
     }
 
     /// A completing link reads the replica after a fetch that also read the mailbox, whichever source showed it.

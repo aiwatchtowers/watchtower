@@ -368,10 +368,16 @@ final class FakeLinkHost: LinkHost {
     var failsFetchesAfterLinked = false
     private var returnedLinked = false
 
-    func completionKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
+    /// When true, a completion fetch reads the data zone but not the mailbox (a `zoneBusy` on the relay zone).
+    var mailboxUncovered = false
+    /// When true, every fetch begun after a device record was written fails (the relay slot's pull failing after the
+    /// answer was already applied to the replica).
+    var failsFetchesAfterWrite = false
+
+    func completionKeybox(hubID: String, deviceID: String) async -> (read: KeyboxRead, mailboxCovered: Bool) {
         completionHubIDs.append(hubID)
-        if completionFails { return .unavailable(reason: "completion fetch failed") }
-        return await fetchKeybox(hubID: hubID, deviceID: deviceID)
+        if completionFails { return (.unavailable(reason: "completion fetch failed"), false) }
+        return (await fetchKeybox(hubID: hubID, deviceID: deviceID), !mailboxUncovered)
     }
 
     func fetchKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
@@ -379,7 +385,8 @@ final class FakeLinkHost: LinkHost {
         let writes = (try? await deviceWrites()) ?? []
         keyboxReads.append(ReadCall(kind: .fetch, writesBefore: writes.count))
         await park { self.parksFetchGrant || (self.parksReadsAfterWrite && !writes.isEmpty) }
-        if refreshFails || Task.isCancelled || (failsFetchesAfterLinked && returnedLinked) {
+        if refreshFails || Task.isCancelled || (failsFetchesAfterLinked && returnedLinked)
+            || (failsFetchesAfterWrite && !writes.isEmpty) {
             return .unavailable(reason: "fetch failed")
         }
         fetchedHubs.insert(hubID)

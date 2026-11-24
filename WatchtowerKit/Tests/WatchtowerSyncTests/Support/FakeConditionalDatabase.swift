@@ -147,6 +147,7 @@ extension CloudKitTransport {
         scope: CloudDatabaseScope = .shared(ownerName: "_owner-acme"),
         role: TransportRole = .phone,
         energy: EnergyCounter? = nil,
+        entitled: Bool = true,
         sleep: @escaping @Sendable (TimeInterval) async -> Void = { _ in }
     ) -> CloudKitTransport {
         CloudKitTransport(
@@ -154,7 +155,7 @@ extension CloudKitTransport {
             scope: scope,
             hubID: HubZones.testHubID,
             role: role,
-            entitlementPresent: { true },
+            entitlementPresent: { entitled },
             zoneAdmin: FakeZoneAdmin(),
             engineFactory: { _, _ in FakeSyncEngine() },
             now: { Date() },
