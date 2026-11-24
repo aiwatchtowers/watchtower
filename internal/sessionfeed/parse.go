@@ -447,6 +447,17 @@ const (
 	taskClose = "</task-notification>"
 )
 
+// hasTaskField reports whether a notification carries a child the agent-
+// finished row shows; one with only unknown children is not a task.
+func hasTaskField(kids map[string]string) bool {
+	for _, k := range []string{"task-id", "tool-use-id", "status", "summary", "result"} {
+		if _, ok := kids[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // parseTaskNotification reads the structured task from the notification at
 // the start of text, up to its first closing tag (text after it, such as a
 // "read the output file" line, is ignored). Every child must close with its
@@ -454,8 +465,8 @@ const (
 func parseTaskNotification(text string) *TaskRef {
 	budget := maxTaskCloseAttempts
 	kids, ok := taskChildren(text[len(taskOpen):], map[string]string{}, &budget)
-	if !ok || len(kids) == 0 {
-		return nil
+	if !ok || !hasTaskField(kids) {
+		return nil // nothing recognised: the title-only notice line
 	}
 	usage := kids["usage"]
 	t := &TaskRef{
