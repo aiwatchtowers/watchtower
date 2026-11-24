@@ -436,7 +436,12 @@ func TestSlackConnectServe_StartUnknownAccountFails(t *testing.T) {
 	assert.Empty(t, h.browserURLs())
 }
 
-// acceptSignal wraps a listener and reports each accepted connection.
+// acceptSignal wraps a listener and reports each accepted connection once the
+// server has read bytes from it (its request is in the server's hands).
+// Reporting at Accept would be too early: a connection the server has not
+// read yet is still http.StateNew, which a shutdown closes (after 5 s) or
+// abandons at the drain bound, and a loaded machine can starve the client
+// that long, giving the browser an EOF instead of a page (#2367).
 type acceptSignal struct {
 	net.Listener
 	accepted chan struct{}
@@ -444,10 +449,24 @@ type acceptSignal struct {
 
 func (a acceptSignal) Accept() (net.Conn, error) {
 	c, err := a.Listener.Accept()
-	if err == nil {
-		a.accepted <- struct{}{}
+	if err != nil {
+		return c, err
 	}
-	return c, err
+	return &readSignalConn{Conn: c, read: a.accepted}, nil
+}
+
+type readSignalConn struct {
+	net.Conn
+	read chan<- struct{}
+	once sync.Once
+}
+
+func (c *readSignalConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if n > 0 {
+		c.once.Do(func() { c.read <- struct{}{} })
+	}
+	return n, err
 }
 
 // Stdin closes while the loop is storing a grant (the callback waits for
