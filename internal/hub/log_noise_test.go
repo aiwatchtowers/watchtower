@@ -212,6 +212,7 @@ func TestAHubStartWithABridgeThatNeverServesLogsOnceAtTheSecondTick(t *testing.T
 		o := r.options()
 		o.Desktop.newCloudKit = func(cloudkit.Config) transport.Transport { return ck }
 		o.Desktop.supervise = func(cloudkit.Config) bridgeRunner { return &stateBridge{} }
+		o.checkEvery = houseEvery // twenty minutes of fake time: few reconciles
 		r.start(o)
 		r.waitStatus("running", func(s Status) bool { return s.State == StateRunning && s.Bridge == BridgeRunning })
 		time.Sleep(10 * time.Second) // the start's passes

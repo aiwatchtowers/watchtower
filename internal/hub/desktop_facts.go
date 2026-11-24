@@ -96,7 +96,9 @@ func (h *hubRuntime) bridgeLaunches() uint64 {
 // noteBridgeLaunch is a houseEvery tick's look at the bridge's launch
 // generation (before its housekeeping reads the account): settled when the
 // previous tick saw the same launch already. The start's and the daemon
-// cycles' housekeepings do not count: they can run back to back.
+// cycles' housekeepings do not count: they can run back to back. A
+// relaunch during a pass that spans a tick can settle a launch one interval
+// early; the worst case is one extra log line, hiding nothing.
 func (h *hubRuntime) noteBridgeLaunch() {
 	g := h.bridgeLaunches()
 	h.ckLaunchSettled = g != 0 && g == h.ckLaunchSeen
