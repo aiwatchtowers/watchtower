@@ -146,9 +146,44 @@ final class TaskOutputFileTests: XCTestCase {
         XCTAssertEqual(read("\(sessionDir)/tasks/c1.output", session: "other"), .reveal)
         XCTAssertEqual(TaskOutputFile.read("\(sessionDir)/tasks/c1.output", claudeSessionID: nil, projectDir: projectDir,
                                            bases: [base], claudeDir: claudeDir), .reveal)
-        XCTAssertEqual(read("tasks/c1.output"), .reveal)
+        XCTAssertEqual(read("tasks/c1.output"), .refused, "a relative path is never resolved")
         XCTAssertEqual(TaskOutputFile.read("\(sessionDir)/tasks/c1.output", claudeSessionID: sid, projectDir: projectDir,
-                                           uid: getuid() + 1, bases: [base], claudeDir: claudeDir), .reveal)
+                                           uid: getuid() + 1, bases: [base], spelledBases: [], claudeDir: claudeDir),
+                       .refused, "another user's claude-<uid> is not spelled inside")
+    }
+
+    /// Final review F6: a transcript-supplied path outside the temp bases' `claude-<uid>/` and Claude Code's
+    /// `projects/` — say under ~/Documents, a TCC-protected folder — is refused on its spelling: it never reaches
+    /// `realpath`, and it is not revealed either.
+    func testAPathOutsideClaudeCodesDirsIsRefusedBeforeAnythingResolvesIt() {
+        var resolved: [String] = []
+        let spy: (String) -> String? = { path in
+            resolved.append(path)
+            return TaskOutputFile.realPath(path)
+        }
+        for path in ["\(NSHomeDirectory())/Documents/notes.txt", "\(base)/outside.txt",
+                     "\(sessionDir)/../../../outside.txt", "\(claudeDir)/projects/./-p/x", "/"] {
+            XCTAssertEqual(TaskOutputFile.read(path, claudeSessionID: sid, projectDir: projectDir, bases: [base],
+                                               spelledBases: [], claudeDir: claudeDir, resolve: spy),
+                           .refused, path)
+            XCTAssertFalse(resolved.contains(path), "\(path) reached realpath")
+        }
+        XCTAssertEqual(resolved, Array(repeating: "\(claudeDir)/projects", count: 5),
+                       "only Claude Code's own projects dir is resolved")
+    }
+
+    /// The temp roots as spelled (`/tmp` for `/private/tmp`) pass the spelling check; the read still resolves.
+    func testASpelledTempRootPassesTheSpellingCheck() throws {
+        try write("ok\n", "\(sessionDir)/tasks/s1.output")
+        let link = "\(base)/tmp-alias"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: base)
+        let spelled = "\(link)/claude-\(getuid())/-p/\(sid)/tasks/s1.output"
+        XCTAssertEqual(TaskOutputFile.read(spelled, claudeSessionID: sid, projectDir: projectDir, bases: [base],
+                                           spelledBases: [link], claudeDir: claudeDir), .text("ok\n", cut: false))
+        XCTAssertEqual(TaskOutputFile.read(spelled, claudeSessionID: sid, projectDir: projectDir, bases: [base],
+                                           spelledBases: [], claudeDir: claudeDir), .refused)
+        XCTAssertEqual(TaskOutputFile.tempCandidates(environment: ["CLAUDE_CODE_TMPDIR": "rel"], osTemp: "/var/t/"),
+                       ["/tmp", "/var/t/"])
     }
 
     func testFIFOIsUnreadableWithoutBlocking() {

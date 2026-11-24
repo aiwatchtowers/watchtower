@@ -140,8 +140,9 @@ struct AgentFinishedRow: View {
     // MARK: - Open output
 
     /// Open output: a file that resolves inside the session's Claude Code temp dir (`TaskOutputFile`) opens read-only
-    /// in the chat's artifact viewer (its first 256 KB, as code), any other is revealed in Finder; a file that is gone
-    /// or unreadable beeps. `claudeSessionID` is the row's own conversation, not the pane's latest; `projectDir` the
+    /// in the chat's artifact viewer (its first 256 KB, as code); one spelled inside Claude Code's dirs that resolves
+    /// elsewhere is revealed in Finder; a path spelled anywhere else is never touched or revealed (final review F6),
+    /// and it, like a file that is gone or unreadable, beeps. `claudeSessionID` is the row's own conversation, not the pane's latest; `projectDir` the
     /// directory of the session's transcript (where its agents' transcripts are).
     static func openOutput(
         _ path: String,
@@ -160,7 +161,7 @@ struct AgentFinishedRow: View {
                                                  content: text, contentCut: cut))
             case .reveal where FileManager.default.fileExists(atPath: path):
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-            case .reveal, .unreadable:
+            case .reveal, .unreadable, .refused:
                 NSSound.beep()
             }
         }
