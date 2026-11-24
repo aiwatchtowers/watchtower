@@ -29,9 +29,11 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 }
 
 // ConfirmRequest is Confirm bound to the request the owner was shown:
-// request, when set, is that request's RequestID, and a yes on a waiting
-// request with another one (a replacement, even one that drew the same
-// code) is ErrCodeChanged, decided in the same transaction that links.
+// requestID, when set, is that request's RequestID, and an answer — a yes
+// or a no — on a waiting request with another one (a replacement, even one
+// that drew the same code) is ErrCodeChanged and changes nothing, decided
+// in the same transaction that links or refuses. Without it a no refuses
+// whichever request waits, as Confirm does.
 func (c *Center) ConfirmRequest(device, code, requestID string, ok bool) error {
 	c.mu.Lock()
 	defer c.unlock()
@@ -52,7 +54,12 @@ func (c *Center) ConfirmRequest(device, code, requestID string, ok bool) error {
 			return ErrNoRequest
 		}
 		request = p
-		if ok && (p.sas != code || requestID != "" && RequestID(p.confirmNonce) != requestID) {
+		if requestID != "" && RequestID(p.confirmNonce) != requestID {
+			// Another request than the one answered, a yes or a no: a
+			// stale window's decline refuses nothing newer.
+			return ErrCodeChanged
+		}
+		if ok && p.sas != code {
 			return ErrCodeChanged
 		}
 		if !ok {
@@ -105,12 +112,13 @@ func (c *Center) ConfirmRequest(device, code, requestID string, ok bool) error {
 	switch {
 	case linked:
 		log.Printf("hub link: linked phone %s, %d other requests refused", request.deviceID, len(others))
-		c.emit(PairEvent{Kind: EventLinked, DeviceID: request.deviceID, Name: request.name})
+		c.emit(PairEvent{Kind: EventLinked, DeviceID: request.deviceID, Name: request.name, Nonce: request.linkNonce})
 		if asks {
 			c.typingAsks = append(c.typingAsks, TypingAsk{DeviceID: strings.ToUpper(request.deviceID), Name: displayName(request.name)})
 		}
 		for _, o := range others {
-			c.emit(PairEvent{Kind: EventRefused, DeviceID: o.deviceID, Name: o.name, Reason: wire.RefusedUsedCode})
+			c.emit(PairEvent{Kind: EventRefused, DeviceID: o.deviceID, Name: o.name, Reason: wire.RefusedUsedCode,
+				Nonce: o.linkNonce})
 		}
 		c.changed()
 	case reason != "":

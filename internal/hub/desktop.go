@@ -89,6 +89,8 @@ type bridgeRunner interface {
 	Run(ctx context.Context) error
 	Running() bool
 	Launches() uint64
+	// LastLaunch is when the last launch was tried (zero before any).
+	LastLaunch() time.Time
 }
 
 // supervisor is the bridge's supervisor over c.

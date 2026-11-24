@@ -154,13 +154,15 @@ func (c *Center) decideHello(opened openedHello, user string, overRelay bool) (P
 	switch {
 	case waiting:
 		log.Printf("hub link: link request from phone %s waits for the owner", out.DeviceID)
-		c.emit(PairEvent{Kind: EventSAS, DeviceID: out.DeviceID, Name: out.Name, Code: out.Code, Request: out.Request, OverRelay: overRelay})
+		c.emit(PairEvent{Kind: EventSAS, DeviceID: out.DeviceID, Name: out.Name, Code: out.Code, Request: out.Request,
+			OverRelay: overRelay, Nonce: opened.code.nonce})
 		c.changed()
 	case out.Refused != "" && out.Unanswered:
 		log.Printf("hub link: hello from phone %s refused (%s), unanswered", out.DeviceID, out.Refused)
 	case out.Refused != "":
 		log.Printf("hub link: hello from phone %s refused (%s)", out.DeviceID, out.Refused)
-		c.emit(PairEvent{Kind: EventRefused, DeviceID: out.DeviceID, Name: out.Name, Reason: out.Refused})
+		c.emit(PairEvent{Kind: EventRefused, DeviceID: out.DeviceID, Name: out.Name, Reason: out.Refused,
+			Nonce: opened.code.nonce})
 		c.changed()
 	}
 	return out, nil

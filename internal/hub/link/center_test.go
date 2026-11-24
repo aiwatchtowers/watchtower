@@ -1577,6 +1577,13 @@ func TestAConfirmForAReplacedRequestIDIsCodeChanged(t *testing.T) {
 		t.Fatalf("pending links %+v, %v: want request %q", pending, err, current.Request)
 	}
 	device := second.id.String()
+	// A stale window's no names the old request: it refuses nothing newer.
+	if err := r.c.ConfirmRequest(device, "", old.Request, false); !errors.Is(err, ErrCodeChanged) {
+		t.Fatalf("a no for the replaced request: %v", err)
+	}
+	if pending, err := r.c.PendingLinks(); err != nil || len(pending) != 1 {
+		t.Fatalf("a stale no refused the waiting request: %+v, %v", pending, err)
+	}
 	if err := r.c.ConfirmRequest(device, current.Code, old.Request, true); !errors.Is(err, ErrCodeChanged) {
 		t.Fatalf("a yes for the replaced request: %v", err)
 	}
@@ -1588,5 +1595,31 @@ func TestAConfirmForAReplacedRequestIDIsCodeChanged(t *testing.T) {
 	}
 	if !r.linked(second) {
 		t.Fatal("not linked on the current request")
+	}
+}
+
+// A no naming the waiting request refuses it; a no naming none refuses
+// whichever request waits, as before request ids.
+func TestANoRefusesTheRequestItNamesOrTheOneWaiting(t *testing.T) {
+	for name, named := range map[string]bool{"named": true, "without request": false} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			code := r.issue()
+			p := newPhone(t)
+			waiting := r.handle(p, code.Nonce)
+			request := ""
+			if named {
+				request = waiting.Request
+			}
+			if err := r.c.ConfirmRequest(p.id.String(), "", request, false); err != nil {
+				t.Fatal(err)
+			}
+			if pending, err := r.c.PendingLinks(); err != nil || len(pending) != 0 {
+				t.Fatalf("the no left %+v, %v", pending, err)
+			}
+			if r.linked(p) {
+				t.Fatal("a no linked the phone")
+			}
+		})
 	}
 }
