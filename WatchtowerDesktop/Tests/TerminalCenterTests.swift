@@ -1212,6 +1212,27 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertTrue(center.promptHoldsText(s.id))
     }
 
+    /// Gate fix 2: an owner key that lands between the host's paste and its
+    /// `left_typed` event (the owner had `a\`, the line is `\x`, a Backspace
+    /// leaves `a\\`) leaves a `\` possible: their Return is a line break.
+    func testAnOwnerKeyBeforeTheLeftTypedEventLeavesTheBackslashPossible() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        let session = sessions[0]
+        session.host.event = { [weak session] event in
+            if event.kind == .leftTyped { session?.onOwnerInput?([0x7F]) }
+            session?.onDeliveryEvent?(event)
+        }
+        session.onOwnerInput?(Array("a\\".utf8))
+
+        let delivery = await center.deliver("\\x", sessionID: s.id) { false }
+
+        XCTAssertEqual(delivery, .pasted)
+        session.onOwnerInput?([0x0D])
+        XCTAssertTrue(center.promptHoldsText(s.id))
+    }
+
     /// Review round 5: the host's "typed" reply comes after the owner kept
     /// typing; it does not set the line's `\` again over their later keys.
     func testALateTypedReplyKeepsTheOwnersLaterKeys() async throws {

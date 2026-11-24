@@ -198,6 +198,8 @@ final class TerminalCenter {
     @ObservationIgnored var onDraftChanged: ((Int64) -> Void)?
     /// How many of the owner's key chunks each session's draft model read (`hostLeftTyped`).
     @ObservationIgnored private var ownerKeys: [Int64: Int] = [:]
+    /// `ownerKeys` when the app's own deliveries now in flight began (`delivering`).
+    @ObservationIgnored private var deliveryKeys: [Int64: Int] = [:]
     /// Sessions whose prompt holds a line the host left without its Return
     /// next to other text not submitted (its `left_typed` event with
     /// `beside_text`, board #380). The pane's "press Return" bar says the
@@ -810,10 +812,12 @@ final class TerminalCenter {
                                      keepingFormatCharacters: keepingFormatCharacters, delay: delay,
                                      refresh: refresh, submitIf: canSubmit)
         }
+        let keysAtStart = ownerKeys[sessionID, default: 0]
         delivering[sessionID, default: 0] += 1
+        deliveryKeys[sessionID] = deliveryKeys[sessionID] ?? keysAtStart
         defer {
             delivering[sessionID, default: 1] -= 1
-            if delivering[sessionID] == 0 { delivering[sessionID] = nil }
+            if delivering[sessionID] == 0 { (delivering[sessionID], deliveryKeys[sessionID]) = (nil, nil) }
         }
         // The next delivery replaces the bars of the last one.
         clipboardHints.remove(sessionID)
@@ -825,7 +829,6 @@ final class TerminalCenter {
             text: text, keepLineBreaks: keepingLineBreaks, keepFormat: keepingFormatCharacters,
             settle: delay, submitIf: submitIf, holdIfPromptText: holdIfPromptText
         )
-        let keysAtStart = ownerKeys[sessionID, default: 0]
         let outcome = await process.deliver(line) { [weak self] in
             let fresh = await refresh()
             let reply = DeliverCheckReply(
@@ -861,7 +864,8 @@ final class TerminalCenter {
             logWithheld(sessionID, "the delivery's connection ended before the host answered")
             if processes[sessionID] === process {
                 // No `left_typed` event may follow: after the owner's keys the `\` is unknown.
-                hostLeftTyped(sessionID, ownerKeys[sessionID, default: 0] == keysAtStart ? line : nil)
+                let known = ownerKeys[sessionID, default: 0] == keysAtStart ? line : nil
+                hostLeftTyped(sessionID, known, keysAtStart: keysAtStart)
                 pasteHints.insert(sessionID)
             }
             return .mayBeTyped
@@ -878,7 +882,7 @@ final class TerminalCenter {
             clipboardHints.remove(sessionID)
             dropPasteHint(sessionID)
         case .leftTyped:
-            hostLeftTyped(sessionID, nil) // any client's line, the hub's too
+            hostLeftTyped(sessionID, nil, keysAtStart: deliveryKeys[sessionID]) // any client's line
             if event.besideText { sharedPrompts.insert(sessionID) }
             // An ask's answer shows its own bar (`answerHints`).
             if answerHints[sessionID] == nil { pasteHints.insert(sessionID) }
@@ -940,16 +944,15 @@ final class TerminalCenter {
         drafts[sessionID, default: DraftModel()].markInexact()
     }
 
-    /// The host left `line` typed, or may have (`DraftModel.hostLeftTyped`). nil: any client's
-    /// line (`left_typed`), its text unknown, so a `\` is possible. A reply after the owner's
-    /// keys (counted from `keysAtStart`) is stale: those keys and that event set the `\`.
-    private func hostLeftTyped(_ sessionID: Int64, _ line: SessionDeliverLine?, keysAtStart: Int = 0) {
-        guard let line, ownerKeys[sessionID, default: 0] == keysAtStart else {
-            let unknown = line == nil
-            drafts[sessionID, default: DraftModel()].hostLeftTyped(endingInBackslash: unknown)
-            return
-        }
-        drafts[sessionID, default: DraftModel()].hostLeftTyped(endingInBackslash: Self.lineEndsInBackslash(line))
+    /// The host left `line` typed, or may have (`DraftModel.hostLeftTyped`). `keysAtStart`: the
+    /// owner's key count when the app's delivery began; keys since make the `\` stale. A reply
+    /// sets its line's `\` unless stale (then the keys and the event did); a `left_typed` event
+    /// (nil, no text) keeps the state during the app's own delivery with no keys since (its
+    /// reply has the line), and else makes a `\` possible (another client's line).
+    private func hostLeftTyped(_ sessionID: Int64, _ line: SessionDeliverLine?, keysAtStart: Int? = nil) {
+        let fresh = keysAtStart == ownerKeys[sessionID, default: 0]
+        let endsInBackslash = if let line { fresh && Self.lineEndsInBackslash(line) } else { !fresh }
+        drafts[sessionID, default: DraftModel()].hostLeftTyped(endingInBackslash: endsInBackslash)
     }
 
     /// An ask's answer line is waiting in or for a running session: its pane
