@@ -43,7 +43,8 @@ A colleague who installs Watchtower at a company that already ran **Set up for m
 - Manifest: `features.bot_user` (`display_name` "Watchtower", `always_online` false) and one harmless bot scope, `team:read`; no message scopes, no Events, no Interactivity, Messages tab off.
 - `slackconnect.AuthorizeURL` adds `scope=team:read`: a bot user is created only by an install that requests a bot scope. The bot token in the exchange answer is discarded, never stored or logged.
 - `slackapp.MergeManifest` (adopt) adds the bot user and the scope; `ManifestChanges` reports `add_bot_user` so the dry run and the confirm screen name it. An installed app needs one re-approval by a workspace admin before the bot appears — the guide says so.
-- Open until the second spike: whether Slack creates a bot user with zero bot scopes (then no scope at all), and whether the bot makes the app findable and opens on About.
+- Spike step A: Slack's manifest validator refuses `bot_user` without a bot scope ("Bot user requires bot scope"), so `team:read` stays.
+- Open until the second spike: whether the bot makes the app findable and opens on About.
 
 ## Design
 
