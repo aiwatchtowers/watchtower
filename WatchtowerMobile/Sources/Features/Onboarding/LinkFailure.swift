@@ -61,7 +61,7 @@ enum LinkFailure: Equatable {
         case .relayUnreachable: "Check your connection and scan again"
         case .macOnRelay: Self.macOnRelayHint
         case .macNotOnRelay: "Open Watchtower on the tower and try again"
-        case let .expiredButLinked(macName): "This iPhone is already linked to \(macName)."
+        case let .expiredButLinked(macName): "This iPhone is already linked to \(macName)"
         case let .iCloud(reason), let .local(reason): reason.isEmpty ? nil : reason
         }
     }
@@ -72,7 +72,7 @@ enum LinkFailure: Equatable {
         switch self {
         case .signIn: "Sign in to iCloud on this iPhone to use Watchtower"
         case .updateApp, .updateMac: title
-        case .expiredButLinked: "\(title). \(hint ?? "")"
+        case let .expiredButLinked(macName): "\(title). This iPhone is already linked to \(macName)."
         default: hint.map { "\(title) — \($0)" } ?? title
         }
     }

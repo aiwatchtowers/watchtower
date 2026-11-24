@@ -689,9 +689,15 @@ final class FakeLinkHost: LinkHost {
         }
     }
 
+    /// When true, `markRemovedByMac` waits (its hub still linked, the removal running) until it is set false again.
+    var parksMarkRemoved = false {
+        didSet { unpark() }
+    }
+
     func markRemovedByMac(_ hubID: String) async {
         log.append("frozen \(hubID)")
         markedRemoved.append(hubID)
+        await park { self.parksMarkRemoved }
         if let index = rows.firstIndex(where: { $0.hubID == hubID }) {
             rows[index].state = .unlinkedByMac
         }

@@ -19,20 +19,31 @@ private func savedLink(hubID: String = TestE2E.hubID.uuidString, macName: String
 /// The Mac does not answer a hello on a closed code, so a linked phone that scans one past its expiry says so at once
 /// and leaves its link as it is; any other expired code keeps the plain expired failure.
 extension LinkingViewModelTests {
+    /// A code 121 s past its expiry on the phone's clock: past the 120 s grace.
+    private func expiredCode() -> LinkPayload {
+        code(issuedAgo: Double(LinkPayload.lifetime) + 121)
+    }
+
+    /// The Mac's keybox for this phone says linked, whatever the phone writes.
+    private func macGrantsTheLink() {
+        host.mac = { [grant = grantMaker] _ in grant(TestE2E.hubID.uuidString, true, nil) }
+    }
+
     /// Ask #1804: an expired code of a Mac this iPhone is linked to says so at once. No hello, no write, the link
     /// untouched; the message names the linked Mac.
     func testExpiredCodeOfALinkedMacSaysItIsAlreadyLinkedAndTouchesNothing() async throws {
         let stored = savedLink(macName: "Desk Mac")
         host.seed(stored)
+        macGrantsTheLink()
         let model = makeModel()
 
-        await model.open(code(issuedAgo: Double(LinkPayload.lifetime) + 121).url())
+        await model.open(expiredCode().url())
 
         XCTAssertEqual(model.phase, .failed(.expiredButLinked(macName: "Desk Mac")))
         let failure = LinkFailure.expiredButLinked(macName: "Desk Mac")
         XCTAssertEqual(failure.message, "This code has expired. This iPhone is already linked to Desk Mac.")
         XCTAssertEqual(failure.title, "This code has expired")
-        XCTAssertEqual(failure.hint, "This iPhone is already linked to Desk Mac.")
+        XCTAssertEqual(failure.hint, "This iPhone is already linked to Desk Mac")
         XCTAssertTrue(host.prepared.isEmpty, "no hello")
         let writes = try await host.deviceWrites()
         XCTAssertTrue(writes.isEmpty)
@@ -46,7 +57,7 @@ extension LinkingViewModelTests {
         host.seed(savedLink(hubID: closedHomeID, macName: "Home Mac"))
         let model = makeModel()
 
-        await model.open(code(issuedAgo: Double(LinkPayload.lifetime) + 121).url())
+        await model.open(expiredCode().url())
 
         XCTAssertEqual(model.phase, .failed(.expired))
         XCTAssertTrue(host.prepared.isEmpty)
@@ -58,10 +69,43 @@ extension LinkingViewModelTests {
         host.seed(savedLink(), state: .unlinkedByMac)
         let model = makeModel()
 
-        await model.open(code(issuedAgo: Double(LinkPayload.lifetime) + 121).url())
+        await model.open(expiredCode().url())
 
         XCTAssertEqual(model.phase, .failed(.expired))
         XCTAssertTrue(host.removals.isEmpty)
+    }
+
+    /// A linked row whose grant is gone (the Mac removed this phone, not yet seen) is not a live link: the plain
+    /// expired failure, the row left to the grant check.
+    func testExpiredCodeOfALinkedRowWithoutItsGrantShowsTheExpiredFailure() async throws {
+        let stored = savedLink()
+        host.seed(stored, grantMissingSince: start)
+        let model = makeModel()
+
+        await model.open(expiredCode().url())
+
+        XCTAssertEqual(model.phase, .failed(.expired))
+        XCTAssertTrue(host.prepared.isEmpty)
+        XCTAssertTrue(host.removals.isEmpty)
+        XCTAssertEqual(host.rows.map(\.link), [stored])
+    }
+
+    /// A link that is ending (the Mac's removal still being applied) is not a live link: the plain expired failure.
+    func testExpiredCodeOfAHubWhoseLinkIsEndingShowsTheExpiredFailure() async throws {
+        host.seed(savedLink())
+        macGrantsTheLink()
+        host.parksMarkRemoved = true
+        let model = makeModel()
+        let removal = Task { await model.removedByMac(TestE2E.hubID.uuidString) }
+        try await poll { host.markedRemoved == [TestE2E.hubID.uuidString] }
+
+        await model.open(expiredCode().url())
+
+        XCTAssertEqual(model.phase, .failed(.expired))
+        XCTAssertTrue(host.prepared.isEmpty)
+        host.parksMarkRemoved = false
+        await removal.value
+        XCTAssertEqual(host.rows.map(\.state), [.unlinkedByMac])
     }
 
     /// Clock skew: the same 120 s grace as the plain expiry check. A code just past its expiry on the phone's clock

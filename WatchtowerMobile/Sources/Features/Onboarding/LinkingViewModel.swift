@@ -225,10 +225,12 @@ final class LinkingViewModel {
             await finishPromoted(payload.hubID, ownerAsked: true)
             return
         }
-        // Step 1: only a code clearly past its expiry on this clock. One of a Mac this phone holds a live link to says
-        // so (ask #1804): the Mac does not answer a hello on a closed code, so none is sent, and the link stays.
+        // Step 1: only a code clearly past its expiry on this clock. One of a Mac this phone holds a live link to (a
+        // linked row, not ending, its grant linked: the valid code's own check below) says so (ask #1804): the Mac
+        // does not answer a hello on a closed code, so none is sent, and the link stays.
         guard !isExpired(payload) else {
-            if let row = row(payload.hubID), row.state == .linked, !ending.contains(row.hubID) {
+            phase = .checking
+            if let row = row(payload.hubID), row.state == .linked, !ending.contains(row.hubID), await isGranted(row.link) {
                 phase = .failed(.expiredButLinked(macName: row.link.macName))
             } else {
                 phase = .failed(.expired)
