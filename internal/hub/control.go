@@ -300,8 +300,44 @@ type pairListener struct {
 	ckNonce string
 	w       *answerWriter
 	queue   chan ControlAnswer // guarded by supervisor.pairMu for sends and close
-	mu      sync.Mutex
-	codes   map[string]string
+	// token names the stream to the link center (IssueFor): its own codes'
+	// qr and waiting events carry it. Set at creation, never changed.
+	token string
+	mu    sync.Mutex
+	codes map[string]string
+	// nonces are the codes this stream was given (their qr carried its
+	// token), oldest first, at most link.KeptCodes (the center keeps no
+	// more): it is shown only those codes' events (broadcast).
+	nonces []string
+}
+
+// addNonce records a code this stream was given, dropping the oldest past
+// link.KeptCodes. p.mu held.
+func (p *pairListener) addNonce(nonce string) {
+	p.nonces = append(p.nonces, nonce)
+	if n := len(p.nonces); n > link.KeptCodes {
+		p.nonces = p.nonces[n-link.KeptCodes:]
+	}
+}
+
+// streamToken is p's token, "" for no stream (an issue no stream asked for).
+func (p *pairListener) streamToken() string {
+	if p == nil {
+		return ""
+	}
+	return p.token
+}
+
+// owns reports whether nonce is one of this stream's codes.
+func (p *pairListener) owns(nonce string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, n := range p.nonces {
+		if n == nonce {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *pairListener) code(device string) (string, bool) {
@@ -315,9 +351,15 @@ func (p *pairListener) code(device string) (string, bool) {
 // stream that falls further behind is dropped (its connection closed).
 const pairQueue = 64
 
-// broadcast hands a pairing event to every pairing stream without waiting
-// on any of them: a stream whose queue is full is dropped, the others get
-// every event.
+// broadcast hands a pairing event to the pairing streams it is about,
+// without waiting on any of them (a stream whose queue is full is dropped):
+// a code's qr and waiting go to the stream that asked for it (Token), which
+// records the code's nonce; every other event of a code (sas, linked,
+// refused) goes to the streams that hold its nonce, which record a SAS's
+// code for the confirm. An event naming no stream or no code (an issue no
+// stream asked for) goes to every stream, as does its code. The link center
+// emits a code's qr before any event of a phone under it, on one channel,
+// so a stream always holds its nonce first.
 func (s *supervisor) broadcast(ev link.PairEvent) {
 	a := ControlAnswer{Event: ev.Kind, OK: true, URL: ev.URL, DeviceID: ev.DeviceID, Name: ev.Name, Code: ev.Code, Reason: ev.Reason}
 	if !ev.ExpiresAt.IsZero() {
@@ -326,14 +368,35 @@ func (s *supervisor) broadcast(ev link.PairEvent) {
 	}
 	s.pairMu.Lock()
 	defer s.pairMu.Unlock()
-	if ev.Kind == link.EventSAS {
-		for p := range s.pairs {
-			p.mu.Lock()
-			p.codes[strings.ToUpper(ev.DeviceID)] = ev.Code
-			p.mu.Unlock()
-		}
+	to := func(*pairListener) bool { return true }
+	switch {
+	case ev.Token != "":
+		to = func(p *pairListener) bool { return p.token == ev.Token }
+	case ev.Nonce != "" && ev.Kind != link.EventQR && ev.Kind != link.EventWaiting:
+		to = func(p *pairListener) bool { return p.owns(ev.Nonce) }
 	}
-	sendAll(s.pairs, a, "pairing")
+	var shown map[*pairListener]bool
+	for p := range s.pairs {
+		if !to(p) {
+			continue
+		}
+		p.mu.Lock()
+		switch {
+		case ev.Kind == link.EventQR && ev.Nonce != "":
+			p.addNonce(ev.Nonce)
+		case ev.Kind == link.EventSAS:
+			if p.codes == nil {
+				p.codes = map[string]string{}
+			}
+			p.codes[strings.ToUpper(ev.DeviceID)] = ev.Code
+		}
+		p.mu.Unlock()
+		if shown == nil {
+			shown = map[*pairListener]bool{}
+		}
+		shown[p] = true
+	}
+	sendIf(s.pairs, a, "pairing", func(p *pairListener) bool { return shown[p] })
 	// Desktop's watch hears of the step, never its URL or code.
 	sendAll(s.watches, ControlAnswer{Event: EventPair, OK: true, Pair: ev.Kind, DeviceID: ev.DeviceID}, "desktop watch")
 }
@@ -348,8 +411,15 @@ func (s *supervisor) notifyDesktop(a ControlAnswer) {
 
 // sendAll queues a on every stream of set (pairMu held); a stream whose
 // queue is full is dropped, the others get every event.
-func sendAll(set map[*pairListener]bool, a ControlAnswer, what string) {
+func sendAll(set map[*pairListener]bool, a ControlAnswer, what string) { sendIf(set, a, what, nil) }
+
+// sendIf is sendAll limited to the streams for which to returns true (every
+// stream when to is nil).
+func sendIf(set map[*pairListener]bool, a ControlAnswer, what string, to func(*pairListener) bool) {
 	for p := range set {
+		if to != nil && !to(p) {
+			continue
+		}
 		select {
 		case p.queue <- a:
 		default:
@@ -409,7 +479,8 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 	// stream is a new stream of this connection (the caller registers it);
 	// its own goroutine writes its queue.
 	stream := func() *pairListener {
-		p := &pairListener{w: w, queue: make(chan ControlAnswer, s.o.pairQueue), codes: map[string]string{}}
+		p := &pairListener{w: w, queue: make(chan ControlAnswer, s.o.pairQueue), codes: map[string]string{},
+			token: "stream-" + strconv.FormatUint(s.pairSeq.Add(1), 10)}
 		pumping.Add(1)
 		go func() {
 			defer pumping.Done()
@@ -759,8 +830,14 @@ func (s *supervisor) withHubOr(fn func(*hubRuntime) ControlAnswer, off func() Co
 // CloudKit issues a CloudKit code (hubRuntime.pairCloudKit), so the phone
 // links on the transport the hub publishes on; its share calls run outside
 // hubMu, the hub held by its wait group, which stop cancels and waits for.
-// Such a hub without the shares answers failed, never a relay code. Any
-// other hub issues a relay code under hubMu (hubRuntime.handle).
+// Such a hub without the shares answers failed, never a relay code. When
+// iCloud is unusable for the CloudKit code (no_icloud, icloud_unreachable
+// past the bridge's start) and the hub's relay is connected, it issues a
+// relay code instead (iCloud is not needed for linking,
+// hubRuntime.relayCodeFallback); otherwise the refusal stands. Any other hub
+// issues a relay code under hubMu (hubRuntime.handle). Every path issues
+// for the asking stream's token, so only that stream is shown the code and
+// its phones' events (broadcast).
 func (s *supervisor) pair(r ControlRequest, pl *pairListener) ControlAnswer {
 	var (
 		h      *hubRuntime
@@ -783,10 +860,23 @@ func (s *supervisor) pair(r ControlRequest, pl *pairListener) ControlAnswer {
 	if h == nil {
 		return a
 	}
-	defer h.wg.Done()
-	a, nonce := h.pairCloudKit(shares)
+	a, nonce, err := func() (ControlAnswer, string, error) {
+		defer h.wg.Done()
+		return h.pairCloudKit(shares, pl.streamToken())
+	}()
 	if nonce != "" && pl != nil {
 		pl.ckNonce = nonce // the connection's own goroutine: no lock
+	}
+	if (a.Error == ErrClassNoICloud || a.Error == ErrClassICloudUnreachable) && h.relayCodeFallback(err) {
+		// iCloud is not needed for linking (F7): a Mac with a relay answers
+		// like a relay hub, under hubMu, on the hub that refused.
+		log.Printf("hub: no iCloud code (%s): a Relay code instead", a.Error)
+		return s.withHub(func(rt *hubRuntime) ControlAnswer {
+			if rt != h {
+				return ControlAnswer{Error: ErrClassHubOff}
+			}
+			return rt.handle(r, pl)
+		})
 	}
 	return a
 }
@@ -817,8 +907,8 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		on := r.On
 		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device), Grant: r.Grant, Allowed: &on}
 	case OpPair:
-		// The qr and waiting events reach the stream through the center.
-		if _, _, err := h.center.Issue(); err != nil {
+		// The qr and waiting events reach the asking stream through the center.
+		if _, _, err := h.center.IssueFor(pl.streamToken()); err != nil {
 			return ControlAnswer{Error: ErrClassFailed}
 		}
 		// The phone's hello may come at once: a pass now rather than at the

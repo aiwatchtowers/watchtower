@@ -113,6 +113,39 @@ func (h *hubRuntime) bridgeStarting() bool {
 	return !h.ckLaunchSettled || h.bridgeLaunches() != h.ckLaunchSeen
 }
 
+// bridgeStartGrace bounds how long an unreadable iCloud account counts as
+// the bridge still starting (iCloudStarting): a healthy bridge serves its
+// socket within seconds of its launch.
+const bridgeStartGrace = 30 * time.Second
+
+// iCloudStarting: an unreadable iCloud account may only mean the bridge is
+// not serving yet — the hub started less than bridgeStartGrace ago, or the
+// bridge runs a process launched less than that ago. A bridge that never
+// launched, that waits to restart (a crash loop between its runs) or whose
+// running process is older is past its start: its unreadable account is
+// unusable. Measured on the hub's clock, which is monotonic in production,
+// so wall-clock steps do not count. If the clock reads earlier than the
+// reference time, it was stepped back; that case counts as outside the
+// grace, so a step never extends it. The bridge's state is read before the
+// clock, so a launch in between is never "in the future". Safe off the
+// worker.
+func (h *hubRuntime) iCloudStarting() bool {
+	running := h.bridge != nil && h.bridge.Running()
+	var last time.Time
+	if running {
+		last = h.bridge.LastLaunch()
+	}
+	now := h.sup.o.Clock()
+	within := func(since time.Time) bool {
+		d := now.Sub(since)
+		return d >= 0 && d < bridgeStartGrace
+	}
+	if within(h.startedAt) {
+		return true
+	}
+	return running && !last.IsZero() && within(last)
+}
+
 // cloudKitStatus is the running hub's "cloudkit" block (Signed is set by
 // setStatus, which also sees a hub that is off).
 func (h *hubRuntime) cloudKitStatus() CloudKitStatus {
