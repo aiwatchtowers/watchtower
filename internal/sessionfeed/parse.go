@@ -242,7 +242,7 @@ func (st *state) handleUser(rec record, at time.Time) {
 		}
 		st.hasTask = true
 	}
-	if e, ok := userEntry(rec); ok {
+	for _, e := range userEntries(rec) {
 		e.At, e.Conversation = at, st.conv
 		st.res.Entries = append(st.res.Entries, e)
 	}
@@ -277,11 +277,62 @@ func (st *state) queuedOwnerEntry(rec record) (Entry, bool) {
 }
 
 func userEntry(rec record) (Entry, bool) {
+	if es := userEntries(rec); len(es) > 0 {
+		return es[0], true
+	}
+	return Entry{}, false
+}
+
+// userEntries is the entries of a user record: one, except for a message whose
+// text blocks are all notices (Claude Code delivers several task notifications
+// or teammate messages as sibling blocks of one message), which gives one
+// event per notice. The first keeps the record's uuid as its id, the others
+// add `#<block>`, so each is stable across reads.
+func userEntries(rec record) []Entry {
+	if parts, ok := noticeBlocks(rec.Message.Content); ok {
+		out := make([]Entry, 0, len(parts))
+		for i, text := range parts {
+			id := rec.UUID
+			if i > 0 {
+				id = rec.UUID + "#" + strconv.Itoa(i)
+			}
+			out = append(out, noticeEntry(id, text))
+		}
+		return out
+	}
 	text, ok := userText(rec.Message.Content)
 	if !ok {
-		return Entry{}, false
+		return nil
 	}
-	return classifyUserText(rec.UUID, text)
+	if e, ok := classifyUserText(rec.UUID, text); ok {
+		return []Entry{e}
+	}
+	return nil
+}
+
+// noticeBlocks is the notices of a message made of two or more text blocks,
+// each a notice once its system reminders are dropped (empty blocks skipped);
+// ok is false for any other content.
+func noticeBlocks(content json.RawMessage) ([]string, bool) {
+	var blocks []block
+	if json.Unmarshal(content, &blocks) != nil {
+		return nil, false
+	}
+	var parts []string
+	for _, b := range blocks {
+		if b.Type != "text" {
+			return nil, false
+		}
+		text := strings.TrimSpace(reminderRe.ReplaceAllString(b.Text, ""))
+		switch {
+		case text == "":
+		case strings.HasPrefix(text, taskOpen), strings.HasPrefix(text, "<teammate-message"):
+			parts = append(parts, text)
+		default:
+			return nil, false
+		}
+	}
+	return parts, len(parts) > 1
 }
 
 // userText flattens a user message's content; ok is false for tool results
@@ -481,19 +532,18 @@ func hasTaskField(kids map[string]string) bool {
 }
 
 // closeEndsNotification reports whether a `</task-notification>` followed by
-// after ends the notification: nothing follows, a sibling notification
-// starts (Claude Code joins several into one message, a newline apart), or
-// the text after has no close of its own (a trailing "read the output file"
-// line). A close followed by more markup and a later close is one quoted
-// inside a child.
+// after ends the notification: nothing follows, or the text after has no
+// close of its own (a trailing "read the output file" line). A close followed
+// by a later close is one quoted inside a child. Sibling notifications come
+// as separate text blocks (userEntries), never inside one text.
 func closeEndsNotification(after string) bool {
 	after = strings.TrimSpace(after)
-	return after == "" || strings.HasPrefix(after, taskOpen) || !strings.Contains(after, taskClose)
+	return after == "" || !strings.Contains(after, taskClose)
 }
 
 // parseTaskChildren reads the children of the notification at the start of
 // text, up to its closing tag (text after it, such as a "read the output
-// file" line or a sibling notification, is ignored). Every child must close
+// file" line, is ignored). Every child must close
 // with its own element name; a truncated or mismatched notification does not
 // parse. The strict reading (closeEndsNotification: a result quoting a whole
 // notification keeps the outer fields after it) is preferred, then the first

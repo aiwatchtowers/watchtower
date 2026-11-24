@@ -536,20 +536,51 @@ func TestNoticeTask_UsageWithoutNumbersIsNoTask(t *testing.T) {
 	assert.Nil(t, res.Entries[0].Task)
 }
 
-// Fix round 2 (codex P2): two notifications Claude Code joined into one
-// message (userText joins text blocks with a newline) are siblings: the first
-// keeps only its own children, never the second's.
+// Fix rounds 2–3 (codex P2): two notifications Claude Code delivered as
+// sibling text blocks of one message are two event entries, the first keeping
+// the record's id and only its own children.
 func TestNoticeTask_SiblingNotificationsAreNotMerged(t *testing.T) {
 	first := "<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent \"A\" finished</summary>\n<result>done A</result>\n</task-notification>"
 	second := "<task-notification>\n<task-id>b2</task-id>\n<status>failed</status>\n<summary>Agent \"B\" failed</summary>\n<result>done B</result>\n</task-notification>"
 	res := parseStr(t, userBlocks("n1", map[string]any{"type": "text", "text": first}, map[string]any{"type": "text", "text": second}), 0)
-	require.NotEmpty(t, res.Entries)
-	e := res.Entries[0]
+	require.Len(t, res.Entries, 2)
+	e, f := res.Entries[0], res.Entries[1]
+	assert.Equal(t, "n1", e.ID, "the first keeps the record's id")
 	require.NotNil(t, e.Task)
 	assert.Equal(t, "a1", e.Task.TaskID)
 	assert.Equal(t, "done A", e.Task.Result)
 	assert.Equal(t, `Agent "A" finished`, e.Title)
 	assert.NotContains(t, e.Text, "b2")
+	assert.Equal(t, "n1#1", f.ID)
+	assert.Equal(t, KindEvent, f.Kind)
+	require.NotNil(t, f.Task)
+	assert.Equal(t, "b2", f.Task.TaskID)
+	assert.Equal(t, "failed", f.Task.Status)
+	assert.Equal(t, "done B", f.Task.Result)
+	assert.Equal(t, e.At, f.At)
+	assert.Equal(t, e.Conversation, f.Conversation)
+}
+
+// A notice block beside an owner's text block keeps the one joined entry.
+func TestNoticeTask_NoticeBesideOwnerTextStaysOneEntry(t *testing.T) {
+	notice := "<task-notification>\n<task-id>a1</task-id>\n</task-notification>"
+	res := parseStr(t, userBlocks("n1", map[string]any{"type": "text", "text": notice}, map[string]any{"type": "text", "text": "and also this"}), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Equal(t, "n1", res.Entries[0].ID)
+}
+
+// Fix round 3 (codex P2): a result quoting two notifications in a row keeps the
+// outer notification's fields after it.
+func TestNoticeTask_ResultQuotingTwoNotificationsInARow(t *testing.T) {
+	q1 := "<task-notification>\n<task-id>x1</task-id>\n<result>one</result>\n</task-notification>"
+	q2 := "<task-notification>\n<task-id>x2</task-id>\n<result>two</result>\n</task-notification>"
+	n := strings.Replace(agentNotice, `This agent's report was delivered to you as a message from "aaea0001".`, "Both: "+q1+"\n"+q2, 1)
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.Len(t, res.Entries, 1)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, "aaea0001", res.Entries[0].Task.TaskID)
+	assert.Equal(t, "Both: "+q1+"\n"+q2, res.Entries[0].Task.Result)
+	assert.Equal(t, 43545, res.Entries[0].Task.Tokens)
 }
 
 // Fix round 2 (codex P3): an unparsed notice's summary that quotes its own
