@@ -72,21 +72,19 @@ package struct DraftModel: Equatable, Sendable {
 
     /// A delivery's own line pasted at the cursor, ending in `\` or not:
     /// the character before the cursor is then the line's last, and the run
-    /// starts again behind it. The caller decides what the paste does to
-    /// the count (left typed: `markInexact`; in its pause: the pause holds
-    /// the prompt).
+    /// starts again behind it. A permission dialog that came up meanwhile
+    /// may have taken the paste, so a `\` already before the cursor stays
+    /// possible too. The caller decides what the paste does to the count
+    /// (left typed: `markInexact`; in its pause: the pause holds the prompt).
     package mutating func appPasted(endingInBackslash: Bool) {
         run = []
-        backslash = endingInBackslash
+        backslash = backslash || endingInBackslash
         appLine = true
     }
 
-    /// The session host left a delivery's line typed, at a moment the Mac
-    /// does not know against the owner's keys: inexact, and a `\` either
-    /// left before the cursor stays possible.
+    /// The session host left a line typed (`appPasted`, then inexact).
     package mutating func hostLeftTyped(endingInBackslash: Bool) {
-        let possibleBackslash = backslash || endingInBackslash
-        appPasted(endingInBackslash: possibleBackslash)
+        appPasted(endingInBackslash: endingInBackslash)
         setInexact()
     }
 

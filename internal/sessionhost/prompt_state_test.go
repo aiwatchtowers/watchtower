@@ -250,12 +250,7 @@ func TestDraftFixture(t *testing.T) {
 		p := promptState{dialog: c.Dialog}
 		for i := 0; i <= len(c.Keys); i++ {
 			if c.App != nil && c.App.After == i {
-				p.pasted(PastePayload(c.App.Line))
-				if c.App.Pause {
-					p.beginPause()
-				} else {
-					p.leaveTyped()
-				}
+				p.pasteLine(PastePayload(c.App.Line), c.App.Pause)
 			}
 			if i < len(c.Keys) {
 				p.ownerInput([]byte(c.Keys[i]), prof)
@@ -404,36 +399,70 @@ func TestPromptState_LineLeftTypedRestartsTheRun(t *testing.T) {
 	wantOutcome(t, st.deliver(cl, held, noCheck(t)), OutcomeHeld, HeldPromptHasText)
 }
 
-// Review round 4: a line in its pause that ends in `\` turns the owner's
-// Return during the pause into a line break, so it did not send the line;
-// a Backspace there reaches the line, so what precedes the cursor is
-// unknown and the next Return is no submit either.
+// Review rounds 4–5: a line ending in `\` never waits for a Return of its
+// own (Claude Code reads one there as a line break): it is left typed and
+// holds, and the owner's Return after it is a line break too. In a line's
+// pause, a Backspace reaches the line, so what precedes the cursor is unknown
+// and the next Return is no submit. The delivery's own Return after any
+// other line empties the prompt.
 func TestPromptState_LineInPauseSetsTheBackslash(t *testing.T) {
 	prof := ProfileFor("claude")
 	var p promptState
-	p.pasted(PastePayload(`x\`))
-	p.beginPause()
+	if p.pasteLine(PastePayload(`x\`), true) {
+		t.Fatal("a line ending in `\\` waits for a Return of its own")
+	}
+	if !p.holdsText() || !p.draft.holdsText() {
+		t.Fatalf("a line ending in `\\` left typed holds nothing: %+v", p)
+	}
 	p.ownerInput([]byte{0x0D}, prof)
-	if p.ownerReturnInPause || !p.draft.holdsText() {
+	if !p.draft.holdsText() {
 		t.Fatalf("the owner's Return after a pasted `\\` read as a submit: %+v", p)
 	}
 
 	p = promptState{}
-	p.pasted(PastePayload(`\x`))
-	p.beginPause()
+	if !p.pasteLine(PastePayload(`\x`), true) {
+		t.Fatal("no pause for `\\x` into an empty prompt")
+	}
 	p.ownerInput([]byte{0x7F, 0x0D}, prof)
 	if p.ownerReturnInPause || !p.draft.holdsText() {
 		t.Fatalf("Backspace then Return into a pasted `\\x` read as a submit: %+v", p)
 	}
 
-	// The delivery's own Return empties the prompt.
 	p = promptState{}
-	p.pasted(PastePayload(`x\`))
-	p.beginPause()
+	if !p.pasteLine(PastePayload(`x`), true) {
+		t.Fatal("no pause for `x` into an empty prompt")
+	}
 	p.endPause()
 	p.appSubmitted()
 	if p.holdsText() || p.draft.backslash || p.draft.appLine {
 		t.Fatalf("after the delivery's Return = %+v", p.draft)
+	}
+}
+
+// Review round 5: a line ending in `\` asked to submit is left typed through
+// Deliver — no Return of ours, `ends_in_backslash` — and the next phone line
+// is held over it.
+func TestDeliverLeavesALineEndingInBackslashTyped(t *testing.T) {
+	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	cl := st.hub()
+	wantOutcome(t, st.deliver(cl, st.req(`x\`), noCheck(t)), OutcomeTyped, TypedEndsInBackslash)
+	wantBytes(t, st.written(), paste(`x\`), "the line, no Return")
+	held := st.req("y")
+	held.HoldIfPromptText = true
+	wantOutcome(t, st.deliver(cl, held, noCheck(t)), OutcomeHeld, HeldPromptHasText)
+}
+
+// Review round 5: a permission dialog may have taken a line pasted without
+// hold_if_prompt_text, so the owner's `\` before it stays possible: their
+// Return is no submit.
+func TestPromptState_PasteKeepsTheOwnersBackslash(t *testing.T) {
+	prof := ProfileFor("claude")
+	var p promptState
+	p.ownerInput([]byte(`a\`), prof)
+	p.pasteLine(PastePayload("x"), false)
+	p.ownerInput([]byte{0x0D}, prof)
+	if !p.draft.holdsText() {
+		t.Fatalf("the owner's Return after their `\\` and a paste read as a submit: %+v", p.draft)
 	}
 }
 

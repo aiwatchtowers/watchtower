@@ -1176,20 +1176,60 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertFalse(center.promptHoldsText(s.id))
     }
 
-    /// Review round 4: a line pasted in its pause that ends in `\` turns the
-    /// owner's Return during the pause into a line break: it did not send the
-    /// line, so no "sent" and the prompt still holds text.
-    func testTheOwnersReturnAfterAPastedBackslashIsALineBreak() async throws {
-        let center = makeCenter(v1Host: true)
+    /// Review round 5: a line ending in `\` gets no Return of ours, on a
+    /// v1-only host and through the v2 host alike — Claude Code reads one there
+    /// as a line break. It is left typed, and the owner's Return after it is a
+    /// line break too.
+    func testALineEndingInABackslashIsLeftTyped() async throws {
+        for v1Host in [true, false] {
+            let center = makeCenter(v1Host: v1Host)
+            let s = try row()
+            center.start(s, fresh: true)
+            let session = try XCTUnwrap(sessions.last)
+
+            let delivery = await center.deliver("x\\", sessionID: s.id) { true }
+
+            XCTAssertEqual(delivery, .pasted, "v1 host: \(v1Host)")
+            XCTAssertEqual(session.inputs, [bracketedPasteBytes("x\\")], "no Return of ours (v1 host: \(v1Host))")
+            XCTAssertTrue(center.promptHoldsText(s.id))
+            session.onOwnerInput?([0x0D])
+            XCTAssertTrue(center.promptHoldsText(s.id), "the owner's Return after `\\` (v1 host: \(v1Host))")
+        }
+    }
+
+    /// Review round 5: another client's line left typed (the hub's
+    /// `left_typed`, no text) may end in `\`, so the owner's next Return is
+    /// read as a line break and the mirror still holds.
+    func testAnotherClientsLineLeftTypedHoldsTheNextReturn() throws {
+        let center = makeCenter()
         let s = try row()
         center.start(s, fresh: true)
-        onSleep = { [weak self] in self?.sessions[0].onOwnerInput?([0x0D]) }
+        sessions[0].onOwnerInput?(Array("a".utf8))
 
-        let delivery = await center.deliver("x\\", sessionID: s.id) { true }
+        sessions[0].onDeliveryEvent?(SessionHostDeliveryEvent(row: 0, run: "", kind: .leftTyped, besideText: true))
+        sessions[0].onOwnerInput?([0x0D])
+
+        XCTAssertTrue(center.promptHoldsText(s.id))
+    }
+
+    /// Review round 5: the host's "typed" reply comes after the owner kept
+    /// typing; it does not set the line's `\` again over their later keys.
+    func testALateTypedReplyKeepsTheOwnersLaterKeys() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        let session = sessions[0]
+        session.host.event = { [weak session] event in
+            session?.onDeliveryEvent?(event)
+            if event.kind == .leftTyped { session?.onOwnerInput?(Array("y".utf8)) }
+        }
+        session.onOwnerInput?(Array("a".utf8))
+
+        let delivery = await center.deliver("x\\", sessionID: s.id) { false }
 
         XCTAssertEqual(delivery, .pasted)
-        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x\\")], "no Return of ours over the line break")
-        XCTAssertTrue(center.promptHoldsText(s.id))
+        session.onOwnerInput?([0x0D])
+        XCTAssertFalse(center.promptHoldsText(s.id), "`ax\\y` then Return is a submit")
     }
 
     /// Review round 4: a line the host left typed beside the owner's `a\`

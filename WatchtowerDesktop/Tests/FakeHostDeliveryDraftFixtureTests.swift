@@ -66,7 +66,7 @@ final class FakeHostDeliveryDraftFixtureTests: XCTestCase {
         }
         type(c.keys[..<app.after])
         let rest = c.keys[app.after...]
-        var draft = host.draft
+        var draft: DraftModel?
         host.pause = { _ in
             type(rest)
             draft = host.draft
@@ -74,10 +74,8 @@ final class FakeHostDeliveryDraftFixtureTests: XCTestCase {
         _ = await host.deliver(SessionDeliverLine(text: app.line, submitIf: app.pause)) {
             DeliverCheckReply(fresh: false, canSubmit: false)
         }
-        if !app.pause {
-            type(rest)
-            draft = host.draft
-        }
-        return draft
+        if let draft { return draft } // the keys went in its pause
+        type(rest) // left typed at once
+        return host.draft
     }
 }

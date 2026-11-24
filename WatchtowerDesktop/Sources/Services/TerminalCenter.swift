@@ -196,6 +196,8 @@ final class TerminalCenter {
     @ObservationIgnored private(set) var drafts: [Int64: DraftModel] = [:]
     /// The session's draft model changed through the owner's keys.
     @ObservationIgnored var onDraftChanged: ((Int64) -> Void)?
+    /// How many of the owner's key chunks each session's draft model read (`hostLeftTyped`).
+    @ObservationIgnored private var ownerKeys: [Int64: Int] = [:]
     /// Sessions whose prompt holds a line the host left without its Return
     /// next to other text not submitted (its `left_typed` event with
     /// `beside_text`, board #380). The pane's "press Return" bar says the
@@ -632,6 +634,10 @@ final class TerminalCenter {
             logWithheld(sessionID, heldBack)
         } else if !canSubmit() {
             logWithheld(sessionID, "the session's state, before the pause")
+        } else if Self.lineEndsInBackslash(SessionDeliverLine(
+            text: text, keepLineBreaks: keepingLineBreaks, keepFormat: keepingFormatCharacters, submitIf: true
+        )) {
+            logWithheld(sessionID, "the line ends in a backslash: a Return would be a line break")
         } else {
             let pause = delay ?? inputProfile(sessionID).pasteSettle
             if let delivery = await returnAfterPause(process, sessionID: sessionID, run: run, delay: pause,
@@ -819,6 +825,7 @@ final class TerminalCenter {
             text: text, keepLineBreaks: keepingLineBreaks, keepFormat: keepingFormatCharacters,
             settle: delay, submitIf: submitIf, holdIfPromptText: holdIfPromptText
         )
+        let keysAtStart = ownerKeys[sessionID, default: 0]
         let outcome = await process.deliver(line) { [weak self] in
             let fresh = await refresh()
             let reply = DeliverCheckReply(
@@ -833,7 +840,7 @@ final class TerminalCenter {
         case .typed:
             // The line sits in the prompt unsubmitted: the app's own
             // pre-checks see it (the host's `left_typed` event says so too).
-            if processes[sessionID] === process { hostLeftTyped(sessionID, line) }
+            if processes[sessionID] === process { hostLeftTyped(sessionID, line, keysAtStart: keysAtStart) }
             return .pasted
         case let .held(reason):
             logWithheld(sessionID, "held by the session host (\(reason))")
@@ -853,7 +860,8 @@ final class TerminalCenter {
             // not. Never "no session": the owner checks and presses Return.
             logWithheld(sessionID, "the delivery's connection ended before the host answered")
             if processes[sessionID] === process {
-                hostLeftTyped(sessionID, line)
+                // No `left_typed` event may follow: after the owner's keys the `\` is unknown.
+                hostLeftTyped(sessionID, ownerKeys[sessionID, default: 0] == keysAtStart ? line : nil)
                 pasteHints.insert(sessionID)
             }
             return .mayBeTyped
@@ -932,11 +940,16 @@ final class TerminalCenter {
         drafts[sessionID, default: DraftModel()].markInexact()
     }
 
-    /// The host left `line` typed, or may have (`DraftModel.hostLeftTyped`); nil:
-    /// a line of any client's, its text unknown here (the host's model has its `\`).
-    private func hostLeftTyped(_ sessionID: Int64, _ line: SessionDeliverLine?) {
-        let endsInBackslash = line.map(Self.lineEndsInBackslash) ?? false
-        drafts[sessionID, default: DraftModel()].hostLeftTyped(endingInBackslash: endsInBackslash)
+    /// The host left `line` typed, or may have (`DraftModel.hostLeftTyped`). nil: any client's
+    /// line (`left_typed`), its text unknown, so a `\` is possible. A reply after the owner's
+    /// keys (counted from `keysAtStart`) is stale: those keys and that event set the `\`.
+    private func hostLeftTyped(_ sessionID: Int64, _ line: SessionDeliverLine?, keysAtStart: Int = 0) {
+        guard let line, ownerKeys[sessionID, default: 0] == keysAtStart else {
+            let unknown = line == nil
+            drafts[sessionID, default: DraftModel()].hostLeftTyped(endingInBackslash: unknown)
+            return
+        }
+        drafts[sessionID, default: DraftModel()].hostLeftTyped(endingInBackslash: Self.lineEndsInBackslash(line))
     }
 
     /// An ask's answer line is waiting in or for a running session: its pane
@@ -973,6 +986,7 @@ final class TerminalCenter {
         }
         drafts[sessionID] = draft == DraftModel() ? nil : draft
         guard key != .ignored else { return }
+        ownerKeys[sessionID, default: 0] += 1
         if (draft.count, draft.exact, draft.holdsText) != before { onDraftChanged?(sessionID) }
         switch answerHints[sessionID] {
         case nil, .held?, .stillHeld?, .queued?: break

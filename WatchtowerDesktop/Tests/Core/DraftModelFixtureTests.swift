@@ -67,8 +67,11 @@ final class DraftModelFixtureTests: XCTestCase {
         var inPause = false
         for index in 0...c.keys.count {
             if let app = c.app, app.after == index {
-                draft.appPasted(endingInBackslash: app.line.hasSuffix("\\"))
-                if app.pause { inPause = true } else { draft.markInexact() }
+                let endsInBackslash = app.line.hasSuffix("\\")
+                // Go `promptState.pasteLine`: a pause only into an empty prompt, never after a `\`.
+                inPause = app.pause && !draft.holdsText && !endsInBackslash
+                draft.appPasted(endingInBackslash: endsInBackslash)
+                if !inPause { draft.markInexact() }
             }
             guard index < c.keys.count else { break }
             switch draft.feed(Array(c.keys[index].utf8), profile: profile, dialog: c.dialog) {

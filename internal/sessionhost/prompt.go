@@ -58,10 +58,21 @@ func (p *promptState) holdsText() bool {
 	return p.draft.holdsText() || p.pendingReturn || p.leftTyped
 }
 
-// pasted is a delivery's line pasted at the cursor (its bracketed payload):
-// what precedes the cursor is now that line's end (draftModel.appPasted).
-func (p *promptState) pasted(payload []byte) {
-	p.draft.appPasted(pasteEndsInBackslash(payload))
+// pasteLine records a delivery's line pasted at the cursor (its bracketed
+// payload; draftModel.appPasted) and reports whether its own Return follows
+// after a pause: only for submitIf, into a prompt that held nothing, and not
+// for a line ending in `\` — Claude Code reads a Return there as a line
+// break, so such a line is left typed.
+func (p *promptState) pasteLine(payload []byte, submitIf bool) (pause bool) {
+	endsInBackslash := pasteEndsInBackslash(payload)
+	pause = submitIf && !p.holdsText() && !endsInBackslash
+	p.draft.appPasted(endsInBackslash)
+	if pause {
+		p.beginPause()
+	} else {
+		p.leaveTyped()
+	}
+	return pause
 }
 
 // beginPause marks a pasted line waiting out its pause before its Return.
@@ -87,5 +98,6 @@ func (p *promptState) leaveTyped() {
 }
 
 // appSubmitted is the delivery's own Return after its pause, into a prompt
-// that held nothing else: the prompt is empty again.
+// that held nothing else and after a line not ending in `\` (pasteLine): the
+// prompt is empty again.
 func (p *promptState) appSubmitted() { p.draft = draftModel{} }

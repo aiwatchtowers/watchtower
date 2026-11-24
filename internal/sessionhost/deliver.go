@@ -54,6 +54,7 @@ const LostAfterPaste = "lost_after_paste"
 const (
 	TypedBesideText        = "beside_text"         // the prompt held text before the paste
 	TypedNoSubmit          = "submit_if_false"     // the caller's pre-check said no Return
+	TypedEndsInBackslash   = "ends_in_backslash"   // a Return after the line's `\` would be a line break
 	TypedCheckFailed       = "check_failed"        // the re-check failed, timed out or its connection dropped
 	TypedDialog            = "dialog"              // a permission dialog after the pause
 	TypedCannotSubmit      = "cannot_submit"       // the caller's re-check said no Return
@@ -197,13 +198,7 @@ func (s *Server) runDelivery(c *conn, req DeliverReq, replies <-chan DeliverChec
 		sess.wmu.Unlock()
 		return DeliveredMsg{Outcome: OutcomeHeld, Reason: HeldPromptHasText}
 	}
-	pause := !besideText && req.SubmitIf
-	sess.prompt.pasted(payload)
-	if pause {
-		sess.prompt.beginPause()
-	} else {
-		sess.prompt.leaveTyped()
-	}
+	pause := sess.prompt.pasteLine(payload, req.SubmitIf)
 	sess.mu.Unlock()
 	_, err := sess.ptmx.Write(payload)
 	sess.wmu.Unlock()
@@ -218,8 +213,11 @@ func (s *Server) runDelivery(c *conn, req DeliverReq, replies <-chan DeliverChec
 	if !pause {
 		sess.event(EventLeftTyped, besideText)
 		reason := TypedNoSubmit
-		if besideText {
+		switch {
+		case besideText:
 			reason = TypedBesideText
+		case req.SubmitIf:
+			reason = TypedEndsInBackslash
 		}
 		return DeliveredMsg{Outcome: OutcomeTyped, Reason: reason}
 	}

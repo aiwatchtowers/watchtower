@@ -1,5 +1,5 @@
 {
-  "about": "The owner-draft model's key table (spec 2026-11-24-workchat-polish §6.1): each case feeds its keys, one owner input chunk each, into an empty draft under its profile, and expects the model after the last one. Read by Go TestDraftFixture (internal/sessionhost/prompt_state_test.go) and Swift DraftModelFixtureTests (WatchtowerDesktop/Tests/Core): one rule on both sides, and FakeHostDelivery uses the Swift model. A case with \"app\" has the app's own delivery paste its line after that many keys: left typed (\"pause\": false) or in its pause before its Return through the case's last key (true); expect is the draft model then.",
+  "about": "The owner-draft model's key table (spec 2026-11-24-workchat-polish §6.1): each case feeds its keys, one owner input chunk each, into an empty draft under its profile, and expects the model after the last one. Read by Go TestDraftFixture (internal/sessionhost/prompt_state_test.go) and Swift DraftModelFixtureTests (WatchtowerDesktop/Tests/Core): one rule on both sides, and FakeHostDelivery uses the Swift model. A case with \"app\" has the app's own delivery paste its line after that many keys: left typed (\"pause\": false) or asked to submit (true: in its pause before its Return through the case's last key, unless it lands beside text or ends in a backslash, which leave it typed); expect is the draft model then.",
   "claude_code_checked": "Claude Code 2.1.331, by hand in a pty on 2026-11-24: idle, one Ctrl+C over typed text cleared the input but showed 'Press Ctrl-C again to exit' (exit armed); working, one Ctrl+C interrupted the turn ('Interrupted · What should Claude do instead?') and the typed text stayed in the prompt. Neither just clears the input, so spec C11 applies: the owner's Ctrl+C makes the draft inexact for every profile. Ctrl+U, cursor at the end, then a marker line submitted to see what was left: a short single-line draft was erased whole; a 147-character draft wrapped over three rows of a 60-column pty lost only its last screen row (the submitted text began with the first two rows), so Ctrl+U makes the draft inexact too. One write of 'text\\r' to an idle prompt submitted it; Option+Return (ESC CR) inserted a line break (the submitted prompt had two lines).",
   "cases": [
     {"name": "type-abc", "profile": "claude", "keys": ["a", "b", "c"], "dialog": false,
@@ -71,6 +71,12 @@
     {"name": "app-line-in-pause-then-backspace-return-holds", "profile": "claude", "keys": ["\u007f", "\r"], "dialog": false,
      "app": {"after": 0, "line": "\\x", "pause": true},
      "expect": {"count": 0, "exact": false, "holds": true}},
+    {"name": "app-line-ending-in-backslash-with-its-return-is-left-typed", "profile": "claude", "keys": [], "dialog": false,
+     "app": {"after": 0, "line": "x\\", "pause": true},
+     "expect": {"count": 0, "exact": false, "holds": true}},
+    {"name": "app-line-left-typed-keeps-the-owners-backslash", "profile": "claude", "keys": ["a", "\\", "\r"], "dialog": false,
+     "app": {"after": 2, "line": "x", "pause": false},
+     "expect": {"count": 2, "exact": false, "holds": true}},
     {"name": "app-line-in-pause-then-return-submits", "profile": "claude", "keys": ["\r"], "dialog": false,
      "app": {"after": 0, "line": "x", "pause": true},
      "expect": {"count": 0, "exact": true, "holds": false}},

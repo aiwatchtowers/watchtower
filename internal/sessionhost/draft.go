@@ -88,11 +88,13 @@ func (d *draftModel) clearedByApp() { *d = draftModel{} }
 
 // appPasted is a delivery's own line pasted at the cursor, ending in `\`
 // or not: the character before the cursor is then the line's last, and the
-// run starts again behind it. The caller decides what the paste does to the
-// count (left typed: inexact; in its pause: the pause holds the prompt).
+// run starts again behind it. A permission dialog that came up meanwhile may
+// have taken the paste, so a `\` already before the cursor stays possible
+// too. The caller decides what the paste does to the count (left typed:
+// inexact; in its pause: the pause holds the prompt).
 func (d *draftModel) appPasted(endsInBackslash bool) {
 	d.run = nil
-	d.backslash = endsInBackslash
+	d.backslash = d.backslash || endsInBackslash
 	d.appLine = true
 }
 

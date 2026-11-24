@@ -77,7 +77,8 @@ final class FakeHostDelivery {
         case .edit:
             if pausing > 0 {
                 textDuringPause = true
-                draft.markInexact() // the key reached the line in its pause
+                // The key reached the line in its pause, unless the owner's Return sent it.
+                if !ownerReturnedInPause { draft.markInexact() }
             }
         case .ignored, .neutral:
             break
@@ -95,15 +96,18 @@ final class FakeHostDelivery {
         let besideText = leftTyped || draft.holdsText || pausing > 0
         if line.holdIfPromptText, besideText { return .held("prompt_has_text") }
         let started = run
+        var endsInBackslash = false
         if case let .paste(bytes) = WorkbenchCommentPrompt.terminalPayload(
             line.text, bracketedPaste: true, keepingLineBreaks: line.keepLineBreaks,
             keepingFormatCharacters: line.keepFormat
         ) {
             write(bytes)
-            draft.appPasted(endingInBackslash: DraftModel.pasteEndsInBackslash(bytes))
+            endsInBackslash = DraftModel.pasteEndsInBackslash(bytes)
+            draft.appPasted(endingInBackslash: endsInBackslash)
         }
         send(.pasted)
-        guard line.submitIf, !besideText else {
+        // A Return after a `\` would be a line break: such a line stays typed.
+        guard line.submitIf, !besideText, !endsInBackslash else {
             if pausing > 0 { textDuringPause = true }
             return leaveTyped(besideText: besideText)
         }
