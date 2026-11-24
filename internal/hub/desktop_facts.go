@@ -101,16 +101,21 @@ func (h *hubRuntime) bridgeLaunches() uint64 {
 // early; the worst case is one extra log line, hiding nothing.
 func (h *hubRuntime) noteBridgeLaunch() {
 	g := h.bridgeLaunches()
-	h.ckLaunchSettled = g != 0 && g == h.ckLaunchSeen
+	var settled uint64
+	if g != 0 && g == h.ckLaunchSeen {
+		settled = g
+	}
+	h.ckLaunchSettled.Store(settled)
 	h.ckLaunchSeen = g
 }
 
 // bridgeStarting: the current bridge launch (if any) has not yet been seen
 // by two houseEvery ticks in a row — a whole houseEvery interval may not
 // have passed since it, so a missing socket may only mean it is not served
-// yet. A relaunch starts it over.
+// yet. A relaunch starts it over. Safe off the worker.
 func (h *hubRuntime) bridgeStarting() bool {
-	return !h.ckLaunchSettled || h.bridgeLaunches() != h.ckLaunchSeen
+	settled := h.ckLaunchSettled.Load()
+	return settled == 0 || h.bridgeLaunches() != settled
 }
 
 // cloudKitStatus is the running hub's "cloudkit" block (Signed is set by

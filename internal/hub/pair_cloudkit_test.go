@@ -259,6 +259,87 @@ func TestPairOnACloudKitDesktopWithICloudBriefyUnavailableIsRetryable(t *testing
 	})
 }
 
+// iCloud that is only not read yet — the account unreadable while the bridge
+// is still starting (the rig's bridge never settles), or the Mac's user not
+// read — keeps the retryable refusal on a Mac with a relay: "try again in a
+// moment", not a move to Relay.
+func TestPairOnACloudKitDesktopWithICloudNotReadYetIsRetryable(t *testing.T) {
+	for _, op := range []string{"account_status", "owner_user"} {
+		t.Run(op, func(t *testing.T) {
+			bubble(t, func(t *testing.T) {
+				r, ck, c := startPairDesk(t, transport.KindCloudKit)
+				ck.failNext(op, 1000)
+				if a := pairRefusal(t, c); a != ErrClassICloudUnreachable {
+					t.Fatalf("answer %s, want %s", a, ErrClassICloudUnreachable)
+				}
+				if n := codesStored(t, r.dir); n != 0 {
+					t.Fatalf("%d codes stored", n)
+				}
+			})
+		})
+	}
+}
+
+// downRelay is a relay that never connects: the hub's relay stays down.
+type downRelay struct{ transport.Transport }
+
+func (downRelay) Connect(context.Context, []string) error { return transport.ErrUnavailable }
+
+// A Mac whose relay is not connected keeps the iCloud refusal: a relay code
+// would send the phone to a pairing slot nobody serves, and the Mac must
+// still say iCloud is the problem.
+func TestPairOnACloudKitDesktopWithoutICloudAndTheRelayDownIsRefused(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, ck, c := startPairDesk(t, transport.KindCloudKit, func(o *Options) {
+			up := o.newTransport
+			o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
+				rel, err := up(ctx, id, st, zones)
+				return downRelay{rel}, err
+			}
+		})
+		ck.acct.Store(transport.AccountNoAccount)
+		if a := pairRefusal(t, c); a != ErrClassNoICloud {
+			t.Fatalf("answer %s, want %s", a, ErrClassNoICloud)
+		}
+		if n := codesStored(t, r.dir); n != 0 {
+			t.Fatalf("%d codes stored", n)
+		}
+	})
+}
+
+// Only an iCloud refusal that is not transient moves a pair to a relay code,
+// and only with a relay that is connected: icloud_changed, failed and the
+// not-read-yet causes keep their refusal.
+func TestRelayCodeFallbackOnlyForUnusableICloud(t *testing.T) {
+	relay := memfake.New(transport.KindRelay, nil)
+	acct := func(a transport.Account) error { return &link.AccountError{Account: a} }
+	for _, tc := range []struct {
+		name    string
+		rel     transport.Transport
+		relDown bool
+		err     error
+		want    bool
+	}{
+		{"no account", relay, false, acct(transport.AccountNoAccount), true},
+		{"restricted", relay, false, acct(transport.AccountRestricted), true},
+		{"no entitlement", relay, false, acct(transport.AccountNoEntitlement), true},
+		{"temporarily unavailable", relay, false, acct(transport.AccountTemporarilyUnavailable), true},
+		{"unreadable while the bridge starts", relay, false,
+			&link.AccountError{Account: link.AccountUnreadable, Err: transport.ErrUnavailable}, false},
+		{"owner unknown", relay, false, link.ErrOwnerUnknown, false},
+		{"account changed", relay, false, fmt.Errorf("w: %w", link.ErrAccountChanged), false},
+		{"failed", relay, false, errors.New("link: storing the code: disk full"), false},
+		{"no relay", nil, false, acct(transport.AccountNoAccount), false},
+		{"relay down", relay, true, acct(transport.AccountNoAccount), false},
+	} {
+		h := &hubRuntime{rel: tc.rel}
+		h.relDown.Store(tc.relDown)
+		if got := h.relayCodeFallback(tc.err); got != tc.want {
+			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // pairRefusal asks for a code and returns the answer's error class, failing
 // on a qr event first.
 func pairRefusal(t *testing.T, c *ControlClient) string {

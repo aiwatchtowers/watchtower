@@ -126,7 +126,8 @@ type hubRuntime struct {
 	bridgeStop func()
 	// relDown: the relay is not connected yet (a desktop host connects it
 	// in the link upkeep, so an unreachable relay never holds CloudKit up).
-	relDown bool
+	// Written by the worker, read by the pair's relay-code fallback too.
+	relDown atomic.Bool
 	pub     *slices.Publisher
 	wiring  *wiring // nil without a database
 	// chatPush sends the chat_answer pushes (chat_turn_watch.go); set once
@@ -189,11 +190,12 @@ type hubRuntime struct {
 	// desktop_facts.go).
 	ckReadFail, ckReadLogged string
 	// ckLaunchSeen is the bridge's launch generation the last houseEvery
-	// tick saw, and ckLaunchSettled whether the tick before it saw the same:
-	// that launch has had at least one whole houseEvery interval to serve
-	// its socket (worker only, desktop_facts.go).
+	// tick saw (worker only), and ckLaunchSettled that launch once the tick
+	// before it saw the same, 0 otherwise: it has had at least one whole
+	// houseEvery interval to serve its socket (written by the worker, read
+	// by the pair's relay-code fallback too; desktop_facts.go).
 	ckLaunchSeen    uint64
-	ckLaunchSettled bool
+	ckLaunchSettled atomic.Uint64
 
 	// ckHoldMu orders the iCloud holds (icloud.go): ckHeld while the account
 	// cannot be used, ckPubHeld while that also holds the publisher and the
@@ -1061,7 +1063,7 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 	}
 	vouched := h.relayVouched()
 	h.syncReaders(ctx, rt, vouched)
-	if zw, ok := rt.(zoneWatcher); ok && !h.relDown {
+	if zw, ok := rt.(zoneWatcher); ok && !h.relDown.Load() {
 		h.watchZones(ctx, zw)
 	}
 	if !vouched && h.acct != nil && h.phoneLinked() {

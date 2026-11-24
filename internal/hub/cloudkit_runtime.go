@@ -97,10 +97,10 @@ func (h *hubRuntime) cloudKitCodes() (s transport.Shares, cloudKit, ok bool) {
 // emits the qr and waiting events as Issue does) and runs a pass at once
 // for the phone's hello. A refusal is answered with its class (LinkErrClass:
 // no_icloud, icloud_unreachable, icloud_changed, else failed); a hub stopping
-// meanwhile answers hub_off. supervisor.pair turns no_icloud and
-// icloud_unreachable into a relay code when the hub has a relay. Called off
-// hubMu with the hub held by its wait group.
-func (h *hubRuntime) pairCloudKit(s transport.Shares) (ControlAnswer, string) {
+// meanwhile answers hub_off. The refusal's error is returned with it
+// (supervisor.pair may answer a relay code instead: relayCodeFallback).
+// Called off hubMu with the hub held by its wait group.
+func (h *hubRuntime) pairCloudKit(s transport.Shares) (ControlAnswer, string, error) {
 	ctx, cancel := context.WithTimeout(h.ctx, opTimeout)
 	defer cancel()
 	p, _, err := h.center.IssueCloudKit(ctx, s)
@@ -110,10 +110,29 @@ func (h *hubRuntime) pairCloudKit(s transport.Shares) (ControlAnswer, string) {
 			class = ErrClassHubOff
 		}
 		log.Printf("hub: CloudKit code not issued (%s, %s)", class, errClass(err))
-		return ControlAnswer{Error: class}, ""
+		return ControlAnswer{Error: class}, "", err
 	}
 	h.kick(h.passKick)
-	return ControlAnswer{OK: true}, p.Nonce
+	return ControlAnswer{OK: true}, p.Nonce, nil
+}
+
+// relayCodeFallback: a CloudKit code refused with err gives way to a relay
+// code (iCloud is not needed for linking) — only when the hub has a relay
+// that is connected, and only when iCloud is really unusable: the bridge
+// answered with an account that refuses linking, or the account could not
+// be read although the bridge is past its start. The Mac's user not read
+// (ErrOwnerUnknown), an unreadable account while the bridge starts, an
+// account change and any other failure keep their refusal, so the Mac still
+// says what is wrong with iCloud, or to try again.
+func (h *hubRuntime) relayCodeFallback(err error) bool {
+	if h.rel == nil || h.relDown.Load() {
+		return false
+	}
+	var ae *link.AccountError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	return ae.Account != link.AccountUnreadable || !h.bridgeStarting()
 }
 
 // abandonCode closes, in the background, the link of the CloudKit code

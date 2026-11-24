@@ -116,7 +116,7 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 		// participants after the answer grace. Both stay due while an iCloud
 		// hold skips the passes, and the stop closes the link (CloseOnStop).
 		c.ck.open = nil
-		c.ck.linkCloseAt, c.ck.linkCloseTries = now, 0
+		c.ck.linkCloseAt, c.ck.linkCloseTries, c.ck.closeAtStop = now, 0, true
 		c.ck.graceEnd = now.Add(c.sweep.AnswerGrace)
 		if c.ck.sweepAt.IsZero() || c.ck.sweepAt.After(c.ck.graceEnd) {
 			c.ck.sweepAt, c.ck.sweepTries = c.ck.graceEnd, 0

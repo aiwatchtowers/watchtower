@@ -201,6 +201,10 @@ type ckState struct {
 	// none. linkCloseTries counts the retries spent.
 	linkCloseAt    time.Time
 	linkCloseTries int
+	// closeAtStop: the link due to close (linkCloseAt) is a CloudKit code's
+	// that a relay code replaced, so CloseOnStop closes it as it would a code
+	// on screen; cleared by the next CloudKit code, whose own close it is.
+	closeAtStop bool
 	// sharing: what the last issue left (SharingAvailable/Unavailable), ""
 	// before any.
 	sharing string
@@ -289,6 +293,7 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 	// a refused one leaves both as they were.
 	c.ck.mu.Lock()
 	c.ck.sweepAt, c.ck.sweepTries, c.ck.linkCloseAt, c.ck.linkCloseTries = time.Time{}, 0, time.Time{}, 0
+	c.ck.closeAtStop = false
 	c.ck.mu.Unlock()
 	c.setRetired(retiredCode{}) // the new code retires every open one: their hellos read expired_code
 	fields := &cloudKitFields{container: c.container, ownerUser: owner}
@@ -658,13 +663,14 @@ func (c *Center) SkipStartClose() {
 // CloseOnStop closes the link of a code still on screen when the hub stops
 // (CloseSheetClosed: nobody can link with it any more), so the shares'
 // public URLs do not outlive the hub; the participants' sweep is left to the
-// next start's close (the sweep mark stays). With no code open, a public
-// link still due to close (a failed close, or a CloudKit code a relay code
-// replaced) is closed once more. Nothing, and no share call, otherwise.
+// next start's close (the sweep mark stays). A CloudKit code a relay code
+// replaced counts as on screen while its link is still due to close
+// (closeAtStop). Nothing, and no share call, otherwise: a failed close of a
+// used code is left to the next start.
 func (c *Center) CloseOnStop(ctx context.Context, s transport.Shares) error {
 	c.ck.mu.Lock()
 	open := c.ck.open != nil
-	closeDue := !c.ck.linkCloseAt.IsZero()
+	closeDue := c.ck.closeAtStop && !c.ck.linkCloseAt.IsZero()
 	c.ck.mu.Unlock()
 	switch {
 	case open:
