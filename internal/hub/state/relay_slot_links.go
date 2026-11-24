@@ -3,6 +3,7 @@ package state
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -38,6 +39,10 @@ import (
 // VerifyRelayIDProof, is what moves an id between rows).
 const MetaRelaySlotLinks = "relay_slot_links"
 
+// ErrRelaySlotLinksUndecodable is the relay_slot_links row being there but
+// not decodable (an error of its own, apart from a failed read).
+var ErrRelaySlotLinksUndecodable = errors.New("state: relay_slot_links cannot be decoded")
+
 // relaySlotLinks is the row's content.
 type relaySlotLinks struct {
 	Linked  map[string]string `json:"linked,omitempty"`
@@ -54,7 +59,7 @@ func readRelaySlotLinks(q querier) (relaySlotLinks, error) {
 	}
 	var r relaySlotLinks
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
-		return relaySlotLinks{}, fmt.Errorf("reading hub_meta %s: %w", MetaRelaySlotLinks, err)
+		return relaySlotLinks{}, fmt.Errorf("%w: %w", ErrRelaySlotLinksUndecodable, err)
 	}
 	return r, nil
 }
@@ -93,14 +98,13 @@ func RelaySlotLinkedTx(tx *sql.Tx, device, linkNonce string) (bool, error) {
 // RelaySlotPendingTx is whether device's waiting request under the code
 // nonce came through a pairing slot. The nonce is compared, not just the
 // device: a request that a writer which does not know the row replaced
-// under another code never inherits the mark.
+// under another code never inherits the mark. An undecodable row is
+// ErrRelaySlotLinksUndecodable (the route is unknown), a failed read its own
+// error.
 func RelaySlotPendingTx(tx *sql.Tx, device, nonce string) (bool, error) {
 	r, err := readRelaySlotLinks(tx)
 	if err != nil {
-		if _, _, merr := meta(tx, MetaRelaySlotLinks); merr != nil {
-			return false, merr
-		}
-		// Undecodable: unmarked (r is empty); the next write replaces it.
+		return false, err
 	}
 	return nonce != "" && r.Pending[slotID(device)] == nonce, nil
 }
@@ -154,11 +158,10 @@ func ForgetRelaySlotTx(tx *sql.Tx, device string) error {
 // the nonce they name, and writes it back (removed when empty).
 func updateRelaySlotLinks(tx *sql.Tx, change func(*relaySlotLinks)) error {
 	r, err := readRelaySlotLinks(tx)
-	if err != nil {
-		if _, _, merr := meta(tx, MetaRelaySlotLinks); merr != nil {
-			return err // unreadable, not undecodable
-		}
+	if errors.Is(err, ErrRelaySlotLinksUndecodable) {
 		r = relaySlotLinks{}
+	} else if err != nil {
+		return err
 	}
 	change(&r)
 	linked, err := nonces(tx, `SELECT device_id, link_nonce FROM devices`)

@@ -3,6 +3,8 @@ package link
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +115,73 @@ func TestOnlyTheRouteChangingReplacesTheRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.wantSlotLinked(b, true)
+}
+
+// A route change that finds the code's confirm nonces spent cannot be saved:
+// the superseded request and its slot mark go with the refusal, so nothing of
+// the old route can be confirmed; the other phones' requests stay.
+func TestARouteChangePastTheCapRemovesTheOldRequest(t *testing.T) {
+	r := newCKRig(t)
+	a, b, c := newPhone(t), newPhone(t), newPhone(t)
+	code := r.issue()
+	for _, p := range []phone{a, b, c} { // MaxNoncesPerCode slot requests
+		if got := r.handle(p, code.Nonce); got.Code == "" {
+			t.Fatalf("not waiting: %+v", got)
+		}
+	}
+	got, err := r.ckHello(a, code.Nonce) // a's same hello over CloudKit
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Refused != wire.RefusedTooManyRequests {
+		t.Fatalf("the capped route change answered %+v, want too_many_requests", got)
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(b, c)) {
+		t.Fatalf("waiting %v, want only b and c", ids)
+	}
+	if err := r.c.Confirm(a.id.String(), "0000", true); !errors.Is(err, ErrNoRequest) {
+		t.Fatalf("the superseded request could still be confirmed: %v", err)
+	}
+	if strings.Contains(r.slotRow(), strings.ToUpper(a.id.String())) {
+		t.Fatalf("a's slot mark stayed: %s", r.slotRow())
+	}
+}
+
+// A route that cannot be read (an undecodable relay_slot_links row) is
+// unknown, never "unchanged": the same hello replaces the request (drawing a
+// nonce) and the row is written whole again.
+func TestAnUnreadableRouteReplacesTheRequest(t *testing.T) {
+	r := newCKRig(t)
+	a := newPhone(t)
+	code := r.issueCK()
+	if got, err := r.ckHello(a, code.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("not waiting: %+v %v", got, err)
+	}
+	if err := r.st.SetMeta(state.MetaRelaySlotLinks, "{"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.ckHello(a, code.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("the resent hello is not waiting: %+v %v", got, err)
+	}
+	var drawn int
+	if err := r.st.ReadTx(context.Background(), func(tx *sql.Tx) error {
+		return tx.QueryRow(`SELECT confirm_nonces_drawn FROM link_codes WHERE nonce = ?`, code.Nonce).Scan(&drawn)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if drawn != 2 {
+		t.Fatalf("%d nonces drawn, want 2: the request was kept as unchanged", drawn)
+	}
+	if _, err := r.st.RelaySlotLinked(); err != nil {
+		t.Fatalf("the row was not written whole again: %v", err)
+	}
+	if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
+		t.Fatal(err)
+	}
+	r.wantSlotLinked(a, false)
+	if r.userOf(a) == "" {
+		t.Fatal("the CloudKit link lost its iCloud user")
+	}
 }
 
 // A re-pairing request of a phone already linked through a slot that is

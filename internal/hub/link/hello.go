@@ -427,23 +427,42 @@ const (
 // request's mark in hub_meta relay_slot_links) is unchanged and draws none;
 // any other hello for the code — a new device, or a known one under new
 // keys, another relay id or the other route — draws one and replaces that
-// device's request, until the code has drawn MaxNoncesPerCode.
+// device's request, until the code has drawn MaxNoncesPerCode. A route that
+// cannot be read (an undecodable relay_slot_links) counts as changed. A
+// route change past the cap removes the superseded request and its mark, so
+// the phone reads the refusal and nothing of the old route can be confirmed.
 func savePending(tx *sql.Tx, p pendingDevice, slot bool) (pendingSave, error) {
+	rerouted := false
 	if stored, ok, err := pendingTx(tx, p.deviceID); err != nil {
 		return 0, err
 	} else if ok && stored.linkNonce == p.linkNonce && bytes.Equal(stored.signingKey, p.signingKey) &&
 		bytes.Equal(stored.agreementKey, p.agreementKey) && stored.relayDeviceID == p.relayDeviceID {
 		storedSlot, err := state.RelaySlotPendingTx(tx, p.deviceID, stored.linkNonce)
-		if err != nil {
+		switch {
+		case errors.Is(err, state.ErrRelaySlotLinksUndecodable):
+			rerouted = true // the route is unknown: replace, never keep
+		case err != nil:
 			return 0, err
-		}
-		if storedSlot == slot {
+		case storedSlot == slot:
 			return pendingUnchanged, nil
+		default:
+			rerouted = true
 		}
 	}
 	drawn, err := drawAnswer(tx, p.linkNonce, MaxNoncesPerCode)
-	if err != nil || !drawn {
-		return pendingCapped, err
+	if err != nil {
+		return 0, err
+	}
+	if !drawn {
+		if rerouted {
+			if _, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID); err != nil {
+				return 0, err
+			}
+			if err := state.MarkRelaySlotRequestTx(tx, p.deviceID, "", false); err != nil {
+				return 0, err
+			}
+		}
+		return pendingCapped, nil
 	}
 	if _, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID); err != nil {
 		return 0, err
