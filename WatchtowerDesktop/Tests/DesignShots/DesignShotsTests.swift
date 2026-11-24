@@ -99,6 +99,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(WorkchatAgentsMockShotFixtures.shots)
     }
 
+    /// The Workchat polish spec's mockups (#2201).
+    func testWorkchatPolishMockShotsRender() throws {
+        try renderShots(WorkchatPolishMockShotFixtures.shots)
+    }
+
     /// The same states on the built views (#2065), `workchat-agents-real-NN-…` beside each mockup.
     func testWorkchatAgentsShotsRender() throws {
         try renderShots(WorkchatAgentsShotFixtures.shots)
