@@ -183,9 +183,11 @@ type hubRuntime struct {
 	storedContact time.Time
 	// ckAccount: the iCloud account the bridge last reported (desktop_facts.go).
 	ckAccount transport.Account
-	// ckReadFail is the error class of the failing account reads the log
-	// last named ("" = the last read answered; worker only, desktop_facts.go).
-	ckReadFail string
+	// ckReadFail is the class of the last failed account read and
+	// ckReadLogged the class the log last named, both of the current run of
+	// failures ("" = the last read answered, or nothing logged; worker only,
+	// desktop_facts.go).
+	ckReadFail, ckReadLogged string
 
 	// ckHoldMu orders the iCloud holds (icloud.go): ckHeld while the account
 	// cannot be used, ckPubHeld while that also holds the publisher and the
@@ -1206,17 +1208,23 @@ func (h *hubRuntime) slotState(ctx context.Context) (settled bool, slotted strin
 type subRetry struct {
 	fails int
 	next  time.Time
+	// logged: the streak's refusal was logged (an expected one is not,
+	// expectedRefusal; a later failure of another kind then is, once).
+	logged bool
 }
 
 // maxSubBackoff caps the wait between attempts to subscribe a refused zone.
 const maxSubBackoff = houseEvery
 
-// expectedRefusal: the relay refusing a zone while no phone holds the hub
-// in a slot (vouched false) is what it does by design, not news — a desktop
-// host on CloudKit whose phones never used the relay sees it at every start
-// (#2192). The same refusal while vouched, or any other failure, is logged.
+// expectedRefusal: the relay closing a zone (FORBIDDEN, ErrZoneForbidden)
+// or refusing an unadmitted hub (HUB_NOT_VOUCHED) while no phone holds the
+// hub in a slot (vouched false) is what it does by design, not news — a
+// desktop host on CloudKit whose phones never used the relay sees it at
+// every start (#2192). The same refusal while vouched, a rejected hub key
+// (UNAUTHENTICATED: plain ErrForbidden), attestation and any other failure
+// are logged.
 func expectedRefusal(err error, vouched bool) bool {
-	return !vouched && (errors.Is(err, transport.ErrForbidden) || errors.Is(err, transport.ErrNotVouched))
+	return !vouched && (errors.Is(err, transport.ErrZoneForbidden) || errors.Is(err, transport.ErrNotVouched))
 }
 
 // zoneKind names a zone in a log line (never its id).
@@ -1234,8 +1242,8 @@ func zoneKind(zone, data string) string {
 // watchZones subscribes the hub's zones not subscribed yet. The relay
 // refuses them (FORBIDDEN) until a phone holds the hub in a slot: a refused
 // zone waits linkEvery, doubling up to maxSubBackoff, and is logged once
-// until it succeeds (not at all while the hub is unvouched and the relay
-// says so, expectedRefusal); the hub becoming vouched (SLOT_ADDED, or a poll that
+// until it succeeds (a refusal by design while the hub is unvouched is not
+// logged, expectedRefusal); the hub becoming vouched (SLOT_ADDED, or a poll that
 // sees a slot) clears the waits. A phone newly admitted while the hub was
 // already vouched (retryZonesNow: a new admission stamp, SLOT_ADDED) makes
 // the refused zones due now, keeping their failure count: a phone that
@@ -1279,9 +1287,10 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 			if r == nil {
 				r = &subRetry{}
 				h.subRetry[z] = r
-				if !expectedRefusal(err, vouched) {
-					log.Printf("hub: the %s not subscribed (%s): retried with backoff", zoneKind(z, h.data), errClass(err))
-				}
+			}
+			if !r.logged && !expectedRefusal(err, vouched) {
+				r.logged = true
+				log.Printf("hub: the %s not subscribed (%s): retried with backoff", zoneKind(z, h.data), errClass(err))
 			}
 			r.fails++
 			wait := h.sup.o.linkEvery << min(r.fails-1, 10)

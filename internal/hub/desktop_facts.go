@@ -43,11 +43,14 @@ type throttleReporter interface{ ThrottledSince() time.Time }
 //
 // The log names a run of failed reads once, and again only when their class
 // changes; the next answer after a logged run says so once (#2192). A read
-// that finds no bridge (unavailable) before this run's first answer is not
-// logged at all: the bridge starts after the hub, so a start's first reads
-// (the pass, the housekeeping and the link upkeep's pass, all kicked at
-// once) find no socket yet, and a bridge that never comes up is logged by
-// its supervisor ("cloudkit bridge did not start" / "exited").
+// that finds no bridge (unavailable) before this run's first answer while
+// the supervisor is still starting or restarting the bridge (the status'
+// bridge is not "running") is not logged: the bridge starts after the hub,
+// so a start's first reads (the pass, the housekeeping and the link
+// upkeep's pass, all kicked at once) find no socket yet, and a bridge that
+// does not start or keeps exiting is logged by its supervisor. Its class is
+// still recorded, and the same failure once the bridge runs (a bridge that
+// never serves its socket) is logged.
 func (h *hubRuntime) refreshCloudKitAccount(ctx context.Context) {
 	s, ok := h.shares()
 	if !ok || h.sup.o.Desktop == nil {
@@ -58,17 +61,20 @@ func (h *hubRuntime) refreshCloudKitAccount(ctx context.Context) {
 	cancel()
 	if err != nil {
 		class := errClass(err)
-		if class == h.ckReadFail || (class == "unavailable" && h.ckAccountUnread()) {
+		starting := class == "unavailable" && h.ckAccountUnread() && h.bridgeState() != BridgeRunning
+		repeat := class == h.ckReadFail && class == h.ckReadLogged
+		h.ckReadFail = class
+		if starting || repeat {
 			return
 		}
-		h.ckReadFail = class
+		h.ckReadLogged = class
 		log.Printf("hub: reading the iCloud account failed (%s): retried next cycle", class)
 		return
 	}
-	if h.ckReadFail != "" {
-		h.ckReadFail = ""
+	if h.ckReadLogged != "" {
 		log.Printf("hub: the iCloud account read again (%s)", a)
 	}
+	h.ckReadFail, h.ckReadLogged = "", ""
 	h.mu.Lock()
 	h.ckAccount = a
 	h.mu.Unlock()
