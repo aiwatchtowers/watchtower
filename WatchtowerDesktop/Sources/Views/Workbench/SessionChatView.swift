@@ -10,6 +10,7 @@ import WatchtowerChatText
 /// (Working and Done) and open in place (the path bar leads back).
 struct SessionChatView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.workchatHighlightProbe) private var highlightProbe
     let vm: WorkbenchesViewModel
     let sessionID: Int64
     let projectID: Int64
@@ -432,6 +433,7 @@ struct SessionChatView: View {
         workchatFeed.onOpenArtifact = { artifact = $0 }
         workchatFeed.transcriptDirs = store.transcriptDirs
         let handlers = highlightHandlers()
+        highlightProbe?(handlers, highlights)
         workchatFeed.onHighlight = handlers.open
         workchatFeed.resolvesPath = handlers.resolvesPath
         var context = workchatFeed.context()
@@ -488,12 +490,17 @@ struct SessionChatView: View {
                         WorkchatFeed.copy(text)
                         copiedNotice = WorkchatHighlights.copiedNotice(text)
                     case let .openFile(file, root):
-                        // The click is looked up again once the unsent edits are pulled (review round 4); an open
-                        // given up while the chat is still here beeps, never a silent no-op.
-                        let opened = await vm.openSessionFile(file, root: root, pane: hostPane) {
-                            await highlights.action(for: span, messageID: messageID, root: root, index: indexView)
-                                == .openFile(file, root)
-                        }
+                        // The click is looked up again before the unsent edits are pulled, and after the pull only
+                        // a bare name's index revision is compared (final review F1); an open given up while the
+                        // chat is still here beeps, never a silent no-op.
+                        let bare = !span.text.contains("/")
+                        var lookedUp = 0
+                        let opened = await vm.openSessionFile(file, root: root, pane: hostPane, stillValid: {
+                            let again = await highlights.action(for: span, messageID: messageID, root: root,
+                                                                index: indexView)
+                            lookedUp = indexView.revision()
+                            return again == .openFile(file, root)
+                        }, stillCurrent: { !bare || indexView.revision() == lookedUp })
                         if !opened, !Task.isCancelled { NSSound.beep() }
                     case .nothing:
                         NSSound.beep()
