@@ -233,9 +233,10 @@ final class MarkdownTableTextTests: XCTestCase {
             let blocks = style.textBlocks.map { block -> String in
                 guard let cell = block as? NSTextTableBlock else { return "\(type(of: block))" }
                 return "r\(cell.startingRow)c\(cell.startingColumn) of \(cell.table.numberOfColumns) "
-                    + "w\(cell.value(for: .width)) pad\(cell.width(for: .padding, edge: .maxX))/"
+                    + "w\(cell.value(for: .width))/\(cell.valueType(for: .width).rawValue) "
+                    + "pad\(cell.width(for: .padding, edge: .minX))/\(cell.width(for: .padding, edge: .maxX))/"
                     + "\(cell.width(for: .padding, edge: .minY))/\(cell.width(for: .padding, edge: .maxY)) "
-                    + "border\(cell.width(for: .border, edge: .maxY))"
+                    + "border\(cell.width(for: .border, edge: .maxY)) valign\(cell.verticalAlignment.rawValue)"
             }
             cells.append("\(text.attributedSubstring(from: range).string.debugDescription) \(blocks) "
                 + "align\(style.alignment.rawValue) wrap\(style.lineBreakMode.rawValue)")
