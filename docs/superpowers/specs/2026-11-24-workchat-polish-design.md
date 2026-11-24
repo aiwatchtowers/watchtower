@@ -192,7 +192,14 @@ host holds the same line for `hold_if_prompt_text`.
    `promptHasText` → "Waiting: the terminal prompt holds text", plus the prompt's last line when the
    Mac terminal buffer can show it (read-only display, never a decision). Actions:
    - **Clear and send** (idle only): one Ctrl+C into the session, wait for the next
-     prompt redraw (≤ 1 s, else give up and leave the line held), then the line.
+     prompt redraw (≤ 1 s, else give up and leave the line held), then the line. The
+     app's own Ctrl+C sets the draft model to `{0, true}` whatever its state (exact or
+     not), so the held line is released by it and never waits for a second clear. The
+     action runs at most once per held line (the button disappears after the click), and
+     the app never sends a Ctrl+C within 3 s of its previous one to the same session — so
+     a Ctrl+C that landed on an already empty prompt (Claude Code then arms "press again
+     to exit") can never be followed by a second one from the app. Test: a fake clock and
+     a fake session assert one Ctrl+C per line and none inside the 3 s window.
    - **Send together**: the existing beside-text delivery (`sharedPrompts`), the line
      pasted after the draft with one Return.
    - **Cancel**: as today.
