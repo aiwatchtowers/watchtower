@@ -42,15 +42,16 @@ type throttleReporter interface{ ThrottledSince() time.Time }
 // answer.
 //
 // The log names a run of failed reads once, and again only when their class
-// changes; the next answer after a logged run says so once (#2192). A read
-// that finds no bridge (unavailable) before this run's first answer while
-// the supervisor is still starting or restarting the bridge (the status'
-// bridge is not "running") is not logged: the bridge starts after the hub,
-// so a start's first reads (the pass, the housekeeping and the link
-// upkeep's pass, all kicked at once) find no socket yet, and a bridge that
-// does not start or keeps exiting is logged by its supervisor. Its class is
-// still recorded, and the same failure once the bridge runs (a bridge that
-// never serves its socket) is logged.
+// changes; the next answer after a logged run says so once (#2192). Before
+// this run's first answer, a read that finds no bridge (unavailable) is not
+// logged until the first housekeeping after the bridge's launch
+// (bridgeStarting): the bridge starts after the hub, and its supervisor
+// reports it running as soon as the process starts, before it serves its
+// socket, so a start's first reads (the pass, the housekeeping and the link
+// upkeep's pass, all kicked at once) find none yet. A bridge that runs and
+// never serves it is logged at that housekeeping; one that does not start
+// or keeps exiting is logged by its supervisor. The silent failure's class
+// is still recorded.
 func (h *hubRuntime) refreshCloudKitAccount(ctx context.Context) {
 	s, ok := h.shares()
 	if !ok || h.sup.o.Desktop == nil {
@@ -61,10 +62,9 @@ func (h *hubRuntime) refreshCloudKitAccount(ctx context.Context) {
 	cancel()
 	if err != nil {
 		class := errClass(err)
-		starting := class == "unavailable" && h.ckAccountUnread() && h.bridgeState() != BridgeRunning
-		repeat := class == h.ckReadFail && class == h.ckReadLogged
+		starting := class == "unavailable" && h.ckAccountUnread() && h.bridgeStarting()
 		h.ckReadFail = class
-		if starting || repeat {
+		if starting || class == h.ckReadLogged {
 			return
 		}
 		h.ckReadLogged = class
@@ -79,6 +79,31 @@ func (h *hubRuntime) refreshCloudKitAccount(ctx context.Context) {
 	h.ckAccount = a
 	h.mu.Unlock()
 	h.applyICloudHold()
+}
+
+// bridgeLaunches is the bridge's launch generation (0 = none, or no bridge).
+func (h *hubRuntime) bridgeLaunches() uint64 {
+	if h.bridge == nil {
+		return 0
+	}
+	return h.bridge.Launches()
+}
+
+// noteBridgeLaunch is housekeeping's look at the bridge's launch generation
+// (before its account read): settled when the previous housekeeping saw the
+// same launch already.
+func (h *hubRuntime) noteBridgeLaunch() {
+	g := h.bridgeLaunches()
+	h.ckLaunchSettled = g != 0 && g == h.ckLaunchSeen
+	h.ckLaunchSeen = g
+}
+
+// bridgeStarting: the current bridge launch (if any) has not yet been seen
+// by two housekeepings in a row — no housekeeping interval has passed since
+// it, so a missing socket may only mean it is not served yet. A relaunch
+// starts it over.
+func (h *hubRuntime) bridgeStarting() bool {
+	return !h.ckLaunchSettled || h.bridgeLaunches() != h.ckLaunchSeen
 }
 
 // cloudKitStatus is the running hub's "cloudkit" block (Signed is set by

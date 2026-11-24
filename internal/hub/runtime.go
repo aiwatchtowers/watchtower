@@ -188,6 +188,12 @@ type hubRuntime struct {
 	// failures ("" = the last read answered, or nothing logged; worker only,
 	// desktop_facts.go).
 	ckReadFail, ckReadLogged string
+	// ckLaunchSeen is the bridge's launch generation the last housekeeping
+	// saw, and ckLaunchSettled whether the one before it saw the same:
+	// that launch has had a whole housekeeping interval to serve its socket
+	// (worker only, desktop_facts.go).
+	ckLaunchSeen    uint64
+	ckLaunchSettled bool
 
 	// ckHoldMu orders the iCloud holds (icloud.go): ckHeld while the account
 	// cannot be used, ckPubHeld while that also holds the publisher and the
@@ -1314,6 +1320,7 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 // age and seq cap, and the daily hygiene (CloudKit sweep, ledger prune).
 func (h *hubRuntime) housekeeping(ctx context.Context) {
 	h.retryCloudKitReset(ctx)
+	h.noteBridgeLaunch()
 	h.refreshCloudKitAccount(ctx)
 	h.retireOldCloudKitZones(ctx)
 	h.savePhoneContact()

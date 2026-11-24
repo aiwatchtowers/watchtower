@@ -28,11 +28,20 @@ type Supervisor struct {
 	c       Config
 	sleep   func(ctx context.Context, d time.Duration) error
 	running atomic.Bool
+	// launches counts the bridge processes started (Launch returned one).
+	launches atomic.Uint64
 }
 
 // Running reports whether a bridge process it launched is alive now (false
 // before the first launch, while it waits to restart one, and after Run).
+// It turns true when the process starts, before the bridge serves its
+// socket.
 func (s *Supervisor) Running() bool { return s.running.Load() }
+
+// Launches is the bridge's launch generation: how many bridge processes it
+// started (0 = none yet). A new value is a new process, whose socket may not
+// be served yet.
+func (s *Supervisor) Launches() uint64 { return s.launches.Load() }
 
 // NewSupervisor returns a supervisor for c.Launch.
 func NewSupervisor(c Config) *Supervisor {
@@ -74,6 +83,7 @@ func (s *Supervisor) runOnce(ctx context.Context) {
 		log.Printf("hub: cloudkit bridge did not start (%s)", launchClass(err))
 		return
 	}
+	s.launches.Add(1)
 	s.running.Store(true)
 	defer s.running.Store(false)
 	s.wait(ctx, p)
