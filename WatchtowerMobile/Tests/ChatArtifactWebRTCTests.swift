@@ -14,17 +14,39 @@ final class PhoneArtifactWebRTCTests: XCTestCase {
         <html><body><script>
         const frame = document.createElement('iframe');
         document.body.appendChild(frame);
-        window.wtResult = [typeof RTCPeerConnection, typeof webkitRTCPeerConnection, typeof RTCDataChannel,
+        document.title = [typeof RTCPeerConnection, typeof webkitRTCPeerConnection, typeof RTCDataChannel,
           typeof frames[0].RTCPeerConnection, typeof frame.contentWindow.RTCDataChannel].join(',');
         </script></body></html>
         """
 
-    private func result(of webView: WKWebView) async -> String? {
-        for _ in 0..<2_000 {
-            if let result = try? await webView.evaluateJavaScript("window.wtResult") as? String { return result }
-            await Task.yield()
+    /// The page's verdict, delivered by events: the page writes it into `document.title`, and the web view's
+    /// KVO-observable `title` changes once the script has run. If a load finishes (`isLoading` true to false) with
+    /// no title, the title is read once more and, if still empty, "" comes back so the assertions fail with their
+    /// messages instead of the suite hanging. No polling budget and no timer.
+    private func result(of webView: WKWebView) async -> String {
+        var observations: [NSKeyValueObservation] = []
+        let value = await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
+            var resumed = false
+            func finish(_ value: String) {
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: value)
+            }
+            var sawLoading = false
+            observations.append(webView.observe(\.title, options: [.initial, .new]) { web, _ in
+                if let title = web.title, !title.isEmpty { finish(title) }
+            })
+            observations.append(webView.observe(\.isLoading, options: [.initial, .new]) { web, _ in
+                if web.isLoading { sawLoading = true; return }
+                guard sawLoading, !resumed else { return }
+                Task { @MainActor in
+                    let title = try? await web.evaluateJavaScript("document.title") as? String
+                    finish(title ?? "")
+                }
+            })
         }
-        return nil
+        observations.forEach { $0.invalidate() }
+        return value
     }
 
     func testNoPeerConnectionInThePageOrAScriptMadeIframe() async throws {
@@ -32,7 +54,7 @@ final class PhoneArtifactWebRTCTests: XCTestCase {
         let plain = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         plain.loadHTMLString(Self.page, baseURL: nil)
         let control = await result(of: plain)
-        XCTAssertEqual(control?.split(separator: ",").first, "function", "a plain web view exposes RTCPeerConnection")
+        XCTAssertEqual(control.split(separator: ",").first, "function", "a plain web view exposes RTCPeerConnection")
 
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
         window.rootViewController = UIHostingController(rootView: SandboxedArtifactWebView(html: Self.page))
