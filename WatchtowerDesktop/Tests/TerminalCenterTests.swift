@@ -1161,21 +1161,18 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertFalse(center.promptHoldsText(s.id))
     }
 
-    /// Controller ruling, review round 1: the app's own interrupt Esc may
-    /// make Claude Code move a queued message back into the prompt, so the
-    /// mirror's empty draft turns inexact (held) until the owner submits.
-    func testTheAppsInterruptMakesTheDraftInexact() throws {
+    /// Controller ruling, review round 2: the app's own interrupt Esc (the
+    /// phone's Interrupt) is not the owner's typing and leaves the draft as
+    /// it was, so a correction the phone sends right after it is not held.
+    func testTheAppsInterruptLeavesTheDraft() throws {
         let center = makeCenter()
         let s = try row()
         center.start(s, fresh: true)
-        XCTAssertFalse(center.promptHoldsText(s.id))
 
         XCTAssertTrue(center.sendInterrupt(sessionID: s.id))
 
         XCTAssertEqual(sessions[0].inputs.last, [0x1B])
-        XCTAssertEqual(center.drafts[s.id]?.exact, false)
-        XCTAssertTrue(center.promptHoldsText(s.id))
-        sessions[0].onOwnerInput?([0x0D])
+        XCTAssertNil(center.drafts[s.id])
         XCTAssertFalse(center.promptHoldsText(s.id))
     }
 

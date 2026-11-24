@@ -728,7 +728,6 @@ final class TerminalCenter {
     func sendInterrupt(sessionID: Int64) -> Bool {
         guard states[sessionID] == .running, let process = processes[sessionID] else { return false }
         process.sendInput([0x1B])
-        leaveDraftInexact(sessionID) // Claude Code may move a queued message back into the prompt
         return true
     }
 

@@ -320,33 +320,6 @@ func TestPromptState_NewRunEmpty(t *testing.T) {
 	}
 }
 
-// Controller ruling, review round 1: the app's own interrupt (one Esc through
-// InputTo, the phone's Interrupt) may make Claude Code move a queued message
-// back into the prompt, so an empty draft turns inexact and holds; any other
-// InputTo adds nothing.
-func TestInputToInterruptMakesTheDraftInexact(t *testing.T) {
-	path, srv := startHost(t, Options{})
-	a := dial(t, path)
-	info := a.launchAgent(1, "claude", `exec cat`)
-	sess := hostSession(t, srv, 1)
-	b := dial(t, path)
-
-	b.send(InputTo, InputToReq{Row: 1, Run: "r1", Launch: info.Launch, Data: []byte("\x1b[A")})
-	b.expectNoError()
-	if sess.promptHoldsText() {
-		t.Fatal("an InputTo escape sequence left a draft")
-	}
-	b.send(InputTo, InputToReq{Row: 1, Run: "r1", Launch: info.Launch, Data: []byte{0x1B}})
-	b.expectNoError()
-	if !sess.promptHoldsText() {
-		t.Fatal("the app's interrupt Esc left the prompt known empty")
-	}
-	a.typeChunks([]byte{0x0D})
-	if sess.promptHoldsText() {
-		t.Fatal("the owner's Return did not empty the prompt")
-	}
-}
-
 // Review round 1: once the owner's own Return sent the pasted line during its
 // pause, their next keys are a draft of their own, kept exact: typed and
 // erased, it holds nothing (the line in its pause still holds until the pause
