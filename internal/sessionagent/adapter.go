@@ -66,6 +66,11 @@ type Adapter interface {
 	// break instead of submitting, nil when it has none beyond the ones
 	// every agent knows (sessionhost.Profile.Newline).
 	ComposerNewline() []byte
+	// ComposerExactBackspace: the owner's Backspace is known to erase one
+	// typed rune in the agent's composer, so an erased draft frees the
+	// prompt (sessionhost.Profile.ExactDraft; the Desktop adapter's
+	// AgentInputProfile.exactDraft).
+	ComposerExactBackspace() bool
 	// LaunchCommand is the login shell's command for one start of the
 	// agent (sessionstart.Launch; the Desktop's TerminalLaunch.make).
 	LaunchCommand(s Start) LaunchCommand

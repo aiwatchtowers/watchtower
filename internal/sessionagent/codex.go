@@ -185,6 +185,10 @@ func (codexAdapter) StoresTranscriptPath() bool { return true }
 // paste, multi-line too, as one prompt.
 func (codexAdapter) ComposerNewline() []byte { return []byte{0x0A} }
 
+// ComposerExactBackspace: not known for Codex's composer — its draft stays
+// inexact after any key until a submit.
+func (codexAdapter) ComposerExactBackspace() bool { return false }
+
 // codexPuller reads a codex rollout's last turn (G5's watch and the app's
 // bridge probe).
 type codexPuller struct{}
