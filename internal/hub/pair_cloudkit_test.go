@@ -372,7 +372,15 @@ func TestAConfirmForAStaleCodeIsRefused(t *testing.T) {
 		if a.Error != ErrClassCodeChanged {
 			t.Fatalf("a yes for a stale code: %+v", a)
 		}
-		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code})
+		// The code still holds but the line answered said another
+		// moves_to_relay (a replacement that kept its code).
+		flipped := !sas.MovesToRelay
+		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code, MovesToRelay: &flipped})
+		if a.Error != ErrClassCodeChanged {
+			t.Fatalf("a yes for another moves_to_relay: %+v", a)
+		}
+		shown := sas.MovesToRelay
+		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code, MovesToRelay: &shown})
 		if !a.OK {
 			t.Fatalf("a yes for the code shown: %+v", a)
 		}

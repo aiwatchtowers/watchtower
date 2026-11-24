@@ -1028,12 +1028,45 @@ func TestHubPairStreamEvents(t *testing.T) {
 		sas := p.next(t)
 		assert.ElementsMatch(t, []string{"event", "device_id", "name", "code", "moves_to_relay"}, hubKeysOf(sas))
 		assert.Equal(t, true, sas["moves_to_relay"])
-		_, err := io.WriteString(p.in, `{"confirm":true}`+"\n")
-		require.NoError(t, err)
-		assert.Equal(t, "4827", (<-f.confirms).Code, "the confirm names the code printed")
+		p.answer(`{"confirm":true}`)
+		// One sas line printed: a yes without code or moves_to_relay names it.
+		req := pairGot(t, p, f.confirms)
+		assert.Equal(t, "4827", req.Code, "the confirm names the code printed")
+		require.NotNil(t, req.MovesToRelay)
+		assert.True(t, *req.MovesToRelay, "the confirm names the moves_to_relay printed")
 		assert.Equal(t, "linked", p.next(t)["event"])
 		require.NoError(t, p.wait(t))
 	})
+}
+
+// answer writes the owner's stdin line without blocking the test: a CLI
+// that stopped reading leaves the write to the pipe's close at cleanup.
+func (p *pairRun) answer(line string) {
+	go func() { _, _ = io.WriteString(p.in, line+"\n") }()
+}
+
+// pairGot is the CLI's next request to a fake hub; the CLI ending first
+// fails the test at once.
+func pairGot(t *testing.T, p *pairRun, got <-chan hub.ControlRequest) hub.ControlRequest {
+	t.Helper()
+	select {
+	case r := <-got:
+		return r
+	case err := <-p.done:
+		t.Fatalf("the CLI ended (%v) before its request; output: %v", err, p.lines)
+		return hub.ControlRequest{}
+	}
+}
+
+// pairSend hands the fake hub's next line to the CLI; the CLI ending first
+// fails the test at once.
+func pairSend(t *testing.T, p *pairRun, f *scriptedPairHub, a hub.ControlAnswer) {
+	t.Helper()
+	select {
+	case f.send <- a:
+	case err := <-p.done:
+		t.Fatalf("the CLI ended (%v) before %+v; output: %v", err, a, p.lines)
+	}
 }
 
 // scriptedPairHub serves one pairing stream on dir's control socket: the
@@ -1087,17 +1120,18 @@ func startScriptedPairHub(t *testing.T, dir string) *scriptedPairHub {
 
 // #2191 review: the stream prints a sas line again when the phone's
 // request is replaced (a new code or moves_to_relay; an unchanged repeat is
-// not printed), the confirm names the code the owner answered, and a
-// code_changed answer asks the owner again; a confirm line without a code
-// takes the last code printed.
+// not printed). A yes names the line it answers; the hub's code_changed
+// prints the current line again before the owner answers again; after a
+// replacement a yes that leaves code or moves_to_relay out is ambiguous:
+// nothing is sent, the current line is printed again.
 func TestHubPairStreamReprintsAReplacedRequest(t *testing.T) {
 	dir := hubShortDir(t)
 	f := startScriptedPairHub(t, dir)
 	exp := time.Now().Add(10 * time.Minute)
 	p := startPair(t)
-	f.send <- hub.ControlAnswer{Event: link.EventQR, URL: testLinkURL(t), ExpiresAt: &exp}
-	f.send <- hub.ControlAnswer{Event: link.EventWaiting}
-	f.send <- hub.ControlAnswer{Event: link.EventSAS, DeviceID: fakePairDevice, Name: "acme phone", Code: "1111"}
+	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventQR, URL: testLinkURL(t), ExpiresAt: &exp})
+	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventWaiting})
+	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventSAS, DeviceID: fakePairDevice, Name: "acme phone", Code: "1111"})
 	p.next(t) // qr
 	p.next(t) // waiting
 	first := p.next(t)
@@ -1105,25 +1139,36 @@ func TestHubPairStreamReprintsAReplacedRequest(t *testing.T) {
 	assert.Equal(t, false, first["moves_to_relay"])
 
 	replaced := hub.ControlAnswer{Event: link.EventSAS, DeviceID: fakePairDevice, Name: "acme phone", Code: "2222", MovesToRelay: true}
-	f.send <- replaced
-	f.send <- replaced // unchanged: not printed again
+	pairSend(t, p, f, replaced)
+	pairSend(t, p, f, replaced) // unchanged: not printed again
 	second := p.next(t)
 	assert.Equal(t, "2222", second["code"])
 	assert.Equal(t, true, second["moves_to_relay"])
 
-	// The owner answered the first line: the hub refuses it, the CLI asks again.
-	_, err := io.WriteString(p.in, `{"confirm":true,"code":"1111"}`+"\n")
-	require.NoError(t, err)
-	req := <-f.got
-	assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Confirm: true, Code: "1111"}, req)
-	f.send <- hub.ControlAnswer{Op: hub.OpConfirm, Error: hub.ErrClassCodeChanged}
+	// The owner answered the first line: the hub refuses it, the CLI prints
+	// the current line again and asks again.
+	p.answer(`{"confirm":true,"code":"1111","moves_to_relay":false}`)
+	no := false
+	assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Confirm: true, Code: "1111", MovesToRelay: &no},
+		pairGot(t, p, f.got))
+	pairSend(t, p, f, hub.ControlAnswer{Op: hub.OpConfirm, Error: hub.ErrClassCodeChanged})
+	assert.Equal(t, second, p.next(t), "code_changed prints the current line before the next answer")
 
-	_, err = io.WriteString(p.in, `{"confirm":true}`+"\n")
-	require.NoError(t, err)
-	req = <-f.got
-	assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Confirm: true, Code: "2222"}, req)
-	f.send <- hub.ControlAnswer{Op: hub.OpConfirm, OK: true, DeviceID: fakePairDevice}
-	f.send <- hub.ControlAnswer{Event: link.EventLinked, DeviceID: fakePairDevice}
+	// After a replacement a yes without the line it answers is ambiguous.
+	p.answer(`{"confirm":true}`)
+	assert.Equal(t, second, p.next(t), "an ambiguous yes prints the current line again")
+	select {
+	case r := <-f.got:
+		t.Fatalf("an ambiguous yes reached the hub: %+v", r)
+	default:
+	}
+
+	p.answer(`{"confirm":true,"code":"2222","moves_to_relay":true}`)
+	yes := true
+	assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Confirm: true, Code: "2222", MovesToRelay: &yes},
+		pairGot(t, p, f.got))
+	pairSend(t, p, f, hub.ControlAnswer{Op: hub.OpConfirm, OK: true, DeviceID: fakePairDevice})
+	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventLinked, DeviceID: fakePairDevice})
 	assert.Equal(t, map[string]any{"event": "linked", "device_id": fakePairDevice}, p.next(t))
 	require.NoError(t, p.wait(t))
 }

@@ -144,7 +144,11 @@ type ControlRequest struct {
 	// Code (confirm, optional) is the code the owner was shown: a yes is
 	// refused code_changed when the phone's request now has another one.
 	// Without it the stream's latest code stands in (#2191).
-	Code         string          `json:"code,omitempty"`
+	Code string `json:"code,omitempty"`
+	// MovesToRelay (confirm, optional) is the moves_to_relay the owner was
+	// shown: a yes is refused code_changed when the stream's latest sas for
+	// the phone says otherwise (a replacement that kept its code).
+	MovesToRelay *bool           `json:"moves_to_relay,omitempty"`
 	Upload       string          `json:"upload,omitempty"`
 	TranscriptID *int64          `json:"transcript_id,omitempty"`
 	ErrorClass   string          `json:"error_class,omitempty"`
@@ -308,10 +312,16 @@ type pairListener struct {
 	w       *answerWriter
 	queue   chan ControlAnswer // guarded by supervisor.pairMu for sends and close
 	mu      sync.Mutex
-	codes   map[string]string
+	codes   map[string]pairShown
 }
 
-func (p *pairListener) code(device string) (string, bool) {
+// pairShown is the last sas a pairing stream got for a phone.
+type pairShown struct {
+	code         string
+	movesToRelay bool
+}
+
+func (p *pairListener) code(device string) (pairShown, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	c, ok := p.codes[strings.ToUpper(device)]
@@ -337,7 +347,7 @@ func (s *supervisor) broadcast(ev link.PairEvent) {
 	if ev.Kind == link.EventSAS {
 		for p := range s.pairs {
 			p.mu.Lock()
-			p.codes[strings.ToUpper(ev.DeviceID)] = ev.Code
+			p.codes[strings.ToUpper(ev.DeviceID)] = pairShown{code: ev.Code, movesToRelay: ev.MovesToRelay}
 			p.mu.Unlock()
 		}
 	}
@@ -417,7 +427,7 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 	// stream is a new stream of this connection (the caller registers it);
 	// its own goroutine writes its queue.
 	stream := func() *pairListener {
-		p := &pairListener{w: w, queue: make(chan ControlAnswer, s.o.pairQueue), codes: map[string]string{}}
+		p := &pairListener{w: w, queue: make(chan ControlAnswer, s.o.pairQueue), codes: map[string]pairShown{}}
 		pumping.Add(1)
 		go func() {
 			defer pumping.Done()
@@ -837,13 +847,19 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		if pl == nil || r.Device == "" {
 			return ControlAnswer{Error: ErrClassNoCode}
 		}
-		code, ok := pl.code(r.Device)
+		latest, ok := pl.code(r.Device)
 		if !ok {
 			return ControlAnswer{Error: ErrClassNoCode}
 		}
-		if r.Confirm && r.Code != "" {
-			// The code the owner saw; a no refuses whichever request waits.
-			code = r.Code
+		code := latest.code
+		if r.Confirm {
+			// What the owner saw; a no refuses whichever request waits.
+			if r.Code != "" {
+				code = r.Code
+			}
+			if r.MovesToRelay != nil && *r.MovesToRelay != latest.movesToRelay {
+				return ControlAnswer{Error: ErrClassCodeChanged}
+			}
 		}
 		if err := h.center.Confirm(r.Device, code, r.Confirm); err != nil {
 			return ControlAnswer{Error: LinkErrClass(err)}

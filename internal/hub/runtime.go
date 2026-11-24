@@ -1394,7 +1394,10 @@ func (h *hubRuntime) forwardPairEvents(ctx context.Context) {
 // past the plan's "false on any read error" (#2191 review): the Mac then
 // warns when unsure, never stays silent before a move that cuts phones
 // off. The answer is fixed at the sas: a transport switch between the sas
-// and the owner's confirm can leave the line stale (a known limit).
+// and the owner's confirm can leave the line stale (a known limit). A
+// replacement request that keeps its 4-digit code but flips the value is
+// refused only when the confirm names the moves_to_relay it answered
+// (ControlRequest.MovesToRelay); a confirm without it is not checked.
 func (h *hubRuntime) movesToRelay(ev link.PairEvent) bool {
 	if !ev.OverRelay || h.sw == nil || !h.sw.IsActive(transport.KindCloudKit) {
 		return false
