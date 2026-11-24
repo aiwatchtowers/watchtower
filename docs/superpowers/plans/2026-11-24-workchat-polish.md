@@ -176,11 +176,12 @@ Depends on: none
 - Modify: `docs/inventory/workbench.md` (PROJ-16/23 wording: the draft model; change-log line, ask #1757)
 
 **Interfaces:**
-- Produces Go: `type draftModel struct{ count int; exact bool }`, `func (d *draftModel) feed(b []byte, prof Profile, dialog bool)` (no idle input: the owner's Ctrl+C sets `exact = false`; only the app's `clear_first` delivery, Task 7, empties via `clearedByApp`), `func (d draftModel) holdsText() bool` (`count > 0 || !exact`), `func (d *draftModel) clearedByApp()` (`{0,true}`); `promptState` embeds it; `holdsText()` keeps its name and callers.
+- Produces Go: `type draftModel struct{ count int; exact bool }`, `func (d *draftModel) feed(b []byte, prof Profile, dialog bool)` (no idle input: the owner's Ctrl+C sets `{0,true}` for the Claude Code profile and `exact = false` for others; the app's `clear_first` delivery, Task 7, empties via `clearedByApp`), `func (d draftModel) holdsText() bool` (`count > 0 || !exact`), `func (d *draftModel) clearedByApp()` (`{0,true}`); `promptState` embeds it; `holdsText()` keeps its name and callers.
 - Produces Swift: `package struct DraftModel: Equatable, Sendable { var count = 0; var exact = true; mutating func feed(_ bytes: [UInt8], profile: AgentInputProfile, dialog: Bool); var holdsText: Bool; mutating func clearedByApp() }`; `TerminalCenter.draftChanged: AsyncStream<Int64>` (session id) or an `@Observable` counter the line delivery observes.
 - Fixture rows: `{"name","profile","keys":[base64 or escaped bytes…],"dialog":false,"expect":{"count":N,"exact":B,"holds":B}}`.
 
-- [ ] **Step 1: Write `draft_cases.json`** with at least: `type-abc` (3,exact,holds); `type-then-backspace-all` (0,exact,free); `backspace-on-empty` (0,exact,free); `ctrl-u-single-line` (0,exact,free); `ctrl-u-multi-line` (exact=false,holds); `left-then-backspace-all` (exact=false,holds); `option-backspace` (exact=false,holds); `esc` (exact=false,holds); `submit-return` (0,exact,free); `shift-tab` (unchanged); `bracketed-paste-5-runes` (5); `utf8-cyrillic-3-runes` (3); `ctrl-c-owner` (exact=false,holds); `dialog-y` with dialog=true (unchanged); `codex-profile-any-key` (exact=false).
+- [ ] **Step 0: Check Claude Code by hand.** In a scratch Claude Code session (not a test): type text, press Ctrl+C once while idle and once while it works — both must clear the input without interrupting or exiting. Record the Claude Code version in the fixture's top-level `"claude_code_checked"` field. If either does not hold, stop and report to the controller (the owner decides).
+- [ ] **Step 1: Write `draft_cases.json`** with at least: `type-abc` (3,exact,holds); `type-then-backspace-all` (0,exact,free); `backspace-on-empty` (0,exact,free); `ctrl-u-single-line` (0,exact,free); `ctrl-u-multi-line` (exact=false,holds); `left-then-backspace-all` (exact=false,holds); `option-backspace` (exact=false,holds); `esc` (exact=false,holds); `submit-return` (0,exact,free); `shift-tab` (unchanged); `bracketed-paste-5-runes` (5); `utf8-cyrillic-3-runes` (3); `ctrl-c-owner` (Claude Code: 0,exact,free; Codex: exact=false,holds); `dialog-y` with dialog=true (unchanged); `codex-profile-any-key` (exact=false).
 - [ ] **Step 2:** Go `TestDraftFixture` and Swift `DraftModelFixtureTests` read the file (Swift path as in `TerminalPasteFixtureTests`) → FAIL.
 - [ ] **Step 3:** Implement both from the table (spec §6.1). A delivery's own paste and `left_typed` set `exact = false` (as the old flag's set). Fake `FakeHostDelivery` uses `DraftModel`.
 - [ ] **Step 4: Re-check on change.** Go: when `holdsText` flips to false, the host re-tries its held `hold_if_prompt_text` deliveries (phone lines, agent messages). Swift: `SessionLineDelivery` re-runs `lineCheck`/`workchatLineCheck` for lines held with `.promptHasText` on `draftChanged`. Tests: `TestPromptState_ReleaseRetriesHeld` (Go, fake deliverer), `SessionLineDeliveryTests.testHeldAnswerGoesWhenDraftErased`.
@@ -195,6 +196,7 @@ Depends on: Task 6
 
 **Files:**
 - Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/WorkchatOutgoing.swift` (`State.queued(reason:)` or a `holdReason` field; captions)
+- Modify: `docs/inventory/workbench.md` (PROJ-12: `clear_first`, `clear_too_soon`, `clear_unsupported`, change-log line), the session-host protocol note in `docs/features/tray-daemon-lifecycle.md` or wherever `Deliver` outcomes are listed (grep `no_paste_mode`)
 - Modify: `internal/sessionhost/deliver.go` (`DeliverRequest.ClearFirst`, `held(clear_too_soon)`), `internal/sessionhost/server.go` (`Options.now`, per-session `lastClear`), `WatchtowerDesktop/Sources/WatchtowerCore/Services/SessionHost/SessionHostMessages.swift` (`clearFirst` → `clear_first`)
 - Modify: `WatchtowerDesktop/Sources/ViewModels/WorkchatModel.swift` (`clearAndSend(_:)`, `sendTogether(_:)`, `holdPreview(for:)`), `WatchtowerDesktop/Sources/Services/TerminalCenter.swift` (pass `clearFirst`; mirror `clearedByApp` on the reported delivery; `promptPreview`), `WatchtowerDesktop/Tests/FakeHostDelivery.swift` (honours `clearFirst`), `WatchtowerDesktop/Sources/Views/Workbench/WorkchatComposer.swift` (`WorkchatOutgoingBubble` actions)
 - Test: `internal/sessionhost/deliver_test.go`
@@ -218,7 +220,8 @@ Depends on: Task 6
   - `testClearAndSendRefusedWhenWorking`: status flips to Working before the click → no delivery, line stays held, `canClearAndSend == false`.
   - `testClearAndSendOncePerLine`: second call for the same line → no-op.
   - `testClearAndSendHiddenForCodex`: a session whose `AgentInputProfile` is not Claude Code → `canClearAndSend == false` (only Send together and Cancel).
-  - `testClearTooSoonKeepsHeld`: the fake host answers `held(clear_too_soon)` → line stays held, caption unchanged.
+  - `testClearTooSoonKeepsHeld`: the fake host answers `held(clear_too_soon)` → line stays held, caption gains `"Cleared a moment ago · try again in a few seconds"`, `canClearAndSend` true again after 3 s on the fake clock.
+  - `testInterruptedClearNotResent`: `FakeHostDelivery` drops the connection after `clear_first` → `.interrupted` path, no second `clear_first` for that line.
   - `testHoldPreviewInCaption`: injected `promptPreview` returns `"> look at the window test again"` → `holdPreview(for:)` returns it; nil preview → nil (caption only).
   - `testSendTogether`: uses the beside-text delivery (`sharedPrompts`), one Return.
   - `testHeldThenSessionGone`: → `.notSent`, text back in the field.

@@ -16,7 +16,7 @@ Board: #2201. Approved design: [`docs/design/mockups/workchat-polish/`](../../de
 | C2 | Highlighting is Workchat-only (a `ChatFeedContext` flag); the AI chat and the phone are unchanged in v1 | author's call |
 | C3 | The prompt-empty fix is a per-agent "draft length" model in both twins (Mac `TerminalCenter`, Go `sessionhost.promptState`, test fake `FakeHostDelivery`), not screen scraping. **Narrower than the v2 mockup's "read the line off the screen":** an erase releases the line when it was a Backspace or Ctrl+U erase of a draft typed straight (no cursor keys); after cursor or word-edit keys the line stays held as today, and the hold caption's actions are the way out | author's call, §6.1 — the owner confirms it by approving this spec |
 | C9 | The app's clear is a host delivery flag (`clear_first`), not a Mac-side keystroke: the host owns the prompt state | author's call, plan review ask #1761 |
-| C4 | "Clear and send" is one Ctrl+C (the v2 mockup said Ctrl+U: in Claude Code Ctrl+U only clears the current line before the cursor, Ctrl+C clears the whole input), offered only while the agent is idle; while it works only "Send together" and Cancel | author's call, §6.3 (Ctrl+C interrupts a working agent) |
+| C4 | "Clear and send" is one Ctrl+C (the v2 mockup said Ctrl+U: in Claude Code Ctrl+U only clears the current line before the cursor, Ctrl+C clears the whole input), offered only while the agent is idle; while it works only "Send together" and Cancel | author's call, §6.3 (in Claude Code Esc interrupts and Ctrl+C clears the input, but a Ctrl+C on an empty prompt arms "press again to exit" — idle-only keeps the app's clear to the plain case) |
 | C5 | The expanded steps list stays above the live line (as today), not below it as the HTML drew | author's call, mock shots |
 | C6 | A pasted screenshot is an inline `Image #N` token (the #2065 paste tokens), not the HTML's thumbnail chip; only Finder files are chips | owner's earlier D7 of `2026-11-19-workchat-agents-and-progress-design.md` ("pastes go inline as tokens, as in Claude Code"); the v2 chip contradicted it |
 | C7 | The Workchat error bar becomes quiet too (glyph, grey text, quiet Retry; no orange box), and the loading state reads "Reading the session…" | author's call, D3 applied to the screen's other states |
@@ -166,9 +166,12 @@ host holds the same line for `hold_if_prompt_text`.
    - Backspace subtracts 1 (floor 0) while `exact`;
    - Ctrl+U while `exact` and the draft holds no line break sets `{0, true}` (the cursor
      is at the end, so it clears the whole line);
-   - a submitting Return sets `{0, true}`; the owner's own Ctrl+C sets `exact = false`
-     (whether it cleared the input depends on the agent's state, which the model does
-     not see — the safe side);
+   - a submitting Return sets `{0, true}`; the owner's own Ctrl+C also sets `{0, true}`
+     for the Claude Code profile: in Claude Code Ctrl+C clears the input (Esc is the
+     interrupt), working or not, so a draft erased with Ctrl+C releases the line (owner,
+     ask #1763: "когда текст в терминале стёрт, сообщение должно уйти"). T6 starts by
+     checking this against the installed Claude Code by hand in a scratch session and
+     records the version in the fixture; other profiles keep `exact = false`;
    - any other cursor or word-edit key (arrows, Home/End, Ctrl+A/E/W/K, Ctrl+U on a
      multi-line draft, Option+Backspace, Esc) sets `exact = false`: from then on only a
      submit or a clear empties it.
@@ -227,12 +230,22 @@ the pane's presentation, with tests.
   the Mac thought free is held by the host with `held(prompt_has_text)` and stays queued.
 - **Host closes while a line is held:** the line turns `notSent`, its text back in the
   field (existing path). Test: `WorkchatModel` held → session gone → `notSent`.
-- **Clear and send, agent starts working between check and Ctrl+C:** the action
-  re-checks `isIdle` right before the Ctrl+C and refuses (line stays held, button
-  disabled). Test with a fake `SessionControl`.
-- **Clear and send, the host restarts between the Ctrl+C and the paste:** the delivery
-  ends `interrupted` → the existing "may be typed" path; no second Ctrl+C is sent.
-  Go test with a fake deliverer.
+- **Clear and send, agent starts working between the Mac's check and the host's
+  Ctrl+C:** the host does not know the agent's state (hooks report to the Mac, not to
+  the host), so the idle check is the Mac's, right before it sends `clear_first`. The
+  remaining window is the request's flight (milliseconds). Its worst case is bounded:
+  the prompt holds text (that is why the line was held), and Ctrl+C on a non-empty
+  Claude Code prompt only clears it — it never interrupts (Esc does) and never exits.
+  Test: the Mac refuses when the fake `SessionControl` says Working (no request sent).
+- **Clear and send, the Mac's connection to the host ends after the request:** the Mac
+  client reports its existing `.interrupted` outcome (`TerminalCenter`, "the delivery's
+  connection ended before the host answered" — a client-side outcome, not a new host
+  reply) → the existing "may be typed" path; the Mac never re-sends a `clear_first`
+  for that line. Swift test with `FakeHostDelivery` dropping the connection.
+- **`held(clear_too_soon)`:** the line stays held; the caption adds "Cleared a moment
+  ago · try again in a few seconds" and the Clear button comes back after the host's
+  3 s window (the once-per-line rule counts only clears the host actually performed).
+  Swift test with a fake clock.
 - **Restart:** a relaunched run starts `{0, true}` (as today's empty flag). The Mac
   mirror resets to `{0, true}` when it adopts a run on re-attach. Tests in T6.
 - **Paste of an image the save fails for:** `attachmentError` shown, nothing inserted
@@ -258,7 +271,12 @@ the pane's presentation, with tests.
 | Hold captions per reason | T6 | `WorkchatOutgoingTests` |
 | `SyntaxTint` values | T2 | `TokenTests` (`make kit-test FILTER=TokenTests`) |
 | Held line re-checks on draft change; caption and actions | T6 | `WorkchatModelTests`, `WorkchatOutgoingTests` |
-| Clear and send refuses when working, gives up after 1 s | T6 | `WorkchatModelTests` with fake control/clock |
+| Clear and send refuses when working (Mac check), once per performed clear, hidden for non-Claude profiles | T7 | `WorkchatModelTests` with fake control/clock and `FakeHostDelivery` |
+| Host `clear_first`: one Ctrl+C, pause via `settle`, `clearedByApp`, 3 s window, `clear_unsupported`, dialog during the pause | T7 | Go `deliver_test` (`TestDeliver_ClearFirst_*`, fake `now`/`settle`) |
+| `clear_too_soon` caption and the button's return | T7 | `WorkchatOutgoingTests`, `WorkchatModelTests` |
+| Connection ends after `clear_first` → `.interrupted`, no re-send | T7 | `WorkchatModelTests` with `FakeHostDelivery` |
+| Owner's Ctrl+C empties the draft (Claude Code profile) | T6 | `draft_cases.json` `ctrl-c-owner` |
+| Relaunch starts empty; the Mac mirror resets on re-attach | T6 | Go `TestPromptState_NewRunEmpty`, Swift `testReattachResetsDraft` |
 | Quiet error bar and loading copy (C7) | T1 | `SessionChatViewTests` (strings, Retry) |
 | PROJ-16 / PROJ-23 guards stay green (never over a draft) | T5 | existing guards + a new `TestProj23_…ErasedDraftReleases` |
 
@@ -286,6 +304,13 @@ compared against these after the build.
   naming this spec's ask.
 - PROJ-16 / PROJ-23 (workbench): the "prompt holds text" input is now the draft model;
   no guard relaxed — an unknown state still holds; the new guard covers the erased draft.
+- PROJ-12 (workbench, the session host's delivery protocol): `Deliver` gains the optional
+  request flag `clear_first` and the hold reasons `clear_too_soon` and
+  `clear_unsupported` (additive; existing outcomes `submitted`, `typed`, `held`,
+  `no_paste_mode`, `no_session` unchanged). The inventory text and the protocol doc
+  gain them with a change-log line naming this spec's ask.
+- §1 (steps closed by default) touches no inventory contract; it reverses C1 of the
+  2026-11-19 spec, and `WorkchatPaneMemoryTests`' default assertion flips with it.
 
 ## Left to the builder
 
