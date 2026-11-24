@@ -24,6 +24,8 @@ final class FakeConditionalDatabase: ConditionalDatabase, @unchecked Sendable {
     var recordFailures: [String: CKError] = [:]
     /// Thrown while a call carries more than this many records (a request-level `limitExceeded`).
     var maxRecordsPerCall = Int.max
+    /// The next calls answer with no result for these record names (the record is not saved).
+    var missingResults: Set<String> = []
     /// Runs while each modify call or fetch is in flight, before it answers (another request landing meanwhile).
     var duringRequest: (@Sendable () async -> Void)?
 
@@ -52,6 +54,7 @@ final class FakeConditionalDatabase: ConditionalDatabase, @unchecked Sendable {
             if saving.count + deleting.count > maxRecordsPerCall { throw CKError(.limitExceeded) }
             var saves: [CKRecord.ID: Result<CKRecord, Error>] = [:]
             for record in saving {
+                if missingResults.remove(record.recordID.recordName) != nil { continue }
                 if let failure = recordFailures.removeValue(forKey: record.recordID.recordName) {
                     saves[record.recordID] = .failure(failure)
                     continue

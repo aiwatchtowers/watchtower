@@ -171,6 +171,19 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertTrue(try keysHeld())
     }
 
+    /// A Relay pairing completes from the first validated replica keybox of `pair/<slot>`: a second pull that would
+    /// fail never fails a link the owner confirmed (#2189 review round 6).
+    func testARelayPairingLinksWithoutASecondPull() async throws {
+        host.completionFails = true
+        let model = makeModel()
+
+        await link(relayCode(), model: model)
+
+        XCTAssertEqual(model.phase, .linked(macName: "build-box"))
+        XCTAssertTrue(host.completionHubIDs.isEmpty, "no second pull of the slot")
+        XCTAssertTrue(try keysHeld())
+    }
+
     func testTheHelloCarriesThePhonesRelayDeviceID() async throws {
         await link(relayCode(), model: makeModel())
 

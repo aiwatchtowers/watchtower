@@ -9,6 +9,8 @@ public enum DirectCallRefusal: Error, Equatable, Sendable {
     case unlinked
     /// The server holds the record, but not as one this build reads (another record type, no payload).
     case unreadableRecord
+    /// A save's answer named no result for the record: it is not known saved.
+    case noResult
 }
 
 /// The phone's link flow outside `CKSyncEngine` (#2189): its keybox read by name and its hello saved at once, so
@@ -59,7 +61,9 @@ extension CloudKitTransport {
                 self.energy?.record(.sendBatch)
                 do {
                     let (saves, _) = try await database.modify(saving: [ck], deleting: [])
-                    _ = try saves[ck.recordID]?.get()
+                    // No result for the record is no save (the conditional writes' `noResult`): the caller queues it.
+                    guard let result = saves[ck.recordID] else { throw DirectCallRefusal.noResult }
+                    _ = try result.get()
                 } catch let error as CKError where error.code == .partialFailure {
                     // The record's own error, so a wrapped `serverRecordChanged` still takes the retry over the copy.
                     throw (error.partialErrorsByItemID?[ck.recordID] as? CKError) ?? error

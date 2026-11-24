@@ -224,6 +224,20 @@ final class CloudKitLinkDirectTests: XCTestCase {
         XCTAssertEqual(sleeps.values, [60], "one retry, for the longer wait")
     }
 
+    /// A save answered with no result for the record is not a save: it throws, so the link flow queues the hello.
+    func testASaveWithoutAResultIsNoSave() async throws {
+        let (transport, database, _) = try make()
+        database.missingResults = ["hello-DEVICE"]
+
+        do {
+            try await transport.saveDirectly(record("hello-DEVICE", zone: .relay, payload: "new"))
+            XCTFail("expected a throw")
+        } catch {
+            XCTAssertEqual(error as? DirectCallRefusal, .noResult)
+        }
+        XCTAssertNil(database.record(named: "hello-DEVICE"))
+    }
+
     func testAServiceOutageWithoutRetryAfterDoesNotThrottle() async throws {
         let (transport, database, _) = try make()
         database.fetchFailures = [CKError(.serviceUnavailable)]

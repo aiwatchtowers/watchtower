@@ -362,8 +362,12 @@ final class FakeLinkHost: LinkHost {
     /// Every `completionKeybox` (a fetch that also read the mailbox), by hub, in call order.
     private(set) var completionHubIDs: [String] = []
 
+    /// When true, every `completionKeybox` fails (its pull did not complete).
+    var completionFails = false
+
     func completionKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
         completionHubIDs.append(hubID)
+        if completionFails { return .unavailable(reason: "completion fetch failed") }
         return await fetchKeybox(hubID: hubID, deviceID: deviceID)
     }
 

@@ -772,13 +772,19 @@ final class LinkingViewModel {
                 Self.logger.warning("a linked keybox without keys: still waiting")
                 return false
             }
-            // The link completes only from the replica's copy after one fetch that read the data zone and the mailbox
-            // (`completionKeybox`: the R4 relay check in `complete` sees a waiting control, and the ordered actions),
-            // whichever source showed it; the linked keybox lands through `ReplicaStore`'s rollback checks. A failed
-            // fetch, or a replica not caught up yet, keeps waiting. A refusal or a waiting keybox read directly skips
-            // those marks: a replayed older copy (from whoever holds the storage) can at most end or stall this scan,
-            // which the storage can do anyway by withholding the Mac's answer, so the impact is denial of service only,
-            // and no key or link comes from such a copy.
+            // A Relay pairing completes from this keybox: it is the replica's, from a pull of `pair/<slot>` that
+            // succeeded; a second pull before the keys are kept could only fail a link the owner already confirmed.
+            if pending.relaySlot != nil, let boxKeys = keybox.keys {
+                await complete(pending, keys: boxKeys, linkedAt: grant.linkedAt)
+                return true
+            }
+            // An iCloud link completes only from the replica's copy after one fetch that read the data zone and the
+            // mailbox (`completionKeybox`: the R4 relay check in `complete` sees a waiting control, and the ordered
+            // actions), whichever source showed it; the linked keybox lands through `ReplicaStore`'s rollback checks. A
+            // failed fetch, or a replica not caught up yet, keeps waiting. A refusal or a waiting keybox read directly
+            // skips those marks: a replayed older copy (from whoever holds the storage) can at most end or stall this
+            // scan, which the storage can do anyway by withholding the Mac's answer, so the impact is denial of service
+            // only, and no key or link comes from such a copy.
             guard case .read(let replica?) = await host?.completionKeybox(hubID: grant.hubID, deviceID: deviceID),
                   replica.grant.hubID == grant.hubID, Self.answersAsLinked(replica.grant, pending), let boxKeys = replica.keys
             else {
