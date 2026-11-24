@@ -441,9 +441,15 @@ final class FakeLinkHost: LinkHost {
         return !Task.isCancelled
     }
 
+    /// When true, a stored-keybox read waits (after it is recorded) until it is set false again.
+    var parksStoredRead = false {
+        didSet { unpark() }
+    }
+
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox? {
         let writes = (try? await deviceWrites()) ?? []
         keyboxReads.append(ReadCall(kind: .stored, writesBefore: writes.count))
+        await park { self.parksStoredRead }
         return replicaKeybox(writes)
     }
 

@@ -226,11 +226,13 @@ final class LinkingViewModel {
             return
         }
         // Step 1: only a code clearly past its expiry on this clock. One of a Mac this phone holds a live link to (a
-        // linked row, not ending, its grant linked: the valid code's own check below) says so (ask #1804): the Mac
-        // does not answer a hello on a closed code, so none is sent, and the link stays.
+        // linked row, not ending, the stored keybox's grant linked; no fetch) says so (ask #1804): the Mac does not
+        // answer a hello on a closed code, so none is sent, and the link stays. `.checking` holds a second scan off
+        // during the read; the row is read again after it, so a removal noticed meanwhile is the plain failure.
         guard !isExpired(payload) else {
             phase = .checking
-            if let row = row(payload.hubID), row.state == .linked, !ending.contains(row.hubID), await isGranted(row.link) {
+            let granted = isLiveLink(payload.hubID) ? await storedGrant(payload.hubID) : false
+            if granted, isLiveLink(payload.hubID), let row = row(payload.hubID) {
                 phase = .failed(.expiredButLinked(macName: row.link.macName))
             } else {
                 phase = .failed(.expired)
@@ -969,8 +971,25 @@ final class LinkingViewModel {
         } else {
             keybox = await host.storedKeybox(hubID: link.hubID, deviceID: deviceID)
         }
+        return Self.grantsLink(keybox, hubID: link.hubID)
+    }
+
+    /// The keybox's grant links this phone to `hubID` (not refused, not revoked).
+    private static func grantsLink(_ keybox: Keybox?, hubID: String) -> Bool {
         guard let grant = keybox?.grant else { return false }
-        return grant.hubID == link.hubID && grant.linked && grant.linkRefused == nil && grant.revoked != true
+        return grant.hubID == hubID && grant.linked && grant.linkRefused == nil && grant.revoked != true
+    }
+
+    /// `hubID`'s saved row is linked and its link is not ending.
+    private func isLiveLink(_ hubID: String) -> Bool {
+        guard let row = row(hubID) else { return false }
+        return row.state == .linked && !ending.contains(hubID)
+    }
+
+    /// The grant in `hubID`'s stored keybox (the replica's copy, no fetch) links this phone.
+    private func storedGrant(_ hubID: String) async -> Bool {
+        guard let deviceID = identity.deviceID, let host else { return false }
+        return Self.grantsLink(await host.storedKeybox(hubID: hubID, deviceID: deviceID), hubID: hubID)
     }
 
     /// Removes the keys stored for `hubID` (best effort, logged).

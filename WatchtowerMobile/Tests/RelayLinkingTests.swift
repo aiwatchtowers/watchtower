@@ -932,8 +932,7 @@ final class RelayLinkingTests: XCTestCase {
 
         XCTAssertEqual(relay.ops, ["vouch \(mac.deviceID)", "promote slot-0"])
         XCTAssertTrue(store.promoted.isEmpty)
-        XCTAssertNotEqual(model.phase, .failed(.expiredButLinked(macName: "build-box")))
-        XCTAssertNotEqual(model.phase, .failed(.expired))
+        XCTAssertEqual(model.phase, .linked(macName: "build-box"))
     }
 
     func testPromoteSentWithTheMacInSlotsBecomesPromotedWithoutPromoting() async throws {

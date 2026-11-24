@@ -45,7 +45,7 @@ enum LinkFailure: Equatable {
         case .relayUnreachable: "Couldn't reach Relay"
         case let .macOnRelay(macName): "\(macName) runs over Relay"
         case let .macNotOnRelay(macName): "\(macName) isn't on Relay yet"
-        case .expiredButLinked: "This code has expired"
+        case .expiredButLinked: "This code expired"
         }
     }
 

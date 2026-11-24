@@ -41,8 +41,8 @@ extension LinkingViewModelTests {
 
         XCTAssertEqual(model.phase, .failed(.expiredButLinked(macName: "Desk Mac")))
         let failure = LinkFailure.expiredButLinked(macName: "Desk Mac")
-        XCTAssertEqual(failure.message, "This code has expired. This iPhone is already linked to Desk Mac.")
-        XCTAssertEqual(failure.title, "This code has expired")
+        XCTAssertEqual(failure.message, "This code expired. This iPhone is already linked to Desk Mac.")
+        XCTAssertEqual(failure.title, LinkFailure.expired.title, "the same title as the plain expired code")
         XCTAssertEqual(failure.hint, "This iPhone is already linked to Desk Mac")
         XCTAssertTrue(host.prepared.isEmpty, "no hello")
         let writes = try await host.deviceWrites()
@@ -50,6 +50,25 @@ extension LinkingViewModelTests {
         XCTAssertTrue(host.removals.isEmpty, "the link stays")
         XCTAssertEqual(host.rows.map(\.link), [stored])
         XCTAssertEqual(host.rows.map(\.state), [.linked])
+        XCTAssertEqual(host.keyboxReads.map(\.kind), [.stored], "the stored keybox only: no fetch, no server read")
+    }
+
+    /// A removal noticed while the stored keybox is read: the row is read again before the answer, so the plain
+    /// expired failure.
+    func testExpiredCodeOfALinkRemovedDuringTheReadShowsTheExpiredFailure() async throws {
+        host.seed(savedLink())
+        macGrantsTheLink()
+        host.parksStoredRead = true
+        let model = makeModel()
+        let scan = Task { await model.open(expiredCode().url()) }
+        try await poll { host.keyboxReads.map(\.kind) == [.stored] }
+
+        await model.removedByMac(TestE2E.hubID.uuidString)
+        host.parksStoredRead = false
+        await scan.value
+
+        XCTAssertEqual(host.rows.map(\.state), [.unlinkedByMac])
+        XCTAssertEqual(model.phase, .failed(.expired))
     }
 
     /// A link to another Mac does not count: the plain expired-code failure.
@@ -75,11 +94,12 @@ extension LinkingViewModelTests {
         XCTAssertTrue(host.removals.isEmpty)
     }
 
-    /// A linked row whose grant is gone (the Mac removed this phone, not yet seen) is not a live link: the plain
-    /// expired failure, the row left to the grant check.
+    /// A linked row whose stored keybox no longer says linked (the Mac removed this phone, the phone not told yet) is
+    /// not a live link: the plain expired failure, the row left to the grant check.
     func testExpiredCodeOfALinkedRowWithoutItsGrantShowsTheExpiredFailure() async throws {
         let stored = savedLink()
-        host.seed(stored, grantMissingSince: start)
+        host.seed(stored)
+        host.mac = { [grant = grantMaker] _ in grant(TestE2E.hubID.uuidString, false, nil) }
         let model = makeModel()
 
         await model.open(expiredCode().url())
