@@ -116,7 +116,7 @@ func (c *Center) decideHello(opened openedHello, user string, slot bool) (Pendin
 			return err
 		case decisionValid:
 		}
-		saved, err := savePending(tx, request)
+		saved, err := savePending(tx, request, slot)
 		if err != nil {
 			return err
 		}
@@ -422,16 +422,24 @@ const (
 )
 
 // savePending stores p, drawing one of its code's confirm nonces (the Swift
-// savePendingDevice): the same device with the same code, keys and relay
-// device id is unchanged and draws none; any other hello for the code — a new
-// device, or a known one under new keys or another relay id — draws one and
-// replaces that device's request, until the code has drawn MaxNoncesPerCode.
-func savePending(tx *sql.Tx, p pendingDevice) (pendingSave, error) {
+// savePendingDevice): the same device with the same code, keys, relay device
+// id and route (slot: through a relay pairing slot, else CloudKit; the
+// request's mark in hub_meta relay_slot_links) is unchanged and draws none;
+// any other hello for the code — a new device, or a known one under new
+// keys, another relay id or the other route — draws one and replaces that
+// device's request, until the code has drawn MaxNoncesPerCode.
+func savePending(tx *sql.Tx, p pendingDevice, slot bool) (pendingSave, error) {
 	if stored, ok, err := pendingTx(tx, p.deviceID); err != nil {
 		return 0, err
 	} else if ok && stored.linkNonce == p.linkNonce && bytes.Equal(stored.signingKey, p.signingKey) &&
 		bytes.Equal(stored.agreementKey, p.agreementKey) && stored.relayDeviceID == p.relayDeviceID {
-		return pendingUnchanged, nil
+		storedSlot, err := state.RelaySlotPendingTx(tx, p.deviceID, stored.linkNonce)
+		if err != nil {
+			return 0, err
+		}
+		if storedSlot == slot {
+			return pendingUnchanged, nil
+		}
 	}
 	drawn, err := drawAnswer(tx, p.linkNonce, MaxNoncesPerCode)
 	if err != nil || !drawn {

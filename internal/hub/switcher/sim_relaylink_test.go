@@ -36,7 +36,7 @@ func (w *world) relayPhone(pays bool) *hubtest.Phone {
 func (w *world) slotLinked(ph *hubtest.Phone) {
 	w.t.Helper()
 	var row struct {
-		Linked []string `json:"linked"`
+		Linked map[string]string `json:"linked"`
 	}
 	if raw, ok, err := w.st.Meta(state.MetaRelaySlotLinks); err != nil {
 		w.t.Fatal(err)
@@ -45,7 +45,10 @@ func (w *world) slotLinked(ph *hubtest.Phone) {
 			w.t.Fatal(err)
 		}
 	}
-	row.Linked = append(row.Linked, strings.ToUpper(ph.ID().String()))
+	if row.Linked == nil {
+		row.Linked = map[string]string{}
+	}
+	row.Linked[strings.ToUpper(ph.ID().String())] = ph.Device().LinkNonce
 	b, err := json.Marshal(row)
 	if err != nil {
 		w.t.Fatal(err)
@@ -407,6 +410,46 @@ func TestRelayLinkACloudKitLinkWithAnEmptyOwnerIsNoCandidate(t *testing.T) {
 		w.relayLinkCheck()
 		w.wantReads(0)
 		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// A slot mark names the link it was written for: a re-link by a writer that
+// never updated the record (the row now carries another link nonce) leaves a
+// mark that does not count, both in the candidates and at the accept.
+func TestRelayLinkAStaleSlotMarkIsNoCandidate(t *testing.T) {
+	relink := func(w *world, ph *hubtest.Phone) {
+		if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+			_, err := tx.Exec(`UPDATE devices SET link_nonce = 'relinked' WHERE device_id = ? COLLATE NOCASE`, ph.ID().String())
+			return err
+		}); err != nil {
+			w.t.Fatal(err)
+		}
+	}
+	t.Run("before_the_read", func(t *testing.T) {
+		eachFlavour(t, func(t *testing.T, w *world) {
+			r := w.relayPhone(true)
+			relink(w, r)
+			w.relayLinkCheck()
+			w.wantReads(0)
+			w.wantActive(transport.KindCloudKit)
+		})
+	})
+	t.Run("mark_for_another_link_during_the_read", func(t *testing.T) {
+		eachFlavour(t, func(t *testing.T, w *world) {
+			r := w.relayPhone(true)
+			w.accountReadHook(func() {
+				row := `{"linked":{"` + strings.ToUpper(r.ID().String()) + `":"another-link"}}`
+				if err := w.st.SetMeta(state.MetaRelaySlotLinks, row); err != nil {
+					t.Error(err)
+				}
+			})
+			w.relayLinkCheck()
+			w.wantReads(1)
+			w.wantActive(transport.KindCloudKit)
+			if w.sw.Pending() {
+				t.Fatal("a switch by a stale slot mark is pending")
+			}
+		})
 	})
 }
 

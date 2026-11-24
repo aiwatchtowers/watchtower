@@ -1295,9 +1295,11 @@ func TestCloudKitLinkingMatchesTheSwiftHub(t *testing.T) {
 		swiftKeys = append(swiftKeys, key)
 	}
 	slices.Sort(swiftKeys)
-	// Since relay client Phase 3a the Kit reads v4 codes: its keys are the fixture's v4 Desktop code's.
-	if !slices.Equal(swiftKeys, want) {
-		t.Errorf("the Kit's LinkPayload keys are %v, the fixture's v4_desktop %v", swiftKeys, want)
+	// Since relay client Phase 3a the Kit reads v4 codes: its keys are the fixture's v4 Desktop code's,
+	// every one of them, plus at most the optional relay_switch (#2191), which a Kit that predates it
+	// does not decode.
+	if kitKeys := slices.DeleteFunc(slices.Clone(swiftKeys), func(k string) bool { return k == "relay_switch" }); !slices.Equal(kitKeys, want) {
+		t.Errorf("the Kit's LinkPayload keys are %v, the fixture's v4_desktop %v (plus an optional relay_switch)", swiftKeys, want)
 	}
 	if src := readSource(t, "../../../WatchtowerKit/Sources/WatchtowerSync/Relay/RelayRecordKind.swift"); !strings.Contains(string(src),
 		`containerID = "`+CloudKitContainer+`"`) {

@@ -54,9 +54,11 @@ func (s *Switcher) markRelayLinkSince() {
 // the relay, in devices order (linked_at, device_id): each was confirmed
 // through a relay pairing slot (hub_meta relay_slot_links, written by the
 // link center: an empty iCloud user alone cannot tell a slot link from a
-// CloudKit link whose owner was unreadable), has a relay id and no iCloud
-// route, and linked after both the last switch and relay_link_since, so a
-// later decision wins and a link from before the update never counts. An
+// CloudKit link whose owner was unreadable) under the link nonce its row
+// still carries (a re-link the record missed never counts), has a relay id
+// and no iCloud route, and linked after both the last switch and
+// relay_link_since, so a later decision wins and a link from before the
+// update never counts. An
 // unset relay_link_since means none; an unreadable or undecodable
 // relay_slot_links is an error (logged as store, no candidate).
 //
@@ -100,7 +102,7 @@ func (s *Switcher) relayLinkCandidates(now time.Time) ([]state.Device, error) {
 	}
 	var out []state.Device
 	for _, d := range devices {
-		if slot[strings.ToUpper(d.ID)] && d.RelayDeviceID != "" && !routes[strings.ToLower(d.ID)] && d.LinkedAt.After(after) {
+		if d.LinkNonce != "" && slot[strings.ToUpper(d.ID)] == d.LinkNonce && d.RelayDeviceID != "" && !routes[strings.ToLower(d.ID)] && d.LinkedAt.After(after) {
 			out = append(out, d)
 		}
 	}
@@ -247,7 +249,7 @@ func (s *Switcher) acceptRelayLink(d state.Device, now time.Time) (accepted, def
 // read from, still marked as linked through a pairing slot, and it came after
 // the last switch.
 func stillRelayLinkTx(tx *sql.Tx, d state.Device) (bool, error) {
-	if slot, err := state.RelaySlotLinkedTx(tx, d.ID); err != nil || !slot {
+	if slot, err := state.RelaySlotLinkedTx(tx, d.ID, d.LinkNonce); err != nil || !slot {
 		return false, err
 	}
 	devices, err := state.DevicesTx(tx)

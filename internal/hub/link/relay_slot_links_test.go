@@ -1,6 +1,9 @@
 package link
 
 import (
+	"context"
+	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,8 +12,8 @@ import (
 )
 
 // slotLinked is the phones hub_meta relay_slot_links lists as linked
-// through a pairing slot.
-func (r *rig) slotLinked() map[string]bool {
+// through a pairing slot, with their link nonces.
+func (r *rig) slotLinked() map[string]string {
 	r.t.Helper()
 	got, err := r.st.RelaySlotLinked()
 	if err != nil {
@@ -19,9 +22,23 @@ func (r *rig) slotLinked() map[string]bool {
 	return got
 }
 
+// wantSlotLinked checks p's mark, which counts only under the link nonce its
+// devices row carries.
 func (r *rig) wantSlotLinked(p phone, want bool) {
 	r.t.Helper()
-	if got := r.slotLinked()[p.id.String()]; got != want {
+	var got bool
+	err := r.st.ReadTx(context.Background(), func(tx *sql.Tx) error {
+		nonce, _, err := state.LinkNonceTx(tx, p.id.String())
+		if err != nil {
+			return err
+		}
+		got, err = state.RelaySlotLinkedTx(tx, strings.ToLower(p.id.String()), nonce)
+		return err
+	})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	if got != want {
 		r.t.Fatalf("%s slot-linked %v, want %v (row %v)", p.id, got, want, r.slotLinked())
 	}
 }
@@ -70,6 +87,81 @@ func TestASlotLinkIsRecordedAndACloudKitLinkIsNot(t *testing.T) {
 	}
 	r.wantSlotLinked(b, false)
 	r.wantSlotLinked(a, true)
+}
+
+// The route is part of a request: a hello identical but for the route it
+// came by (same phone, keys, code and relay id) replaces the request, so the
+// confirm links the phone by the route of the last hello, either way.
+func TestOnlyTheRouteChangingReplacesTheRequest(t *testing.T) {
+	r := newCKRig(t)
+	a := newPhone(t)
+	code := r.issue()
+	r.handle(a, code.Nonce) // through a slot
+	r.linkCK(a, code.Nonce) // the same hello over CloudKit, then Link
+	r.wantSlotLinked(a, false)
+	if r.userOf(a) == "" {
+		t.Fatal("the CloudKit request did not replace the slot one")
+	}
+
+	b := newPhone(t)
+	code = r.issue()
+	if got, err := r.ckHello(b, code.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("CloudKit hello not waiting: %+v %v", got, err)
+	}
+	r.handle(b, code.Nonce) // the same hello through a slot
+	if err := r.c.Confirm(b.id.String(), r.code(b), true); err != nil {
+		t.Fatal(err)
+	}
+	r.wantSlotLinked(b, true)
+}
+
+// A re-pairing request of a phone already linked through a slot that is
+// refused, expires, or meets its code already used by this phone leaves the
+// phone's link and its slot mark as they were.
+func TestARelinkRequestThatEndsKeepsTheSlotMark(t *testing.T) {
+	for _, how := range []string{"refused", "expired", "used_by_this_device"} {
+		t.Run(how, func(t *testing.T) {
+			r := newRig(t)
+			a := newPhone(t)
+			r.confirmLinked(a)
+			r.wantSlotLinked(a, true)
+			code := r.issue()
+			if got := r.handle(a, code.Nonce); got.Code == "" {
+				t.Fatalf("the re-pairing request is not waiting: %+v", got)
+			}
+			switch how {
+			case "refused":
+				if err := r.c.Confirm(a.id.String(), r.code(a), false); err != nil {
+					t.Fatal(err)
+				}
+			case "expired":
+				r.advance(wire.LinkLifetime + time.Second)
+				if err := r.c.Sweep(); err != nil {
+					t.Fatal(err)
+				}
+			case "used_by_this_device":
+				if err := r.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+					_, err := tx.Exec(`UPDATE link_codes SET used_by_device = ? WHERE nonce = ?`, a.id.String(), code.Nonce)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if ids := pendingIDs(t, r.c); len(ids) != 0 {
+				t.Fatalf("still waiting: %v", ids)
+			}
+			if !r.linked(a) {
+				t.Fatal("the link went")
+			}
+			r.wantSlotLinked(a, true)
+			if row := r.slotRow(); strings.Contains(row, `"pending"`) {
+				t.Fatalf("the request's mark stayed: %s", row)
+			}
+		})
+	}
 }
 
 // A phone that re-links over CloudKit is no slot link any more, also when
@@ -127,6 +219,27 @@ func TestUnlinkDropsTheSlotMark(t *testing.T) {
 	if row := r.slotRow(); row != "" {
 		t.Fatalf("an unlinked phone left %q", row)
 	}
+}
+
+// A mark whose link nonce the phone's row no longer carries (a re-link by a
+// writer that never updated the record) does not count, and the next write
+// of the row drops it.
+func TestAStaleSlotMarkIsPrunedByTheNextWrite(t *testing.T) {
+	r := newRig(t)
+	a, b := newPhone(t), newPhone(t)
+	r.confirmLinked(a)
+	if err := r.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE devices SET link_nonce = 'relinked' WHERE device_id = ? COLLATE NOCASE`, a.id.String())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.wantSlotLinked(a, false)
+	r.confirmLinked(b)
+	if _, ok := r.slotLinked()[a.id.String()]; ok {
+		t.Fatalf("the stale mark stayed: %s", r.slotRow())
+	}
+	r.wantSlotLinked(b, true)
 }
 
 // An undecodable row reads as an error, and the next write replaces it with
