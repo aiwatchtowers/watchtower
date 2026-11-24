@@ -79,10 +79,16 @@ final class CodeCLIProcessTests: XCTestCase {
     func testTerminateKillsTheWholeGroupAndReaps() async throws {
         let pidFile = stub.directory.appendingPathComponent("child.pid")
         let process = try shell("sleep 30 & echo $! > '\(pidFile.path)'; wait")
-        let wrote = await eventually { FileManager.default.fileExists(atPath: pidFile.path) }
-        XCTAssertTrue(wrote)
-        try await Task.sleep(for: .milliseconds(50))
-        let child = try XCTUnwrap(pid_t(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        // A failure before `terminateGroup` still reaps the group.
+        let group = process.pid
+        addTeardownBlock { killpg(group, SIGKILL) }
+        // `echo $! > file` creates the file before it writes the pid, so wait for the pid itself.
+        func writtenPID() -> pid_t? {
+            let text = (try? String(contentsOf: pidFile, encoding: .utf8)) ?? ""
+            return pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        _ = await eventually { writtenPID() != nil }
+        let child = try XCTUnwrap(writtenPID())
         XCTAssertEqual(getpgid(child), process.pid, "the child shares the CLI's own group")
         XCTAssertNotEqual(process.pid, getpgrp(), "never Watchtower's group")
         process.terminateGroup()
