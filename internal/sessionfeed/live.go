@@ -20,6 +20,11 @@ const liveWindow = 4 << 20
 const maxLiveAgents = 32
 const maxLiveAgentCandidates = 128
 
+// maxLiveMetas bounds the sidecar files one live poll reads. A long Claude
+// session keeps a meta file for every agent it ever ran (finished ones too), so
+// the bound is well above maxLiveAgentCandidates.
+const maxLiveMetas = 1024
+
 // maxLiveSteps caps the current turn's step list; steps_more counts the cut.
 const maxLiveSteps = 40
 
@@ -83,7 +88,10 @@ func LiveOf(c Conversation, sidechain bool, now time.Time) (*Live, error) {
 	}
 	live := &Live{ObservedAt: now.UTC(), Conversation: c.AgentSessionID, TurnActive: true, Agents: []LiveAgent{}, AgentsState: "known", Steps: []LiveAction{}}
 	r := liveReader{live: live, agents: map[string]*LiveAgent{}, codex: c.Codex, sidechain: sidechain, path: c.Path}
-	if cut {
+	// A Claude main session's agents come from its sidecar metadata, which
+	// lists every agent it launched however long the transcript is; Codex and
+	// a sidechain see their agents only in the window.
+	if cut && (c.Codex || sidechain) {
 		live.AgentsState = "unknown"
 	}
 	// Only newline-terminated records are committed to a rollout.
@@ -193,6 +201,11 @@ func (r *liveReader) claudeLine(line []byte) {
 				if b.Type == "tool_result" {
 					r.recognized = true
 					r.complete(b.ToolUseID, at)
+					// A refused launch ("Agent type … not found") starts no agent
+					// and writes no metadata; a launched one's metadata wins below.
+					if a := r.agents[b.ToolUseID]; a != nil && b.IsError {
+						a.Ref.Status = StatusFinished
+					}
 				}
 			}
 		}
@@ -660,8 +673,12 @@ func (r *liveReader) reconcileAgents() {
 		return at.After(bt)
 	})
 	if len(ids) > maxLiveAgentCandidates {
+		// Finished agents sort last: dropping only those leaves the working
+		// set complete.
+		if r.agents[ids[maxLiveAgentCandidates]].Ref.Status != StatusFinished {
+			r.live.AgentsState = "unknown"
+		}
 		ids = ids[:maxLiveAgentCandidates]
-		r.live.AgentsState = "unknown"
 	}
 	claudePaths := map[string]string{} // id -> transcript; read only for visible rows
 	for _, id := range ids {
@@ -751,7 +768,7 @@ func readLiveMetas(sessionDir string) (map[string]subagentMeta, error) {
 		if !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".meta.json") {
 			continue
 		}
-		if examined >= maxLiveAgentCandidates {
+		if examined >= maxLiveMetas {
 			firstErr = fmt.Errorf("subagent metadata exceeds live budget")
 			break
 		}
