@@ -759,8 +759,11 @@ func (s *supervisor) withHubOr(fn func(*hubRuntime) ControlAnswer, off func() Co
 // CloudKit issues a CloudKit code (hubRuntime.pairCloudKit), so the phone
 // links on the transport the hub publishes on; its share calls run outside
 // hubMu, the hub held by its wait group, which stop cancels and waits for.
-// Such a hub without the shares answers failed, never a relay code. Any
-// other hub issues a relay code under hubMu (hubRuntime.handle).
+// Such a hub without the shares answers failed, never a relay code. When
+// iCloud refuses the CloudKit code (no_icloud, icloud_unreachable) and the
+// hub has a relay, it issues a relay code instead (iCloud is not needed for
+// linking); without a relay the refusal stands. Any other hub issues a
+// relay code under hubMu (hubRuntime.handle).
 func (s *supervisor) pair(r ControlRequest, pl *pairListener) ControlAnswer {
 	var (
 		h      *hubRuntime
@@ -783,10 +786,23 @@ func (s *supervisor) pair(r ControlRequest, pl *pairListener) ControlAnswer {
 	if h == nil {
 		return a
 	}
-	defer h.wg.Done()
-	a, nonce := h.pairCloudKit(shares)
+	a, nonce := func() (ControlAnswer, string) {
+		defer h.wg.Done()
+		return h.pairCloudKit(shares)
+	}()
 	if nonce != "" && pl != nil {
 		pl.ckNonce = nonce // the connection's own goroutine: no lock
+	}
+	if (a.Error == ErrClassNoICloud || a.Error == ErrClassICloudUnreachable) && h.rel != nil {
+		// iCloud is not needed for linking (F7): a Mac with a relay answers
+		// like a relay hub, under hubMu, on the hub that refused.
+		log.Printf("hub: no iCloud code (%s): a Relay code instead", a.Error)
+		return s.withHub(func(rt *hubRuntime) ControlAnswer {
+			if rt != h {
+				return ControlAnswer{Error: ErrClassHubOff}
+			}
+			return rt.handle(r, pl)
+		})
 	}
 	return a
 }

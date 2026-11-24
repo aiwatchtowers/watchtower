@@ -415,6 +415,47 @@ func TestIssueOnCloudKitOpensThePublicLinkAndCarriesShares(t *testing.T) {
 	}
 }
 
+// A CloudKit code offers relay only when the hub has a relay: a Mac
+// without one never sends a paying phone to a relay that is not there. The
+// relay identity stays on the code either way (spec §1).
+func TestIssueCloudKitTransportsFollowTheHost(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		host []string
+		want []string
+	}{
+		{"with a relay", []string{wire.TransportCloudKit, wire.TransportRelay},
+			[]string{wire.TransportCloudKit, wire.TransportRelay}},
+		{"without a relay", []string{wire.TransportCloudKit}, []string{wire.TransportCloudKit}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newCKRig(t)
+			r.c = NewCenter(Config{
+				Store: r.st, Keys: r.kr, Opener: secure.NewOpener(r.kr, r.kr),
+				Host: HostInfo{Name: "acme-host", RelayDeviceID: testRelayID, RelayAuthPub: testRelayPub,
+					Transports: tc.host},
+				Clock: r.clock, Publish: func(...string) {}, Sweep: DefaultSweep,
+			})
+			p, url, err := r.c.IssueCloudKit(r.ctx, r.s)
+			if err != nil {
+				t.Fatalf("IssueCloudKit: %v", err)
+			}
+			parsed, err := wire.ParseLinkURL(url)
+			if err != nil {
+				t.Fatalf("ParseLinkURL: %v", err)
+			}
+			for _, lp := range []wire.LinkPayload{p, parsed} {
+				if lp.Transport != wire.TransportCloudKit || !slices.Equal(lp.Transports, tc.want) {
+					t.Errorf("transport %q transports %v, want cloudkit %v", lp.Transport, lp.Transports, tc.want)
+				}
+				if lp.RelayDeviceID != testRelayID || lp.RelayAuthPub != testRelayPub {
+					t.Errorf("relay identity %q %q", lp.RelayDeviceID, lp.RelayAuthPub)
+				}
+			}
+		})
+	}
+}
+
 // testNoAccountOrRestrictedRefusesTheCodeAndCreatesNoShare.
 func TestNoAccountRefusesToIssue(t *testing.T) {
 	r := newCKRig(t)

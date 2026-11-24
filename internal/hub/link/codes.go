@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,7 +42,10 @@ type cloudKitFields struct {
 func (c *Center) Issue() (wire.LinkPayload, string, error) { return c.issue(nil) }
 
 // issue is Issue; ck set makes a CloudKit code (IssueCloudKit): the
-// CloudKit fields, transport cloudkit and transports ["cloudkit","relay"].
+// CloudKit fields, transport cloudkit and transports ["cloudkit"], plus
+// "relay" only when the host has a relay (HostInfo.Transports): a Mac
+// without one never sends a paying phone to a relay that is not there. The
+// relay identity stays on the code either way.
 func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 	c.mu.Lock()
 	defer c.unlock()
@@ -67,7 +71,10 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 	}
 	if ck != nil {
 		p.Container, p.OwnerUser, p.DataShare, p.RelayShare = ck.container, ck.ownerUser, ck.dataShare, ck.relayShare
-		p.Transport, p.Transports = wire.TransportCloudKit, []string{wire.TransportCloudKit, wire.TransportRelay}
+		p.Transport, p.Transports = wire.TransportCloudKit, []string{wire.TransportCloudKit}
+		if slices.Contains(c.host.Transports, wire.TransportRelay) {
+			p.Transports = append(p.Transports, wire.TransportRelay)
+		}
 	}
 	url, err := p.URL()
 	if err != nil {

@@ -97,8 +97,9 @@ func (h *hubRuntime) cloudKitCodes() (s transport.Shares, cloudKit, ok bool) {
 // emits the qr and waiting events as Issue does) and runs a pass at once
 // for the phone's hello. A refusal is answered with its class (LinkErrClass:
 // no_icloud, icloud_unreachable, icloud_changed, else failed); a hub stopping
-// meanwhile answers hub_off. Called off hubMu with the hub held by its wait
-// group.
+// meanwhile answers hub_off. supervisor.pair turns no_icloud and
+// icloud_unreachable into a relay code when the hub has a relay. Called off
+// hubMu with the hub held by its wait group.
 func (h *hubRuntime) pairCloudKit(s transport.Shares) (ControlAnswer, string) {
 	ctx, cancel := context.WithTimeout(h.ctx, opTimeout)
 	defer cancel()

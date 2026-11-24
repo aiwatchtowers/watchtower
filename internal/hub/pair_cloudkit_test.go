@@ -23,8 +23,9 @@ import (
 
 // startPairDesk runs a desktop host over an acctCK with an available iCloud
 // account, active the transport given, no phone linked, and dials its
-// control socket.
-func startPairDesk(t *testing.T, active transport.Kind) (*deskRig, *acctCK, *ControlClient) {
+// control socket. edit changes the rig's options before the start (noRelay
+// takes the relay away).
+func startPairDesk(t *testing.T, active transport.Kind, edit ...func(*Options)) (*deskRig, *acctCK, *ControlClient) {
 	t.Helper()
 	policytest.Set(t, nil)
 	r := newDeskRig(t, shortDir(t))
@@ -39,6 +40,9 @@ func startPairDesk(t *testing.T, active transport.Kind) (*deskRig, *acctCK, *Con
 		r.ckDial.Add(1)
 		return ck
 	}
+	for _, e := range edit {
+		e(&o)
+	}
 	r.start(o)
 	r.waitStatus("running on "+string(active), func(s Status) bool {
 		return s.State == StateRunning && s.Transport == string(active) &&
@@ -48,6 +52,9 @@ func startPairDesk(t *testing.T, active transport.Kind) (*deskRig, *acctCK, *Con
 	t.Cleanup(func() { _ = c.Close() })
 	return r, ck, c
 }
+
+// noRelay is a desktop host without a relay origin: CloudKit only.
+func noRelay(o *Options) { o.RelayOrigin = "" }
 
 // pairCode asks for a code and parses the qr event's link.
 func pairCode(t *testing.T, c *ControlClient) wire.LinkPayload {
@@ -99,6 +106,15 @@ func TestPairOnACloudKitDesktopIssuesACloudKitCode(t *testing.T) {
 			t.Fatalf("the shares' public link opened %d times, want 1", n)
 		}
 	})
+	// A Mac without a relay offers CloudKit alone: a paying phone is never
+	// sent to a relay that is not there.
+	bubble(t, func(t *testing.T) {
+		_, _, c := startPairDesk(t, transport.KindCloudKit, noRelay)
+		lp := pairCode(t, c)
+		if lp.Transport != wire.TransportCloudKit || !slices.Equal(lp.Transports, []string{wire.TransportCloudKit}) {
+			t.Fatalf("without a relay: transport %q, transports %v, want cloudkit only", lp.Transport, lp.Transports)
+		}
+	})
 }
 
 // On the relay the desktop host keeps the relay code and makes no share call.
@@ -115,11 +131,11 @@ func TestPairOnARelayDesktopIssuesARelayCode(t *testing.T) {
 	})
 }
 
-// With CloudKit active and the iCloud account gone, the pair is refused
-// no_icloud and no code is issued.
+// With CloudKit active, no relay and the iCloud account gone, the pair is
+// refused no_icloud and no code is issued.
 func TestPairOnACloudKitDesktopWithoutICloudIsRefused(t *testing.T) {
 	bubble(t, func(t *testing.T) {
-		r, ck, c := startPairDesk(t, transport.KindCloudKit)
+		r, ck, c := startPairDesk(t, transport.KindCloudKit, noRelay)
 		ck.acct.Store(transport.AccountNoAccount)
 		if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
 			t.Fatal(err)
@@ -172,11 +188,67 @@ func TestLinkErrClassForCloudKitCodes(t *testing.T) {
 	}
 }
 
+// F7: with CloudKit active and iCloud unusable (gone, or not readable just
+// now), a Mac with a relay answers like a relay hub: a relay code (no
+// CloudKit fields) over a pairing slot, and the public link never opens.
+func TestPairOnACloudKitDesktopWithoutICloudFallsBackToARelayCode(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		account transport.Account
+	}{
+		{ErrClassNoICloud, transport.AccountNoAccount},
+		{ErrClassICloudUnreachable, transport.AccountTemporarilyUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bubble(t, func(t *testing.T) {
+				r, ck, c := startPairDesk(t, transport.KindCloudKit)
+				ck.acct.Store(tc.account)
+				if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
+					t.Fatal(err)
+				}
+				var (
+					qr     *ControlAnswer
+					answer *ControlAnswer
+				)
+				for qr == nil || answer == nil {
+					a, err := c.Next()
+					if err != nil {
+						t.Fatal(err)
+					}
+					switch {
+					case a.Event == link.EventQR:
+						qr = &a
+					case a.Event == "" && a.Op == OpPair:
+						if !a.OK || a.Error != "" {
+							t.Fatalf("answer %+v, want OK", a)
+						}
+						answer = &a
+					}
+				}
+				lp, err := wire.ParseLinkURL(qr.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if lp.Transport != wire.TransportRelay || lp.Container != "" || lp.OwnerUser != "" ||
+					lp.DataShare != nil || lp.RelayShare != nil || lp.RelayDeviceID == "" {
+					t.Fatalf("want a relay code, got %+v", lp)
+				}
+				if n := codesStored(t, r.dir); n != 1 {
+					t.Fatalf("%d codes stored, want 1", n)
+				}
+				if n := ck.count("set_public_link:open"); n != 0 {
+					t.Fatalf("the public link opened %d times", n)
+				}
+			})
+		})
+	}
+}
+
 // An iCloud account the bridge reports only for now unavailable refuses the
-// pair as retryable, with nothing issued.
+// pair as retryable, with nothing issued, on a Mac without a relay.
 func TestPairOnACloudKitDesktopWithICloudBriefyUnavailableIsRetryable(t *testing.T) {
 	bubble(t, func(t *testing.T) {
-		r, ck, c := startPairDesk(t, transport.KindCloudKit)
+		r, ck, c := startPairDesk(t, transport.KindCloudKit, noRelay)
 		ck.acct.Store(transport.AccountTemporarilyUnavailable)
 		if a := pairRefusal(t, c); a != ErrClassICloudUnreachable {
 			t.Fatalf("answer %s, want %s", a, ErrClassICloudUnreachable)

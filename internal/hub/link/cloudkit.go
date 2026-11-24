@@ -248,7 +248,7 @@ type retiredCode struct{ nonce, reason string }
 // owner) closes the link with CloseAccountChanged and returns
 // ErrAccountChanged. Otherwise it stores the code like Issue (v4, container,
 // owner_user, data_share, relay_share, transport cloudkit, transports
-// ["cloudkit","relay"]). Once the account and the owner checks pass, a
+// ["cloudkit"], plus "relay" when the host has one). Once the account and the owner checks pass, a
 // pending grace sweep or retry is cancelled (the new code's own close
 // sweeps) and the last close's refusal is retired; a code refused before
 // that leaves them as they were. A code that cannot be stored closes the link
