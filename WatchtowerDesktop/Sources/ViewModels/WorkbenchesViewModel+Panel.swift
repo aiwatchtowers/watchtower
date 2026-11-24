@@ -516,6 +516,43 @@ extension WorkbenchesViewModel {
         showFilesPane(projectID: root.workbenchID)
     }
 
+    /// A path clicked in a session's Workchat (spec 2026-11-24-workchat-polish §2): the file in a preview tab of the
+    /// session's root. In a split the Files pane goes beside `pane`, the Workchat it was clicked in — so the page's
+    /// session is that one, and a split with another session (or that session's report) never takes the chat's
+    /// place. A single pane opens Files the way a FILES click does. Either way the Files pane works in `root`, not
+    /// a FILES root chosen before. `pane` is the pane hosting the chat (the Workchat's own, or Branch review's for
+    /// its Author chat); one no longer on screen opens nothing. `stillValid` re-checks the click after the
+    /// unsent edits are pulled — the pull may suspend while the index changes (review round 4). Returns whether the
+    /// file opened.
+    @discardableResult
+    func openSessionFile(
+        _ relPath: String,
+        root: CodeRoot,
+        pane: WorkspacePane,
+        stillValid: @MainActor () async -> Bool = { true }
+    ) async -> Bool {
+        let projectID = root.workbenchID
+        guard layout(projectID: projectID).visiblePanes.contains(pane) else { return false }
+        await codeFiles.pullPending(root)
+        guard !Task.isCancelled, await stillValid() else { return false }
+        // The click's chat left, or its pane is off screen, meanwhile: nothing
+        // opens, and another session's layout is never changed (review round 3).
+        var updated = layout(projectID: projectID)
+        guard !Task.isCancelled, updated.visiblePanes.contains(pane) else { return false }
+        codeFiles.open(relPath, root: root, preview: true)
+        if updated.isSplit {
+            beginSwitch(projectID: projectID)
+            updated.openBeside(.files, keeping: pane)
+            setLayout(updated, projectID: projectID)
+        } else {
+            showFilesPane(projectID: projectID)
+        }
+        if let project = summaries.first(where: { $0.id == projectID })?.project {
+            selectFilesRoot(root, project: project)
+        }
+        return true
+    }
+
     /// Open Quickly's ↩ and ⌥↩ (spec §8.1): the file in a preview tab, the
     /// cursor on the target's line (if any) and the keyboard in the editor
     /// once it shows. ↩ puts the Files pane on

@@ -95,6 +95,24 @@ struct ColoursPage: View {
                     tint("In review", Tone.status("purple"))
                 }
             }
+            syntaxTints
+        }
+    }
+
+    /// The Workchat's colours for the agent's text: coloured text only, no fill, box or weight.
+    private var syntaxTints: some View {
+        PageSection("Syntax tints") {
+            Sample("The agent's text in the Workchat: a ref, a hash, a path and a command",
+                   usage: "SyntaxTint.ref  ·  SyntaxTint.hash  ·  SyntaxTint.path  ·  SyntaxTint.command") {
+                VStack(alignment: .leading, spacing: Spacing.compact) {
+                    Text("Round 3 of ") + Text("#2188").foregroundStyle(SyntaxTint.ref) + Text(" is ready: ")
+                        + Text("67a59755a").foregroundStyle(SyntaxTint.hash) + Text(" changes ")
+                        + Text("internal/sessionhost/prompt_state.go").foregroundStyle(SyntaxTint.path) + Text(".")
+                    Text("Run ") + Text("make test-swift").font(.body.monospaced()).foregroundStyle(SyntaxTint.command)
+                        + Text(" before the merge.")
+                }
+                .font(.body)
+            }
         }
     }
 

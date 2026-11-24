@@ -27,6 +27,22 @@ final class WorkbenchCodeIndexTests: XCTestCase {
         XCTAssertEqual(index.symbols(in: "a.swift").map(\.name), ["Buffer", "save"])
     }
 
+    /// A batch in which a file joins or leaves bumps the revision once; a re-index of a known file does not.
+    func testTheFilesRevisionFollowsMembership() {
+        let index = WorkbenchCodeIndex()
+        index.applyIndexLines([file("a.swift"), file("b.swift")], from: .update)
+        XCTAssertEqual(index.filesRevision, 1, "one bump per batch")
+        index.applyIndexLines([file("a.swift", [symbol("A", .class, "a.swift")])], from: .update)
+        XCTAssertEqual(index.filesRevision, 1, "same files")
+        index.applyIndexLines([.deleted("b.swift"), file("c.swift")], from: .update)
+        XCTAssertEqual(index.filesRevision, 2, "a rename keeping the count still changes it")
+        index.beginFullRun()
+        index.applyIndexLines([file("a.swift")], from: .fullRun)
+        XCTAssertEqual(index.filesRevision, 2)
+        index.finishFullRun()
+        XCTAssertEqual(index.filesRevision, 3, "the run dropped c.swift")
+    }
+
     /// Ruling R31: go to definition searches text only in a file whose
     /// language the index does not read.
     func testTheDefinitionLanguageOfAFileAsTheCLIReportedIt() {

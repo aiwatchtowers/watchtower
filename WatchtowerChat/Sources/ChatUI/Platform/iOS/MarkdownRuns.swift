@@ -10,6 +10,8 @@ struct ChatAnswerText: View {
     let text: String
     let isFinal: Bool
     let isOwner: Bool
+    /// The phone keeps the agent's text plain (spec 2026-11-24-workchat-polish C2).
+    var highlighting: AgentTextHighlighting?
 
     var body: some View {
         if isOwner {

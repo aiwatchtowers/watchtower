@@ -22,6 +22,8 @@ struct SessionChatSubagentView: View {
     let isActive: () -> Bool
     let isOnScreen: () -> Bool
     let onOpenSubagent: (SessionFeedSubagent) -> Void
+    /// The parent Workchat's highlighted-span click and path lookup (`WorkchatFeed`).
+    let highlights: WorkchatHighlightHandlers
     /// The subagent's own live line from its activity and entries; nil = none.
     let liveLine: (SessionFeedActivity?, [SessionFeedEntry]) -> WorkchatActivityPresenter.Line?
     /// Restarts the follow: the session's state or the screen changed.
@@ -113,6 +115,8 @@ struct SessionChatSubagentView: View {
         var feed = WorkchatFeed(entries: entries, markdown: markdown, expandedEvents: expandedEvents,
                                 onToggle: toggleEvent)
         feed.onOpenArtifact = { artifact = $0 }
+        feed.onHighlight = highlights.open
+        feed.resolvesPath = highlights.resolvesPath
         let byID = feed.entriesByMessage
         var context = feed.context()
         context.follow = ChatFeedFollow(conversationID: nil)
