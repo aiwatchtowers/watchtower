@@ -189,19 +189,19 @@ final class TerminalCenter {
     /// answers the prompt; input into a permission dialog changes none),
     /// Dismiss, the next delivery or the process's exit.
     private(set) var answerHints: [Int64: AnswerHint] = [:]
-    /// Sessions whose agent prompt holds text not submitted, as the app
-    /// sees it: the owner typed since their last submitting Return, or the
-    /// host left a line typed (`left_typed`). Only the app's own pre-checks
-    /// read it — the phone's hold reason (PROJ-16) and the chat-question
-    /// escalation; the delivery itself is the session host's, which keeps
-    /// its own prompt state (PROJ-12, `internal/sessionhost/prompt.go`).
-    /// Input while `inputAnswersDialog` holds goes to the agent's
-    /// permission dialog, not to its prompt, and changes nothing.
-    @ObservationIgnored private(set) var promptDrafts: Set<Int64> = []
+    /// Each session's draft model (`DraftModel`; none: an empty prompt) as
+    /// the app sees it: the owner's keys since their last submitting Return,
+    /// or a line the host left typed (`left_typed`, inexact). Only the app's
+    /// own pre-checks read it (PROJ-16's hold, the Workchat's, the
+    /// chat-question escalation); the delivery is the session host's, whose
+    /// prompt state is the authority (PROJ-12, `internal/sessionhost/prompt.go`).
+    @ObservationIgnored private(set) var drafts: [Int64: DraftModel] = [:]
+    /// The session's draft model changed through the owner's keys.
+    @ObservationIgnored var onDraftChanged: ((Int64) -> Void)?
     /// Sessions whose prompt holds a line the host left without its Return
     /// next to other text not submitted (its `left_typed` event with
     /// `beside_text`, board #380). The pane's "press Return" bar says the
-    /// Return sends them together. Cleared with `promptDrafts`.
+    /// Return sends them together. Cleared with `drafts`.
     private(set) var sharedPrompts: Set<Int64> = []
     /// Sessions a delivery is going to right now (paste, pause, Return):
     /// the prompt holds that line until it ends.
@@ -217,10 +217,6 @@ final class TerminalCenter {
     /// The `pendingReturns` runs where the owner's own submitting Return
     /// came during the pause (board #388): it sent the line.
     @ObservationIgnored private var ownerReturnsInPause: Set<Int> = []
-    /// Sessions whose owner's last printable prompt input was `\`, with
-    /// only escape sequences or paste brackets since: a Return there inserts
-    /// a line break in Claude Code, it does not submit.
-    @ObservationIgnored private var ownerBackslashPending: Set<Int64> = []
     /// Whether the session's agent shows a permission dialog right now (its
     /// agent status is `needsApproval`). Set by `WorkbenchesViewModel`.
     @ObservationIgnored var inputAnswersDialog: (_ sessionID: Int64) -> Bool = { _ in false }
@@ -599,7 +595,7 @@ final class TerminalCenter {
 
     /// `deliver` into a run whose host is v1-only: `text` pasted
     /// (`sendPrompt`), then a Return only while `canSubmit` holds and the
-    /// prompt held no text before the paste (`promptDrafts`, or a line in
+    /// prompt held no text before the paste (`drafts`, or a line in
     /// its pause, `pendingReturns`) — both checked before the pause and
     /// again after it, after `refresh` — and only into the same process run
     /// (`runs`), as a write of its own after `delay` (nil: the profile's
@@ -621,7 +617,7 @@ final class TerminalCenter {
         // untracked by run.
         guard states[sessionID] == .running, let run = runs[sessionID],
               let process = processes[sessionID] else { return .noSession }
-        let promptWasEmpty = !promptDrafts.contains(sessionID) && !pendingReturns.contains(run)
+        let promptWasEmpty = drafts[sessionID]?.holdsText != true && !pendingReturns.contains(run)
         // Read before the paste, which clears the bars it names.
         let heldBack = promptWasEmpty ? nil : heldBackBeforePause(sessionID, run: run)
         switch sendPrompt(text, sessionID: sessionID, keepingLineBreaks: keepingLineBreaks,
@@ -644,11 +640,11 @@ final class TerminalCenter {
                 return delivery
             }
             // An owner key or another delivery landed during the pause.
-            besideText = promptDrafts.contains(sessionID)
+            besideText = drafts[sessionID]?.holdsText == true
         }
         // The line sits in the prompt unsubmitted: the next line must not
         // submit it with its own Return.
-        promptDrafts.insert(sessionID)
+        leaveDraftInexact(sessionID)
         pasteHints.insert(sessionID)
         if besideText { sharedPrompts.insert(sessionID) }
         return .pasted
@@ -719,7 +715,7 @@ final class TerminalCenter {
                 ? .withheld("a permission prompt after the owner's Return in the pause") : .ownerSent
         }
         guard canSubmit() else { return .withheld("the session's state, after the pause") }
-        guard !promptDrafts.contains(sessionID) else { return .withheld("text reached the prompt during the pause") }
+        guard drafts[sessionID]?.holdsText != true else { return .withheld("text reached the prompt during the pause") }
         return .pressReturn
     }
     /// Writes the owner's clipboard (the `.copied` delivery). A seam for tests.
@@ -837,7 +833,7 @@ final class TerminalCenter {
         case .typed:
             // The line sits in the prompt unsubmitted: the app's own
             // pre-checks see it (the host's `left_typed` event says so too).
-            if processes[sessionID] === process { promptDrafts.insert(sessionID) }
+            if processes[sessionID] === process { leaveDraftInexact(sessionID) }
             return .pasted
         case let .held(reason):
             logWithheld(sessionID, "held by the session host (\(reason))")
@@ -857,7 +853,7 @@ final class TerminalCenter {
             // not. Never "no session": the owner checks and presses Return.
             logWithheld(sessionID, "the delivery's connection ended before the host answered")
             if processes[sessionID] === process {
-                promptDrafts.insert(sessionID)
+                leaveDraftInexact(sessionID)
                 pasteHints.insert(sessionID)
             }
             return .mayBeTyped
@@ -874,7 +870,7 @@ final class TerminalCenter {
             clipboardHints.remove(sessionID)
             dropPasteHint(sessionID)
         case .leftTyped:
-            promptDrafts.insert(sessionID)
+            leaveDraftInexact(sessionID)
             if event.besideText { sharedPrompts.insert(sessionID) }
             // An ask's answer shows its own bar (`answerHints`).
             if answerHints[sessionID] == nil { pasteHints.insert(sessionID) }
@@ -903,7 +899,7 @@ final class TerminalCenter {
     /// line still going to it. The phone's lines are held then (PROJ-16);
     /// the host holds them too (`holdIfPromptText`).
     func promptHoldsText(_ sessionID: Int64) -> Bool {
-        if promptDrafts.contains(sessionID) || delivering[sessionID] != nil { return true }
+        if drafts[sessionID]?.holdsText == true || delivering[sessionID] != nil { return true }
         guard let run = runs[sessionID] else { return false }
         return pendingReturns.contains(run)
     }
@@ -927,8 +923,13 @@ final class TerminalCenter {
 
     /// The prompt holds nothing not submitted any more.
     private func clearPromptDraft(_ sessionID: Int64) {
-        promptDrafts.remove(sessionID)
+        drafts[sessionID] = nil
         sharedPrompts.remove(sessionID)
+    }
+
+    /// A line of the app's own may sit in the prompt: only a submit empties it.
+    private func leaveDraftInexact(_ sessionID: Int64) {
+        drafts[sessionID, default: DraftModel()].exact = false
     }
 
     /// What the hint over a session holding an ask's answer says.
@@ -968,27 +969,28 @@ final class TerminalCenter {
         answerHints[sessionID] = hint
     }
 
-    /// The owner typed or pasted into the session. Input that answers a
-    /// permission dialog changes nothing: the prompt still holds what it
-    /// held. Otherwise a submitting Return (`isSubmit`) empties the prompt
-    /// (`promptDrafts`); Shift+Tab (`isShiftTab`) leaves it as it was; any
-    /// other input — Esc and Ctrl+C too — leaves a draft. A copied answer's
-    /// hint turns into "press Return" (the paste was the first step); a
+    /// The owner's keys, through the draft model (twin of Go `promptState.ownerInput`;
+    /// dialog input changes nothing). A submit in a line's pause sent that line;
+    /// any other key but Shift+Tab there reaches the pasted line: inexact. A copied
+    /// answer's hint turns into "press Return" (the paste was the first step); a
     /// typed one has done its job; a held one waits for its delivery.
     private func ownerInput(_ sessionID: Int64, _ bytes: [UInt8]) {
-        guard !bytes.isEmpty, !inputAnswersDialog(sessionID) else { return }
-        let backslashBefore = ownerBackslashPending.contains(sessionID)
-        if Self.isSubmit(bytes, backslashBefore: backslashBefore, profile: inputProfile(sessionID)) {
-            clearPromptDraft(sessionID)
-            if let run = runs[sessionID], pendingReturns.contains(run) { ownerReturnsInPause.insert(run) }
-        } else if !Self.isShiftTab(bytes) {
-            promptDrafts.insert(sessionID)
+        var draft = drafts[sessionID] ?? DraftModel()
+        let before = draft
+        let inPause = runs[sessionID].map(pendingReturns.contains) ?? false
+        switch draft.feed(bytes, profile: inputProfile(sessionID), dialog: inputAnswersDialog(sessionID)) {
+        case .ignored:
+            return
+        case .submit:
+            sharedPrompts.remove(sessionID)
+            if inPause, let run = runs[sessionID] { ownerReturnsInPause.insert(run) }
+        case .edit where inPause:
+            draft.exact = false
+        case .edit, .neutral:
+            break
         }
-        if Self.endsAfterBackslash(bytes, backslashBefore: backslashBefore) {
-            ownerBackslashPending.insert(sessionID)
-        } else {
-            ownerBackslashPending.remove(sessionID)
-        }
+        drafts[sessionID] = draft == DraftModel() ? nil : draft
+        if draft != before { onDraftChanged?(sessionID) }
         switch answerHints[sessionID] {
         case nil, .held?, .stillHeld?, .queued?: break
         case .copied?: answerHints[sessionID] = .typed
@@ -1201,7 +1203,6 @@ final class TerminalCenter {
         // waits for a Return there (board #389), and its host has no hint.
         clearPromptDraft(id)
         pasteHints.remove(id)
-        ownerBackslashPending.remove(id)
         sentPromptHints[id] = nil
         states[id] = .running
     }
@@ -1503,7 +1504,6 @@ final class TerminalCenter {
         startedAt[sessionID] = nil
         runs[sessionID] = nil
         clearPromptDraft(sessionID)
-        ownerBackslashPending.remove(sessionID)
         sentPromptHints[sessionID] = nil
         clipboardHints.remove(sessionID)
         pasteHints.remove(sessionID)

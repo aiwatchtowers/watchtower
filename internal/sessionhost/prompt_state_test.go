@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"slices"
 	"testing"
 	"testing/synctest"
@@ -208,4 +209,113 @@ func TestPromptStateWaitingBehindABusyCallEndsAtItsDeadline(t *testing.T) {
 			t.Fatalf("host read %d frames after hello, want only the List", n)
 		}
 	})
+}
+
+// TestDraftFixture pins the draft model to testdata/draft_cases.json, which
+// Swift's DraftModel reads too (DraftModelFixtureTests): one key table on
+// both sides of the delivery.
+func TestDraftFixture(t *testing.T) {
+	b, err := os.ReadFile("testdata/draft_cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		Checked string `json:"claude_code_checked"`
+		Cases   []struct {
+			Name    string   `json:"name"`
+			Profile string   `json:"profile"`
+			Keys    []string `json:"keys"`
+			Dialog  bool     `json:"dialog"`
+			Expect  struct {
+				Count int  `json:"count"`
+				Exact bool `json:"exact"`
+				Holds bool `json:"holds"`
+			} `json:"expect"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(b, &fx); err != nil {
+		t.Fatal(err)
+	}
+	if fx.Checked == "" || len(fx.Cases) == 0 {
+		t.Fatal("no claude_code_checked or no cases")
+	}
+	for _, c := range fx.Cases {
+		prof := ProfileFor(c.Profile)
+		var d draftModel
+		for _, k := range c.Keys {
+			d.feed([]byte(k), prof, c.Dialog)
+		}
+		if d.count != c.Expect.Count || d.inexact == c.Expect.Exact || d.holdsText() != c.Expect.Holds {
+			t.Errorf("%s: {count %d, exact %v, holds %v}, want %+v", c.Name, d.count, !d.inexact, d.holdsText(), c.Expect)
+		}
+	}
+}
+
+// The app's own clear (Task 7's clear_first) empties any draft, an inexact
+// one and a pending `\` included.
+func TestDraftClearedByApp(t *testing.T) {
+	var d draftModel
+	d.feed([]byte("ab\\"), ProfileFor("claude"), false)
+	d.feed([]byte("\x1b[D"), ProfileFor("claude"), false)
+	d.clearedByApp()
+	if d != (draftModel{}) || d.holdsText() {
+		t.Fatalf("after clearedByApp = %+v", d)
+	}
+}
+
+// §6.2: a line held over the owner's draft (hold_if_prompt_text — a phone
+// line, an agent message) goes on its next try once the owner erased the
+// draft with Backspace; it was held, nothing written, while the text was
+// there. The tries are the holders' own (the hub's state lane, the
+// daemon's message deliverer); the host answers each from the draft model.
+func TestPromptState_ReleaseRetriesHeld(t *testing.T) {
+	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	cl := st.hub()
+	held := st.req("x")
+	held.HoldIfPromptText = true
+
+	st.desktop.typeChunks([]byte("a"), []byte("b"))
+	wantOutcome(t, st.deliver(cl, held, noCheck(t)), OutcomeHeld, HeldPromptHasText)
+	st.desktop.typeChunks([]byte{0x7F})
+	wantOutcome(t, st.deliver(cl, held, noCheck(t)), OutcomeHeld, HeldPromptHasText)
+	st.desktop.typeChunks([]byte{0x7F})
+	wantOutcome(t, st.deliver(cl, held, nil), OutcomeSubmitted, "")
+	wantBytes(t, st.written(), cat([]byte("ab\x7f\x7f"), paste("x"), []byte{0x0D}), "the erased draft, then the line")
+
+	// After a cursor key the erase is not trusted: still held.
+	st.desktop.typeChunks([]byte("c"), []byte("\x1b[D"), []byte{0x7F})
+	wantOutcome(t, st.deliver(cl, held, noCheck(t)), OutcomeHeld, HeldPromptHasText)
+}
+
+// Spec "Restart": a new run of the row starts with an empty, exact prompt,
+// whatever the run before held.
+func TestPromptState_NewRunEmpty(t *testing.T) {
+	path, srv := startHost(t, Options{})
+	a := dial(t, path)
+	a.launchAgent(1, "claude", `exec cat`)
+	a.typeChunks([]byte("half"), []byte("\x1b[D"))
+	if !hostSession(t, srv, 1).promptHoldsText() {
+		t.Fatal("no draft in the first run")
+	}
+
+	b := dial(t, path)
+	b.send(Launch, LaunchReq{
+		Row: 1, Run: "r2", Executable: "/bin/sh", Args: []string{"-c", `exec cat`},
+		Cwd: os.TempDir(), Cols: 80, Rows: 24, Agent: "claude",
+	})
+	var info SessionInfo
+	if err := json.Unmarshal(b.expect(Launched), &info); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reap(t, info.Pid) })
+	next := srv.lookup(1, "r2")
+	if next == nil {
+		t.Fatal("no second run")
+	}
+	next.mu.Lock()
+	got := next.prompt
+	next.mu.Unlock()
+	if got != (promptState{}) || got.holdsText() {
+		t.Fatalf("a new run's prompt = %+v", got)
+	}
 }

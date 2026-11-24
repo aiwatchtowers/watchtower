@@ -23,17 +23,24 @@ package struct AgentInputProfile: Sendable, Equatable {
     /// answer is not urgent and the state read after it then also sees a
     /// permission prompt whose async hook landed a little late.
     package let submitSettle: Duration
+    /// Whether the owner's Backspace and Ctrl+U are known to erase typed
+    /// text one character / the whole line, so an erased draft frees the
+    /// prompt (`DraftModel`); otherwise any key leaves the draft inexact
+    /// until a submit. Twin of Go `sessionhost.Profile.ExactDraft`.
+    package let exactDraft: Bool
 
     /// Claude Code: CR submits; the pauses of boards #379/#380.
     package static let claude = Self(
-        submit: [0x0D], newline: nil, pasteSettle: .milliseconds(150), submitSettle: .milliseconds(500)
+        submit: [0x0D], newline: nil, pasteSettle: .milliseconds(150), submitSettle: .milliseconds(500),
+        exactDraft: true
     )
 
     /// Codex: CR submits a bracketed paste, multi-line too, as one prompt;
     /// Ctrl+J (LF) inserts a line break (Task 0 capture, composer keys). The
     /// pauses are Claude Code's.
     package static let codex = Self(
-        submit: [0x0D], newline: [0x0A], pasteSettle: .milliseconds(150), submitSettle: .milliseconds(500)
+        submit: [0x0D], newline: [0x0A], pasteSettle: .milliseconds(150), submitSettle: .milliseconds(500),
+        exactDraft: false
     )
 
     /// The profile of `kind`'s session adapter.

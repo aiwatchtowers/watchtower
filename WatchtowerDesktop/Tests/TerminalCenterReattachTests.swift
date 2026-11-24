@@ -393,6 +393,29 @@ final class TerminalCenterReattachTests: XCTestCase {
         hosted.detachFromHost()
     }
 
+    /// Spec 2026-11-24-workchat-polish "Restart": adopting a run on
+    /// re-attach resets the draft mirror to an empty, exact prompt — the
+    /// host's run starts its own — whatever the earlier process left.
+    func testReattachResetsDraft() async throws {
+        let row = try await sessionRow()
+        center.start(row, fresh: false)
+        let local = try XCTUnwrap(center.process(for: row.id) as? FakeTerminalSession)
+        local.onOwnerInput?(Array("half".utf8))
+        local.onOwnerInput?([0x1B, 0x5B, 0x44])
+        XCTAssertTrue(center.promptHoldsText(row.id))
+        local.exit(0)
+        XCTAssertEqual(center.drafts[row.id]?.exact, false, "the exit alone leaves the mirror as it was")
+        control.listed = [SessionHostSessionInfo(row: row.id, run: "run-d", pid: 7400, startedAtMs: 1, exited: false, code: nil)]
+
+        await vm.reattachHostedSessions()
+
+        XCTAssertNil(center.drafts[row.id])
+        XCTAssertFalse(center.promptHoldsText(row.id))
+        let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
+        await hosted.connecting?.value
+        hosted.detachFromHost()
+    }
+
     /// An adopted run replacing an earlier process gets a new view: the
     /// session's keyboard request of the earlier view is dropped, so the new
     /// one attaches plainly (#1150).

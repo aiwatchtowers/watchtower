@@ -12,7 +12,8 @@ import Foundation
 /// pause, Return) another one for it waits, so two lines never share a
 /// prompt. Held lines live in memory only, and go on the next read of the
 /// session states that succeeds (`deliverHeld`, wired to
-/// `SessionAgentStateCenter.onChange`/`onRead`) — never on a timer.
+/// `SessionAgentStateCenter.onChange`/`onRead`) or once the owner erased the
+/// session's draft (`draftChanged`) — never on a timer.
 @MainActor
 final class SessionLineDelivery {
     /// Where a line went (PROJ-12, board #379).
@@ -127,6 +128,17 @@ final class SessionLineDelivery {
 
     init(terminalCenter: TerminalCenter?) {
         self.terminalCenter = terminalCenter
+        terminalCenter?.onDraftChanged = { [weak self] in self?.draftChanged($0) }
+    }
+
+    /// The owner's draft in a session changed (`TerminalCenter.onDraftChanged`):
+    /// once its prompt holds no text, its held lines are tried again now
+    /// (spec 2026-11-24-workchat-polish §6.2) — each through its own check
+    /// (`SessionControl.lineCheck`/`workchatLineCheck` in its gate) and the
+    /// host's hold, as on a state read.
+    func draftChanged(_ sessionID: Int64) {
+        guard queues[sessionID] != nil, terminalCenter?.promptHoldsText(sessionID) == false else { return }
+        deliverHeldLater()
     }
 
     /// Sends `line` to the session now, or holds it (`.held`/`.queued`):

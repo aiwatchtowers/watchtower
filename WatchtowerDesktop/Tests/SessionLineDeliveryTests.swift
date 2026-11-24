@@ -304,6 +304,40 @@ final class SessionLineDeliveryTests: XCTestCase {
         XCTAssertTrue(vm.lineDelivery.heldKeys(sessionID: s.id).isEmpty)
     }
 
+    /// Spec 2026-11-24-workchat-polish §6.2: a line held because the prompt
+    /// holds the owner's text (the phone's line, over its gate's
+    /// `promptHasText`) is checked again on every change of the draft — not
+    /// on the next state read — and goes, submitted, once the owner erased
+    /// the draft with Backspace; while any of it is left nothing is typed.
+    func testHeldAnswerGoesWhenDraftErased() async throws {
+        let (_, s, _) = try await seed()
+        let vm = makeVM()
+        let process = try XCTUnwrap(processes.first)
+        process.host.tracksDrafts = true
+        let owner = try XCTUnwrap(process.onOwnerInput)
+        owner(Array("a".utf8))
+        owner(Array("b".utf8))
+        let gate: SessionLineDelivery.Gate = { [center] id in center?.promptHoldsText(id) == true ? .hold : .go }
+        var events: [SessionLineDelivery.HeldEvent] = []
+
+        let delivery = await vm.lineDelivery.deliverLine(Self.otherLine, key: .input("action-9"), sessionID: s.id,
+                                                         gate: gate) { events.append($0) }
+
+        XCTAssertEqual(delivery, .held)
+        owner([0x7F])
+        await vm.lineDelivery.settled()
+        XCTAssertTrue(typed.isEmpty, "one character is still in the prompt")
+        XCTAssertTrue(events.isEmpty)
+
+        owner([0x7F])
+        await vm.lineDelivery.settled()
+
+        XCTAssertEqual(events, [.tried(.submitted)])
+        XCTAssertTrue(typedText.first?.contains(Self.otherLine) == true)
+        XCTAssertEqual(typed.last, [0x0D])
+        XCTAssertTrue(vm.lineDelivery.heldKeys(sessionID: s.id).isEmpty)
+    }
+
     /// A line held for a session that started a new run meanwhile goes
     /// nowhere: that run's brief has the context, not the old prompt.
     func testALineHeldForASessionThatStartedANewRunGoesNowhere() async throws {

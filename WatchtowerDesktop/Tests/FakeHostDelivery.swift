@@ -12,8 +12,9 @@ import WatchtowerCore
 /// paste, the pause, the re-check, then the Return only when the line asked
 /// for one, the re-check is fresh, allows it and shows no dialog, and the
 /// prompt held nothing before or during the pause. The owner's keys
-/// (`ownerInput`) leave a draft or empty the prompt as the host's do; their
-/// Return during the pause sent the line. A relaunch (`newRun`) during the
+/// (`ownerInput`) feed the host's draft model (`DraftModel`, the shared key
+/// table of `draft_cases.json`): typed text holds a line, an erased one no
+/// longer does; their Return during the pause sent the line. A relaunch (`newRun`) during the
 /// pause is no session.
 @MainActor
 final class FakeHostDelivery {
@@ -35,8 +36,10 @@ final class FakeHostDelivery {
     var forced: DeliverOutcome?
     /// A line of this fake sits in the prompt without its Return.
     var leftTyped = false
-    /// The owner typed since their last submitting Return.
-    private(set) var draft = false
+    /// The owner's draft, by the host's draft model.
+    private(set) var draft = DraftModel()
+    /// The session's agent profile (the draft model's key table).
+    var profile: AgentInputProfile = .claude
     private var run = 0
     /// Lines in their pause; whether another line or the owner's text
     /// reached the prompt meanwhile (the host's `text_during_pause`); whether
@@ -49,27 +52,34 @@ final class FakeHostDelivery {
     func newRun() {
         run += 1
         leftTyped = false
-        draft = false
+        draft = DraftModel()
     }
 
     /// The owner's keys, as the host reads them (`prompt.go`): a submitting
     /// Return empties the prompt (and, in a pause, sent the line); keys
-    /// into a dialog (`dialog`) change nothing. Other keys leave a draft
-    /// only with `tracksDrafts`: a test's fake has no PromptHint, so without
-    /// it a key into a permission prompt would read as a draft.
+    /// into a dialog (`dialog`) change nothing. Other keys feed the draft
+    /// model only with `tracksDrafts`: a test's fake has no PromptHint, so
+    /// without it a key into a permission prompt would read as a draft.
     func ownerInput(_ bytes: [UInt8]) {
         guard !bytes.isEmpty, !dialog() else { return }
-        if TerminalCenter.isSubmit(bytes, backslashBefore: false) {
+        let key: DraftModel.Key = if tracksDrafts {
+            draft.feed(bytes, profile: profile, dialog: false)
+        } else {
+            TerminalCenter.isSubmit(bytes, backslashBefore: false, profile: profile) ? .submit : .ignored
+        }
+        switch key {
+        case .submit:
             leftTyped = false
-            draft = false
+            draft = DraftModel()
             if pausing > 0 { ownerReturnedInPause = true }
-        } else if tracksDrafts {
-            draft = true
+        case .edit:
             if pausing > 0 { textDuringPause = true }
+        case .ignored, .neutral:
+            break
         }
     }
 
-    /// Whether the owner's non-submitting keys leave a draft.
+    /// Whether the owner's non-submitting keys feed the draft model.
     var tracksDrafts = false
 
     func deliver(_ line: SessionDeliverLine, check: @escaping @MainActor () async -> DeliverCheckReply) async -> DeliverOutcome {
@@ -77,7 +87,7 @@ final class FakeHostDelivery {
         if let forced { return forced }
         guard bracketedPaste() else { return .noPasteMode }
         // A line in its pause holds the prompt too (the host's pending Return).
-        let besideText = leftTyped || draft || pausing > 0
+        let besideText = leftTyped || draft.holdsText || pausing > 0
         if line.holdIfPromptText, besideText { return .held("prompt_has_text") }
         let started = run
         if case let .paste(bytes) = WorkbenchCommentPrompt.terminalPayload(

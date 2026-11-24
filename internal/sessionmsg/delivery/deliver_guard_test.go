@@ -118,3 +118,32 @@ func TestPreClaimFailuresNeverTouchAClaimedRow(t *testing.T) {
 	assert.Equal(t, "delivering", w.row(t, id).state)
 	assert.Empty(t, w.toSession(t, from))
 }
+
+// PROJ-23 under the draft model (spec 2026-11-24-workchat-polish §6, ask
+// #1757): a message is held, nothing pasted, on every try while any of the
+// owner's draft is left (the host's prompt_has_text), always asking the host
+// to hold over text; once the owner erased it the next try delivers it, once.
+// The host's side — an erased draft answers no hold — is
+// sessionhost.TestPromptState_ReleaseRetriesHeld.
+func TestProj23_ErasedDraftReleases(t *testing.T) {
+	w := newWorld(t)
+	from, to := w.session(t, "Planner", "waiting", 0), w.session(t, "Worker", "waiting", 0)
+	w.port.setRun(to, runStart, true)
+	overDraft := handlers.DeliverResult{Outcome: handlers.DeliverHeld, Reason: sessionhost.HeldPromptHasText}
+	w.port.outcomes = []handlers.DeliverResult{overDraft, overDraft} // "ab", then one Backspace
+	id := w.queue(t, sessionmsg.KindMessage, from, to, "hello")
+
+	w.del.Tick(t.Context())
+	w.del.Tick(t.Context())
+	assert.Equal(t, "queued", w.row(t, id).state, "held while text is left")
+	require.Len(t, w.port.deliveries(), 2)
+
+	w.del.Tick(t.Context()) // the second Backspace erased it
+	assert.Equal(t, "delivered", w.row(t, id).state)
+	w.del.Tick(t.Context())
+	got := w.port.deliveries()
+	require.Len(t, got, 3, "delivered once")
+	for _, r := range got {
+		assert.True(t, r.HoldIfPromptText, "every try asks the host to hold over text")
+	}
+}

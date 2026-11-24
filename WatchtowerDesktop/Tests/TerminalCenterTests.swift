@@ -1154,7 +1154,7 @@ final class TerminalCenterTests: XCTestCase {
             XCTAssertEqual(delivery, .submitted, name)
             XCTAssertEqual(Array(sessions[0].inputs.dropFirst(before)), [bracketedPasteBytes("x")], "\(name): no Return of ours")
             XCTAssertFalse(center.pasteHints.contains(s.id), name)
-            XCTAssertFalse(center.promptDrafts.contains(s.id), name)
+            XCTAssertFalse(center.drafts[s.id]?.holdsText == true, name)
         }
 
         onSleep = { [weak self] in
@@ -1165,7 +1165,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(thenTyped, .submitted)
         XCTAssertFalse(sessions[0].inputs.contains([0x0D]))
         XCTAssertFalse(center.pasteHints.contains(s.id), "the line went; the draft is the owner's own")
-        XCTAssertTrue(center.promptDrafts.contains(s.id), "a later Return of ours would submit it")
+        XCTAssertTrue(center.drafts[s.id]?.holdsText == true, "a later Return of ours would submit it")
 
         sessions[0].onOwnerInput?([0x0D])
         center.inputAnswersDialog = { _ in true }
@@ -1211,7 +1211,7 @@ final class TerminalCenterTests: XCTestCase {
 
             XCTAssertEqual(delivery, .pasted, name)
             XCTAssertEqual(session.inputs, [bracketedPasteBytes("x")], "\(name): no Return of ours")
-            XCTAssertTrue(center.promptDrafts.contains(s.id), "\(name): the next line must not submit it")
+            XCTAssertTrue(center.drafts[s.id]?.holdsText == true, "\(name): the next line must not submit it")
             XCTAssertTrue(center.pasteHints.contains(s.id), "\(name): the bar asks for Return")
         }
     }
@@ -1236,7 +1236,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(delivery, .submitted)
         XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x")], "no Return of ours")
         XCTAssertFalse(center.pasteHints.contains(s.id))
-        XCTAssertFalse(center.promptDrafts.contains(s.id))
+        XCTAssertFalse(center.drafts[s.id]?.holdsText == true)
     }
 
     /// PROJ-12: a line the app left without its Return is still in the
@@ -1661,13 +1661,13 @@ final class TerminalCenterTests: XCTestCase {
         center.start(s, fresh: true)
         _ = await center.deliver("x", sessionID: s.id) { false }
         XCTAssertTrue(center.pasteHints.contains(s.id))
-        XCTAssertTrue(center.promptDrafts.contains(s.id))
+        XCTAssertTrue(center.drafts[s.id]?.holdsText == true)
 
         sessions[0].exit(0)
         center.start(s, fresh: false)
 
         XCTAssertFalse(center.pasteHints.contains(s.id), "a new run starts with no paste bar")
-        XCTAssertFalse(center.promptDrafts.contains(s.id))
+        XCTAssertFalse(center.drafts[s.id]?.holdsText == true)
         let next = await center.deliver("y", sessionID: s.id) { true }
         XCTAssertEqual(next, .submitted)
     }

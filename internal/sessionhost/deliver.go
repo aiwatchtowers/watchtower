@@ -284,13 +284,13 @@ func (s *Server) afterPause(sess *session, req DeliverReq, reply DeliverCheckRep
 		return DeliveredMsg{Outcome: OutcomeSubmitted}
 	case !reply.CanSubmit:
 		reason = TypedCannotSubmit
-	case sess.prompt.draft:
+	case sess.prompt.draft.holdsText():
 		reason = TypedTextDuringPause
 	case dialog:
 		reason = TypedDialog
 	}
 	if reason != "" {
-		besideText := sess.prompt.draft
+		besideText := sess.prompt.draft.holdsText()
 		sess.prompt.leaveTyped()
 		sess.mu.Unlock()
 		sess.event(EventLeftTyped, besideText)

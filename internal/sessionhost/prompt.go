@@ -9,9 +9,11 @@ package sessionhost
 // (hold_if_prompt_text) is held while holdsText. A session is one run, so a
 // relaunch starts with an empty prompt. Guarded by session.mu.
 type promptState struct {
-	// draft: the prompt holds text not submitted — the owner typed since
-	// their last submitting Return, or a line was left without its Return.
-	draft bool
+	// draft is the owner's text in the prompt, by the draft model's key
+	// table (draft.go): what they typed since their last submitting
+	// Return, or a line left without its Return (inexact). It also keeps
+	// the pending `\` a Return after which is a line break.
+	draft draftModel
 	// pendingReturn: a delivered line is in its pause before its Return.
 	pendingReturn bool
 	// leftTyped: a delivered line was left without its Return and the
@@ -20,39 +22,31 @@ type promptState struct {
 	// dialog: the last PromptHint said a permission dialog is up; input
 	// then answers the dialog and changes nothing here.
 	dialog bool
-	// backslash: the owner's last printable prompt input was `\`, with only
-	// escape sequences or paste brackets since — a Return there is a line
-	// break, not a submit.
-	backslash bool
 	// ownerReturnInPause: the owner's own submitting Return came during
 	// pendingReturn's pause; it sent the line, so no Return of ours follows.
 	ownerReturnInPause bool
 }
 
 // ownerInput feeds one chunk of the owner's typing (an attached client's
-// Input; InputTo never comes here) by
-// TerminalCenter.ownerInput's rule: input while a permission dialog is up
-// changes nothing; a submitting Return (IsSubmit) empties the prompt;
-// Shift+Tab (IsShiftTab) leaves it as it was; any other input — Esc and
-// Ctrl+C too — leaves a draft.
+// Input; InputTo never comes here) into the draft model (draftModel.feed,
+// TerminalCenter.ownerInput's twin): input while a permission dialog is up
+// changes nothing; a submitting Return (IsSubmit) empties the prompt and,
+// during a line's pause, sent that line; Shift+Tab (IsShiftTab) leaves it as
+// it was. Any other key during a line's pause reaches the pasted line, so the
+// draft turns inexact: the line is left typed, never submitted with it.
 func (p *promptState) ownerInput(b []byte, prof Profile) {
-	if len(b) == 0 || p.dialog {
-		return
-	}
-	switch {
-	case IsSubmit(b, p.backslash, prof):
-		p.draft = false
+	switch p.draft.feed(b, prof, p.dialog) {
+	case keySubmit:
 		p.leftTyped = false
 		if p.pendingReturn {
 			p.ownerReturnInPause = true
 		}
-	case IsShiftTab(b):
-		// A mode switch: the prompt holds what it held (and `\` stays
-		// pending, as EndsAfterBackslash skips an escape sequence).
-	default:
-		p.draft = true
+	case keyEdit:
+		if p.pendingReturn {
+			p.draft.inexact = true
+		}
+	case keyIgnored, keyNeutral:
 	}
-	p.backslash = EndsAfterBackslash(b, p.backslash)
 }
 
 // holdsText reports whether the prompt holds text not submitted right now:
@@ -60,7 +54,7 @@ func (p *promptState) ownerInput(b []byte, prof Profile) {
 // before its Return — what a delivery only pastes beside and a phone line is
 // held over (held(prompt_has_text)).
 func (p *promptState) holdsText() bool {
-	return p.draft || p.pendingReturn || p.leftTyped
+	return p.draft.holdsText() || p.pendingReturn || p.leftTyped
 }
 
 // beginPause marks a pasted line waiting out its pause before its Return.
@@ -81,6 +75,6 @@ func (p *promptState) endPause() (ownerReturned bool) {
 // leaveTyped marks a delivered line left in the prompt without its Return:
 // the next line must not submit it with its own.
 func (p *promptState) leaveTyped() {
-	p.draft = true
+	p.draft.inexact = true
 	p.leftTyped = true
 }

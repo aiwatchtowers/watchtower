@@ -418,14 +418,14 @@ func TestProj12_ShiftTabKeepsTheDraftState(t *testing.T) {
 		p = promptState{}
 		p.ownerInput([]byte("half"), prof)
 		p.ownerInput(shiftTab, prof)
-		if !p.draft {
+		if !p.draft.holdsText() {
 			t.Errorf("%s: Shift+Tab cleared the owner's draft", agent)
 		}
 
 		p = promptState{}
 		p.leaveTyped()
 		p.ownerInput(shiftTab, prof)
-		if !p.draft || !p.leftTyped {
+		if !p.draft.holdsText() || !p.leftTyped {
 			t.Errorf("%s: Shift+Tab cleared a line left typed", agent)
 		}
 
@@ -434,11 +434,11 @@ func TestProj12_ShiftTabKeepsTheDraftState(t *testing.T) {
 		p = promptState{}
 		p.ownerInput([]byte("a\\"), prof)
 		p.ownerInput(shiftTab, prof)
-		if !p.backslash {
+		if !p.draft.backslash {
 			t.Errorf("%s: Shift+Tab after `\\` dropped the pending backslash", agent)
 		}
 		p.ownerInput([]byte{0x0D}, prof)
-		if !p.draft {
+		if !p.draft.holdsText() {
 			t.Errorf("%s: `\\`, Shift+Tab, Return read as a submit", agent)
 		}
 
@@ -447,7 +447,7 @@ func TestProj12_ShiftTabKeepsTheDraftState(t *testing.T) {
 		p = promptState{}
 		p.beginPause()
 		p.ownerInput(shiftTab, prof)
-		if p.endPause() || p.draft {
+		if p.endPause() || p.draft.holdsText() {
 			t.Errorf("%s: Shift+Tab during the pause changed the line's Return", agent)
 		}
 	}
@@ -478,14 +478,14 @@ func TestProj12_EscAndCtrlCStayDrafts(t *testing.T) {
 			}
 			var p promptState
 			p.ownerInput(d.b, prof)
-			if !p.draft {
+			if !p.draft.holdsText() {
 				t.Errorf("%s: %s left no draft", agent, d.name)
 			}
 
 			p = promptState{}
 			p.beginPause()
 			p.ownerInput(d.b, prof)
-			if p.endPause() || !p.draft {
+			if p.endPause() || !p.draft.holdsText() {
 				t.Errorf("%s: %s during the pause left no draft", agent, d.name)
 			}
 		}
