@@ -205,4 +205,110 @@ final class CloudKitTransportPollTests: XCTestCase {
         try store.wipe()
         XCTAssertNil(try store.pollToken(zone: .data))
     }
+
+    // MARK: - #2189: the link flow knows whether a pull read the data zone
+
+    func testAPullThatPollsTheDataZoneToItsEndIsCounted() async throws {
+        let engine = FakeSyncEngine()
+        engine.enqueueZonePage(page(token: "d1", moreComing: true), zoneName: HubZones.testDataZoneName)
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+
+        try await transport.pull()
+
+        let completed = await transport.dataZonePollsCompleted
+        XCTAssertEqual(completed, 1, "once, at the last page")
+    }
+
+    func testAThrottledPullReturnsWithoutCounting() async throws {
+        let engine = FakeSyncEngine(fetchErrors: [CKError(.zoneBusy)])
+        // The throttle holds for the test: its retry never fires.
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine) { _ in
+            try? await Task.sleep(for: .seconds(3_600))
+        }
+
+        try await transport.pull()
+        try await transport.pull()
+
+        let completed = await transport.dataZonePollsCompleted
+        XCTAssertEqual(completed, 0, "the throttle skipped the poll, and then the pull")
+    }
+
+    func testADataZonePollCutShortIsNotCounted() async throws {
+        let engine = FakeSyncEngine()
+        engine.enqueueZonePage(.failure(CKError(.zoneBusy)), zoneName: HubZones.testDataZoneName)
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine) { _ in
+            try? await Task.sleep(for: .seconds(3_600))
+        }
+
+        try await transport.pull()
+
+        let completed = await transport.dataZonePollsCompleted
+        XCTAssertEqual(completed, 0)
+    }
+
+    /// A throttle a direct call (#2189) installs while the engine's fetch runs outlives that fetch's success.
+    func testAnEngineFetchKeepsAThrottleSetDuringIt() async throws {
+        let engine = FakeSyncEngine()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine) { _ in
+            try? await Task.sleep(for: .seconds(3_600))
+        }
+        let keybox = CKRecord.ID(recordName: "keybox-DEVICE", zoneID: sharedZones.zoneID(for: .data))
+        engine.onNextFetch {
+            await transport.applyDirectCallFailure(
+                CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0]), recordID: keybox)
+        }
+
+        try await transport.pull()
+
+        let throttled = await transport.throttledUntil
+        XCTAssertNotNil(throttled, "the engine's success did not clear it")
+    }
+
+    /// The data zone polled to its end, then the relay zone's `zoneNotFound` unlinked the phone: the pull returns
+    /// normally with the poll counted, so the link flow also checks `isUnlinked` (`HubSession.refreshForLink`).
+    func testARelayZoneGoneAfterTheDataZoneCountsTheDataPollAndUnlinks() async throws {
+        let engine = FakeSyncEngine()
+        engine.enqueueZonePage(.failure(CKError(.zoneNotFound)), zoneName: HubZones.testRelayZoneName)
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+
+        try await transport.pull()
+
+        let completed = await transport.dataZonePollsCompleted
+        let unlinked = await transport.isUnlinked
+        XCTAssertEqual(completed, 1)
+        XCTAssertTrue(unlinked)
+    }
+
+    /// The refetch after an expired token keeps a throttle another request set while it ran.
+    func testARefetchKeepsAThrottleSetDuringIt() async throws {
+        let engine = FakeSyncEngine(fetchErrors: [CKError(.changeTokenExpired)])
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine) { _ in
+            try? await Task.sleep(for: .seconds(3_600))
+        }
+        engine.onNextFetch {
+            // The first fetch throws the expired token; the refetch is the next one.
+            engine.onNextFetch { _ = await transport.applyThrottle(from: [CKError(.zoneBusy)]) }
+        }
+
+        try await transport.pull()
+
+        XCTAssertEqual(engine.fetchCount, 2, "the fetch and its refetch")
+        let throttled = await transport.throttledUntil
+        XCTAssertNotNil(throttled, "the refetch's success did not clear it")
+    }
+
+    func testThePullCountsTheRelayZonePollApart() async throws {
+        let engine = FakeSyncEngine()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+        try await transport.pull()
+        let relay = await transport.relayZonePollsCompleted
+        XCTAssertEqual(relay, 1)
+
+        engine.enqueueZonePage(.failure(CKError(.serverRejectedRequest)), zoneName: HubZones.testRelayZoneName)
+        _ = try? await transport.pull()
+        let data = await transport.dataZonePollsCompleted
+        let relayAfter = await transport.relayZonePollsCompleted
+        XCTAssertEqual(data, 2, "the data zone read again")
+        XCTAssertEqual(relayAfter, 1, "the mailbox was not")
+    }
 }

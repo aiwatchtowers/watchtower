@@ -139,14 +139,40 @@ actor SaveLogTransport: CloudSyncTransport {
         }
     }
 
+    /// When true, the engine's queue (`save`) holds what it is given until `releaseQueue()`, as `CKSyncEngine` may
+    /// hold a send behind a fresh replica's launch pull: the scripted Mac sees none of it meanwhile. A direct save
+    /// (`saveDirectly`) is not held.
+    private var holdsQueue = false
+    private(set) var queued: [CloudRecord] = []
+
+    func setHoldsQueue(_ holds: Bool) {
+        holdsQueue = holds
+    }
+
+    /// The launch pull ended: the held saves go out.
+    func releaseQueue() {
+        holdsQueue = false
+        saved += queued
+        queued = []
+    }
+
     func save(_ records: [CloudRecord]) async throws {
         if let saveError { throw saveError }
-        if let sealer {
-            var wire: [CloudRecord] = []
-            for record in records { wire.append(try await sealer.seal(record)) }
-            sealed += wire
-        }
+        try await seal(records)
+        if holdsQueue { queued += records } else { saved += records }
+    }
+
+    /// The link flow's direct save (`LinkHost.sendDirectly`): never held.
+    func saveDirectly(_ records: [CloudRecord]) async throws {
+        try await seal(records)
         saved += records
+    }
+
+    private func seal(_ records: [CloudRecord]) async throws {
+        guard let sealer else { return }
+        var wire: [CloudRecord] = []
+        for record in records { wire.append(try await sealer.seal(record)) }
+        sealed += wire
     }
 
     func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
@@ -280,6 +306,8 @@ final class FakeLinkHost: LinkHost {
             try Task.checkCancellation()
         }
         if let prepareError { throw prepareError }
+        if case .cloudKit = route { cloudKitHubs.insert(hubID) } else { cloudKitHubs.remove(hubID) }
+        fetchedHubs.remove(hubID)
         let transport = transport(for: route)
         if let keys {
             let provider = try PhoneKeyProvider(store: keys, hubID: hubID, seq: SeqAllocator(load: { 1 }, store: { _ in }))
@@ -288,7 +316,7 @@ final class FakeLinkHost: LinkHost {
         return transport
     }
 
-    /// When true, `fetchKeybox` waits until it is set false again or its task
+    /// When true, `fetchKeybox` and `serverKeybox` wait until it is set false again or their task
     /// is cancelled (a link flow held mid-check).
     var parksFetchGrant = false {
         didSet { unpark() }
@@ -296,15 +324,130 @@ final class FakeLinkHost: LinkHost {
     /// The hub of each `fetchKeybox`, in call order.
     private(set) var grantHubIDs: [String] = []
 
-    func fetchKeybox(hubID: String, deviceID: String) async -> Keybox? {
+    /// One keybox read of the link flow: a zone fetch (`fetchKeybox`, the full download on a fresh replica) or a
+    /// server read by record name (`serverKeybox`), with how many device records had been written when it began.
+    struct ReadCall: Equatable {
+        enum Kind: Equatable { case fetch, server }
+        let kind: Kind
+        let writesBefore: Int
+    }
+
+    /// Every keybox read, in call order.
+    private(set) var keyboxReads: [ReadCall] = []
+    /// The hubs whose session reads keyboxes off the server and saves directly: the ones last prepared on CloudKit
+    /// (`prepare`), not the relay's pairing ones (`preparePairing`), as `HubSession` on each transport.
+    private var cloudKitHubs: Set<String> = []
+    /// The hubs a fetch read since their last `prepare`: only then does `hubRunsOnRelay` see the zone's marker.
+    private var fetchedHubs: Set<String> = []
+    /// When true, every server read fails (`.unavailable`).
+    var serverReadFails = false
+    /// The next server reads that fail (`.unavailable`), one per read.
+    var failingServerReads = 0
+    /// When true, every fetch fails (`.unavailable`: `HubSession.refresh` false).
+    var refreshFails = false
+    /// When true, every direct save fails: the flow queues the hello on the engine instead.
+    var directSaveFails = false
+    /// The replica's view when it lags the server's (`mac`); nil: the same as the server's.
+    var replicaMac: (@MainActor (_ writes: [DevicePayload]) -> DeviceGrant?)?
+    /// When true, a keybox read begun after a device record was written waits as `parksFetchGrant` does (the app
+    /// killed between the hello and the first answer).
+    var parksReadsAfterWrite = false {
+        didSet { unpark() }
+    }
+
+    /// A keybox on both sources that this phone cannot open (sealed to a key it no longer has): its fingerprint for
+    /// the device records written so far; nil = none such, `mac` decides.
+    var macOpaque: (@MainActor (_ writes: [DevicePayload]) -> String?)?
+
+    /// Every `completionKeybox` (a fetch that also read the mailbox), by hub, in call order.
+    private(set) var completionHubIDs: [String] = []
+
+    /// When true, every `completionKeybox` fails (its pull did not complete).
+    var completionFails = false
+    /// When true, every fetch after one that returned a linked keybox fails (a throttle holding a second fetch).
+    var failsFetchesAfterLinked = false
+    private var returnedLinked = false
+
+    /// When true, a completion fetch reads the data zone but not the mailbox (a `zoneBusy` on the relay zone).
+    var mailboxUncovered = false
+    /// When true, every fetch begun after a device record was written fails (the relay slot's pull failing after the
+    /// answer was already applied to the replica).
+    var failsFetchesAfterWrite = false
+
+    func completionKeybox(hubID: String, deviceID: String) async -> (read: KeyboxRead, mailboxCovered: Bool) {
+        completionHubIDs.append(hubID)
+        if completionFails { return (.unavailable(reason: "completion fetch failed"), false) }
+        return (await fetchKeybox(hubID: hubID, deviceID: deviceID), !mailboxUncovered)
+    }
+
+    func fetchKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
         grantHubIDs.append(hubID)
-        await park { self.parksFetchGrant }
-        return await storedKeybox(hubID: hubID, deviceID: deviceID)
+        let writes = (try? await deviceWrites()) ?? []
+        keyboxReads.append(ReadCall(kind: .fetch, writesBefore: writes.count))
+        await park { self.parksFetchGrant || (self.parksReadsAfterWrite && !writes.isEmpty) }
+        if refreshFails || Task.isCancelled || (failsFetchesAfterLinked && returnedLinked)
+            || (failsFetchesAfterWrite && !writes.isEmpty) {
+            return .unavailable(reason: "fetch failed")
+        }
+        fetchedHubs.insert(hubID)
+        if let stored = await storedKeybox(hubID: hubID, deviceID: deviceID), stored.grant.linked { returnedLinked = true }
+        if let fingerprint = macOpaque?(writes) { return .opaque(fingerprint: fingerprint) }
+        return .read(await storedKeybox(hubID: hubID, deviceID: deviceID))
+    }
+
+    func serverKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
+        guard cloudKitHubs.contains(hubID) else { return .unavailable(reason: "no direct read on this route") }
+        let writes = (try? await deviceWrites()) ?? []
+        keyboxReads.append(ReadCall(kind: .server, writesBefore: writes.count))
+        await park { self.parksFetchGrant || (self.parksReadsAfterWrite && !writes.isEmpty) }
+        if serverReadFails || Task.isCancelled { return .unavailable(reason: "read failed") }
+        if failingServerReads > 0 {
+            failingServerReads -= 1
+            return .unavailable(reason: "read failed")
+        }
+        if let fingerprint = macOpaque?(writes) { return .opaque(fingerprint: fingerprint) }
+        return .read(keybox(mac(writes)))
+    }
+
+    /// Every direct save, in call order (the hub of each).
+    private(set) var directSaves: [String] = []
+
+    /// Every direct save begun, in call order (a parked or failed one included).
+    private(set) var directSaveAttempts = 0
+    /// When true, a direct save waits until it is set false again or its task is cancelled (the app killed while
+    /// the request is in flight: nothing lands).
+    var parksDirectSave = false {
+        didSet { unpark() }
+    }
+    /// When true, a direct save lands on the server and then waits as `parksDirectSave` does (the app killed after
+    /// CloudKit accepted the hello, before the flow marked it sent).
+    var parksAfterDirectSave = false {
+        didSet { unpark() }
+    }
+
+    func sendDirectly(_ record: CloudRecord, hubID: String) async -> Bool {
+        guard cloudKitHubs.contains(hubID), let index = preparedHubIDs.lastIndex(of: hubID) else { return false }
+        directSaveAttempts += 1
+        await park { self.parksDirectSave }
+        guard !directSaveFails, !Task.isCancelled else { return false }
+        directSaves.append(hubID)
+        do {
+            try await transport(for: prepared[index]).saveDirectly([record])
+        } catch {
+            return false
+        }
+        await park { self.parksAfterDirectSave }
+        return !Task.isCancelled
     }
 
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox? {
-        guard let grant = mac((try? await deviceWrites()) ?? []) else { return nil }
-        return Keybox(grant: grant, keys: grant.linked && grant.revoked != true ? keyboxKeys : nil)
+        let writes = (try? await deviceWrites()) ?? []
+        if macOpaque?(writes) != nil { return nil }
+        return keybox((replicaMac ?? mac)(writes))
+    }
+
+    private func keybox(_ grant: DeviceGrant?) -> Keybox? {
+        grant.map { Keybox(grant: $0, keys: $0.linked && $0.revoked != true ? keyboxKeys : nil) }
     }
 
     /// How many times the flow reported merged epoch keys.
@@ -471,6 +614,8 @@ final class FakeLinkHost: LinkHost {
     func preparePairing(macDeviceID: String, slot: String, hubID: String) async throws -> any CloudSyncTransport {
         log.append("pair \(slot)")
         pairings.append((macDeviceID, slot, hubID))
+        cloudKitHubs.remove(hubID)
+        fetchedHubs.remove(hubID)
         if let pairingError { throw pairingError }
         let transport = pairZones[slot] ?? SaveLogTransport()
         pairZones[slot] = transport
@@ -527,7 +672,7 @@ final class FakeLinkHost: LinkHost {
     var onRelay: Set<String> = []
 
     func hubRunsOnRelay(_ hubID: String) -> Bool {
-        onRelay.contains(hubID)
+        onRelay.contains(hubID) && fetchedHubs.contains(hubID)
     }
 
     /// Sets a row's last heartbeat (a link that came alive).

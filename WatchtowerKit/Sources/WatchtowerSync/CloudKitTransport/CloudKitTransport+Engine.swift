@@ -179,6 +179,7 @@ extension CloudKitTransport {
     /// like any throttle.
     private func refetchAfterExpiredToken(engine: any SyncEngineDriving) async throws {
         guard !refetchInFlight else { return }
+        let throttleAtStart = throttledUntil
         refetchInFlight = true
         defer { refetchInFlight = false }
         if !managesZones {
@@ -199,7 +200,7 @@ extension CloudKitTransport {
         refetchFetchInFlight = true
         defer { refetchFetchInFlight = false }
         try await engine.fetchChanges(scope: zones.allZoneIDs)
-        clearThrottle()
+        clearThrottle(ifStill: throttleAtStart)
     }
 
     /// nil (no zone context) counts as ours: the error may be about any zone.
@@ -288,6 +289,7 @@ extension CloudKitTransport {
                 )
             }
             batchSerial += 1
+            throttleAtLastBatch = throttledUntil
             lastBuiltBatch = (
                 id: batchSerial,
                 size: pending.saves.count + pending.deletes.count,
@@ -450,7 +452,7 @@ extension CloudKitTransport {
         applySendFailures(failures)
         let throttled = applyThrottle(from: failures)
         if !saved.isEmpty || !deleted.isEmpty, !throttled {
-            clearThrottle()
+            clearThrottle(ifStill: throttleAtLastBatch)
         }
 
         // re-nudge: pendingBatch is capped at 200; without this a large offline

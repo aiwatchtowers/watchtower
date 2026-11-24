@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import WatchtowerHostedRelay
 import WatchtowerSync
@@ -118,11 +119,25 @@ protocol LinkHost: AnyObject {
     /// `prepare`. After `promote_pairing`, `prepare(route: .hostedRelay(mac), fresh: false)` moves the hub to its
     /// data zone and mailbox on the same store.
     func preparePairing(macDeviceID: String, slot: String, hubID: String) async throws -> any CloudSyncTransport
-    /// One fetch of `hubID`'s session, then this phone's keybox there
-    /// (`device_grant-<device_id>`, the epoch keys included).
-    func fetchKeybox(hubID: String, deviceID: String) async -> Keybox?
+    /// One fetch of `hubID`'s session, then this phone's keybox in its replica
+    /// (`device_grant-<device_id>`, the epoch keys included). `.unavailable` when no session runs, the fetch failed
+    /// (`HubSession.refresh` false) or the replica's copy did not open: never a guessed absence.
+    func fetchKeybox(hubID: String, deviceID: String) async -> KeyboxRead
+    /// `fetchKeybox`, and whether its fetch also read the relay zone (the mailbox): a link completes only from a read
+    /// that did, so the R4 `hub_on_relay` check sees a waiting control (#2189); a waiting keybox or a refusal needs
+    /// the data zone only.
+    func completionKeybox(hubID: String, deviceID: String) async -> (read: KeyboxRead, mailboxCovered: Bool)
     /// `hubID`'s keybox as its replica holds it, without a fetch.
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox?
+    /// `hubID`'s keybox as the server holds it now (#2189): one read of `keybox-<DEVICE_ID>` by its fixed name,
+    /// outside the replica and its zone fetch (`HubSession.serverKeybox`). `.unavailable` for a hub without a
+    /// session, off CloudKit (the relay, the demo), throttled, or when the read failed or the record did not map
+    /// or open.
+    func serverKeybox(hubID: String, deviceID: String) async -> KeyboxRead
+    /// Saves `record` (plain; sealed here with `hubID`'s session) at once, outside the engine's queue (#2189: the
+    /// hello must not wait behind a fresh replica's full download). false, logged, when the hub's session is not on
+    /// CloudKit or the save failed: the caller queues it on the session's transport instead.
+    func sendDirectly(_ record: CloudRecord, hubID: String) async -> Bool
     /// Merges a keybox's `keys` into `hubID`'s stored link through its session (`HubSession.mergeKeybox`: one
     /// `updateHubLink`, and on a link that reseals across epochs the outbox's merge, which keeps this phone's own rows
     /// readable). nil when no link is stored or no session runs: nothing written. Throws as the merge does (a locked
@@ -183,6 +198,23 @@ protocol LinkHost: AnyObject {
     func requestNotificationPermission() async
     /// Selects the Now tab.
     func openNow()
+}
+
+/// One read of this phone's keybox (`LinkHost.serverKeybox`, `LinkHost.fetchKeybox`): what the source holds, or
+/// that it could not say. An absence is only ever `.read(nil)`.
+enum KeyboxRead: Equatable {
+    /// The source's copy; nil when it holds none.
+    case read(Keybox?)
+    /// The source holds a keybox this phone cannot open (sealed to a key it no longer has, signed by a reset hub's old
+    /// key): only a fingerprint of its sealed bytes, never a grant. A re-pair's baseline, never an answer.
+    case opaque(fingerprint: String)
+    /// No such read here, or it failed (`reason` is for the log).
+    case unavailable(reason: String)
+
+    /// A keybox envelope's fingerprint: SHA-256 of its sealed bytes, base64url.
+    static func fingerprint(_ sealed: Data) -> String {
+        WireBytes.base64URL(Data(SHA256.hash(data: sealed)))
+    }
 }
 
 /// What a wipe reports to the link flow.

@@ -171,6 +171,31 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertTrue(try keysHeld())
     }
 
+    /// A Relay pairing completes from the first validated replica keybox of `pair/<slot>`: a second pull that would
+    /// fail never fails a link the owner confirmed (#2189 review round 6).
+    func testARelayPairingLinksWithoutASecondPull() async throws {
+        host.completionFails = true
+        let model = makeModel()
+
+        await link(relayCode(), model: model)
+
+        XCTAssertEqual(model.phase, .linked(macName: "build-box"))
+        XCTAssertTrue(host.completionHubIDs.isEmpty, "no second pull of the slot")
+        XCTAssertTrue(try keysHeld())
+    }
+
+    /// A Relay pairing whose fetches of the slot fail once the hello is out still takes the linked keybox already
+    /// applied to its replica (the relay socket, the launch pull), as before #2189.
+    func testARelayPairingWhoseFetchesFailStillTakesTheStoredAnswer() async throws {
+        host.failsFetchesAfterWrite = true
+        let model = makeModel()
+
+        await link(relayCode(), model: model)
+
+        XCTAssertEqual(model.phase, .linked(macName: "build-box"))
+        XCTAssertTrue(try keysHeld())
+    }
+
     func testTheHelloCarriesThePhonesRelayDeviceID() async throws {
         await link(relayCode(), model: makeModel())
 
@@ -356,6 +381,36 @@ final class RelayLinkingTests: XCTestCase {
             MacsModel.finishingRows(model.promotedLinks, running: [], failed: []).first?.line,
             "You can link up to 4 towers. Unlink one, then try again, or cancel this link."
         )
+    }
+
+    // MARK: - A hello not marked sent (#2189)
+
+    /// A relay link killed before its hello was marked sent, the Mac not answering: the resume sends the hello again
+    /// into the pairing slot through the engine (no direct save), with this phone's relay id.
+    func testAResumedRelayLinkSendsItsHelloAgainIntoTheSlot() async throws {
+        let payload = relayCode()
+        host.mac = { _ in nil }
+        host.parksReadsAfterWrite = true
+        let first = makeModel()
+        let flow = Task { await first.open(payload.url()) }
+        try await poll({ self.host.keyboxReads.contains { $0.writesBefore > 0 } }, "the first read after the hello")
+        flow.cancel()
+        await flow.value
+        host.parksReadsAfterWrite = false
+        var unsent = try XCTUnwrap(store.pending)
+        XCTAssertNotNil(unsent.relaySlot)
+        unsent.helloSent = false
+        store.pending = unsent
+        let before = try await host.pairHellos()
+        XCTAssertEqual(before.count, 1)
+
+        await makeModel().resumePendingLink()
+
+        let after = try await host.pairHellos()
+        XCTAssertEqual(after.count, 2, "sent again into the slot")
+        XCTAssertEqual(after.last?.relayDeviceID, try relay.phoneDeviceID())
+        XCTAssertEqual(after.last?.device.linkNonce, payload.nonce)
+        XCTAssertEqual(host.directSaveAttempts, 0, "never a direct save on the relay")
     }
 
     // MARK: - A confirmed link left in pending (review round 1, finding 1)
