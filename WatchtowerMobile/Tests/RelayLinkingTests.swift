@@ -409,6 +409,7 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(model.phase, .linked(macName: "Work Mac"))
         XCTAssertEqual(relay.count("open"), 0)
         XCTAssertEqual(host.linkedCalls.last?.record.route, .cloudKit(.private))
+        XCTAssertEqual(container.accountAsks, 2, "one iCloud check (availability, identity), reused by the link")
     }
 
     /// Every slot taken and iCloud signed out: the slots screen, where a slot can be freed (review round 2).
@@ -421,6 +422,7 @@ final class RelayLinkingTests: XCTestCase {
 
         XCTAssertEqual(model.phase, .slotsFull(macName: "Work Mac"))
         XCTAssertEqual(model.relaySlots.macs, ["m1", "m2", "m3"])
+        XCTAssertEqual(container.accountAsks, 1, "the route's iCloud check is reused when open_pairing answers slots full")
     }
 
     /// Another Apple ID and a code without share URLs cannot link over iCloud: full slots, at the route check or at
@@ -432,6 +434,7 @@ final class RelayLinkingTests: XCTestCase {
 
         await model.open(iCloudCode().url())
         XCTAssertEqual(model.phase, .slotsFull(macName: "Work Mac"))
+        XCTAssertEqual(container.accountAsks, 2, "the route's iCloud check is reused at open_pairing")
 
         model.dismiss()
         relay.slots = []
@@ -507,14 +510,17 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(model.phase, .linked(macName: "Work Mac"))
         XCTAssertEqual(host.linkedCalls.last?.record.route, .cloudKit(.private))
         XCTAssertEqual(relay.count("open"), 1)
+        XCTAssertEqual(container.accountAsks, 2, "the route saw a free slot: one iCloud check, made at open_pairing")
 
         await model.finish()
+        let asked = container.accountAsks
         container.status = .noAccount
         relay.fail("open", with: HostedRelayPairing.Refusal.slotsFull(macs: taken))
         let other = mac.code(hubID: otherHub, macName: "Home Mac", owner: owner, now: clock.now(), transport: .cloudKit)
         await model.open(other.url())
         XCTAssertEqual(model.phase, .slotsFull(macName: "Home Mac"))
         XCTAssertEqual(model.relaySlots.macs, taken)
+        XCTAssertEqual(container.accountAsks, asked + 1)
     }
 
     /// `open_pairing` answers not paying after the paying check said yes: a Mac on iCloud links over iCloud; a Mac on

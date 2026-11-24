@@ -205,10 +205,12 @@ final class LinkRoutePolicyTests: XCTestCase {
         let newEntered = Gate()
         let newGate = Gate()
         let never = Gate()
+        let oldCancelled = Flag()
         let shared = SharedEntitlementRead(maxAge: 60, clock: clock) {
             if reads.add() == 1 {
                 oldEntered.open()
                 await oldGate.wait()
+                oldCancelled.set(Task.isCancelled)
                 return false
             }
             newEntered.open()
@@ -235,6 +237,7 @@ final class LinkRoutePolicyTests: XCTestCase {
         let fresh = await late.value
         XCTAssertTrue(fresh, "the new read's answer")
         XCTAssertEqual(shared.waiting, 0)
+        XCTAssertTrue(oldCancelled.value, "the replaced read's task was cancelled")
     }
 
     func testAnUnknownPayingAnswerWithAnEntitlementIsRelayUnreachable() async {
@@ -387,6 +390,18 @@ private final class ReadCount: @unchecked Sendable {
             value += 1
             return value
         }
+    }
+}
+
+/// A flag a fake sets from its task.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = false
+
+    var value: Bool { lock.withLock { stored } }
+
+    func set(_ value: Bool) {
+        lock.withLock { stored = value }
     }
 }
 
