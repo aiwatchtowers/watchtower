@@ -36,8 +36,8 @@ struct AskExplainChatView: View {
                 VStack(alignment: .leading, spacing: Spacing.regular) {
                     EmbeddedChatRows(engine: engine)
                         .padding(.horizontal, Spacing.medium)
-                    if let failure = error ?? Self.startFailure(engine) {
-                        AskExplainErrorRow(message: failure, onRetry: onRetry)
+                    if let line = Self.failureLine(openError: error, engine: engine) {
+                        AskExplainErrorRow(text: line, onRetry: onRetry)
                     }
                 }
                 .padding(.vertical, Spacing.regular)
@@ -60,6 +60,14 @@ struct AskExplainChatView: View {
     static func startFailure(_ engine: EmbeddedChatEngine) -> String? {
         guard engine.hiddenTurnNotStarted, engine.messages.isEmpty, !engine.isBusy else { return nil }
         return engine.bannerError
+    }
+
+    /// The failure row's text: a failed open says "Couldn't explain: <reason>";
+    /// a hidden first turn that never started shows the engine's own banner,
+    /// which already says what failed ("Couldn't send: …").
+    static func failureLine(openError: String?, engine: EmbeddedChatEngine) -> String? {
+        if let openError { return AskExplainErrorRow.openFailure(openError) }
+        return startFailure(engine)
     }
 
     /// The composer's Esc (it reaches only a focused composer): back to the
@@ -89,7 +97,7 @@ struct AskExplainPane: View {
             case let .failure(error):
                 VStack(alignment: .leading, spacing: 0) {
                     AskExplainStrip(title: ask.title, onBack: onBack)
-                    AskExplainErrorRow(message: error, onRetry: retry)
+                    AskExplainErrorRow(text: AskExplainErrorRow.openFailure(error), onRetry: retry)
                         .padding(.vertical, Spacing.regular)
                     Spacer(minLength: 0)
                 }
@@ -155,14 +163,19 @@ private struct AskExplainStrip: View {
     }
 }
 
-/// "Couldn't explain: <reason>" with Retry.
-private struct AskExplainErrorRow: View {
-    let message: String
+/// A failure line with Retry.
+struct AskExplainErrorRow: View {
+    let text: String
     let onRetry: (() -> Void)?
+
+    /// "Couldn't explain: <reason>", for an open that failed.
+    static func openFailure(_ reason: String) -> String {
+        "\(AskExplainCopy.errorPrefix) \(reason)"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
-            Label("\(AskExplainCopy.errorPrefix) \(message)", systemImage: "exclamationmark.triangle")
+            Label(text, systemImage: "exclamationmark.triangle")
                 .font(.callout)
                 .foregroundStyle(Tone.error)
                 .fixedSize(horizontal: false, vertical: true)

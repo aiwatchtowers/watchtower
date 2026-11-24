@@ -233,6 +233,7 @@ Workbench
 - Session report and analytics (features/workbench/session-report.md)
 - Updates and quitting (features/workbench/updates-and-quitting.md)
 - Asks (features/workbench/asks.md)
+- The ask guard (features/workbench/ask-guard.md)
 - Code viewer (features/workbench/code-viewer.md)
 - Switching branches (features/workbench/branches.md)
 - Worktrees and cleanup (features/workbench/worktrees-and-cleanup.md)

@@ -31,6 +31,10 @@ One quiet control on the ask, **Not clear?**. It turns the whole ask panel into 
 | D7 | Question and check asks, open or closed; not review asks | decided by the agent: a spec or plan review has its own Discuss threads, a classic review is read in its document; a closed ask's chat helps understand a past decision |
 | D8 | Mac only in v1 | decided by the agent: the phone has no embedded chat engine (spec review threads are Mac-only too) |
 | D9 | No session transcript in the context | decided by the agent: the ask's summary is the agent's own statement of the question; the transcript is large, may hold other sources' text, and `ai query` has no reader for it today. A follow-up can add it |
+| D10 | One indicator per state: Loading shows the feed's own live row and Queued the composer's own queued status; no "Explaining…" or "Waiting — other chats are answering." text of this feature (the `explaining` and `queued` copy keys are gone) | decided by the agent during implementation (T4 review): the mockup's extra line sat next to the built-in indicator, so each state showed two |
+| D11 | A turn that fails once its reply row exists shows the shared ChatUI error card with its Retry; "Couldn't explain: <reason>" with **Retry** is only for a failed open (`explainErrors`, e.g. "This workbench no longer exists."); a hidden first turn that failed before it started (no row carries it) shows the engine's banner ("Couldn't send: …") with **Retry**, without the prefix | decided by the agent during implementation (T4): the feed already draws a failed reply and its Retry; a second error line would repeat it |
+| D12 | Retry after a restart is offered for a quit-partial first turn or a retryable error, never for a non-retryable code such as quota. Stop and quit persist the same `partial` row, so after a restart a stopped explanation offers Retry too | decided by the agent during implementation (T3): Retry is owner-initiated and harmless; a `stopped` marker would change every embedded chat's persistence. Known limit, see the feature note |
+| D13 | Before the engine exists the chat view shows the strip over a centred spinner ("finding the chat") while the conversation is found or created | decided by the agent during implementation (T4): the pane was blank for the length of `chat.new` |
 
 ## Behaviour
 
@@ -57,7 +61,7 @@ Opening the chat of an ask with no chat yet finds-or-creates its conversation, t
 
 > Explain this question to the owner in plain words: what is being decided, what each option changes for them, and what the agent recommends and why. Short; no jargon the question does not explain.
 
-Opening a chat that already has messages starts nothing. A chat whose first turn ended in an error or partially shows that row with **Retry** (the engine's existing Retry), never a second hidden turn on its own.
+Opening a chat that already has messages starts nothing. A chat whose first turn ended in an error or partially shows that row with **Retry** (the engine's existing Retry), never a second hidden turn on its own; after a restart Retry follows D12. A hidden first turn that failed before it started (no row) shows the engine's banner ("Couldn't send: <reason>") with **Retry**, which opens the chat again (D11).
 
 ### The assistant
 
@@ -65,8 +69,8 @@ A `ChatSurfaceSpec` (`AskExplainSurface`, `Sources/Services/ChatSurfaces/`), lik
 - key `EmbeddedChatKey(contextType: "owner_ask_explain", contextID: "<workbench id>:<ask id>", conversationID:)`;
 - persistence `.database`, the conversation found or created with `DatabaseEmbeddedChatStore.conversationID(…)` (Go's `chat.new` with `reuse: true`), title "Ask #<id>";
 - `toolAccess: .draftOnly`;
-- `runOptions`: the config's provider at its strong tier, `readFolder` = the workbench's folder, `purpose` = `ask.explain` (the usage ledger shows these turns as "Ask explanations" under Workbench; `ai query --purpose` accepts only listed values, so Go's `queryPurposes` gains it);
-- the system prompt (first turn only) carries, fenced as untrusted data (a fence longer than any backtick run inside, as `CodeQuestionContext` does, with a line telling the model it is data, not instructions): the ask's title, summary, reason, questions with their options and descriptions (or the checklist), the recommended labels, and the target's title and intent when the ask has a target. It says: answer in the language the ask is written in; you explain, you never decide for the owner; the folder is for reading only.
+- `runOptions`: the config's provider at its strong tier, `readFolder` = the workbench's folder only for a provider that can read files (claude, codex; never ollama, whose `ai query` refuses `--read-folder`), `purpose` = `ask.explain` (the usage ledger shows these turns as "Ask explanations" under Workbench; `ai query --purpose` accepts only listed values, so Go's `queryPurposes` gains it);
+- the system prompt (rebuilt from the ask and sent with every turn; only the hidden first-turn request is sent once) carries, fenced as untrusted data (a fence longer than any backtick run inside, as `CodeQuestionContext` does, with a line telling the model it is data, not instructions): the ask's title, summary, changes since the previous round, the "Look at" (focus) items, questions with their options and descriptions (or the checklist), the recommended labels (asks store no reason, so none is sent), and the target's title and intent when the ask has a target. It says: answer in the language the ask is written in; you explain, you never decide for the owner; the folder is for reading only.
 
 The prompt text lives in one Swift constant (`AskExplainPrompt`), covered by a test that pins its parts (fence, language rule, the "never decide" line). Both providers run it unchanged (it is plain text, no provider-specific syntax).
 
@@ -78,8 +82,6 @@ The prompt text lives in one Swift constant (`AskExplainPrompt`), covered by a t
 | entryHelp | Ask the assistant to explain this question |
 | back | Back to question |
 | placeholder | Ask about this question… |
-| explaining | Explaining… |
-| queued | Waiting — other chats are answering. |
 | errorPrefix | Couldn't explain: |
 | retry | Retry |
 | emptyHint | The assistant explains; it never changes anything. |
@@ -89,15 +91,17 @@ The prompt text lives in one Swift constant (`AskExplainPrompt`), covered by a t
 | State | Shot | What shows |
 |---|---|---|
 | Entry | `ask-explain-entry` | The question view with **Not clear?** under the card |
-| Queued (empty) | `ask-explain-queued` | Chat view, no rows, "Waiting — other chats are answering." (the 3-turn gate is full) |
-| Loading | `ask-explain-loading` | Chat view, the live row "Explaining…" |
+| Finding | `ask-explain-built-finding` | The strip over a centred spinner while the conversation is found or created (D13; built only) |
+| Queued (empty) | `ask-explain-queued` | Chat view, no rows, the composer's own queued status with Cancel (the 3-turn gate is full; D10) |
+| Loading | `ask-explain-loading` | Chat view, the feed's own live row (D10) |
 | Explained | `ask-explain-explained` | The explanation, the composer |
 | Long | `ask-explain-long` | Several turns, scrolled to the latest |
 | Busy | `ask-explain-busy` | A follow-up sent, its reply streaming, composer shows Stop |
-| Error | `ask-explain-error` | "Couldn't explain: <reason>" with **Retry** |
+| Error | `ask-explain-error` | A failed turn: the shared ChatUI error card with **Retry** (D11); a failed open: "Couldn't explain: <reason>" with **Retry**; a hidden first turn that never started: the engine's "Couldn't send: <reason>" with **Retry** (built shots `-error-open`, `-error-start`) |
 | Narrow | `ask-explain-narrow` | The chat in a drawer at its least width (320) |
+| Back, scrolled | `ask-explain-built-back-scrolled` | A long question scrolled to its bottom, the chat opened and closed: still at its bottom (built only) |
 
-Colours come from `Tone` and the kit; no stock chrome, no row dividers (style guide). The shots are drawn by a design-only mock (`Tests/DesignShots/DesignShotFixtures+AskExplainMock.swift`); T5 renders the same states from the built views and compares them with these.
+Colours come from `Tone` and the kit; no stock chrome, no row dividers (style guide). The shots are drawn by a design-only mock (`Tests/DesignShots/DesignShotFixtures+AskExplainMock.swift`); T5 renders the same states from the built views (`DesignShotFixtures+AskExplain.swift`, `ask-explain-built-*`, `DesignShotsTests/testAskExplainBuiltShotsRender`), and the differences that stay are listed in `docs/features/ask-explain-chat.md`.
 
 | Entry | Explained | Busy | Error |
 |---|---|---|---|
@@ -113,7 +117,7 @@ Colours come from `Tone` and the kit; no stock chrome, no row dividers (style gu
 | Two windows open the same ask's chat | One engine per key; Go's `reuse: true` returns one conversation even if both create at once | `AskExplainSurfaceTests.testSameKeySameConversation` |
 | The ask is answered or withdrawn while the chat is open (phone, agent, another window) | Nothing changes in the chat; the question view behind it shows the closed ask as today | `AskExplainModelTests.testChatSurvivesAskClosing` |
 | The workbench is deleted | `db.DeleteWorkbench` also deletes its `owner_ask_explain` conversations (prefix `<id>:`, like code questions) — PROJ-02 | `TestDeleteWorkbenchDropsAskExplainChats` |
-| The workbench is merged into another (`workbenchfolders` merge) | `reKeyChats` re-keys `owner_ask_explain` together with `code_question` and `spec_review_thread`: `<from>:<ask>` → `<into>:<ask>` (ask ids are global, so no clash) | `TestMergeReKeysAskExplainChats` |
+| The workbench is merged into another (`workbenchfolders` merge) | `reKeyChats` re-keys `owner_ask_explain` together with `code_question` and `spec_review_thread`: `<from>:<ask>` → `<into>:<ask>` (ask ids are global, so no clash) | `TestMergeReKeysTheChats` (its `owner_ask_explain` case) |
 | No CLI (a host without it) | No entry is shown | `AskExplainModelTests.testNoCLINoEntry` |
 
 **Writers of the same data.** The conversation row: `chat.new` (Desktop, find-or-create; Go dedupes); its `context_id` later only `reKeyChats`, inside the merge's transaction. Its messages: each turn's `ai query --persist` process, and the Mac's `chat.reply.finish` / `chat.message.append` after a turn — the existing embedded chat rules, one turn at a time per key. Deletion: only `db.DeleteWorkbench`. A merge while a turn streams: the turn writes by conversation id, which the re-key does not change, so the reply lands in the re-keyed chat; the Desktop's key for an open chat is rebuilt on the next open. No other writer; the ask itself is never written by this feature.
@@ -133,7 +137,7 @@ The guard tests (`internal/tools/code_question_guard_test.go`, `internal/memory/
 
 | # | Task | Tests |
 |---|---|---|
-| T1 | Go: `db.AskExplainContextType`; delete with the workbench; re-key on merge (`reKeyChats`); add the type to `chat_history.go`, `source_chat_artifact.go` and both lists in `chat_knowledge.go`; `ask.explain` in `queryPurposes` | `TestDeleteWorkbenchDropsAskExplainChats`, `TestMergeReKeysAskExplainChats`, a `chat_knowledge` test that an `owner_ask_explain` message yields no decision or fact, the extended guard tests |
+| T1 | Go: `db.AskExplainContextType`; delete with the workbench; re-key on merge (`reKeyChats`); add the type to `chat_history.go`, `source_chat_artifact.go` and both lists in `chat_knowledge.go`; `ask.explain` in `queryPurposes` | `TestDeleteWorkbenchDropsAskExplainChats`, `TestMergeReKeysTheChats` (an `owner_ask_explain` case), a `chat_knowledge` test that an `owner_ask_explain` message yields no decision or fact, the extended guard tests |
 | T2 | Swift Core: `AskExplainCopy`, `AskExplainPrompt`, `AskExplainKey` (context id), entry visibility (`AskExplainPresentation.showsEntry(kind:hasCLI:)`); `savesKnowledge` excludes the type | `AskExplainCopyTests`, `AskExplainPromptTests`, `AskExplainPresentationTests`, the `savesKnowledge` test |
 | T3 | `AskExplainSurface` + the per-ask mode in `OwnerAsksViewModel` (`explainOpen`), the hidden first turn, Retry-only after a failed first turn | `AskExplainSurfaceTests`, `AskExplainModelTests` |
 | T4 | Views: the entry in `OwnerAskDrawer`, `AskExplainChatView`, keys off in chat mode, Esc back | `OwnerAskDrawerKeysTests` (keys off), shots |

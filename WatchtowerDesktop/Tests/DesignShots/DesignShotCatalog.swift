@@ -671,6 +671,7 @@ enum DesignShotCatalog {
             + WatchmanTuningShotFixtures.shots // Watchman tuning spec (#2134), design only.
             + WorkchatAgentsMockShotFixtures.shots // Workchat agents list and live steps spec (#2065), design only.
             + AskExplainMockShotFixtures.shots // "Not clear?" on an ask (#2355), design only.
+            + AskExplainBuiltShotFixtures.shots // the same, as built (#2355 T5).
             + WorkchatAgentsShotFixtures.shots // The same states on the built views (#2065), against the mockups.
             + ConnectAssistantShotFixtures.shots // Connect with an agent spec (#2133), the panel's states and the overview.
             + SignInWaitShotFixtures.shots // Cancel for a waiting browser sign-in (#2132), design only.
@@ -728,6 +729,7 @@ enum DesignShotFixtures {
         ComposerShotFixtures.cleanUp()
         ApprovalCardShotFixtures.cleanUp()
         SignInWaitBuiltShots.cleanUp()
+        AskExplainBuiltShotFixtures.cleanUp()
         RoutingPillShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
