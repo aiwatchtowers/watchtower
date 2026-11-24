@@ -29,6 +29,7 @@ import (
 	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
@@ -976,8 +977,9 @@ func pairPhone(t *testing.T, p *pairRun, fake *memfake.Fake) (string, map[string
 	require.NoError(t, phone.Hello(transport.PairZone("slot1")))
 	fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: "slot1"}})
 	sas := p.next(t)
-	assert.ElementsMatch(t, []string{"event", "device_id", "name", "code"}, hubKeysOf(sas))
+	assert.ElementsMatch(t, []string{"event", "device_id", "name", "code", "moves_to_relay"}, hubKeysOf(sas))
 	assert.Equal(t, "sas", sas["event"])
+	assert.Equal(t, false, sas["moves_to_relay"], "a headless hub never moves to Relay")
 	assert.True(t, strings.EqualFold(phone.ID().String(), sas["device_id"].(string)))
 	assert.Len(t, sas["code"], 4)
 	return phone.ID().String(), sas
@@ -1010,6 +1012,24 @@ func TestHubPairStreamEvents(t *testing.T) {
 		assert.ElementsMatch(t, []string{"event", "reason"}, hubKeysOf(refused))
 		assert.Equal(t, "refused", refused["event"])
 		assert.Equal(t, wire.RefusedNotConfirmed, refused["reason"])
+		require.NoError(t, p.wait(t))
+	})
+
+	// #2191: the hub's moves_to_relay reaches the sas line as true too.
+	t.Run("moves to relay", func(t *testing.T) {
+		dir := hubShortDir(t)
+		_, before := fakePairOpening(t, time.Now().Add(10*time.Minute), "acme phone")
+		before[len(before)-1].MovesToRelay = true
+		startFakePairHub(t, dir, before, []hub.ControlAnswer{{Event: link.EventLinked, DeviceID: fakePairDevice}})
+		p := startPair(t)
+		p.next(t) // qr
+		p.next(t) // waiting
+		sas := p.next(t)
+		assert.ElementsMatch(t, []string{"event", "device_id", "name", "code", "moves_to_relay"}, hubKeysOf(sas))
+		assert.Equal(t, true, sas["moves_to_relay"])
+		_, err := io.WriteString(p.in, `{"confirm":true}`+"\n")
+		require.NoError(t, err)
+		assert.Equal(t, "linked", p.next(t)["event"])
 		require.NoError(t, p.wait(t))
 	})
 }

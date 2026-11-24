@@ -1105,7 +1105,7 @@ func (c *Center) handleCloudKitHello(ctx context.Context, s transport.Shares, re
 		return Pending{}, fmt.Errorf("%w: written by another iCloud user", ErrHelloDropped)
 	}
 	if payload.Scope == wire.ScopePrivate {
-		return c.decideHello(opened, owner)
+		return c.decideHello(opened, owner, false)
 	}
 	valid, err := c.codeValidFor(opened)
 	if err != nil {
@@ -1114,7 +1114,7 @@ func (c *Center) handleCloudKitHello(ctx context.Context, s transport.Shares, re
 	if valid && !c.acceptedBothShares(ctx, s, payload.UserRecordName, opened.device) {
 		return Pending{}, fmt.Errorf("%w: the phone's user has not accepted both shares", ErrHelloDropped)
 	}
-	return c.decideHello(opened, payload.UserRecordName)
+	return c.decideHello(opened, payload.UserRecordName, false)
 }
 
 // creatorMatches is the Swift creatorMatches: a shared phone's record was

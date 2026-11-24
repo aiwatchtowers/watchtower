@@ -21,6 +21,8 @@ import (
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/logcanary"
 )
@@ -1480,5 +1482,57 @@ func TestALinkedKeyboxReadBeforeARelinkIsSealedToTheLink(t *testing.T) {
 	}
 	if err := open(a); err != nil {
 		t.Fatalf("the link's key cannot open it: %v", err)
+	}
+}
+
+// sasEvent drains c's events up to the next sas.
+func sasEvent(t *testing.T, c *Center) PairEvent {
+	t.Helper()
+	for {
+		select {
+		case ev := <-c.Events():
+			if ev.Kind == EventSAS {
+				return ev
+			}
+		default:
+			t.Fatal("no sas event")
+		}
+	}
+}
+
+// #2191: the sas event says whether the hello came through a Relay pairing
+// slot (no iCloud user behind it). A CloudKit hello is never over Relay,
+// even one carrying the phone's relay device id (a paying phone's).
+func TestASASOverAPairingSlotSaysOverRelay(t *testing.T) {
+	t.Run("slot", func(t *testing.T) {
+		r := newRig(t)
+		f := memfake.New(transport.KindRelay, r.clock)
+		code := r.issue()
+		p := newPhone(t)
+		r.writeHello(f, "slot1", p, code.Nonce, withRelayID(relayID(t)))
+		if err := r.c.OnPairingOpened(context.Background(), f, "slot1"); err != nil {
+			t.Fatal(err)
+		}
+		if ev := sasEvent(t, r.c); !ev.OverRelay || ev.MovesToRelay || ev.DeviceID != p.id.String() {
+			t.Fatalf("a slot hello's sas: %+v", ev)
+		}
+	})
+	for _, scope := range []string{wire.ScopePrivate, wire.ScopeShared} {
+		t.Run("cloudkit "+scope, func(t *testing.T) {
+			r := newCKRig(t)
+			code := r.issueCK()
+			p := newPhone(t)
+			edits := []func(*wire.DeviceHello){withRelayID(relayID(t))}
+			if scope == wire.ScopeShared {
+				r.s.join("_phone-acme")
+				edits = append(edits, sharedHello("_phone-acme"))
+			}
+			if got, err := r.ckHello(p, code.Nonce, edits...); err != nil || got.Code == "" {
+				t.Fatalf("hello not waiting: %+v %v", got, err)
+			}
+			if ev := sasEvent(t, r.c); ev.OverRelay || ev.MovesToRelay {
+				t.Fatalf("a CloudKit hello's sas: %+v", ev)
+			}
+		})
 	}
 }

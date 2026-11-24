@@ -62,15 +62,17 @@ func (c *Center) HandleHello(zone, wireName string, env []byte) (Pending, error)
 	if err != nil {
 		return Pending{}, err
 	}
-	return c.decideHello(opened, "")
+	return c.decideHello(opened, "", opened.relayID != "")
 }
 
 // decideHello is HandleHello after the hello opened: user is the iCloud
 // user the request is bound to on CloudKit ("" elsewhere), kept with it so
-// the participant sweep spares a linked shared phone's user. A code an
-// answering CloudKit close retired reads that close's refusal (retired),
-// not expired_code.
-func (c *Center) decideHello(opened openedHello, user string) (Pending, error) {
+// the participant sweep spares a linked shared phone's user. overRelay: the
+// hello came through a Relay pairing slot (its sas event's OverRelay); a
+// CloudKit hello never did, even a private one whose owner read came back
+// empty. A code an answering CloudKit close retired reads that close's
+// refusal (retired), not expired_code.
+func (c *Center) decideHello(opened openedHello, user string, overRelay bool) (Pending, error) {
 	c.mu.Lock()
 	defer c.unlock()
 	payload := opened.hello.Device
@@ -137,7 +139,7 @@ func (c *Center) decideHello(opened openedHello, user string) (Pending, error) {
 	switch {
 	case waiting:
 		log.Printf("hub link: link request from phone %s waits for the owner", out.DeviceID)
-		c.emit(PairEvent{Kind: EventSAS, DeviceID: out.DeviceID, Name: out.Name, Code: out.Code})
+		c.emit(PairEvent{Kind: EventSAS, DeviceID: out.DeviceID, Name: out.Name, Code: out.Code, OverRelay: overRelay})
 		c.changed()
 	case out.Refused != "" && out.Unanswered:
 		log.Printf("hub link: hello from phone %s refused (%s), unanswered", out.DeviceID, out.Refused)

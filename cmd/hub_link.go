@@ -112,6 +112,9 @@ type (
 		DeviceID string `json:"device_id"`
 		Name     string `json:"name"`
 		Code     string `json:"code"`
+		// MovesToRelay: confirming this phone moves the Mac from iCloud
+		// to Relay and cuts off iCloud phones (always present, #2191).
+		MovesToRelay bool `json:"moves_to_relay"`
 	}
 	hubPairLinked struct {
 		Event    string `json:"event"`
@@ -614,7 +617,7 @@ func runHubPair(cmd *cobra.Command, _ []string) error {
 			}
 			device = a.DeviceID
 			_ = c.SetReadDeadline(time.Time{})
-			if err := hubPrint(cmd, true, hubPairSAS{Event: a.Event, DeviceID: a.DeviceID, Name: a.Name, Code: a.Code}, ""); err != nil {
+			if err := hubPrint(cmd, true, hubPairSAS{Event: a.Event, DeviceID: a.DeviceID, Name: a.Name, Code: a.Code, MovesToRelay: a.MovesToRelay}, ""); err != nil {
 				return err
 			}
 			if err := c.Send(hub.ControlRequest{Op: hub.OpConfirm, Device: device, Confirm: readPairConfirm(in)}); err != nil {

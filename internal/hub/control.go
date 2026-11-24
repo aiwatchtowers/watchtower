@@ -171,6 +171,9 @@ type ControlAnswer struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	Code      string     `json:"code,omitempty"`
 	Reason    string     `json:"reason,omitempty"`
+	// MovesToRelay (a sas event): confirming the phone moves the hub from
+	// iCloud to Relay and cuts off iCloud phones (hubRuntime.movesToRelay).
+	MovesToRelay bool `json:"moves_to_relay,omitempty"`
 	// At is when a desktop heartbeat was written; UploadID, Status and
 	// TranscriptID a recording job after a claim or finish; AudioPath the
 	// claimed job's audio file (claim only: Desktop never derives it).
@@ -319,7 +322,8 @@ const pairQueue = 64
 // on any of them: a stream whose queue is full is dropped, the others get
 // every event.
 func (s *supervisor) broadcast(ev link.PairEvent) {
-	a := ControlAnswer{Event: ev.Kind, OK: true, URL: ev.URL, DeviceID: ev.DeviceID, Name: ev.Name, Code: ev.Code, Reason: ev.Reason}
+	a := ControlAnswer{Event: ev.Kind, OK: true, URL: ev.URL, DeviceID: ev.DeviceID, Name: ev.Name, Code: ev.Code, Reason: ev.Reason,
+		MovesToRelay: ev.MovesToRelay}
 	if !ev.ExpiresAt.IsZero() {
 		at := ev.ExpiresAt
 		a.ExpiresAt = &at

@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/state"
@@ -280,4 +282,103 @@ func TestAnAbandonedPairStreamClosesItsCloudKitCode(t *testing.T) {
 			t.Fatal("the abandoned stream's code kept its link open")
 		}
 	})
+}
+
+// startSASDesk is startPairDesk with an iCloud-routed phone linked before
+// the start (icloudPhone) and the runtime handed back.
+func startSASDesk(t *testing.T, active transport.Kind, icloudPhone bool) (*deskRig, *hubRuntime, *ControlClient) {
+	t.Helper()
+	policytest.Set(t, nil)
+	r := newDeskRig(t, shortDir(t))
+	ck := newAcctCK(transport.AccountAvailable)
+	r.ck = ck.Fake
+	fctx, fcancel := context.WithCancel(context.Background())
+	t.Cleanup(fcancel)
+	go ck.forward(fctx)
+	setMeta(t, r.dir, state.MetaEnabled, "1", switcher.MetaTransport, string(active))
+	if icloudPhone {
+		linkSharedPhone(t, r.dir, sharedPhoneID, "_colleague-a")
+	}
+	var h *hubRuntime
+	o := r.options()
+	o.Desktop.newCloudKit = func(cloudkit.Config) transport.Transport { return ck }
+	o.started = func(rt *hubRuntime) { h = rt }
+	r.start(o)
+	r.waitStatus("running on "+string(active), func(s Status) bool {
+		return s.State == StateRunning && s.Transport == string(active) &&
+			s.CloudKit.Account == string(transport.AccountAvailable)
+	})
+	c := r.dial()
+	t.Cleanup(func() { _ = c.Close() })
+	return r, h, c
+}
+
+// slotSAS issues a code, sends a phone's hello through a Relay pairing
+// slot and reads the sas line the pairing stream gets.
+func slotSAS(t *testing.T, r *deskRig, c *ControlClient) (ControlAnswer, *hubtest.Phone) {
+	t.Helper()
+	phone, err := hubtest.FromLink(pairCode(t, c), r.fake, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := phone.Hello(transport.PairZone("slot1")); err != nil {
+		t.Fatal(err)
+	}
+	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: "slot1"}})
+	for {
+		a, err := c.Next()
+		if err != nil || a.Error != "" {
+			t.Fatalf("waiting for the sas: %+v, %v", a, err)
+		}
+		if a.Event == link.EventSAS {
+			return a, phone
+		}
+	}
+}
+
+// #2191 (Q6): the sas line says the Link moves the Mac to Relay exactly when
+// the phone paired through a Relay pairing slot, the hub runs on iCloud and
+// another linked phone has an iCloud route.
+func TestTheSASLineSaysWhenTheLinkMovesTheMacToRelay(t *testing.T) {
+	t.Run("a slot hello on iCloud with an iCloud phone", func(t *testing.T) {
+		bubble(t, func(t *testing.T) {
+			r, h, c := startSASDesk(t, transport.KindCloudKit, true)
+			sas, phone := slotSAS(t, r, c)
+			if !sas.MovesToRelay || !strings.EqualFold(sas.DeviceID, phone.ID().String()) {
+				t.Fatalf("sas %+v: want moves_to_relay", sas)
+			}
+			// The same phone's hello read over iCloud moves nothing.
+			if h.movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sas.DeviceID}) {
+				t.Fatal("a CloudKit hello moves the Mac to Relay")
+			}
+			// The iCloud-routed phone relinking is not "another" phone.
+			if h.movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sharedPhoneID, OverRelay: true}) {
+				t.Fatal("the iCloud phone itself counts as another iCloud phone")
+			}
+		})
+	})
+	t.Run("no other iCloud phone", func(t *testing.T) {
+		bubble(t, func(t *testing.T) {
+			r, _, c := startSASDesk(t, transport.KindCloudKit, false)
+			if sas, _ := slotSAS(t, r, c); sas.MovesToRelay {
+				t.Fatalf("sas %+v: nobody is cut off", sas)
+			}
+		})
+	})
+	t.Run("the hub on Relay", func(t *testing.T) {
+		bubble(t, func(t *testing.T) {
+			r, _, c := startSASDesk(t, transport.KindRelay, true)
+			if sas, _ := slotSAS(t, r, c); sas.MovesToRelay {
+				t.Fatalf("sas %+v: the hub is on Relay already", sas)
+			}
+		})
+	})
+}
+
+// A host without a switcher (one transport) never moves.
+func TestMovesToRelayWithoutASwitcherIsFalse(t *testing.T) {
+	h := &hubRuntime{}
+	if h.movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sharedPhoneID, OverRelay: true}) {
+		t.Fatal("a host without a switcher moves to Relay")
+	}
 }
