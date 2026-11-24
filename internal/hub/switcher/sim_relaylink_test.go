@@ -1,6 +1,8 @@
 package switcher_test
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"strconv"
 	"strings"
@@ -107,7 +109,10 @@ func TestRelayLinkBeforeTheUpdateIsNoCandidate(t *testing.T) {
 
 // F9: a read that failed, was not made afresh, hung past the old-side
 // timeout or does not list the phone moves nothing; every next RelayLinkSoon
-// reads again and a paying answer then moves the hub.
+// reads again and a paying answer then moves the hub. A read that answered
+// (or failed) uses up the NoPayerPoll slot, so a poll without a kick reads
+// nothing; a read that was not made afresh is no read and the next poll
+// tries again, as G2 does.
 func TestRelayLinkWaitsOnAnUnknownRead(t *testing.T) {
 	for _, how := range []string{"error", "not_fresh", "hang", "not_listed"} {
 		t.Run(how, func(t *testing.T) {
@@ -134,7 +139,14 @@ func TestRelayLinkWaitsOnAnUnknownRead(t *testing.T) {
 				w.relayLinkCheck()
 				w.wantActive(transport.KindCloudKit)
 				w.wantReads(1)
-				w.relayLinkCheck()
+				w.advance(switcher.OtherPoll)
+				w.sw.PollOther(w.ctx) // no kick
+				if how == "not_fresh" {
+					w.wantReads(2)
+				} else {
+					w.wantReads(1)
+					w.relayLinkCheck()
+				}
 				w.wantActive(transport.KindCloudKit)
 				w.wantReads(2)
 				set(false)
@@ -435,5 +447,137 @@ func TestRelayLinkSwitchNoticesOtherPhones(t *testing.T) {
 		if m, ok := w.marker(payer, w.relay, ""); !ok || *m.Target != wire.TransportRelay {
 			t.Fatalf("relay marker %+v %v", m, ok)
 		}
+	})
+}
+
+// accountReadHook makes hook run inside every AccountPhones read, after the
+// relay answered and before the answer reaches the switcher (a restart with
+// the hook in the config).
+func (w *world) accountReadHook(hook func()) {
+	w.t.Helper()
+	w.rebuild(func(c *switcher.Config) {
+		read := c.AccountPhones
+		c.AccountPhones = func(ctx context.Context) ([]switcher.AccountPhone, error) {
+			phones, err := read(ctx)
+			hook()
+			return phones, err
+		}
+	})
+}
+
+// F11 during the read: the phone unlinked while the account was read is no
+// candidate any more by the time the switch would be accepted.
+func TestRelayLinkUnlinkDuringTheReadMovesNothing(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		r := w.relayPhone(true)
+		w.accountReadHook(func() {
+			if err := w.center.Unlink(r.ID().String()); err != nil {
+				t.Error(err)
+			}
+		})
+		w.relayLinkCheck()
+		w.wantReads(1)
+		w.wantActive(transport.KindCloudKit)
+		if w.sw.Pending() {
+			t.Fatal("a switch by an unlinked phone is pending")
+		}
+	})
+}
+
+// A person's ask read during the account read goes first: the check defers
+// to the Step and reads again at the next poll, without a kick.
+func TestRelayLinkAnAskDuringTheReadGoesFirst(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := w.addPhone(false)
+		w.route(a, true)
+		r := w.relayPhone(true)
+		asked := false
+		w.accountReadHook(func() {
+			if asked {
+				return
+			}
+			asked = true
+			w.ask(a, wire.TransportRelay)
+			if _, err := w.sw.ActiveProcessor().Pass(w.ctx); err != nil {
+				t.Error(err)
+			}
+		})
+		w.sw.RelayLinkSoon()
+		w.sw.PollOther(w.ctx)
+		w.wantReads(1)
+		if w.sw.Pending() {
+			t.Fatal("the check accepted over a waiting ask")
+		}
+		if err := w.sw.Step(w.ctx); err != nil { // a does not pay: refused
+			t.Fatal(err)
+		}
+		w.wantActive(transport.KindCloudKit)
+		w.sw.PollOther(w.ctx) // no kick: the deferred check reads again
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantReads(2)
+		w.wantActive(transport.KindRelay)
+		w.wantSwitchedBy(r)
+	})
+}
+
+// A relay_link_since that cannot be read moves nothing and is never mistaken
+// for "no limit".
+func TestRelayLinkUnreadableSinceMovesNothing(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		if err := w.st.SetMeta(switcher.MetaRelayLinkSince, "not a time"); err != nil {
+			t.Fatal(err)
+		}
+		w.relayPhone(true)
+		w.relayLinkCheck()
+		w.wantReads(0)
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// A relay_link_since stamped while the Mac's clock ran ahead is pulled back
+// to now at the next check, so a phone that links afterwards counts.
+func TestRelayLinkSinceInTheFutureIsPulledBack(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		now := w.clock()
+		ahead := strconv.FormatFloat(float64(now.Add(time.Hour).UnixNano())/1e9, 'f', -1, 64)
+		if err := w.st.SetMeta(switcher.MetaRelayLinkSince, ahead); err != nil {
+			t.Fatal(err)
+		}
+		w.relayLinkCheck() // no candidate yet; the stamp comes back to now
+		want := strconv.FormatFloat(float64(now.UnixNano())/1e9, 'f', -1, 64)
+		if v, _, _ := w.st.Meta(switcher.MetaRelayLinkSince); v != want {
+			t.Fatalf("relay_link_since %q, want %q (now)", v, want)
+		}
+		r := w.relayPhone(true) // a minute later, still before the old stamp
+		w.relayLinkCheck()
+		w.wantActive(transport.KindRelay)
+		w.wantSwitchedBy(r)
+	})
+}
+
+// A relay_link_since that New cannot write never stops the hub: the key
+// stays unset and the check stays off.
+func TestRelayLinkSinceWriteFailureLeavesTheCheckOff(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		if err := w.st.DeleteMeta(switcher.MetaRelayLinkSince); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+			_, err := tx.Exec(`CREATE TRIGGER refuse_relay_link_since BEFORE INSERT ON hub_meta
+				WHEN NEW.key = 'relay_link_since' BEGIN SELECT RAISE(ABORT, 'refused'); END`)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		w.rebuild(nil) // New does not fail
+		if _, ok, err := w.st.Meta(switcher.MetaRelayLinkSince); err != nil || ok {
+			t.Fatalf("relay_link_since set %v (%v)", ok, err)
+		}
+		w.relayPhone(true)
+		w.relayLinkCheck()
+		w.wantReads(0)
+		w.wantActive(transport.KindCloudKit)
 	})
 }

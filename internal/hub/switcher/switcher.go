@@ -89,12 +89,16 @@ const (
 // time (seconds since 1970 as a decimal string, like enabled_at) and who
 // asked (a device id or wire.SwitchedByEntitlement), and the switch record
 // (switchRecord, JSON). metaAdoptedAt is the adoption's (internal/hub/adopt).
+// MetaRelayLinkSince is when the first build carrying the relay-link check
+// started the hub (stamp format, relaylink.go): a phone linked over a pairing
+// slot before it never moves the Mac by itself (spec Q5).
 const (
-	MetaTransport  = "transport"
-	MetaSwitchedAt = "switched_at"
-	MetaSwitchedBy = "switched_by"
-	metaSwitch     = "transport_switch"
-	metaAdoptedAt  = "adopted_at"
+	MetaTransport      = "transport"
+	MetaSwitchedAt     = "switched_at"
+	MetaSwitchedBy     = "switched_by"
+	MetaRelayLinkSince = "relay_link_since"
+	metaSwitch         = "transport_switch"
+	metaAdoptedAt      = "adopted_at"
 )
 
 // Config wires a Switcher. Relay may be nil (a desktop host without a relay
@@ -218,9 +222,7 @@ func New(c Config) (*Switcher, error) {
 		return nil, err
 	}
 	s.active = active
-	if err := s.markRelayLinkSince(); err != nil {
-		return nil, err
-	}
+	s.markRelayLinkSince()
 	r, ok, err := s.record()
 	if err != nil {
 		return nil, err
@@ -234,16 +236,6 @@ func New(c Config) (*Switcher, error) {
 	s.loadPending()
 	s.loadOwed()
 	return s, nil
-}
-
-// markRelayLinkSince writes hub_meta.relay_link_since once, at the first
-// start of a build that carries the relay-link check (relaylink.go); New is
-// its only writer and never rewrites it.
-func (s *Switcher) markRelayLinkSince() error {
-	if _, ok, err := s.c.Store.Meta(MetaRelayLinkSince); err != nil || ok {
-		return err
-	}
-	return s.c.Store.SetMeta(MetaRelayLinkSince, stamp(s.now()))
 }
 
 func (s *Switcher) storedActive() (transport.Kind, error) {
