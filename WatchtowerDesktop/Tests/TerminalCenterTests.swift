@@ -2,7 +2,7 @@ import XCTest
 import AppKit
 import GRDB
 @testable import WatchtowerDesktop
-import WatchtowerCore
+@testable import WatchtowerCore
 import WatchtowerTestSupport
 
 @MainActor
@@ -1141,6 +1141,326 @@ final class TerminalCenterTests: XCTestCase {
     /// the empty prompt and no bar asks for one; text they type after it
     /// is their own draft. A Return into a permission dialog sends nothing
     /// of the line and keeps the app's Return.
+    /// Review round 1: once the owner's own Return sent the pasted line in
+    /// its pause, their next keys are a draft of their own, kept exact —
+    /// typed and erased within the same pause, the prompt holds nothing.
+    func testAfterTheOwnersReturnInThePauseTheNextDraftStaysExact() async throws {
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+        onSleep = { [weak self] in
+            self?.sessions[0].onOwnerInput?([0x0D])
+            self?.sessions[0].onOwnerInput?(Array("n".utf8))
+            self?.sessions[0].onOwnerInput?([0x7F])
+        }
+
+        let delivery = await center.deliver("x", sessionID: s.id) { true }
+
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertNil(center.drafts[s.id], "typed and erased after the line went: an empty prompt")
+        XCTAssertFalse(center.promptHoldsText(s.id))
+    }
+
+    /// Controller ruling, review round 2: the app's own interrupt Esc (the
+    /// phone's Interrupt) is not the owner's typing and leaves the draft as
+    /// it was, so a correction the phone sends right after it is not held.
+    func testTheAppsInterruptLeavesTheDraft() throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+
+        XCTAssertTrue(center.sendInterrupt(sessionID: s.id))
+
+        XCTAssertEqual(sessions[0].inputs.last, [0x1B])
+        XCTAssertNil(center.drafts[s.id])
+        XCTAssertFalse(center.promptHoldsText(s.id))
+    }
+
+    /// Review round 5: a line ending in `\` gets no Return of ours, on a
+    /// v1-only host and through the v2 host alike — Claude Code reads one there
+    /// as a line break. It is left typed, and the owner's Return after it is a
+    /// line break too.
+    func testALineEndingInABackslashIsLeftTyped() async throws {
+        for v1Host in [true, false] {
+            let center = makeCenter(v1Host: v1Host)
+            let s = try row()
+            center.start(s, fresh: true)
+            let session = try XCTUnwrap(sessions.last)
+
+            let delivery = await center.deliver("x\\", sessionID: s.id) { true }
+
+            XCTAssertEqual(delivery, .pasted, "v1 host: \(v1Host)")
+            XCTAssertEqual(session.inputs, [bracketedPasteBytes("x\\")], "no Return of ours (v1 host: \(v1Host))")
+            XCTAssertTrue(center.promptHoldsText(s.id))
+            session.onOwnerInput?([0x0D])
+            XCTAssertTrue(center.promptHoldsText(s.id), "the owner's Return after `\\` (v1 host: \(v1Host))")
+        }
+    }
+
+    /// Review round 5: another client's line left typed (the hub's
+    /// `left_typed`, no text) may end in `\`, so the owner's next Return is
+    /// read as a line break and the mirror still holds.
+    func testAnotherClientsLineLeftTypedHoldsTheNextReturn() throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].onOwnerInput?(Array("a".utf8))
+
+        sessions[0].onDeliveryEvent?(SessionHostDeliveryEvent(row: 0, run: "", kind: .leftTyped, besideText: true))
+        sessions[0].onOwnerInput?([0x0D])
+
+        XCTAssertTrue(center.promptHoldsText(s.id))
+    }
+
+    /// Gate fix 2: an owner key that lands between the host's paste and its
+    /// `left_typed` event (the owner had `a\`, the line is `\x`, a Backspace
+    /// leaves `a\\`) leaves a `\` possible: their Return is a line break.
+    func testAnOwnerKeyBeforeTheLeftTypedEventLeavesTheBackslashPossible() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        let session = sessions[0]
+        session.host.event = { [weak session] event in
+            if event.kind == .leftTyped { session?.onOwnerInput?([0x7F]) }
+            session?.onDeliveryEvent?(event)
+        }
+        session.onOwnerInput?(Array("a\\".utf8))
+
+        let delivery = await center.deliver("\\x", sessionID: s.id) { false }
+
+        XCTAssertEqual(delivery, .pasted)
+        session.onOwnerInput?([0x0D])
+        XCTAssertTrue(center.promptHoldsText(s.id))
+    }
+
+    /// Review round 5: the host's "typed" reply comes after the owner kept
+    /// typing; it does not set the line's `\` again over their later keys.
+    func testALateTypedReplyKeepsTheOwnersLaterKeys() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        let session = sessions[0]
+        session.host.event = { [weak session] event in
+            session?.onDeliveryEvent?(event)
+            if event.kind == .leftTyped { session?.onOwnerInput?(Array("y".utf8)) }
+        }
+        session.onOwnerInput?(Array("a".utf8))
+
+        let delivery = await center.deliver("x\\", sessionID: s.id) { false }
+
+        XCTAssertEqual(delivery, .pasted)
+        session.onOwnerInput?([0x0D])
+        XCTAssertFalse(center.promptHoldsText(s.id), "`ax\\y` then Return is a submit")
+    }
+
+    /// T6 carried item 0a': the host's `left_typed` event may come after the
+    /// app's own "typed" reply (they travel on different connections). The
+    /// reply put the line in the mirror; the event, naming the same delivery,
+    /// does nothing more, so the owner's later `y` stands and their Return
+    /// submits `x\y`.
+    func testALeftTypedEventAfterTheReplyIsNotAppliedAgain() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        let session = sessions[0]
+        session.host.defersLeftTyped = true
+
+        let delivery = await center.deliver("x\\", sessionID: s.id) { false }
+
+        XCTAssertEqual(delivery, .pasted)
+        XCTAssertEqual(session.host.deferredEvents.map(\.id), [session.host.lines.last?.id])
+        session.onOwnerInput?(Array("y".utf8))
+        session.host.sendDeferredEvents()
+        session.onOwnerInput?([0x0D])
+        XCTAssertFalse(center.promptHoldsText(s.id), "`x\\y` then Return is a submit")
+        XCTAssertTrue(center.ownLines.isEmpty, "both halves came: nothing kept")
+    }
+
+    /// T6 carried item 0a' (codex gatefix2 #2): an owner key between the
+    /// line's `left_typed` event and the reply. The event applied the line's
+    /// `\`, so the owner's Return is a line break and the mirror holds; the
+    /// reply changes nothing.
+    func testAnOwnerReturnBetweenTheEventAndTheReplyIsALineBreak() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        let session = sessions[0]
+        var heldAfterTheReturn: Bool? // swiftlint:disable:this discouraged_optional_boolean
+        session.host.event = { [weak session, weak center] event in
+            session?.onDeliveryEvent?(event)
+            guard event.kind == .leftTyped else { return }
+            session?.onOwnerInput?([0x0D])
+            heldAfterTheReturn = center?.drafts[s.id]?.holdsText
+        }
+
+        let delivery = await center.deliver("x\\", sessionID: s.id) { false }
+
+        XCTAssertEqual(delivery, .pasted)
+        XCTAssertEqual(heldAfterTheReturn, true, "the Return after the line's `\\` is a line break")
+        XCTAssertTrue(center.promptHoldsText(s.id))
+    }
+
+    /// T6 carried item 0a' (fix round 1, codex P2): another client's line left
+    /// typed while the app's own delivery is in flight. The Mac cannot order the
+    /// owner's keys against a paste it did not ask for (a Backspace the host
+    /// read after the hub's paste may reach the mirror before its `pasted`
+    /// event), so the line's `\` stays unknown whatever its flag says — even
+    /// with no key at all here: the owner's first Return holds, the next one
+    /// submits.
+    func testAnotherClientsLineLeavesItsBackslashUnknown() async throws {
+        for foreign in ["z\\", "z"] {
+            let center = makeCenter()
+            let s = try row()
+            center.start(s, fresh: true)
+            let session = try XCTUnwrap(sessions.last)
+            session.host.event = { [weak session] event in
+                if event.kind == .pasted, session?.host.lines.count == 1 {
+                    session?.onDeliveryEvent?(SessionHostDeliveryEvent(row: 0, run: "", kind: .pasted))
+                    session?.onDeliveryEvent?(SessionHostDeliveryEvent(
+                        row: 0, run: "", kind: .leftTyped, id: "d1", endsInBackslash: foreign.hasSuffix("\\")
+                    ))
+                }
+                session?.onDeliveryEvent?(event)
+            }
+
+            let delivery = await center.deliver("y", sessionID: s.id) { false }
+
+            XCTAssertEqual(delivery, .pasted)
+            session.onOwnerInput?([0x0D])
+            XCTAssertTrue(center.promptHoldsText(s.id), "another client's \(foreign): the `\\` is unknown")
+            session.onOwnerInput?([0x0D])
+            XCTAssertFalse(center.promptHoldsText(s.id), "the second Return submits")
+        }
+    }
+
+    /// T6 carried item 0a': a host before the id and the flag says nothing of
+    /// the line's `\`: unknown, read as possible — the owner's Return holds.
+    func testALeftTypedEventWithoutTheFlagLeavesTheBackslashPossible() throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].onDeliveryEvent?(SessionHostDeliveryEvent(row: 0, run: "", kind: .pasted))
+        sessions[0].onDeliveryEvent?(SessionHostDeliveryEvent(row: 0, run: "", kind: .leftTyped))
+
+        sessions[0].onOwnerInput?([0x0D])
+
+        XCTAssertTrue(center.promptHoldsText(s.id))
+    }
+
+    /// T6 carried item 0b: an interrupted delivery has no reply and may have
+    /// no event. The owner's Backspace after the request began may have
+    /// landed after the paste, behind the line rather than their own `a\`:
+    /// the `\` is unknown and their Return holds. With no key meanwhile the
+    /// line's own `\` (none) stands, and the Return submits.
+    func testAnInterruptedDeliveryAfterTheOwnersKeyLeavesTheBackslashUnknown() async throws {
+        for (keyed, holds) in [(true, true), (false, false)] {
+            let center = makeCenter()
+            let s = try row()
+            center.start(s, fresh: true)
+            let session = try XCTUnwrap(sessions.last)
+            if keyed {
+                session.onOwnerInput?(Array("a\\".utf8))
+                session.host.onRequest = { [weak session] in session?.onOwnerInput?([0x7F]) }
+            }
+            session.host.forced = .interrupted
+
+            let delivery = await center.deliver("x", sessionID: s.id) { true }
+
+            XCTAssertEqual(delivery, .mayBeTyped)
+            XCTAssertTrue(center.promptHoldsText(s.id))
+            session.onOwnerInput?([0x0D])
+            XCTAssertEqual(center.promptHoldsText(s.id), holds, "owner's key meanwhile: \(keyed)")
+        }
+    }
+
+    /// T6 carried item 0c: a line ending in `\` never asks for the host's
+    /// Return, whatever the session's state allows — a v2 host from before
+    /// `ends_in_backslash` would press it into a line break.
+    func testALineEndingInABackslashAsksForNoReturn() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+
+        _ = await center.deliver("x\\", sessionID: s.id) { true }
+        _ = await center.deliver("y", sessionID: s.id) { true }
+
+        XCTAssertEqual(sessions[0].host.lines.map(\.submitIf), [false, true], "only the line ending in `\\`")
+        XCTAssertNotEqual(sessions[0].host.lines[0].id, sessions[0].host.lines[1].id)
+        XCTAssertTrue(sessions[0].host.lines[0].id.hasPrefix("mac-"), "the app names its own requests")
+    }
+
+    /// Fix round 1 (codex P2): the prompt preview is the cursor's row of the
+    /// live screen; while the owner has scrolled the terminal back the rows
+    /// shown are history, so there is none.
+    func testCursorRowTextIsTheLiveScreensAndNoneWhenScrolledBack() throws {
+        let view = PalettedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let history = (1...80).map { "line \($0)\r\n" }.joined()
+        view.feedOutput(Array((history + "> look at the window").utf8)[...])
+
+        XCTAssertEqual(view.cursorRowText(), "> look at the window")
+        view.scrollUp(lines: 10)
+        XCTAssertNil(view.cursorRowText(), "scrolled back: the shown rows are history")
+        view.scroll(toPosition: 1)
+        XCTAssertEqual(view.cursorRowText(), "> look at the window")
+    }
+
+    /// T6 carried item 0d: closing a session drops its key count and the
+    /// app's lines still waiting for their event.
+    func testCloseForgetsTheMirrorsBookkeeping() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].host.defersLeftTyped = true
+        sessions[0].onOwnerInput?(Array("a".utf8))
+        _ = await center.deliver("x", sessionID: s.id) { false }
+        XCTAssertNotNil(center.ownerKeys[s.id])
+        XCTAssertEqual(center.ownLines.count, 1, "the reply came, its event not yet")
+
+        await center.close(sessionID: s.id)
+
+        XCTAssertNil(center.ownerKeys[s.id])
+        XCTAssertTrue(center.ownLines.isEmpty)
+    }
+
+    /// Review round 4: a line the host left typed beside the owner's `a\`
+    /// restarts the mirror's run. The host pasted `\x`; a Backspace leaves
+    /// `a\\`, so the owner's Return is a line break and the prompt holds text.
+    func testALineLeftTypedRestartsTheMirrorsRun() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].onOwnerInput?(Array("a".utf8))
+        sessions[0].onOwnerInput?(Array("\\".utf8))
+
+        // The host leaves it typed (the session's state does not allow a Return).
+        let delivery = await center.deliver("\\x", sessionID: s.id) { false }
+
+        XCTAssertEqual(delivery, .pasted)
+        sessions[0].onOwnerInput?([0x7F])
+        sessions[0].onOwnerInput?([0x0D])
+        XCTAssertTrue(center.promptHoldsText(s.id), "the Return after `a\\\\` is a line break")
+    }
+
+    /// Review round 4: the owner's keys append to the mirror's run in place —
+    /// the center keeps no copy of the draft beside it — and a profile whose
+    /// Backspace never reads the run keeps none.
+    func testTheMirrorsRunIsKeptOnlyWhereRead() throws {
+        let center = makeCenter()
+        let claude = try row()
+        let shell = try row(kind: .shell)
+        center.start(claude, fresh: true)
+        center.start(shell, fresh: true)
+        for _ in 0..<200 {
+            sessions[0].onOwnerInput?(Array("x".utf8))
+            sessions[1].onOwnerInput?(Array("x".utf8))
+        }
+
+        XCTAssertEqual(center.drafts[claude.id]?.count, 200)
+        XCTAssertEqual(center.drafts[claude.id]?.runLength, 200)
+        XCTAssertEqual(center.drafts[shell.id]?.count, 200)
+        XCTAssertEqual(center.drafts[shell.id]?.runLength, 0, "an unidentified agent's draft keeps no run")
+    }
+
     func testTheOwnersReturnDuringThePauseSkipsOurs() async throws {
         let center = makeCenter(v1Host: true)
         let s = try row()
@@ -1154,7 +1474,7 @@ final class TerminalCenterTests: XCTestCase {
             XCTAssertEqual(delivery, .submitted, name)
             XCTAssertEqual(Array(sessions[0].inputs.dropFirst(before)), [bracketedPasteBytes("x")], "\(name): no Return of ours")
             XCTAssertFalse(center.pasteHints.contains(s.id), name)
-            XCTAssertFalse(center.promptDrafts.contains(s.id), name)
+            XCTAssertFalse(center.drafts[s.id]?.holdsText == true, name)
         }
 
         onSleep = { [weak self] in
@@ -1165,7 +1485,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(thenTyped, .submitted)
         XCTAssertFalse(sessions[0].inputs.contains([0x0D]))
         XCTAssertFalse(center.pasteHints.contains(s.id), "the line went; the draft is the owner's own")
-        XCTAssertTrue(center.promptDrafts.contains(s.id), "a later Return of ours would submit it")
+        XCTAssertTrue(center.drafts[s.id]?.holdsText == true, "a later Return of ours would submit it")
 
         sessions[0].onOwnerInput?([0x0D])
         center.inputAnswersDialog = { _ in true }
@@ -1211,7 +1531,7 @@ final class TerminalCenterTests: XCTestCase {
 
             XCTAssertEqual(delivery, .pasted, name)
             XCTAssertEqual(session.inputs, [bracketedPasteBytes("x")], "\(name): no Return of ours")
-            XCTAssertTrue(center.promptDrafts.contains(s.id), "\(name): the next line must not submit it")
+            XCTAssertTrue(center.drafts[s.id]?.holdsText == true, "\(name): the next line must not submit it")
             XCTAssertTrue(center.pasteHints.contains(s.id), "\(name): the bar asks for Return")
         }
     }
@@ -1236,7 +1556,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(delivery, .submitted)
         XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x")], "no Return of ours")
         XCTAssertFalse(center.pasteHints.contains(s.id))
-        XCTAssertFalse(center.promptDrafts.contains(s.id))
+        XCTAssertFalse(center.drafts[s.id]?.holdsText == true)
     }
 
     /// PROJ-12: a line the app left without its Return is still in the
@@ -1661,13 +1981,13 @@ final class TerminalCenterTests: XCTestCase {
         center.start(s, fresh: true)
         _ = await center.deliver("x", sessionID: s.id) { false }
         XCTAssertTrue(center.pasteHints.contains(s.id))
-        XCTAssertTrue(center.promptDrafts.contains(s.id))
+        XCTAssertTrue(center.drafts[s.id]?.holdsText == true)
 
         sessions[0].exit(0)
         center.start(s, fresh: false)
 
         XCTAssertFalse(center.pasteHints.contains(s.id), "a new run starts with no paste bar")
-        XCTAssertFalse(center.promptDrafts.contains(s.id))
+        XCTAssertFalse(center.drafts[s.id]?.holdsText == true)
         let next = await center.deliver("y", sessionID: s.id) { true }
         XCTAssertEqual(next, .submitted)
     }

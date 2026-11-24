@@ -2,6 +2,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import WatchtowerChatText
 import WatchtowerDesign
 
 /// The Mac's layout of the shared composer (the look it had before the composer moved into ChatUI).
@@ -44,6 +45,8 @@ enum ComposerPlatform {
 /// The paperclip.
 struct ComposerAttachButton: View {
     let help: String
+    /// Set: the menu `ComposerAttachMenu` opens under this button.
+    var anchor: ComposerMenuAnchor?
     let action: () -> Void
 
     var body: some View {
@@ -52,10 +55,128 @@ struct ComposerAttachButton: View {
                 .font(.system(size: IconSize.composer))
                 .foregroundStyle(.secondary)
         }
+        .background { if let anchor { ComposerMenuAnchorView(anchor: anchor) } }
         .buttonStyle(.borderless)
         .accessibilityLabel("Attach files")
         .help(help)
         .padding(.bottom, Spacing.compact)
+    }
+}
+
+/// What the paperclip menu may look at on the clipboard (#2201 §4): the advertised types and how many items carry
+/// a file URL — never the content, which only the Paste action reads (`PastingTextView.paste(_:)`), so opening the
+/// menu cannot trigger the system's paste-privacy prompt.
+protocol PasteboardAdvert {
+    var advertisedTypes: [String] { get }
+    /// Items carrying `public.file-url` (one per Finder file).
+    var fileItemCount: Int { get }
+}
+
+extension NSPasteboard: PasteboardAdvert {
+    var advertisedTypes: [String] { types?.map(\.rawValue) ?? [] }
+    var fileItemCount: Int { pasteboardItems?.filter { $0.types.contains(.fileURL) }.count ?? 0 }
+}
+
+/// The paperclip menu's paste item (#2201 §4): titled by what the clipboard advertises.
+enum ComposerPasteMenu {
+    /// The item while the clipboard holds nothing the field takes (disabled).
+    static let unavailableTitle = "Paste from clipboard"
+    static let attachTitle = "Attach files…"
+
+    /// nil → nothing usable: the item is disabled. `fileCount` is the number of Finder files (0: unknown).
+    static func title(for action: PasteAction?, fileCount: Int) -> String? {
+        switch action {
+        case nil: nil
+        case .attachImage: "Paste screenshot"
+        case .attachFiles:
+            switch fileCount {
+            case ...0: "Paste files"
+            case 1: "Paste 1 file"
+            default: "Paste \(fileCount) files"
+            }
+        case .attachPDF: "Paste PDF"
+        case .insertText: "Paste text"
+        }
+    }
+
+    /// Types a Finder copy advertises: either one means files, even when the items cannot be counted.
+    private static let fileTypes = [NSPasteboard.PasteboardType.fileURL.rawValue, "NSFilenamesPboardType"]
+
+    /// What ⌘V would most likely do, from the advertised types alone; nil when nothing usable is advertised. The
+    /// one guess: text beside an image is the image when a URL type is there too (a browser's "Copy Image" puts
+    /// the image's link beside it), otherwise the text — `PasteClassifier` decides for real on the paste.
+    static func action(advertised: some PasteboardAdvert) -> PasteAction? {
+        let types = advertised.advertisedTypes
+        if types.contains(where: fileTypes.contains) { return .attachFiles([]) }
+        let hasText = types.contains(NSPasteboard.PasteboardType.string.rawValue)
+        let hasImage = types.contains(where: PasteClassifier.isImageType)
+        let hasLink = types.contains(NSPasteboard.PasteboardType.URL.rawValue)
+        if hasText, !(hasImage && hasLink) { return .insertText(offerAsFile: false) }
+        if hasImage { return .attachImage }
+        if types.contains(PasteClassifier.pdfType) { return .attachPDF }
+        return nil
+    }
+}
+
+/// Where the paperclip's menu opens: the button's own view, set by `ComposerAttachButton`.
+final class ComposerMenuAnchor {
+    weak var view: NSView?
+}
+
+/// The Workchat's paperclip (`ChatComposerFieldConfig.pasteMenu`): "Paste …" and "Attach files…", under the
+/// paperclip. The paste item's title comes from the clipboard's advertised types; its action asks the field to
+/// paste, which reads the content.
+@MainActor
+final class ComposerAttachMenu: NSObject {
+    let menu = NSMenu()
+    private let paste: () -> Void
+    private let attach: () -> Void
+
+    init(advertised: some PasteboardAdvert, paste: @escaping () -> Void, attach: @escaping () -> Void) {
+        self.paste = paste
+        self.attach = attach
+        super.init()
+        let action = ComposerPasteMenu.action(advertised: advertised)
+        let title = ComposerPasteMenu.title(for: action, fileCount: advertised.fileItemCount)
+        menu.autoenablesItems = false
+        let pasteItem = NSMenuItem(title: title ?? ComposerPasteMenu.unavailableTitle,
+                                   action: #selector(pastePicked), keyEquivalent: "v")
+        pasteItem.target = self
+        pasteItem.isEnabled = title != nil
+        menu.addItem(pasteItem)
+        let attachItem = NSMenuItem(title: ComposerPasteMenu.attachTitle, action: #selector(attachPicked),
+                                    keyEquivalent: "")
+        attachItem.target = self
+        menu.addItem(attachItem)
+    }
+
+    @objc private func pastePicked() { paste() }
+    @objc private func attachPicked() { attach() }
+
+    /// Opens under the paperclip (at the mouse when the button's view is gone); returns once it closes.
+    static func show(anchor: ComposerMenuAnchor, paste: @escaping () -> Void, attach: @escaping () -> Void) {
+        let control = ComposerAttachMenu(advertised: NSPasteboard.general, paste: paste, attach: attach)
+        if let view = anchor.view {
+            let below = NSPoint(x: 0, y: view.isFlipped ? view.bounds.maxY + Spacing.small : -Spacing.small)
+            control.menu.popUp(positioning: nil, at: below, in: view)
+        } else {
+            control.menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        }
+    }
+}
+
+/// Hands the paperclip's view to its `ComposerMenuAnchor`.
+private struct ComposerMenuAnchorView: NSViewRepresentable {
+    let anchor: ComposerMenuAnchor
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        anchor.view = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        anchor.view = view
     }
 }
 

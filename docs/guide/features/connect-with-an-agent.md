@@ -22,6 +22,17 @@ since: 0.29.2
 action: nav:connections
 -->
 
+<!-- learn
+id: connect-agent-chrome-check
+title: Connect Claude in Chrome from the panel
+text: No Claude in Chrome? The connect panel shows how to add it; press **Check again**, or go on in words.
+area: setup
+level: next
+kind: tip
+since: 0.29.3
+action: nav:connections
+-->
+
 **It presses Watchtower's own buttons.** The assistant starts the same sign-ins the forms start, so nothing new is stored and one connect runs at a time. It follows a written playbook per connector; you can read each one under [Connect with an agent](../README.md#connect-with-an-agent) in this guide.
 
 **It speaks your language and starts from what you chose.** The assistant writes in your **Assistant language** (**Settings → General**), or in the one you write to it in, and names buttons as they read on screen. What you already picked, such as the services and the company name in the company setup wizard, it takes as given and asks only for what is missing. Every page it sends you to is a link you can click.
@@ -71,8 +82,6 @@ action: nav:connections
 **"Slack is already connecting in another window"**. Another connect is running. Press **Open it** to finish or cancel that one first.
 
 **"Still not connected."** after **Check again**. Chrome still has no signed-in Claude extension. Check that the extension is signed in with the same claude.ai account as Claude on your Mac, restart Chrome, and press **Check again**, or press **Continue without the browser**.
-
-**It stays on Working on it… and nothing happens.** Claude may be stuck checking for your browser. Press **Cancel**, check that the Claude in Chrome extension is connected, then press **Start** again, or choose **Guide me in words**.
 
 **An account needs attention.** The assistant doesn't reconnect existing accounts; use **Reconnect** or **Re-login** as in [An account needs attention](../troubleshooting/account-needs-attention.md).
 

@@ -31,7 +31,18 @@ since: 0.29.0
 action: nav:connections
 -->
 
-1. Open **Connections** and press **Set up for my company** under **Companies**, or pick it at the end of the **Connect…** menu. Connections → Slack, the Atlassian banner and the empty Jira page have the same button. With Claude or Codex installed, **Connect with Claude** under **Companies** (**Set up for my company with Claude** in the menu and on a service's page) lets [the assistant](../features/connect-with-an-agent.md) walk these steps with you.
+<!-- learn
+id: company-setup-with-agent
+title: Hand the company setup to the assistant
+text: Press **Set up with Claude** on any step of **Set up for my company**; the assistant asks only for what is missing.
+area: setup
+level: next
+kind: tip
+since: 0.29.3
+action: nav:connections
+-->
+
+1. Open **Connections** and press **Set up for my company** under **Companies**, or pick it at the end of the **Connect…** menu. Connections → Slack, the Atlassian banner and the empty Jira page have the same button. With Claude or Codex installed, **Connect with Claude** under **Companies** (**Set up for my company with Claude** in the menu and on a service's page) lets [the assistant](../features/connect-with-an-agent.md) walk these steps with you. Inside the wizard, **Set up with Claude** at the top of every step hands it over: the assistant takes what you already chose (the services, the company name, Slack's app) as given.
 2. On **Services**, tick what your company uses. Only those become steps; anything else connects through [Quick Connections](../features/quick-connections.md).
 3. Each service step first lists the apps this Mac already knows under **Found on this Mac**. Pick one to reuse it, or choose **Create new** (Watchtower walks you through the vendor's console) or **We already have one** (paste what identifies it: for Slack, the app's **App ID**, which starts with A, from api.slack.com/apps → your app → **Basic Information**, or a link to the app). Watchtower never creates a second app by accident.
 4. Google and Atlassian are checked by your own sign-in, which also connects your own account and stores the company setup. Linear and Microsoft 365 are checked without a sign-in. For Atlassian, tick the three settings under **Confirm the app's settings**; Atlassian gives no way to read them.
@@ -80,6 +91,8 @@ The top of **Connections** lists each stored company as a card: how many of its 
 - **The browser shows "This link does not work".** The link is damaged, cut short or too long. Ask your admin for a fresh link or the code.
 - **"This link needs a newer Watchtower".** Update Watchtower from its menu, then open the link again.
 - **"Another link is waiting".** Answer the open question in Watchtower first.
+- **"Slack would not let this token change app …"** on the Slack step. Make the configuration token in the workspace the app was made in, signed in as one of the app's collaborators, and press **Try again**. If you can't, press **Create a new app instead**: Watchtower makes a second app with the same token, and the company link uses that one.
+- **"This workspace already has a Watchtower app. Paste its App ID to update it."** **Create the app** found the app a Slack account on this Mac uses, but not its App ID. Paste it (or a link to the app). When Watchtower knows the App ID, it reads that app instead and shows what **Update the app** would change.
 - **You clicked the link during Watchtower's first-run Setup.** The question waits until Setup ends; a pasted code asks you to finish Setup first.
 
 ## Related

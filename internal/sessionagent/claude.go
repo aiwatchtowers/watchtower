@@ -161,6 +161,8 @@ func (claudeAdapter) WireAgent() string { return "claude_code" }
 
 func (claudeAdapter) ComposerNewline() []byte { return nil }
 
+func (claudeAdapter) ComposerExactBackspace() bool { return true }
+
 // LaunchCommand: `exec claude` with the app's id, `--resume` for a resume.
 // A first prompt travels in FirstPromptEnv: /bin/sh reads it whatever the
 // login shell, and `env -u` keeps it out of everything Claude Code runs.

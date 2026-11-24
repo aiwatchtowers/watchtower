@@ -1,4 +1,5 @@
 import GRDB
+import WatchtowerChatText
 import WatchtowerCore
 import XCTest
 @testable import WatchtowerDesktop
@@ -128,8 +129,20 @@ final class CodeIndexCenterTests: XCTestCase {
         center.markShown(root: otherWorkbench)
         XCTAssertTrue(center.index(for: root(7)) === mainIndex, "another workbench's main root leaves it alone")
 
+        // Another bench folder's own (main) root: no stale root of the home folder, and the other way round
+        // (two Workchats on two bench folders, #2201 T2 review).
+        let hub = WorkbenchFolder(id: 5, workbenchID: 7, folderPath: moved.appendingPathComponent("hub").path,
+                                  position: 1, name: "hub")
+        let hubRoot = CodeRoot(folder: hub, homeFolderID: 3)
+        center.markShown(root: hubRoot)
+        let hubIndex = center.index(for: hubRoot)
+        XCTAssertTrue(center.index(for: root(7)) === mainIndex, "another bench folder leaves the home index alone")
+        center.markShown(root: root(7))
+        XCTAssertTrue(center.index(for: hubRoot) === hubIndex, "and the home folder leaves the other folder's")
+
         center.markShown(root: movedRoot)
         XCTAssertFalse(center.index(for: root(7)) === mainIndex, "the stale main index is released")
+        XCTAssertTrue(center.index(for: hubRoot) === hubIndex, "a move of the home folder leaves another folder's")
         XCTAssertTrue(center.index(for: worktree) === worktreeIndex, "the worktree's index stays")
     }
 
@@ -285,6 +298,76 @@ final class CodeIndexCenterTests: XCTestCase {
         files.stopShowing(project.mainCodeRoot)
         center.releaseIdleIndexes(now: clock.now + 300)
         XCTAssertFalse(center.index(for: root(7)) === index)
+    }
+
+    /// The Workchat's production wiring (#2201 T2 review round 3): its lease holds the root in the Files centre with
+    /// FILES closed, the centre's batches reach this index, and a duplicate base name joining the index turns a bare
+    /// file name plain — no longer coloured, and a click on it opens nothing.
+    func testAWorkchatHoldTurnsABareNamePlainWhenADuplicateAppearsWithFilesClosed() async throws {
+        let debounceClock = HandMovedDebounceClock()
+        let center = makeCenter(["STUB_FILES": "lib/a.swift"], debounceClock: debounceClock)
+        let files = CodeFilesCenter(
+            defaults: UserDefaults(suiteName: "CodeIndexCenterTests-\(UUID().uuidString)") ?? .standard,
+            gitRead: { _ in .noRepository }, watchesFolders: false
+        )
+        files.codeIndex = center
+        let lease = WorkchatIndexLease()
+        lease.hold(root(7), in: files)
+        defer { lease.release() }
+        let index = center.index(for: root(7))
+        let ready = await eventually { index.state == .ready }
+        XCTAssertTrue(ready)
+
+        let highlights = WorkchatHighlights()
+        func resolves() -> Bool {
+            highlights.resolves("a.swift", messageID: 1, root: root(7), epoch: 0, revision: index.filesRevision,
+                                indexFiles: index.files)
+        }
+        _ = resolves()
+        await highlights.lookupsFinished()
+        XCTAssertTrue(resolves(), "a unique base name is coloured")
+
+        try "x\n".write(to: folder.appendingPathComponent("lib/sub/a.swift"), atomically: true, encoding: .utf8)
+        files.handle(FolderWatcher.Batch(paths: ["lib/sub/a.swift"]), root: root(7))
+        await debounceClock.untilSleeps(1)
+        debounceClock.advance(by: .milliseconds(300))
+        let joined = await eventually { index.files.contains("lib/sub/a.swift") }
+        XCTAssertTrue(joined, "files: \(index.files)")
+        _ = resolves()
+        await highlights.lookupsFinished()
+        XCTAssertFalse(resolves(), "ambiguous now: plain")
+        let text = "a.swift"
+        let span = AgentTextHighlights.Span(range: text.startIndex ..< text.endIndex, kind: .path, text: text)
+        let click = await highlights.action(
+            for: span, messageID: 1, root: root(7),
+            index: .init(files: { index.files }, revision: { index.filesRevision })
+        )
+        XCTAssertEqual(click, .nothing)
+    }
+
+    /// A bench folder retired and then back on the bench (round 4): held again, its index runs in full, so a
+    /// file list kept within the idle time is not trusted.
+    func testARestoredFolderRunsItsIndexAgain() async {
+        let center = makeCenter()
+        let files = CodeFilesCenter(
+            defaults: UserDefaults(suiteName: "CodeIndexCenterTests-\(UUID().uuidString)") ?? .standard,
+            gitRead: { _ in .noRepository }, watchesFolders: false
+        )
+        files.codeIndex = center
+        let hub = WorkbenchFolder(id: 5, workbenchID: 7, folderPath: folder.path, position: 1, name: "hub")
+        let removed = WorkbenchFolder(id: 5, workbenchID: 7, folderPath: folder.path, position: 1,
+                                      removedAt: "2026-11-24T00:00:00Z", name: "hub")
+        let hubRoot = CodeRoot(folder: hub, homeFolderID: 3)
+        let lease = WorkchatIndexLease()
+        lease.hold(hubRoot, in: files)
+        defer { lease.release() }
+        let index = center.index(for: hubRoot)
+        let ready = await eventually { index.state == .ready }
+        XCTAssertTrue(ready)
+        files.retireRootsOffTheBench([7: BenchFolders(folders: [removed], homeID: 3)])
+        lease.hold(hubRoot, in: files)
+        let again = await eventually { self.stub.fullRuns == 2 && index.state == .ready }
+        XCTAssertTrue(again, "full runs: \(stub.fullRuns)")
     }
 
     // MARK: Rules file (spec §6.5)

@@ -160,7 +160,8 @@ operations that never bind the connection to a session, so the hub never takes a
 `List`, `InputTo` (bytes into one run and launch — the phone's Interrupt Esc, the Desktop pane's terminal replies and app input (#1743); never the owner's draft), `Deliver`
 (PROJ-12's typed-never-submitted delivery inside the host: bracketed paste, the settle pause, `DeliverCheck` before
 the Return, `hold_if_prompt_text` for PROJ-16 lines; outcomes `submitted`, `typed`, `held`, `no_paste_mode`,
-`no_session`), `PromptHint` and `Stop` (the exit carries `requested`, so no PROJ-18 cleanup follows). Every launch of a
+`no_session`; the attached client's `DeliveryEvent` `left_typed` names the request `id` and the line's
+`ends_in_backslash`, both absent from an older host), `PromptHint` and `Stop` (the exit carries `requested`, so no PROJ-18 cleanup follows). Every launch of a
 row gets the next value of a per-row launch counter; `InputTo`, `Deliver` and `Stop` name it. PROJ-12, PROJ-16, PROJ-20
 and PROJ-21 list the Go guards (`docs/inventory/workbench.md`).
 

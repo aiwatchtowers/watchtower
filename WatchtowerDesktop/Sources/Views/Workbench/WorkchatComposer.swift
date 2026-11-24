@@ -46,7 +46,8 @@ struct WorkchatComposer: View {
                     focusRequest: focusRequest,
                     sendWhileStreaming: true,
                     inlinePastes: true,
-                    livePastes: model.pastes.mapValues(\.kind)
+                    livePastes: model.pastes.mapValues(\.kind),
+                    pasteMenu: true
                 ),
                 onSend: send,
                 onStop: stop,
@@ -106,6 +107,10 @@ struct WorkchatOutgoingBubble: View {
     var working = false
     /// The line waits for the agent to stop (`WorkchatModel.holdsUntilIdle`).
     var holdsUntilIdle = false
+    /// The terminal prompt's line under a line held for its text (`WorkchatModel.holdPreview`).
+    var holdPreview: String?
+    /// Send together, offered for a line held for the prompt's text (`WorkchatModel.sendTogether`).
+    var onSendTogether: (() -> Void)?
     let onCancel: () -> Void
     let onShowTerminal: () -> Void
 
@@ -141,18 +146,37 @@ struct WorkchatOutgoingBubble: View {
     }
 
     /// `WorkchatOutgoing.caption`, with the state's link after it; the send
-    /// time where it has none.
+    /// time where it has none. A line held for a known reason (spec §6.3)
+    /// says it, shows the prompt's line when held for its text, and puts its
+    /// text-button actions on a row of their own.
     @ViewBuilder
     private var caption: some View {
         let text = WorkchatOutgoing.caption(
-            state: line.state, working: working, holdsUntilIdle: holdsUntilIdle, sentWhileBusy: line.sentWhileBusy
+            state: line.state, working: working, holdsUntilIdle: holdsUntilIdle, sentWhileBusy: line.sentWhileBusy,
+            holdReason: line.holdReason
         )
-        if let text {
+        if line.state == .queued, line.holdReason != nil, let text {
+            VStack(alignment: .trailing, spacing: Spacing.tight) {
+                Text(text)
+                if let holdPreview {
+                    Text(holdPreview).font(.caption.monospaced()).lineLimit(1).truncationMode(.head)
+                }
+                HStack(spacing: Spacing.medium) {
+                    if line.holdReason == .promptHasText, let onSendTogether {
+                        Button(WorkchatOutgoing.sendTogether, action: onSendTogether)
+                            .buttonStyle(KitQuietButtonStyle(label: .secondary))
+                    }
+                    Button(WorkchatOutgoing.cancel, action: onCancel)
+                        .buttonStyle(KitQuietButtonStyle(label: Color(nsColor: .tertiaryLabelColor)))
+                }
+            }
+            .font(.caption)
+        } else if let text {
             HStack(spacing: Spacing.small) {
                 Text(text)
                 switch line.state {
                 case .queued:
-                    Button("Cancel", action: onCancel).buttonStyle(.link)
+                    Button(WorkchatOutgoing.cancel, action: onCancel).buttonStyle(.link)
                 case .typed, .copied:
                     Button("Show in Terminal", action: onShowTerminal).buttonStyle(.link)
                 case .sending, .sent, .notSent:

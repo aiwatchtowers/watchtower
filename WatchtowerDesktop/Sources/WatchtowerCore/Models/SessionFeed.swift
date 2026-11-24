@@ -106,6 +106,77 @@ package struct SessionFeedPeer: Decodable, Equatable, Sendable {
     }
 }
 
+/// The `task` payload (Go `sessionfeed.TaskRef`) of a task-notification `event`: an agent or a background command
+/// Claude Code ran finished. `result` is "" when the notice held only Claude Code's delivery boilerplate and the
+/// feed found no handback for it.
+package struct SessionFeedTask: Decodable, Equatable, Sendable {
+    package var taskID: String
+    package var toolUseID: String
+    /// "completed", "failed", "killed", …
+    package var status: String
+    package var summary: String
+    package var result: String
+    package var outputFile: String
+    package var tokens: Int
+    package var toolUses: Int
+    package var durationMS: Int
+    /// "agent" or "command".
+    package var kind: String
+    /// A background command's exit code; nil when the notice gave none.
+    package var exitCode: Int?
+
+    package init(
+        taskID: String = "",
+        toolUseID: String = "",
+        status: String = "",
+        summary: String = "",
+        result: String = "",
+        outputFile: String = "",
+        tokens: Int = 0,
+        toolUses: Int = 0,
+        durationMS: Int = 0,
+        kind: String = "",
+        exitCode: Int? = nil
+    ) {
+        self.taskID = taskID
+        self.toolUseID = toolUseID
+        self.status = status
+        self.summary = summary
+        self.result = result
+        self.outputFile = outputFile
+        self.tokens = tokens
+        self.toolUses = toolUses
+        self.durationMS = durationMS
+        self.kind = kind
+        self.exitCode = exitCode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case taskID = "task_id"
+        case toolUseID = "tool_use_id"
+        case outputFile = "output_file"
+        case toolUses = "tool_uses"
+        case durationMS = "duration_ms"
+        case exitCode = "exit_code"
+        case status, summary, result, tokens, kind
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        taskID = try c.decodeIfPresent(String.self, forKey: .taskID) ?? ""
+        toolUseID = try c.decodeIfPresent(String.self, forKey: .toolUseID) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        result = try c.decodeIfPresent(String.self, forKey: .result) ?? ""
+        outputFile = try c.decodeIfPresent(String.self, forKey: .outputFile) ?? ""
+        tokens = try c.decodeIfPresent(Int.self, forKey: .tokens) ?? 0
+        toolUses = try c.decodeIfPresent(Int.self, forKey: .toolUses) ?? 0
+        durationMS = try c.decodeIfPresent(Int.self, forKey: .durationMS) ?? 0
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
+        exitCode = try c.decodeIfPresent(Int.self, forKey: .exitCode)
+    }
+}
+
 package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
     /// Kinds this app renders; anything else is forward-compatible noise.
     package static let knownKinds: Set<String> = [
@@ -130,6 +201,8 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
     package var subagent: SessionFeedSubagent?
     /// Who a `peer` entry is from or to.
     package var peer: SessionFeedPeer?
+    /// A task notification's fields (an `event` of type "task" from a newer CLI); nil otherwise.
+    package var task: SessionFeedTask?
 
     package init(
         id: String,
@@ -142,7 +215,8 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
         via: String? = nil,
         eventType: String? = nil,
         subagent: SessionFeedSubagent? = nil,
-        peer: SessionFeedPeer? = nil
+        peer: SessionFeedPeer? = nil,
+        task: SessionFeedTask? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -155,10 +229,11 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
         self.eventType = eventType
         self.subagent = subagent
         self.peer = peer
+        self.task = task
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, at, text, conversation, title, via, subagent, peer
+        case id, kind, at, text, conversation, title, via, subagent, peer, task
         case askID = "ask_id"
         case eventType = "event_type"
     }
@@ -176,6 +251,7 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
         eventType = try c.decodeIfPresent(String.self, forKey: .eventType)
         subagent = try c.decodeIfPresent(SessionFeedSubagent.self, forKey: .subagent)
         peer = try c.decodeIfPresent(SessionFeedPeer.self, forKey: .peer)
+        task = try c.decodeIfPresent(SessionFeedTask.self, forKey: .task)
     }
 
     /// RFC 3339 with or without fractional seconds; Go's zero time and
@@ -210,11 +286,14 @@ package struct SessionFeedPayload: Decodable, Sendable {
     /// A `--tail` read's page start: the id to pass as `--before` for the
     /// page before it; "" when absent (nothing earlier, or not a tail read).
     package var before: String
+    /// Each Claude Code conversation's transcript directory (the folder's or a worktree's project); empty from a
+    /// `--subagent` read, a Codex session or an older CLI.
+    package var transcriptDirs: [String: String]
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case cursor, entries, subagents, activity, live, before
-        case liveOK = "live_ok", liveError = "live_error"
+        case liveOK = "live_ok", liveError = "live_error", transcriptDirs = "transcript_dirs"
     }
 
     package init(from decoder: Decoder) throws {
@@ -228,5 +307,6 @@ package struct SessionFeedPayload: Decodable, Sendable {
         liveOK = try c.decodeIfPresent(Bool.self, forKey: .liveOK) ?? false
         liveError = try c.decodeIfPresent(String.self, forKey: .liveError)
         before = try c.decodeIfPresent(String.self, forKey: .before) ?? ""
+        transcriptDirs = try c.decodeIfPresent([String: String].self, forKey: .transcriptDirs) ?? [:]
     }
 }

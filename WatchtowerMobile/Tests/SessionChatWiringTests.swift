@@ -24,7 +24,13 @@ final class SessionChatWiringTests: XCTestCase {
                 AsyncStream { continuation in
                     spy.tick = continuation
                     let ended = spy.ended.continuation
-                    continuation.onTermination = { _ in ended.yield() }
+                    // AsyncStream runs onTermination on cancel BEFORE it finishes the
+                    // stream, so a test woken by `ended` could still see `.enqueued`.
+                    // Finish first (safe here: the handler is already swapped out).
+                    continuation.onTermination = { _ in
+                        continuation.finish()
+                        ended.yield()
+                    }
                 }
             },
             send: { route in spy.sent.append("\(route.sessionID)/\(route.agentID ?? "-")/\(route.toolUseID ?? "-")") }

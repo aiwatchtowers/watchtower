@@ -15,14 +15,14 @@ final class WorkchatPaneMemoryTests: XCTestCase {
         XCTAssertTrue(memory.doneOpen("p", default: false))
     }
 
-    func testStepsOpenByDefaultToggleRemembered() {
+    func testStepsClosedByDefault() {
         let memory = WorkchatPaneMemory()
-        XCTAssertTrue(memory.stepsOpen("p"), "the steps list is open by default (C1)")
-        memory.toggleSteps("p")
-        XCTAssertFalse(memory.stepsOpen("p"))
-        XCTAssertTrue(memory.stepsOpen("q"), "another pane keeps the default")
+        XCTAssertFalse(memory.stepsOpen("p"), "the steps list is closed by default (#2201 §1)")
         memory.toggleSteps("p")
         XCTAssertTrue(memory.stepsOpen("p"))
+        XCTAssertFalse(memory.stepsOpen("q"), "another pane keeps the default")
+        memory.toggleSteps("p")
+        XCTAssertFalse(memory.stepsOpen("p"))
     }
 
     func testPanesAreIndependent() {
