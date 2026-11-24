@@ -183,6 +183,9 @@ type hubRuntime struct {
 	storedContact time.Time
 	// ckAccount: the iCloud account the bridge last reported (desktop_facts.go).
 	ckAccount transport.Account
+	// ckReadFail is the error class of the failing account reads the log
+	// last named ("" = the last read answered; worker only, desktop_facts.go).
+	ckReadFail string
 
 	// ckHoldMu orders the iCloud holds (icloud.go): ckHeld while the account
 	// cannot be used, ckPubHeld while that also holds the publisher and the
@@ -1208,6 +1211,14 @@ type subRetry struct {
 // maxSubBackoff caps the wait between attempts to subscribe a refused zone.
 const maxSubBackoff = houseEvery
 
+// expectedRefusal: the relay refusing a zone while no phone holds the hub
+// in a slot (vouched false) is what it does by design, not news — a desktop
+// host on CloudKit whose phones never used the relay sees it at every start
+// (#2192). The same refusal while vouched, or any other failure, is logged.
+func expectedRefusal(err error, vouched bool) bool {
+	return !vouched && (errors.Is(err, transport.ErrForbidden) || errors.Is(err, transport.ErrNotVouched))
+}
+
 // zoneKind names a zone in a log line (never its id).
 func zoneKind(zone, data string) string {
 	switch {
@@ -1223,7 +1234,8 @@ func zoneKind(zone, data string) string {
 // watchZones subscribes the hub's zones not subscribed yet. The relay
 // refuses them (FORBIDDEN) until a phone holds the hub in a slot: a refused
 // zone waits linkEvery, doubling up to maxSubBackoff, and is logged once
-// until it succeeds; the hub becoming vouched (SLOT_ADDED, or a poll that
+// until it succeeds (not at all while the hub is unvouched and the relay
+// says so, expectedRefusal); the hub becoming vouched (SLOT_ADDED, or a poll that
 // sees a slot) clears the waits. A phone newly admitted while the hub was
 // already vouched (retryZonesNow: a new admission stamp, SLOT_ADDED) makes
 // the refused zones due now, keeping their failure count: a phone that
@@ -1236,12 +1248,12 @@ func zoneKind(zone, data string) string {
 // watched but says nothing of reach, so it never clears an outage the event
 // lane noted.
 func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
+	vouched := h.relayVouched()
 	if _, ok := h.relayT().(relayAdmission); ok {
-		v := h.relayVouched()
-		if v && !h.wasVouched {
+		if vouched && !h.wasVouched {
 			clear(h.subRetry)
 		}
-		h.wasVouched = v
+		h.wasVouched = vouched
 	}
 	if h.zonesDue.Swap(false) {
 		for _, r := range h.subRetry {
@@ -1267,7 +1279,9 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 			if r == nil {
 				r = &subRetry{}
 				h.subRetry[z] = r
-				log.Printf("hub: the %s not subscribed (%s): retried with backoff", zoneKind(z, h.data), errClass(err))
+				if !expectedRefusal(err, vouched) {
+					log.Printf("hub: the %s not subscribed (%s): retried with backoff", zoneKind(z, h.data), errClass(err))
+				}
 			}
 			r.fails++
 			wait := h.sup.o.linkEvery << min(r.fails-1, 10)

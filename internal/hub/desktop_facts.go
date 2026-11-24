@@ -40,6 +40,14 @@ type throttleReporter interface{ ThrottledSince() time.Time }
 // change) and holds or releases the
 // CloudKit side by it (applyICloudHold); a failed read keeps the last
 // answer.
+//
+// The log names a run of failed reads once, and again only when their class
+// changes; the next answer after a logged run says so once (#2192). A read
+// that finds no bridge (unavailable) before this run's first answer is not
+// logged at all: the bridge starts after the hub, so a start's first reads
+// (the pass, the housekeeping and the link upkeep's pass, all kicked at
+// once) find no socket yet, and a bridge that never comes up is logged by
+// its supervisor ("cloudkit bridge did not start" / "exited").
 func (h *hubRuntime) refreshCloudKitAccount(ctx context.Context) {
 	s, ok := h.shares()
 	if !ok || h.sup.o.Desktop == nil {
@@ -49,8 +57,17 @@ func (h *hubRuntime) refreshCloudKitAccount(ctx context.Context) {
 	a, err := s.AccountStatus(cctx)
 	cancel()
 	if err != nil {
-		log.Printf("hub: reading the iCloud account failed (%s): retried next cycle", errClass(err))
+		class := errClass(err)
+		if class == h.ckReadFail || (class == "unavailable" && h.ckAccountUnread()) {
+			return
+		}
+		h.ckReadFail = class
+		log.Printf("hub: reading the iCloud account failed (%s): retried next cycle", class)
 		return
+	}
+	if h.ckReadFail != "" {
+		h.ckReadFail = ""
+		log.Printf("hub: the iCloud account read again (%s)", a)
 	}
 	h.mu.Lock()
 	h.ckAccount = a
