@@ -6,8 +6,6 @@ package enum AskExplainCopy {
     package static let entryHelp = "Ask the assistant to explain this question"
     package static let back = "Back to question"
     package static let placeholder = "Ask about this question…"
-    package static let explaining = "Explaining…"
-    package static let queued = "Waiting — other chats are answering."
     package static let errorPrefix = "Couldn't explain:"
     package static let retry = "Retry"
     package static let emptyHint = "The assistant explains; it never changes anything."
@@ -33,5 +31,12 @@ package enum AskExplainPresentation {
     /// can run the assistant.
     package static func showsEntry(kind: OwnerAskKind, hasCLI: Bool) -> Bool {
         hasCLI && (kind == .question || kind == .check)
+    }
+
+    /// Whether an Esc leaves the chat for the question: always, unless a
+    /// focused composer holds text. The composer's own Esc is the focused
+    /// one; any other reaches the drawer's key catcher.
+    package static func escapeLeavesChat(composerFocused: Bool, draft: String) -> Bool {
+        !composerFocused || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }

@@ -29,8 +29,6 @@ final class AskExplainTests: XCTestCase {
         XCTAssertEqual(AskExplainCopy.entryHelp, "Ask the assistant to explain this question")
         XCTAssertEqual(AskExplainCopy.back, "Back to question")
         XCTAssertEqual(AskExplainCopy.placeholder, "Ask about this question…")
-        XCTAssertEqual(AskExplainCopy.explaining, "Explaining…")
-        XCTAssertEqual(AskExplainCopy.queued, "Waiting — other chats are answering.")
         XCTAssertEqual(AskExplainCopy.errorPrefix, "Couldn't explain:")
         XCTAssertEqual(AskExplainCopy.retry, "Retry")
         XCTAssertEqual(AskExplainCopy.emptyHint, "The assistant explains; it never changes anything.")
@@ -112,5 +110,16 @@ final class AskExplainTests: XCTestCase {
         let shown = LLMPurposeNames.display(purpose: AskExplainKey.purpose)
         XCTAssertEqual(shown.name, "Ask explanations")
         XCTAssertEqual(shown.group, "Workbench")
+    }
+
+    /// Esc leaves the chat unless a focused composer holds text: the
+    /// composer's own Esc reaches only its `onEscape` (focused), any other
+    /// Esc reaches the drawer's key catcher (not focused).
+    func testEscRules() {
+        XCTAssertTrue(AskExplainPresentation.escapeLeavesChat(composerFocused: false, draft: ""))
+        XCTAssertTrue(AskExplainPresentation.escapeLeavesChat(composerFocused: false, draft: "text"))
+        XCTAssertTrue(AskExplainPresentation.escapeLeavesChat(composerFocused: true, draft: ""))
+        XCTAssertTrue(AskExplainPresentation.escapeLeavesChat(composerFocused: true, draft: " \n"), "blank is empty")
+        XCTAssertFalse(AskExplainPresentation.escapeLeavesChat(composerFocused: true, draft: "text"))
     }
 }
