@@ -96,7 +96,11 @@ final class WorkchatActivityPresenterTests: XCTestCase {
         XCTAssertEqual(Presenter.label(forTool: "mcp__watchtower-workbench__update_target",
                                        summary: "mcp__watchtower-workbench__update_target"), "update target")
         XCTAssertEqual(Presenter.label(forTool: "mcp__watchtower-workbench__update_target", summary: ""), "update target")
-        XCTAssertEqual(Presenter.label(forTool: "mcp__watchtower-workbench__update_target", summary: ""), "update target")
+        // Free text stays as the host wrote it, even with " · " and underscores.
+        XCTAssertEqual(Presenter.label(forTool: "mcp__watchtower-workbench__update_target",
+                                       summary: "set the_status · to done"), "set the_status · to done")
+        XCTAssertEqual(Presenter.label(forTool: "mcp__srv__update_target", summary: "update_target · other"),
+                       "update_target · other", "a server that is not the call's own")
         XCTAssertEqual(Presenter.label(forTool: "TodoWrite", summary: ""), "Update the task list")
         XCTAssertEqual(Presenter.label(forTool: "TaskOutput", summary: ""), "Read a background task's output")
         XCTAssertEqual(Presenter.label(forTool: "Bash", summary: "go test ./..."), "go test ./...")

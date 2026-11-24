@@ -238,6 +238,13 @@ final class SessionChatViewTests: XCTestCase {
         XCTAssertEqual(SessionChatPresentation.retryTitle, "Retry")
     }
 
+    func testErrorStrings() {
+        XCTAssertEqual(SessionChatPresentation.errorTitle, "Couldn’t read the session feed")
+        XCTAssertEqual(SessionChatPresentation.errorDetail("  The session host did not answer. "), "The session host did not answer.")
+        XCTAssertNil(SessionChatPresentation.errorDetail(nil))
+        XCTAssertNil(SessionChatPresentation.errorDetail("  "))
+    }
+
     /// The spinner shows until the first feed read; a turn ending (`clearActivity`) must not bring it back.
     func testLoadingStaysOffAfterClearActivity() async {
         let runner = PageRunner([page([agent("e90")], before: nil)])

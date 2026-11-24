@@ -11,14 +11,11 @@ struct WorkchatStepsList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let earlier = slot.earlierLine {
-                Text(earlier).foregroundStyle(.tertiary).frame(height: ListLayout.lineMinHeight)
-            }
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(slot.rows) { row in stepRow(row) }
-            }
-            .frame(height: Self.height, alignment: .bottom)
+            // Always reserved, so the slot keeps one height whether or not the line shows.
+            Text(slot.earlierLine ?? " ").foregroundStyle(.tertiary).frame(height: ListLayout.lineMinHeight)
+            ForEach(slot.rows) { row in stepRow(row) }
         }
+        .frame(height: Self.height, alignment: .bottom)
         .font(.caption)
         // Quiet: no card, a thin rule under the live line's chevron.
         .padding(.leading, Spacing.medium)

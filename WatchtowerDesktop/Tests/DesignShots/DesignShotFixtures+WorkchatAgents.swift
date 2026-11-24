@@ -32,10 +32,7 @@ enum WorkchatAgentsShotFixtures {
         shot("14-paste-tokens", .pasteTokens),
         paneShot("15-pane-loading", height: 360) { AnyView(SessionChatLoadingView()) },
         paneShot("16-pane-error", height: 360) {
-            AnyView(VStack(spacing: 0) {
-                SessionChatErrorBar(message: "Couldn’t read the session feed", retry: noop)
-                Spacer()
-            })
+            AnyView(SessionChatErrorBlock(detail: "The session host did not answer.", retry: noop))
         }
     ]
 

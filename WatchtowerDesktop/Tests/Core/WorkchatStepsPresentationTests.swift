@@ -104,7 +104,8 @@ final class WorkchatStepsPresentationTests: XCTestCase {
 
     func testSlotHeightIsFixedAtSixRows() {
         XCTAssertEqual(WorkchatLivePresentation.stepsVisibleRows, 6)
-        XCTAssertEqual(WorkchatLivePresentation.stepsHeight(rowHeight: 20), 120)
+        XCTAssertEqual(WorkchatLivePresentation.stepsSlotRows, 7, "six rows plus the reserved earlier line")
+        XCTAssertEqual(WorkchatLivePresentation.stepsHeight(rowHeight: 20), 140)
     }
 
     func testLineChevronAndSummaryWhenOpen() throws {
@@ -135,6 +136,25 @@ final class WorkchatStepsPresentationTests: XCTestCase {
         XCTAssertNil(closed.symbol)
         let done = try XCTUnwrap(row(live(steps: [step("d1", "Read", "a.go", start: now - 30, end: now - 20)])))
         XCTAssertNil(done.stepSummary, "no open call, nothing to name")
+    }
+
+    /// The slot's height is a constant: six steps (no earlier line) and seven (one) use the same frame.
+    func testSlotHeightDoesNotChangeWhenTheEarlierLineAppears() throws {
+        let six = try XCTUnwrap(slot(live(steps: steps(6))))
+        let seven = try XCTUnwrap(slot(live(steps: steps(7))))
+        XCTAssertNil(six.earlierLine)
+        XCTAssertNotNil(seven.earlierLine)
+        XCTAssertEqual(six.rows.count, 6)
+        XCTAssertEqual(seven.rows.count, 6)
+        XCTAssertEqual(WorkchatLivePresentation.stepsHeight(rowHeight: 20), 140)
+    }
+
+    func testCurrentCallWithoutStartShowsSummaryWithoutTimer() throws {
+        var snap = live(steps: steps(2))
+        snap.current = step("c", "Bash", "go vet ./...", start: nil, end: nil)
+        let closed = try XCTUnwrap(row(snap))
+        XCTAssertEqual(closed.stepSummary, "go vet ./...")
+        XCTAssertNil(closed.stepElapsed)
     }
 
     func testFinishedCallWithoutEndTimeShowsNoSpinner() throws {

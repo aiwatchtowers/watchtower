@@ -79,13 +79,24 @@ package enum WorkchatActivityPresenter {
         case "TaskOutput": return "Read a background task's output"
         default: break
         }
-        if tool.hasPrefix("mcp__") || summary.hasPrefix("mcp__") {
-            let raw = bare ? tool : summary
-            let name = raw.hasPrefix("mcp__")
-                ? (raw.dropFirst(5).components(separatedBy: "__").dropFirst().joined(separator: "__"))
-                : (raw.components(separatedBy: " · ").first ?? raw)
-            return (name.isEmpty ? raw : name).replacingOccurrences(of: "_", with: " ")
+        if let call = mcpCall(tool) {
+            // Only the host's two fallbacks are rewritten: the bare tool name, `tool · server`
+            // (Claude) or the full `mcp__server__tool` (Codex). Any other summary is the owner's text.
+            if bare || summary == tool || summary == "\(call.name) · \(call.server)" {
+                return call.name.replacingOccurrences(of: "_", with: " ")
+            }
+            return summary
+        }
+        if summary.hasPrefix("mcp__"), let call = mcpCall(summary) {
+            return call.name.replacingOccurrences(of: "_", with: " ")
         }
         return bare ? tool : summary
+    }
+
+    private static func mcpCall(_ raw: String) -> (server: String, name: String)? {
+        guard let rest = raw.hasPrefix("mcp__") ? Optional(raw.dropFirst(5)) : nil,
+              let split = rest.range(of: "__") else { return nil }
+        let name = String(rest[split.upperBound...])
+        return name.isEmpty ? nil : (String(rest[..<split.lowerBound]), name)
     }
 }

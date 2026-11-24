@@ -22,7 +22,9 @@ package enum WorkchatLivePresentation {
     // The live steps of the current turn (#2065 spec §3).
     /// The steps slot is this many rows tall from the moment it appears; more scroll.
     package static let stepsVisibleRows = 6
-    package static func stepsHeight(rowHeight: CGFloat) -> CGFloat { CGFloat(stepsVisibleRows) * rowHeight }
+    /// The slot reserves one more row for "N earlier steps" so the list never grows when the seventh step arrives.
+    package static let stepsSlotRows = stepsVisibleRows + 1
+    package static func stepsHeight(rowHeight: CGFloat) -> CGFloat { CGFloat(stepsSlotRows) * rowHeight }
     /// The live line's accessibility hint while it toggles the steps.
     package static func stepsToggleHint(open: Bool) -> String { open ? "Hide this turn’s steps" : "Show this turn’s steps" }
     package static func turnSummary(_ count: Int) -> String { "This turn · \(count) \(count == 1 ? "step" : "steps")" }
@@ -140,9 +142,9 @@ package enum WorkchatLivePresentation {
             result.elapsed = elapsed(from: snapshot.turnAt ?? stateAt, now: now)
             result.pulse = false
             // The open call is the snapshot's `current`, never a row that merely lacks its end time.
-            if !stepsOpen, let current = snapshot.current, current.completedAt == nil, let start = current.startedAt {
+            if !stepsOpen, let current = snapshot.current, current.completedAt == nil {
                 result.stepSummary = WorkchatActivityPresenter.label(forTool: current.tool, summary: current.summary)
-                result.stepElapsed = stepTime(now.timeIntervalSince(start))
+                result.stepElapsed = current.startedAt.map { stepTime(now.timeIntervalSince($0)) }
             }
         }
         return result
