@@ -438,7 +438,7 @@ func TestNoticeTask_AdversarialCloseTagsIsFast(t *testing.T) {
 	for _, n := range []int{5000, 10000} {
 		text := "<task-notification>\n<task-id>a</task-id>\n<result>" + strings.Repeat("</result></status>", n) + "<status>x</task-notification>"
 		budget := maxTaskCloseAttempts
-		_, ok := taskChildren(text[len(taskOpen):], map[string]string{}, &budget)
+		_, ok := taskChildren(text[len(taskOpen):], nil, &budget)
 		assert.False(t, ok)
 		assert.Less(t, budget, 0, "attempts are capped, whatever the input size")
 		assert.GreaterOrEqual(t, budget, -1)
@@ -453,4 +453,53 @@ func TestNoticeTask_OnlyUnknownChildrenIsNil(t *testing.T) {
 	require.Len(t, res.Entries, 1)
 	assert.Equal(t, KindEvent, res.Entries[0].Kind)
 	assert.Nil(t, res.Entries[0].Task)
+}
+
+// #2386 N5: a notification carrying only an output file or a usage block is
+// still a task (both are fields the agent-finished row reads).
+func TestNoticeTask_OutputFileOrUsageAloneIsATask(t *testing.T) {
+	for _, child := range []string{
+		"<output-file>/tmp/x.output</output-file>",
+		"<usage><subagent_tokens>12</subagent_tokens></usage>",
+	} {
+		res := parseStr(t, join(userStr("n1", "<task-notification>\n"+child+"\n</task-notification>")), 0)
+		require.Len(t, res.Entries, 1)
+		assert.NotNil(t, res.Entries[0].Task, child)
+	}
+}
+
+// #2386 codex #8: the entry's text reads the children by element name, like the
+// task: a result quoting a close tag keeps its whole text.
+func TestNoticeTask_TextKeepsAResultQuotingCloseTags(t *testing.T) {
+	for _, result := range []string{
+		"it ends with </task-notification> and goes on",
+		"a literal </result> then more",
+		"Found <b>3</b> issues",
+	} {
+		n := strings.Replace(agentNotice, `This agent's report was delivered to you as a message from "aaea0001".`, result, 1)
+		res := parseStr(t, join(userStr("n1", n)), 0)
+		require.Len(t, res.Entries, 1)
+		e := res.Entries[0]
+		require.NotNil(t, e.Task, result)
+		assert.Equal(t, result, e.Task.Result)
+		assert.Contains(t, e.Text, "result: "+result)
+		assert.Contains(t, e.Text, "status: completed")
+		assert.Equal(t, `Agent "Verify review #1" finished`, e.Title)
+	}
+}
+
+// A summary quoting a close tag titles the entry whole.
+func TestNoticeTask_TitleFromTheElementMatchedSummary(t *testing.T) {
+	n := "<task-notification>\n<task-id>a1</task-id>\n<summary>Agent \"fix </result> parsing\" finished</summary>\n</task-notification>"
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Equal(t, `Agent "fix </result> parsing" finished`, res.Entries[0].Title)
+}
+
+// A notification that does not parse keeps its text, not a regex's guess.
+func TestNoticeTask_UnparsedNotificationKeepsItsText(t *testing.T) {
+	res := parseStr(t, join(userStr("n1", "<task-notification>\n<task-id>a1</task-id>\n<status>comp")), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Nil(t, res.Entries[0].Task)
+	assert.Contains(t, res.Entries[0].Text, "<status>comp")
 }

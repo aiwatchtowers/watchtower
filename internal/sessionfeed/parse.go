@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,7 +33,6 @@ var (
 	reminderRe    = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
 	askRe         = regexp.MustCompile(`^Ask #(\d+) answered `)
 	cmdNameRe     = regexp.MustCompile(`(?s)<command-name>(.*?)</command-name>`)
-	taskChildRe   = regexp.MustCompile(`(?s)<([A-Za-z][\w-]*)>(.*?)</[A-Za-z][\w-]*>`)
 	mateOpenRe    = regexp.MustCompile(`(?s)^<teammate-message\b([^>]*)>`)
 	mateSummaryRe = regexp.MustCompile(`summary="([^"]*)"`)
 	taskTokensRe  = regexp.MustCompile(`<subagent_tokens>\s*(\d+)\s*</subagent_tokens>`)
@@ -357,17 +356,23 @@ func noticeEntry(uuid, text string) Entry {
 	e := Entry{ID: uuid, Kind: KindEvent}
 	if strings.HasPrefix(text, "<task-notification>") {
 		e.EventType = EventTask
-		var lines []string
-		inner := strings.TrimSuffix(strings.TrimPrefix(text, "<task-notification>"), "</task-notification>")
-		for _, m := range taskChildRe.FindAllStringSubmatch(inner, -1) {
-			v := strings.TrimSpace(m[2])
-			lines = append(lines, m[1]+": "+v)
-			if m[1] == "summary" && e.Title == "" {
-				e.Title = v
+		// The same element-name-matched children as the task: a child
+		// quoting a close tag keeps its whole text. One that does not parse
+		// keeps its own text.
+		budget := maxTaskCloseAttempts
+		if kids, ok := taskChildren(text[len(taskOpen):], nil, &budget); ok {
+			lines := make([]string, 0, len(kids))
+			for _, k := range kids {
+				lines = append(lines, k.name+": "+k.value)
+				if k.name == "summary" && e.Title == "" {
+					e.Title = k.value
+				}
 			}
+			e.Text = strings.Join(lines, "\n")
+			e.Task = taskRef(taskFields(kids))
+		} else {
+			e.Text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, taskOpen), taskClose))
 		}
-		e.Text = strings.Join(lines, "\n")
-		e.Task = parseTaskNotification(text)
 	} else {
 		e.EventType = EventTeammate
 		body := strings.TrimPrefix(text, "<teammate-message")
@@ -403,11 +408,14 @@ var taskReportBoilerplate = []string{
 // untrusted text with many repeated close tags parses in linear time.
 const maxTaskCloseAttempts = 64
 
+// taskChild is one child element of a notification.
+type taskChild struct{ name, value string }
+
 // taskChildren consumes the children of a notification from rest up to its
 // closing tag, which it takes after the last child (a result may quote a whole
 // notification, so a child's close is tried at each occurrence until the rest
-// parses).
-func taskChildren(rest string, kids map[string]string, budget *int) (map[string]string, bool) {
+// parses). The children come in document order.
+func taskChildren(rest string, kids []taskChild, budget *int) ([]taskChild, bool) {
 	rest = strings.TrimSpace(rest)
 	if strings.HasPrefix(rest, taskClose) {
 		return kids, true
@@ -431,10 +439,7 @@ func taskChildren(rest string, kids map[string]string, budget *int) (map[string]
 		if *budget--; *budget < 0 {
 			return nil, false // crafted text with many close tags: give up
 		}
-		next := maps.Clone(kids)
-		if _, dup := next[name]; !dup {
-			next[name] = strings.TrimSpace(body[:i])
-		}
+		next := append(slices.Clip(kids), taskChild{name, strings.TrimSpace(body[:i])})
 		if got, ok := taskChildren(body[i+len(closeTag):], next, budget); ok {
 			return got, true
 		}
@@ -447,10 +452,22 @@ const (
 	taskClose = "</task-notification>"
 )
 
+// taskFields maps a notification's children by name, the first of a repeated
+// name winning.
+func taskFields(kids []taskChild) map[string]string {
+	out := make(map[string]string, len(kids))
+	for _, k := range kids {
+		if _, dup := out[k.name]; !dup {
+			out[k.name] = k.value
+		}
+	}
+	return out
+}
+
 // hasTaskField reports whether a notification carries a child the agent-
 // finished row shows; one with only unknown children is not a task.
 func hasTaskField(kids map[string]string) bool {
-	for _, k := range []string{"task-id", "tool-use-id", "status", "summary", "result"} {
+	for _, k := range []string{"task-id", "tool-use-id", "status", "summary", "result", "output-file", "usage"} {
 		if _, ok := kids[k]; ok {
 			return true
 		}
@@ -464,8 +481,17 @@ func hasTaskField(kids map[string]string) bool {
 // own element name; a truncated or mismatched notification yields nil.
 func parseTaskNotification(text string) *TaskRef {
 	budget := maxTaskCloseAttempts
-	kids, ok := taskChildren(text[len(taskOpen):], map[string]string{}, &budget)
-	if !ok || !hasTaskField(kids) {
+	kids, ok := taskChildren(text[len(taskOpen):], nil, &budget)
+	if !ok {
+		return nil
+	}
+	return taskRef(taskFields(kids))
+}
+
+// taskRef is the task a notification's children describe, nil when none of
+// them is a field the agent-finished row reads.
+func taskRef(kids map[string]string) *TaskRef {
+	if !hasTaskField(kids) {
 		return nil // nothing recognised: the title-only notice line
 	}
 	usage := kids["usage"]
