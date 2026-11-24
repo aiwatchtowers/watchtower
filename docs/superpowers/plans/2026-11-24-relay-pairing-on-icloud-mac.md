@@ -34,6 +34,14 @@
 5. **A plain `Kick()` cannot bypass the check's 5-minute throttle.** `Kick()` only wakes `Run` (Step + `PollOther`), and the spec bounds the check to one read per `NoPayerPoll` without a kick. Task 2 adds `Switcher.RelayLinkSoon()`, which marks the next check due and then kicks. The runtime calls it where the spec says `h.sw.Kick()` (Task 3).
 6. **The guide page has almost no room.** `docs/guide/features/iphone-relay.md` is about 8.1 KB against the 8192-byte cap in `docs/guide/guide_test.go`. Task 7 tightens existing sentences on that page to fit the new paragraph. It never splits the page and never drops the "Relay isn't in the current version…" opening line.
 
+## Owner decisions this plan asks for (ask #1809)
+
+The plan goes past the approved spec in three places. Each is the smallest change that makes the spec work. Implementation of the affected task waits for the owner's answer in the plan review:
+
+1. **Task 4:** a new local key, `moves_to_relay`, on the `sas` line of `hub pair --json --stream`, plus `OverRelay`/`MovesToRelay` on `link.PairEvent`. The hub decides the Q6 condition because the Mac cannot read it. This is the Mac's local CLI contract, not the phone wire (`TestHubContractFixture` stays green). The alternative is no warning.
+2. **Task 6:** **Link** stays available on a Mac whose iCloud is unusable (`paused`/`no_icloud`) when the hub has a relay, so the spec's relay-code fallback (F7) is reachable from the UI, following "iCloud must not be needed for linking" (ask #1743). The alternative is a CLI-only fallback.
+3. **Task 5:** the Q2 default reads the device's StoreKit entitlement without `AppStore.sync()`, so a scan never asks the person to sign in to the App Store. Known limit: on a new device, before purchases are restored, a paying phone whose relay check gets no answer links over iCloud (the conservative Q2 default). It moves to Relay later through Connection → **Relay**.
+
 ## Review Focus
 
 - **The iCloud account dies after the code is shown but before the switch (F7 at runtime, not at code issue).** Expected: the paired phone still links over the slot, and the switch to Relay completes with CloudKit held (`applyICloudHold`). The publisher's iCloud hold lifts once `switchedTo` re-runs `applyICloudHold` on the new active transport. Test: `TestRelayPairingOnADesktopWithoutICloudSwitches` (Task 3).
@@ -121,7 +129,13 @@ Every implementer brief carries `docs/review/review-rules.md` (Go sections; for 
   - `checkRelayLink`:
     1. Return early when `AccountPhones`, `Relay` or `CloudKit` is nil, when `activeKind() != KindCloudKit`, when `Pending()`, or when `asksWaiting()`.
     2. Take `rlMu`. Read the candidates; none → return.
-    3. Throttle: when not due (the `RelayLinkSoon` flag is unset, `now < retryAt`, or `now - last < NoPayerPoll`), return. Clear the flag and set `last = now`.
+    3. Throttle. The check is **due** when `now >= retryAt` (a zero `retryAt` always passes) **and** at least one of these holds:
+       - the `RelayLinkSoon` flag is set;
+       - `last` is zero (the first check after a start, so a restart finishes a switch the crash interrupted, F9);
+       - `now - last >= NoPayerPoll`;
+       - a `retryAt` set by `too_soon` has passed since `last` (`retryAt > last`), so the retry after anti-flap does not also wait out `NoPayerPoll`.
+       
+       When it is not due, return. When it is due, clear the flag, zero `retryAt`, and set `last = now`. A flag set during an anti-flap wait does not bypass `retryAt`. Tests: `TestRelayLinkReadsAtMostOncePerPollWithoutAKick` (no kick: the first `PollOther` after start reads, then one read per `NoPayerPoll`), `TestRelayLinkSurvivesRestart` (no kick after the restart: the first `PollOther` finishes the switch), and `TestRelayLinkRespectsAntiFlap`, which also asserts that the retry happens at `retryAt` even when `retryAt - last < NoPayerPoll`.
     4. Read `AccountPhones` under `context.WithTimeout(ctx, s.oldSide())`. On an error (`ErrNotFresh` included), log `hub: a phone linked over Relay: switch waits (<class>)` once per class change and return.
     5. Pick the first candidate (devices order) whose `RelayDeviceID` the read lists with `Paying` true. None → return. Otherwise `s.mu.Lock(); accepted, err := s.accept(canonical(id), transport.KindRelay, now); s.mu.Unlock()`.
     6. On `*actions.SwitchRejected` with `too_soon`: set `retryAt = now + RetryAfter`, log the waits line with `too_soon`, and send nothing. On `accepted`: log `hub: a phone linked over Relay pays: transport switch to relay accepted`, then `resetBackoff()` and `Kick()`.
@@ -252,29 +266,29 @@ The default keeps every existing `LinkRoutePolicyTests` call compiling unedited.
 **Interfaces:**
 - Produces:
   - `MobilePairingModel.init(streamer:macName:now:sleep:)`, with `macName: String = ""`.
-  - `nonisolated static func relayMoveWarning(_ mac: String) -> String`, returning the Global Constraints line with `<Mac>` replaced by `mac`.
+  - `nonisolated static func relayMoveWarning(_ mac: String) -> String`, returning the Global Constraints line with `<Mac>` replaced by `mac`. An empty or whitespace-only `mac` (a hub status without a name) uses "this Mac" instead, so the line never reads "moves  to Relay".
   - `private(set) var relayMoveWarning: String?`: set on a `sas` line with `moves_to_relay == true`, cleared by `start()` and by every non-`sas` step.
   - `func markConfirmed()`: the step change `confirm(true)` makes after it sends the line, callable by the shots.
   - `nonisolated static func accountAllowsLinking(transport:account:hasRelay: Bool = false) -> Bool`.
 
 - [ ] **Step 1: Write the failing model tests.**
   - `MobilePairingModelTests.testTheRelayLinkWarningShowsOnlyWithICloudPhones`: a `sas` line with `"moves_to_relay":true` and `macName: "Work Mac"` gives `relayMoveWarning == "Linking this iPhone moves Work Mac to Relay. iPhones linked over iCloud without Relay lose their connection until they subscribe."`. `false`, or the key absent (an older CLI), gives nil. A `linked`/`refused` line or `start()` afterwards gives nil.
-  - Extend `testCopy` with `relayMoveWarning("Work Mac")`, the exact string.
+  - Extend `testCopy` with `relayMoveWarning("Work Mac")` and with `relayMoveWarning("")` and `relayMoveWarning("  ")` (both "Linking this iPhone moves this Mac to Relay. …"), as exact strings.
   - `MobileSettingsModelTests.testLinkStaysOnWithoutICloudOnlyWithARelay`: `accountAllowsLinking(transport: "cloudkit", account: "no_account", hasRelay: true)` is true. A status `{"state":"paused","reason":"no_icloud","transport":"cloudkit","relay":{…},…}` gives `canLink == true`. The same status without `relay` gives `canLink == false`. `testLinkNeedsAUsableAccountOnCloudKit` stays unedited.
 - [ ] **Step 2: Run and watch them fail.** `make test-swift FILTER='MobilePairingModelTests|MobileSettingsModelTests'`.
 - [ ] **Step 3: Implement the model.**
   - Decode `moves_to_relay` as `Bool?` in `Line`.
   - `linkPhone` passes `macName`.
   - `canLink = (status.state == "running" || (status.state == "paused" && status.reason == "no_icloud" && status.relay != nil)) && Self.accountAllowsLinking(transport:account:hasRelay: status.relay != nil)`.
-- [ ] **Step 4: Add the mockups first** (before the view change, so the after-shots can be compared with them). New `Pairing` cases, each a `MobilePairingSheet` at its fixed 380 pt width:
+- [ ] **Step 4: Mockups first, approved by the owner before the view changes.** A "before" shot cannot be the reference: it has no warning line. So the mockups are a test-only fixture view, `MobilePairingWarningMockup` (in `Tests/DesignShots`, built only from design-kit components, the same layout `MobilePairingSheet` uses for `.sas` plus the warning line as Step 5 will draw it). New `Pairing` cases render that mockup at the sheet's fixed 380 pt width:
   - `mobilePairingSAS-relayWarning`: the warning present, Mac "Work Mac", phone "Phone A".
   - `mobilePairingSAS-relayWarningLongName`: the warning with a long Mac name ("Design Studio Mac Pro (Basement)") and phone name. This is the narrow/wrap case: the sheet never widens, the text wraps, and the buttons stay on one row.
   - `mobilePairingConfirming`: the busy state after **Link** (`markConfirmed()`: progress and "Waiting for your phone…", no warning).
   - `mobilePairingFailed-afterRelayWarning`: the error with **Try again** after a warned `sas` (`streamEnded("The hub is not running.")`).
   - The existing `mobilePairingSAS` stays as the "line absent" state, and `mobilePairingStarting` as loading. No empty state applies to this sheet.
-  - Render with `make desktop-shots DESKTOP_SHOTS=build/desktop-shots/2191-before` and keep that directory as the reference.
+  - Render with `make desktop-shots DESKTOP_SHOTS=build/desktop-shots/2191-mockups`. The controller files a review ask with the mockup PNGs attached. Step 5 starts only after the owner approves them; approved mockups are committed under `docs/design/mockups/2191-relay-warning/` (no live data) and are the reference.
 - [ ] **Step 5: Implement the view.** In `.sas`, under `Copy.checkCodeText`, when `model.relayMoveWarning` is set, show it as a caption-weight note in `Tone.warning` (design-kit text styles; no icon, banner or separator), wrapping inside the sheet. The buttons are unchanged.
-- [ ] **Step 6: Compare the shots.** Run `make desktop-shots DESKTOP_SHOTS=build/desktop-shots/2191-after` and compare each new shot by eye with its Step 4 mockup and with `desktop-style-guide.md`: Tone colours only, kit buttons, no separators, no stock look. Fix any drift. The reviewer gets both directories.
+- [ ] **Step 6: Compare the shots.** Switch the `Pairing` cases from the mockup view to the real `MobilePairingSheet` (the mockup fixture is then deleted), run `make desktop-shots DESKTOP_SHOTS=build/desktop-shots/2191-after`, and compare each shot by eye with its approved mockup in `docs/design/mockups/2191-relay-warning/` and with `desktop-style-guide.md`: Tone colours only, kit buttons, no separators, no stock look. Fix any drift. The reviewer gets both directories.
 - [ ] **Step 7: Run the task scope.** `make test-swift FILTER='MobilePairingModelTests|MobileSettingsModelTests|DesignShotsTests'`, then `cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json` on the touched files (`lint-diff` does not check Swift).
 - [ ] **Step 8: Commit.** `feat(desktop): the Link confirmation warns before a Relay move; Link without iCloud on a relay Mac (#2191)`.
 
