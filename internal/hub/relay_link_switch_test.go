@@ -127,16 +127,16 @@ func onRelayBy(t *testing.T, r *deskRig, phone *hubtest.Phone, since time.Time, 
 	deadline := since.Add(within)
 	for {
 		s, changed := r.rec.lastAndChanged()
+		left := time.Until(deadline)
+		if left <= 0 {
+			t.Fatalf("not on the relay under %v after the cause (no kick): last status %s/%s on %s",
+				within, s.State, s.Reason, s.Transport)
+		}
 		if s.State == StateRunning && s.Transport == string(transport.KindRelay) {
 			if !strings.EqualFold(s.SwitchedBy, phone.ID().String()) {
 				t.Fatalf("switched_by %q, want the phone %s", s.SwitchedBy, phone.ID())
 			}
 			return s
-		}
-		left := time.Until(deadline)
-		if left <= 0 {
-			t.Fatalf("not on the relay %v after the cause (no kick): last status %s/%s on %s",
-				within, s.State, s.Reason, s.Transport)
 		}
 		select {
 		case <-changed:

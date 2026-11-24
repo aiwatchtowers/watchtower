@@ -262,6 +262,41 @@ func TestRelayLinkAfterALaterSwitchIsNoCandidate(t *testing.T) {
 	})
 }
 
+// A slot link confirmed in the same second as a recorded switch counts: the
+// link center truncates linked_at to the second, so the switched_at floor is
+// compared at the second too (relayLinkSince).
+func TestRelayLinkInTheSwitchSecondIsACandidate(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := w.addPhone(true)
+		w.route(a, true)
+		w.advance(time.Minute)
+		w.moveTo(a, wire.TransportRelay)
+		w.advance(time.Minute + 400*time.Millisecond)
+		w.moveTo(a, wire.TransportCloudKit)
+		at, _, ok, err := w.sw.SwitchedAt()
+		if err != nil || !ok {
+			t.Fatalf("switched_at %v %v", ok, err)
+		}
+		r := w.addPhone(true)
+		w.route(r, false)
+		w.slotLinked(r)
+		w.onRelay(r)
+		// The link center's linked_at: the switch's whole second.
+		linked := float64(at.Truncate(time.Second).UnixNano()) / 1e9
+		err = w.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+			_, err := tx.Exec(`UPDATE devices SET linked_at = ? WHERE device_id = ?`, linked, r.Device().ID)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.advance(switcher.AntiFlap)
+		w.relayLinkCheck()
+		w.wantActive(transport.KindRelay)
+		w.wantSwitchedBy(r)
+	})
+}
+
 // F10: within AntiFlap of the last switch the check reads paying, accept
 // answers too_soon, nothing is sent to any phone, and the check tries again
 // once the wait is over, without waiting out NoPayerPoll and without a kick.

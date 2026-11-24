@@ -38,7 +38,12 @@ func (s *Switcher) RelayLinkSoon() {
 // second before now's whole second. The link center writes linked_at
 // truncated to the second and a candidate's linked_at must come strictly
 // after the stamp, so a link confirmed in the same second as the start
-// counts (its linked_at is now's whole second).
+// counts (its linked_at is now's whole second). The same floor applies to
+// switched_at (relayLinkCandidates, stillRelayLinkTx): a slot link confirmed
+// in the second of a recorded switch counts. Widening by up to a second lets
+// no link from before the update in: a candidate also needs
+// relay_slot_links[id] == its link nonce, and only a build with this check
+// writes that record, after it starts.
 func relayLinkSince(now time.Time) time.Time {
 	return now.Truncate(time.Second).Add(-time.Second)
 }
@@ -94,8 +99,8 @@ func (s *Switcher) relayLinkCandidates(now time.Time) ([]state.Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	if switched && switchedAt.After(after) {
-		after = switchedAt
+	if floor := relayLinkSince(switchedAt); switched && floor.After(after) {
+		after = floor
 	}
 	devices, err := s.c.Store.Devices()
 	if err != nil {
@@ -283,5 +288,5 @@ func stillRelayLinkTx(tx *sql.Tx, d state.Device) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("switcher: unreadable %s: %w", MetaSwitchedAt, err)
 	}
-	return d.LinkedAt.After(at), nil
+	return d.LinkedAt.After(relayLinkSince(at)), nil
 }
