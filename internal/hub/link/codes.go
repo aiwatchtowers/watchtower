@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strings"
 	"time"
@@ -80,10 +81,37 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 	if err != nil {
 		return wire.LinkPayload{}, "", fmt.Errorf("link: rendering the code: %w", err)
 	}
+	// The CloudKit code a relay code replaces (nil otherwise): read again
+	// under ck.mu below; a close that takes it meanwhile refuses its own.
+	var replaced *openCode
+	if ck == nil {
+		c.ck.mu.Lock()
+		replaced = c.ck.open
+		c.ck.mu.Unlock()
+	}
+	refused := 0
 	err = c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`UPDATE link_codes SET exp = ? WHERE used_by_device IS NULL AND exp >= ?`,
 			secs(now)-1, secs(now)); err != nil {
 			return err
+		}
+		if replaced != nil {
+			// Its waiting phones read expired_code before the replaced code's
+			// sweep can take their participants away. No pair event: a stream
+			// with no phone bound yet ends at any refused event.
+			all, err := pendingDevicesTx(tx)
+			if err != nil {
+				return err
+			}
+			for _, pd := range all {
+				if pd.linkNonce != replaced.nonce {
+					continue
+				}
+				if err := refusePending(tx, pd, wire.RefusedExpiredCode, now); err != nil {
+					return err
+				}
+				refused++
+			}
 		}
 		if _, err := tx.Exec(`INSERT INTO link_codes (nonce, issued_at, exp) VALUES (?, ?, ?)`,
 			p.Nonce, float64(p.Iat), float64(p.Exp)); err != nil {
@@ -95,6 +123,10 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 	})
 	if err != nil {
 		return wire.LinkPayload{}, "", fmt.Errorf("link: storing the code: %w", err)
+	}
+	if refused > 0 {
+		c.changed() // their keyboxes are republished
+		log.Printf("hub link: a relay code replaced the CloudKit code: %d waiting requests refused", refused)
 	}
 	c.ck.mu.Lock()
 	c.ck.codeGen++
@@ -113,14 +145,14 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 		// A relay code replaces the CloudKit code on screen: off screen now
 		// (a close of it refuses nobody waiting on the relay code), closed as
 		// an answering close would: its public link at the next pass, its
-		// participants after the answer grace. Both stay due while an iCloud
-		// hold skips the passes, and the stop closes the link (CloseOnStop).
+		// participants after the answer grace (no sweep before it, an
+		// unlink's included: sweepSoon). Both stay due while an iCloud hold
+		// skips the passes, and the stop closes the link until a close of it
+		// lands (closeAtStop).
 		c.ck.open = nil
 		c.ck.linkCloseAt, c.ck.linkCloseTries, c.ck.closeAtStop = now, 0, true
 		c.ck.graceEnd = now.Add(c.sweep.AnswerGrace)
-		if c.ck.sweepAt.IsZero() || c.ck.sweepAt.After(c.ck.graceEnd) {
-			c.ck.sweepAt, c.ck.sweepTries = c.ck.graceEnd, 0
-		}
+		c.ck.sweepAt, c.ck.sweepTries = c.ck.graceEnd, 0
 	}
 	if ck == nil {
 		c.ck.relayCodes = append(c.ck.relayCodes, p.Nonce)

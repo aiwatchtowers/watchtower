@@ -201,9 +201,11 @@ type ckState struct {
 	// none. linkCloseTries counts the retries spent.
 	linkCloseAt    time.Time
 	linkCloseTries int
-	// closeAtStop: the link due to close (linkCloseAt) is a CloudKit code's
-	// that a relay code replaced, so CloseOnStop closes it as it would a code
-	// on screen; cleared by the next CloudKit code, whose own close it is.
+	// closeAtStop: the public link of a CloudKit code a relay code replaced
+	// still needs closing, whatever the retry timer (linkCloseAt) says, so
+	// CloseOnStop closes it as it would a code on screen. Cleared once a
+	// close lands (writeLink) and by the next CloudKit code, whose own close
+	// it is.
 	closeAtStop bool
 	// sharing: what the last issue left (SharingAvailable/Unavailable), ""
 	// before any.
@@ -260,9 +262,10 @@ type retiredCode struct{ nonce, reason string }
 // the same step. Once the account and the owner checks pass, a pending grace
 // sweep or retry is cancelled (the new code's own close sweeps) and the last
 // close's refusal is retired; a code refused before that leaves them as they
-// were. A code that cannot be stored closes the link it opened. Issues run one at a time: a second call waits for the one in
-// flight, then issues the newest code (the one that links), as two New code
-// clicks did in Swift — so one issue's close never shuts another's link.
+// were. A code that cannot be stored closes the link it opened. Issues run
+// one at a time: a second call waits for the one in flight, then issues the
+// newest code (the one that links), as two New code clicks did in Swift — so
+// one issue's close never shuts another's link.
 func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.LinkPayload, string, error) {
 	// Not bounded by ctx: the issue in flight ends within its share timeouts.
 	c.issueSem <- struct{}{}
@@ -544,6 +547,9 @@ func (c *Center) writeLink(ctx context.Context, s transport.Shares, done chan st
 		c.ck.mu.Lock()
 		if err == nil {
 			c.ck.linkWritten = writtenAs(target)
+			if !target {
+				c.ck.closeAtStop = false
+			}
 			continue
 		}
 		c.ck.linkWriteErr = err
@@ -664,19 +670,20 @@ func (c *Center) SkipStartClose() {
 // (CloseSheetClosed: nobody can link with it any more), so the shares'
 // public URLs do not outlive the hub; the participants' sweep is left to the
 // next start's close (the sweep mark stays). A CloudKit code a relay code
-// replaced counts as on screen while its link is still due to close
-// (closeAtStop). Nothing, and no share call, otherwise: a failed close of a
-// used code is left to the next start.
+// replaced counts as on screen until a close of its link lands
+// (closeAtStop), its retries spent or not. Nothing, and no share call,
+// otherwise: a failed close of a used code is left to the next start.
 func (c *Center) CloseOnStop(ctx context.Context, s transport.Shares) error {
 	c.ck.mu.Lock()
-	open := c.ck.open != nil
-	closeDue := c.ck.closeAtStop && !c.ck.linkCloseAt.IsZero()
+	open, replaced := c.ck.open != nil, c.ck.closeAtStop
 	c.ck.mu.Unlock()
 	switch {
 	case open:
 		return c.CloseLink(ctx, s, CloseSheetClosed)
-	case closeDue:
-		return c.retryLinkClose(ctx, s, c.now())
+	case replaced:
+		if _, err := c.setLink(ctx, s, false, CloseSheetClosed, closeScope{}); err != nil {
+			return fmt.Errorf("link: closing a replaced code's public link: %w", err)
+		}
 	}
 	return nil
 }
@@ -862,13 +869,19 @@ func (c *Center) scheduleSweepRetry(spent int) {
 
 // sweepSoon makes a deferred sweep due at the next pass (an unlinked shared
 // phone's participant goes at once, as in Swift; RemoveCloudKit removes it
-// even sooner).
+// even sooner) — but never inside an answer grace: the sweep removes every
+// unbound participant, so a phone that accepted the share and has not read
+// its answer yet would go too. It is due at the grace's end then.
 func (c *Center) sweepSoon() {
 	c.ck.mu.Lock()
 	defer c.ck.mu.Unlock()
 	c.ck.sweepGen++
-	if now := c.now(); c.ck.sweepAt.IsZero() || c.ck.sweepAt.After(now) {
-		c.ck.sweepAt, c.ck.sweepTries = now, 0
+	due := c.now()
+	if c.ck.graceEnd.After(due) {
+		due = c.ck.graceEnd
+	}
+	if c.ck.sweepAt.IsZero() || c.ck.sweepAt.After(due) {
+		c.ck.sweepAt, c.ck.sweepTries = due, 0
 	}
 }
 
