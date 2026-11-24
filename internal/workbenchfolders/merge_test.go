@@ -357,7 +357,8 @@ func TestMergeRewritesStaleOtherBench(t *testing.T) {
 }
 
 // Chats keyed by the workbench id follow it: code questions, spec review
-// threads, ask explain chats, reviewer threads (B's home-folder thread gains its folder).
+// threads, ask explain chats (and their queued drafts), reviewer threads
+// (B's home-folder thread gains its folder).
 func TestMergeReKeysTheChats(t *testing.T) {
 	ctx := context.Background()
 	d := testDB(t)
@@ -378,6 +379,14 @@ func TestMergeReKeysTheChats(t *testing.T) {
 	home := chat("review_reviewer", bs+":main")
 	folder := chat("review_reviewer", bs+":f"+strconv.FormatInt(bHome, 10)+":wt/fix")
 	mine := chat("review_reviewer", as+":main")
+	// The explain chat's queued follow-up, by the Desktop's surface key; a
+	// bench whose id only starts with B's keeps its own.
+	explainDraft := fmt.Sprintf("owner_ask_explain.%s:9.%d", bs, explain)
+	longerDraft := fmt.Sprintf("owner_ask_explain.%s1:9.1", bs)
+	for _, k := range []string{explainDraft, longerDraft} {
+		_, err := d.Exec(`INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES (?, 'and B?', 1)`, k)
+		require.NoError(t, err)
+	}
 	for _, status := range []string{"pending", "approved", "applied", "rejected", "failed"} {
 		_, err := d.Exec(`INSERT INTO agent_actions (tool, args_json, context_type, context_id, status)
 			VALUES ('update_target', '{}', 'project', ?, ?)`, bs, status)
@@ -401,6 +410,11 @@ func TestMergeReKeysTheChats(t *testing.T) {
 	assert.Equal(t, as+":f"+strconv.FormatInt(bHome, 10)+":main", key(home), "B's home is a folder of A now")
 	assert.Equal(t, as+":f"+strconv.FormatInt(bHome, 10)+":wt/fix", key(folder))
 	assert.Equal(t, as+":main", key(mine), "A's own thread untouched")
+	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM chat_queued_drafts WHERE surface_key = ?`,
+		fmt.Sprintf("owner_ask_explain.%s:9.%d", as, explain)), "the draft follows its chat to A")
+	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM chat_queued_drafts WHERE surface_key = ?`, longerDraft),
+		"a longer id with B's leading digits is untouched")
+	assert.Equal(t, 0, countRows(t, d, `SELECT COUNT(*) FROM chat_queued_drafts WHERE surface_key = ?`, explainDraft))
 }
 
 // Spec §7 "crash mid-move": a failure on any table rolls the whole merge

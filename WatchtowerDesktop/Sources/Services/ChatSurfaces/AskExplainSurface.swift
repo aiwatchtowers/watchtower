@@ -14,8 +14,8 @@ import WatchtowerCore
 ///   with Go's `chat.new` (`reuse: true`), so two windows opening the same
 ///   ask get one conversation.
 /// - The config's provider at its strong tier, `--purpose ask.explain` for
-///   the usage ledger. It reads the workbench folder (`ai query
-///   --read-folder`, read only) only when its capability row reads folders,
+///   the usage ledger. It reads the ask's folder (`readFolder`; `ai
+///   query --read-folder`, read only) only when its capability row reads folders,
 ///   as `CodeQuestionSurface` does: `ai query` refuses the flag for a
 ///   provider without file tools (ollama), which then answers from the ask
 ///   alone (the prompt says so: "If you cannot…").
@@ -28,6 +28,23 @@ enum AskExplainSurface {
             dbPool: dbPool, writes: writes, contextType: AskExplainKey.contextType,
             contextID: AskExplainKey.contextID(workbenchID: ask.projectID, askID: ask.id),
             title: AskExplainKey.title(askID: ask.id))
+    }
+
+    /// The folder the assistant reads for `ask` (multi-folder workbench):
+    /// the folder its filing session was started in, else its document's
+    /// folder (`doc_folder_id`), else the home folder. Only a live folder of
+    /// the ask's own workbench counts — a removed folder, or one that moved to
+    /// another bench, falls back to the home folder. Read at each open.
+    nonisolated static func readFolder(_ db: Database, ask: OwnerAsk, homeFolder: String) throws -> String {
+        let sessionFolderID = try ask.sessionID.flatMap {
+            try Int64.fetchOne(db, sql: "SELECT workbench_folder_id FROM terminal_sessions WHERE id = ?",
+                               arguments: [$0])
+        }
+        let live = try WorkbenchFolderQueries.folders(db, workbenchID: ask.projectID, withRemoved: false)
+        for id in [sessionFolderID, ask.docFolderID].compactMap({ $0 }) {
+            if let folder = live.first(where: { $0.id == id }) { return folder.folderPath }
+        }
+        return homeFolder
     }
 
     static func spec(

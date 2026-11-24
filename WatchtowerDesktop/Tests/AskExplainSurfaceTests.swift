@@ -50,11 +50,17 @@ final class AskExplainFixture {
         TestDatabase.cleanup(path: path)
     }
 
-    func insertAsk(kind: String = "question", title: String = "Which way?", targetID: Int64? = nil) throws -> OwnerAsk {
+    func insertAsk(
+        kind: String = "question",
+        title: String = "Which way?",
+        targetID: Int64? = nil,
+        sessionID: Int64? = nil
+    ) throws -> OwnerAsk {
         let projectID = projectID
         let docPath = kind == "review" ? "docs/spec.md" : ""
         let id = try pool.write {
-            try TestDatabase.insertOwnerAsk($0, projectID: projectID, targetID: targetID, kind: kind, title: title, docPath: docPath)
+            try TestDatabase.insertOwnerAsk($0, projectID: projectID, sessionID: sessionID, targetID: targetID,
+                                            kind: kind, title: title, docPath: docPath)
         }
         return try XCTUnwrap(try pool.read { try OwnerAskQueries.ask($0, id: id, projectID: projectID) })
     }
