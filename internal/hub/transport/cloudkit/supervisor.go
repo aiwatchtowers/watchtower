@@ -30,6 +30,18 @@ type Supervisor struct {
 	running atomic.Bool
 	// launches counts the bridge processes started (Launch returned one).
 	launches atomic.Uint64
+	// lastLaunch is when the last launch was tried (Config.Clock, Unix
+	// nanoseconds; 0 before any), whether or not it started a process.
+	lastLaunch atomic.Int64
+}
+
+// LastLaunch is when the supervisor last tried to launch the bridge (zero
+// before any try), on Config.Clock.
+func (s *Supervisor) LastLaunch() time.Time {
+	if n := s.lastLaunch.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Time{}
 }
 
 // Running reports whether a bridge process it launched is alive now (false
@@ -78,6 +90,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 // runOnce launches the bridge and waits for it to exit (or ctx to end).
 func (s *Supervisor) runOnce(ctx context.Context) {
+	s.lastLaunch.Store(s.c.Clock().UnixNano())
 	p, err := s.c.Launch(ctx)
 	if err != nil {
 		log.Printf("hub: cloudkit bridge did not start (%s)", launchClass(err))

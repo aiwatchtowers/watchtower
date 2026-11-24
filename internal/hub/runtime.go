@@ -190,12 +190,14 @@ type hubRuntime struct {
 	// desktop_facts.go).
 	ckReadFail, ckReadLogged string
 	// ckLaunchSeen is the bridge's launch generation the last houseEvery
-	// tick saw (worker only), and ckLaunchSettled that launch once the tick
-	// before it saw the same, 0 otherwise: it has had at least one whole
-	// houseEvery interval to serve its socket (written by the worker, read
-	// by the pair's relay-code fallback too; desktop_facts.go).
+	// tick saw, and ckLaunchSettled whether the tick before it saw the same:
+	// that launch has had at least one whole houseEvery interval to serve
+	// its socket (worker only, desktop_facts.go).
 	ckLaunchSeen    uint64
-	ckLaunchSettled atomic.Uint64
+	ckLaunchSettled bool
+	// startedAt is when this runtime was built (Options.Clock): the start
+	// of the bridge's startup grace (iCloudStarting).
+	startedAt time.Time
 
 	// ckHoldMu orders the iCloud holds (icloud.go): ckHeld while the account
 	// cannot be used, ckPubHeld while that also holds the publisher and the
@@ -292,6 +294,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		sup: s, st: st, mode: mode, name: name, id: id, watched: map[string]bool{}, subRetry: map[string]*subRetry{},
 		passKick: make(chan struct{}, 1), linkKick: make(chan struct{}, 1), houseKick: make(chan struct{}, 1),
 		soonKick: make(chan struct{}, 1), readersFailLog: logreason.NewLimiter(logreason.RepeatEvery, time.Now),
+		startedAt: s.o.Clock(),
 	}
 	ok := false
 	defer func() {

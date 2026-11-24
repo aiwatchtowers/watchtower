@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -188,9 +189,51 @@ func TestLinkErrClassForCloudKitCodes(t *testing.T) {
 	}
 }
 
-// F7: with CloudKit active and iCloud unusable (gone, or not readable just
-// now), a Mac with a relay answers like a relay hub: a relay code (no
-// CloudKit fields) over a pairing slot, and the public link never opens.
+// pairRelayCode asks for a code and wants a relay code (no CloudKit fields)
+// answered OK, one code stored and the shares' public link never opened.
+func pairRelayCode(t *testing.T, r *deskRig, ck *acctCK, c *ControlClient) {
+	t.Helper()
+	if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
+		t.Fatal(err)
+	}
+	var (
+		qr     *ControlAnswer
+		answer *ControlAnswer
+	)
+	for qr == nil || answer == nil {
+		a, err := c.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case a.Event == link.EventQR:
+			qr = &a
+		case a.Event == "" && a.Op == OpPair:
+			if !a.OK || a.Error != "" {
+				t.Fatalf("answer %+v, want OK", a)
+			}
+			answer = &a
+		}
+	}
+	lp, err := wire.ParseLinkURL(qr.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lp.Transport != wire.TransportRelay || lp.Container != "" || lp.OwnerUser != "" ||
+		lp.DataShare != nil || lp.RelayShare != nil || lp.RelayDeviceID == "" {
+		t.Fatalf("want a relay code, got %+v", lp)
+	}
+	if n := codesStored(t, r.dir); n != 1 {
+		t.Fatalf("%d codes stored, want 1", n)
+	}
+	if n := ck.count("set_public_link:open"); n != 0 {
+		t.Fatalf("the public link opened %d times", n)
+	}
+}
+
+// F7: with CloudKit active and iCloud unusable (gone, or reported
+// unavailable), a Mac with a relay answers like a relay hub: a relay code
+// over a pairing slot, and the public link never opens.
 func TestPairOnACloudKitDesktopWithoutICloudFallsBackToARelayCode(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -203,42 +246,40 @@ func TestPairOnACloudKitDesktopWithoutICloudFallsBackToARelayCode(t *testing.T) 
 			bubble(t, func(t *testing.T) {
 				r, ck, c := startPairDesk(t, transport.KindCloudKit)
 				ck.acct.Store(tc.account)
-				if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
-					t.Fatal(err)
-				}
-				var (
-					qr     *ControlAnswer
-					answer *ControlAnswer
-				)
-				for qr == nil || answer == nil {
-					a, err := c.Next()
-					if err != nil {
-						t.Fatal(err)
-					}
-					switch {
-					case a.Event == link.EventQR:
-						qr = &a
-					case a.Event == "" && a.Op == OpPair:
-						if !a.OK || a.Error != "" {
-							t.Fatalf("answer %+v, want OK", a)
-						}
-						answer = &a
-					}
-				}
-				lp, err := wire.ParseLinkURL(qr.URL)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if lp.Transport != wire.TransportRelay || lp.Container != "" || lp.OwnerUser != "" ||
-					lp.DataShare != nil || lp.RelayShare != nil || lp.RelayDeviceID == "" {
-					t.Fatalf("want a relay code, got %+v", lp)
-				}
-				if n := codesStored(t, r.dir); n != 1 {
-					t.Fatalf("%d codes stored, want 1", n)
-				}
-				if n := ck.count("set_public_link:open"); n != 0 {
-					t.Fatalf("the public link opened %d times", n)
-				}
+				pairRelayCode(t, r, ck, c)
+			})
+		})
+	}
+}
+
+// idleBridge is a bridge that never launches (its launches keep failing):
+// never running, no launch on record.
+type idleBridge struct{}
+
+func (idleBridge) Run(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+func (idleBridge) Running() bool                 { return false }
+func (idleBridge) Launches() uint64              { return 0 }
+func (idleBridge) LastLaunch() time.Time         { return time.Time{} }
+
+// An unreadable iCloud account past the bridge's startup grace is unusable:
+// a Mac with a connected relay issues a relay code — whether its bridge
+// runs (the rig's, launched long ago) or never launched at all.
+func TestPairWithAnUnreadableAccountPastTheBridgeGraceFallsBackToARelayCode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit []func(*Options)
+	}{
+		{"running", nil},
+		{"never launched", []func(*Options){func(o *Options) {
+			o.Desktop.supervise = func(cloudkit.Config) bridgeRunner { return idleBridge{} }
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bubble(t, func(t *testing.T) {
+				r, ck, c := startPairDesk(t, transport.KindCloudKit, tc.edit...)
+				time.Sleep(bridgeStartGrace)
+				ck.failNext("account_status", 1000)
+				pairRelayCode(t, r, ck, c)
 			})
 		})
 	}
@@ -259,8 +300,8 @@ func TestPairOnACloudKitDesktopWithICloudBriefyUnavailableIsRetryable(t *testing
 	})
 }
 
-// iCloud that is only not read yet — the account unreadable while the bridge
-// is still starting (the rig's bridge never settles), or the Mac's user not
+// iCloud that is only not read yet — the account unreadable inside the
+// bridge's startup grace (just after the hub started), or the Mac's user not
 // read — keeps the retryable refusal on a Mac with a relay: "try again in a
 // moment", not a move to Relay.
 func TestPairOnACloudKitDesktopWithICloudNotReadYetIsRetryable(t *testing.T) {
@@ -285,54 +326,110 @@ type downRelay struct{ transport.Transport }
 
 func (downRelay) Connect(context.Context, []string) error { return transport.ErrUnavailable }
 
-// A Mac whose relay is not connected keeps the iCloud refusal: a relay code
-// would send the phone to a pairing slot nobody serves, and the Mac must
-// still say iCloud is the problem.
-func TestPairOnACloudKitDesktopWithoutICloudAndTheRelayDownIsRefused(t *testing.T) {
-	bubble(t, func(t *testing.T) {
-		r, ck, c := startPairDesk(t, transport.KindCloudKit, func(o *Options) {
-			up := o.newTransport
-			o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
-				rel, err := up(ctx, id, st, zones)
-				return downRelay{rel}, err
-			}
-		})
-		ck.acct.Store(transport.AccountNoAccount)
-		if a := pairRefusal(t, c); a != ErrClassNoICloud {
-			t.Fatalf("answer %s, want %s", a, ErrClassNoICloud)
-		}
-		if n := codesStored(t, r.dir); n != 0 {
-			t.Fatalf("%d codes stored", n)
-		}
-	})
+// liveRelay connects, then reports its live connection state from up (the
+// hosted relay's connectedReporter).
+type liveRelay struct {
+	transport.Transport
+	up *atomic.Bool
 }
 
+func (liveRelay) Connect(context.Context, []string) error { return nil }
+func (l liveRelay) Connected() bool                       { return l.up.Load() }
+
+// A Mac whose relay is not connected keeps the iCloud refusal — never
+// connected, or connected once and dropped since: a relay code would send the
+// phone to a pairing slot nobody serves, and the Mac must still say iCloud
+// is the problem.
+func TestPairOnACloudKitDesktopWithoutICloudAndTheRelayDownIsRefused(t *testing.T) {
+	var up atomic.Bool
+	for _, tc := range []struct {
+		name string
+		wrap func(transport.Transport) transport.Transport
+	}{
+		{"never connected", func(rel transport.Transport) transport.Transport { return downRelay{rel} }},
+		{"dropped after a connect", func(rel transport.Transport) transport.Transport {
+			up.Store(true)
+			return liveRelay{rel, &up}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bubble(t, func(t *testing.T) {
+				r, ck, c := startPairDesk(t, transport.KindCloudKit, func(o *Options) {
+					next := o.newTransport
+					o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
+						rel, err := next(ctx, id, st, zones)
+						return tc.wrap(rel), err
+					}
+				})
+				up.Store(false)
+				ck.acct.Store(transport.AccountNoAccount)
+				if a := pairRefusal(t, c); a != ErrClassNoICloud {
+					t.Fatalf("answer %s, want %s", a, ErrClassNoICloud)
+				}
+				if n := codesStored(t, r.dir); n != 0 {
+					t.Fatalf("%d codes stored", n)
+				}
+			})
+		})
+	}
+}
+
+// clockBridge is a bridge whose state the test sets.
+type clockBridge struct {
+	running bool
+	last    time.Time
+}
+
+func (b clockBridge) Run(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+func (b clockBridge) Running() bool                 { return b.running }
+func (clockBridge) Launches() uint64                { return 0 }
+func (b clockBridge) LastLaunch() time.Time         { return b.last }
+
 // Only an iCloud refusal that is not transient moves a pair to a relay code,
-// and only with a relay that is connected: icloud_changed, failed and the
-// not-read-yet causes keep their refusal.
+// and only with a relay that is connected now: icloud_changed, failed and
+// the not-read-yet causes keep their refusal; an unreadable account counts
+// as unusable once the bridge is past its startup grace.
 func TestRelayCodeFallbackOnlyForUnusableICloud(t *testing.T) {
+	start := time.Unix(1_800_000_000, 0)
+	past := start.Add(time.Hour)
 	relay := memfake.New(transport.KindRelay, nil)
+	var connected, dropped atomic.Bool
+	connected.Store(true)
 	acct := func(a transport.Account) error { return &link.AccountError{Account: a} }
+	unreadable := &link.AccountError{Account: link.AccountUnreadable, Err: transport.ErrUnavailable}
 	for _, tc := range []struct {
 		name    string
 		rel     transport.Transport
 		relDown bool
+		bridge  bridgeRunner
+		now     time.Time
 		err     error
 		want    bool
 	}{
-		{"no account", relay, false, acct(transport.AccountNoAccount), true},
-		{"restricted", relay, false, acct(transport.AccountRestricted), true},
-		{"no entitlement", relay, false, acct(transport.AccountNoEntitlement), true},
-		{"temporarily unavailable", relay, false, acct(transport.AccountTemporarilyUnavailable), true},
-		{"unreadable while the bridge starts", relay, false,
-			&link.AccountError{Account: link.AccountUnreadable, Err: transport.ErrUnavailable}, false},
-		{"owner unknown", relay, false, link.ErrOwnerUnknown, false},
-		{"account changed", relay, false, fmt.Errorf("w: %w", link.ErrAccountChanged), false},
-		{"failed", relay, false, errors.New("link: storing the code: disk full"), false},
-		{"no relay", nil, false, acct(transport.AccountNoAccount), false},
-		{"relay down", relay, true, acct(transport.AccountNoAccount), false},
+		{"no account", relay, false, nil, start, acct(transport.AccountNoAccount), true},
+		{"restricted", relay, false, nil, start, acct(transport.AccountRestricted), true},
+		{"no entitlement", relay, false, nil, start, acct(transport.AccountNoEntitlement), true},
+		{"temporarily unavailable", relay, false, nil, start, acct(transport.AccountTemporarilyUnavailable), true},
+		{"unreadable just after the start", relay, false, clockBridge{running: true}, start.Add(bridgeStartGrace - time.Second), unreadable, false},
+		{"unreadable, a process launched just now", relay, false,
+			clockBridge{running: true, last: past.Add(-time.Second)}, past, unreadable, false},
+		{"unreadable, the process past its grace", relay, false,
+			clockBridge{running: true, last: past.Add(-bridgeStartGrace)}, past, unreadable, true},
+		{"unreadable, waiting to restart", relay, false,
+			clockBridge{last: past.Add(-time.Second)}, past, unreadable, true},
+		{"unreadable, never launched", relay, false, clockBridge{}, past, unreadable, true},
+		{"unreadable, no bridge", relay, false, nil, past, unreadable, true},
+		{"owner unknown", relay, false, nil, past, link.ErrOwnerUnknown, false},
+		{"account changed", relay, false, nil, past, fmt.Errorf("w: %w", link.ErrAccountChanged), false},
+		{"failed", relay, false, nil, past, errors.New("link: storing the code: disk full"), false},
+		{"no relay", nil, false, nil, past, acct(transport.AccountNoAccount), false},
+		{"relay never connected", relay, true, nil, past, acct(transport.AccountNoAccount), false},
+		{"relay connected now", liveRelay{relay, &connected}, false, nil, past, acct(transport.AccountNoAccount), true},
+		{"relay dropped after a connect", liveRelay{relay, &dropped}, false, nil, past, acct(transport.AccountNoAccount), false},
 	} {
-		h := &hubRuntime{rel: tc.rel}
+		now := tc.now
+		h := &hubRuntime{rel: tc.rel, bridge: tc.bridge, startedAt: start,
+			sup: &supervisor{o: Options{Clock: func() time.Time { return now }}}}
 		h.relDown.Store(tc.relDown)
 		if got := h.relayCodeFallback(tc.err); got != tc.want {
 			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)

@@ -117,22 +117,36 @@ func (h *hubRuntime) pairCloudKit(s transport.Shares) (ControlAnswer, string, er
 }
 
 // relayCodeFallback: a CloudKit code refused with err gives way to a relay
-// code (iCloud is not needed for linking) — only when the hub has a relay
-// that is connected, and only when iCloud is really unusable: the bridge
-// answered with an account that refuses linking, or the account could not
-// be read although the bridge is past its start. The Mac's user not read
-// (ErrOwnerUnknown), an unreadable account while the bridge starts, an
-// account change and any other failure keep their refusal, so the Mac still
-// says what is wrong with iCloud, or to try again.
+// code (iCloud is not needed for linking) — only when the hub's relay is
+// connected now (relayConnected), and only when iCloud is really unusable:
+// the bridge answered with an account that refuses linking, or the account
+// could not be read although the bridge is past its start (iCloudStarting:
+// it never launched, waits to restart, or runs past the grace). The Mac's
+// user not read (ErrOwnerUnknown), an unreadable account inside the grace,
+// an account change and any other failure keep their refusal, so the Mac
+// still says what is wrong with iCloud, or to try again.
 func (h *hubRuntime) relayCodeFallback(err error) bool {
-	if h.rel == nil || h.relDown.Load() {
+	if !h.relayConnected() {
 		return false
 	}
 	var ae *link.AccountError
 	if !errors.As(err, &ae) {
 		return false
 	}
-	return ae.Account != link.AccountUnreadable || !h.bridgeStarting()
+	return ae.Account != link.AccountUnreadable || !h.iCloudStarting()
+}
+
+// relayConnected: the hub has a relay and it is connected now — by the
+// transport's own live state when it reports one (connectedReporter, the
+// hosted relay), else connected once by the link upkeep (relDown false).
+func (h *hubRuntime) relayConnected() bool {
+	if h.rel == nil {
+		return false
+	}
+	if c, ok := h.rel.(connectedReporter); ok {
+		return c.Connected()
+	}
+	return !h.relDown.Load()
 }
 
 // abandonCode closes, in the background, the link of the CloudKit code

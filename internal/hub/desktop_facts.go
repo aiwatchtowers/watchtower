@@ -101,21 +101,39 @@ func (h *hubRuntime) bridgeLaunches() uint64 {
 // early; the worst case is one extra log line, hiding nothing.
 func (h *hubRuntime) noteBridgeLaunch() {
 	g := h.bridgeLaunches()
-	var settled uint64
-	if g != 0 && g == h.ckLaunchSeen {
-		settled = g
-	}
-	h.ckLaunchSettled.Store(settled)
+	h.ckLaunchSettled = g != 0 && g == h.ckLaunchSeen
 	h.ckLaunchSeen = g
 }
 
 // bridgeStarting: the current bridge launch (if any) has not yet been seen
 // by two houseEvery ticks in a row — a whole houseEvery interval may not
 // have passed since it, so a missing socket may only mean it is not served
-// yet. A relaunch starts it over. Safe off the worker.
+// yet. A relaunch starts it over.
 func (h *hubRuntime) bridgeStarting() bool {
-	settled := h.ckLaunchSettled.Load()
-	return settled == 0 || h.bridgeLaunches() != settled
+	return !h.ckLaunchSettled || h.bridgeLaunches() != h.ckLaunchSeen
+}
+
+// bridgeStartGrace bounds how long an unreadable iCloud account counts as
+// the bridge still starting (iCloudStarting): a healthy bridge serves its
+// socket within seconds of its launch.
+const bridgeStartGrace = 30 * time.Second
+
+// iCloudStarting: an unreadable iCloud account may only mean the bridge is
+// not serving yet — the hub started less than bridgeStartGrace ago, or the
+// bridge runs a process launched less than that ago. A bridge that never
+// launched, that waits to restart (a crash loop between its runs) or whose
+// running process is older is past its start: its unreadable account is
+// unusable. On the hub's clock; safe off the worker.
+func (h *hubRuntime) iCloudStarting() bool {
+	now := h.sup.o.Clock()
+	if now.Sub(h.startedAt) < bridgeStartGrace {
+		return true
+	}
+	if h.bridge == nil || !h.bridge.Running() {
+		return false
+	}
+	last := h.bridge.LastLaunch()
+	return !last.IsZero() && now.Sub(last) < bridgeStartGrace
 }
 
 // cloudKitStatus is the running hub's "cloudkit" block (Signed is set by

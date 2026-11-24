@@ -72,6 +72,39 @@ func (c *fakeClock) advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
+// LastLaunch is the last launch try on the supervisor's clock, a launch
+// that failed to start included (the hub's bridge startup grace).
+func TestSupervisorLastLaunchIsTheLastTry(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(1_800_000_000, 0)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := cloudkit.NewSupervisor(cloudkit.Config{Clock: clock.Now, Launch: func(context.Context) (*os.Process, error) {
+		return nil, os.ErrNotExist
+	}})
+	if !s.LastLaunch().IsZero() {
+		t.Fatalf("a launch before any try: %v", s.LastLaunch())
+	}
+	tries := 0
+	cloudkit.SetSleep(s, func(_ context.Context, d time.Duration) error {
+		tries++
+		if tries == 2 {
+			cancel()
+			return context.Canceled
+		}
+		clock.advance(d)
+		return nil
+	})
+	if err := s.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if want := time.Unix(1_800_000_000, 0).Add(time.Second); !s.LastLaunch().Equal(want) {
+		t.Fatalf("last launch %v, want the second try at %v", s.LastLaunch(), want)
+	}
+	if s.Launches() != 0 {
+		t.Fatalf("launches %d: none started", s.Launches())
+	}
+}
+
 func TestSupervisorRestartsWithBackoff(t *testing.T) {
 	st := newStubs(t)
 	clock := &fakeClock{now: time.Unix(1_800_000_000, 0)}
