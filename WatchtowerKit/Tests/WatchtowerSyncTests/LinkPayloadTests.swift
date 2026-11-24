@@ -140,6 +140,34 @@ final class LinkPayloadTests: XCTestCase {
         XCTAssertFalse(try LinkPayload.parse(try Self.linkURL(object)).get().offersCloudKit, "owner_user still missing")
     }
 
+    /// `relay_switch` (#2191): optional, absent on older Macs' codes (false), tolerant of a non-boolean (read as
+    /// absent), and written back only when present, so the sorted-key bytes round-trip with or without it.
+    func testRelaySwitchDecodesPresentAndAbsent() throws {
+        var object = try Self.fixtureObject()
+        object["v"] = 4
+        object["transport"] = "cloudkit"
+        object["transports"] = ["cloudkit", "relay"]
+        let absent = try LinkPayload.parse(try Self.linkURL(object)).get()
+        XCTAssertNil(absent.relaySwitch)
+        XCTAssertFalse(absent.switchesToRelay)
+        let absentJSON = try XCTUnwrap(String(bytes: try LinkPayload.makeEncoder().encode(absent), encoding: .utf8))
+        XCTAssertFalse(absentJSON.contains("relay_switch"), "an absent key stays absent")
+
+        object["relay_switch"] = true
+        let present = try LinkPayload.parse(try Self.linkURL(object)).get()
+        XCTAssertEqual(present.relaySwitch, true)
+        XCTAssertTrue(present.switchesToRelay)
+        let presentJSON = try XCTUnwrap(String(bytes: try LinkPayload.makeEncoder().encode(present), encoding: .utf8))
+        XCTAssertTrue(presentJSON.contains("\"relay_switch\":true"))
+        XCTAssertEqual(try LinkPayload.parse(present.url()).get(), present, "the key round-trips")
+
+        object["relay_switch"] = false
+        XCTAssertFalse(try LinkPayload.parse(try Self.linkURL(object)).get().switchesToRelay)
+        object["relay_switch"] = "yes"
+        let odd = try LinkPayload.parse(try Self.linkURL(object)).get()
+        XCTAssertNil(odd.relaySwitch, "a non-boolean reads as absent, never fails the code")
+    }
+
     func testAnUnknownTransportReadsAsNil() throws {
         var object = try Self.fixtureObject()
         object["v"] = 4
