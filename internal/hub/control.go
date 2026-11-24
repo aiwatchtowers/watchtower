@@ -364,7 +364,9 @@ func (p *pairListener) owns(nonce string) bool {
 // that code is its newest (a phone refused on the code on screen). A
 // refusal under a code the stream asked for and then replaced (a relay code
 // after its CloudKit code), for a phone it never showed, is not: it would
-// end a stream showing a fresh code. nonce "" is no stream's.
+// end a stream showing a fresh code. nonce "" is no stream's, even one
+// that recorded a sas without a nonce (a sas no code names reaches every
+// stream).
 func (p *pairListener) refusalFor(device, nonce string) bool {
 	if nonce == "" {
 		return false
@@ -400,18 +402,23 @@ const pairQueue = 64
 // broadcast hands a pairing event to the pairing streams it is about,
 // without waiting on any of them (a stream whose queue is full is dropped):
 // a code's qr and waiting go to the stream that asked for it (Token), which
-// records the code's nonce; every other event of a code (sas, linked,
-// linked) goes to the streams that hold its nonce, which record a SAS's
-// code for the confirm. A refusal goes only to the streams that showed that
-// phone's request under its code or whose newest code it is
-// (pairListener.refusalFor); one no stream matches is logged and sent to
-// none, never to every stream. Any other event naming no stream or no code
-// (an issue no stream asked for) goes to every stream, as does its code.
-// The link center emits a code's qr before any event of a phone under it,
-// on one channel, so a stream always holds its nonce first — and a new
-// code's qr before any refusal of a hello under the code it replaced
-// (decideHello waits on the issue's lock), so such a refusal finds the
-// stream's newest code already moved on.
+// records the code's nonce; a phone's sas and linked go to the streams that
+// hold its code's nonce, which record a SAS's code (and that nonce) for the
+// confirm. A refusal goes only to the streams that showed that phone's
+// request under its code or whose newest code it is
+// (pairListener.refusalFor); one no stream matches is sent to none, never to
+// every stream (logged while any pairing stream is open). Any other event
+// naming no stream or no code (an issue no stream asked for) goes to every
+// stream, as does its code. The link center emits a code's qr before any
+// event of a phone under it, on one channel, so a stream always holds its
+// nonce first. Against a replacement: a hello under a replaced code is
+// decided after the new code's qr (decideHello waits on the lock the issue
+// holds while it emits), so its refusal finds the asking stream's newest
+// code moved on and reaches only a stream that showed the phone. The issue
+// itself refuses the requests waiting under the CloudKit code a relay code
+// replaces before it emits the new qr (link.Center.issue); those phones had
+// a sas, so a stream that showed it hears the refusal — the asking stream
+// too, when it asked for both codes.
 func (s *supervisor) broadcast(ev link.PairEvent) {
 	a := ControlAnswer{Event: ev.Kind, OK: true, URL: ev.URL, DeviceID: ev.DeviceID, Name: ev.Name, Code: ev.Code, Reason: ev.Reason,
 		MovesToRelay: ev.MovesToRelay, Request: ev.Request}
@@ -452,7 +459,7 @@ func (s *supervisor) broadcast(ev link.PairEvent) {
 		}
 		shown[p] = true
 	}
-	if ev.Kind == link.EventRefused && len(shown) == 0 {
+	if ev.Kind == link.EventRefused && len(shown) == 0 && len(s.pairs) > 0 {
 		log.Printf("hub: a pairing refusal (%s) matched no pairing stream: sent to none", ev.Reason)
 	}
 	sendIf(s.pairs, a, "pairing", func(p *pairListener) bool { return shown[p] })

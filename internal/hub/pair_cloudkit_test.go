@@ -338,6 +338,11 @@ func TestAScanOfAReplacedICloudCodeLeavesTheRelayCodeStreamOpen(t *testing.T) {
 		if err := watch.Send(ControlRequest{Op: OpDesktopWatch}); err != nil {
 			t.Fatal(err)
 		}
+		// The watch's first line is its answer, written once it is registered:
+		// no pair step before the hello can be missed.
+		if a, err := watch.Next(); err != nil || a.Op != OpDesktopWatch || !a.OK {
+			t.Fatalf("watch answer %+v (%v)", a, err)
+		}
 		phone, err := hubtest.FromLink(old, ck.Fake, nil)
 		if err != nil {
 			t.Fatal(err)

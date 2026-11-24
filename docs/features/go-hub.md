@@ -521,10 +521,13 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   code, `used_code` after another phone linked, an expired or declined request) goes only to the streams that showed
   that phone's `sas` under that code, or whose newest code it is (`pairListener.refusalFor`, #2385): a stream that asked
   again (a relay code after its iCloud code) is not ended when a phone it never showed scans the replaced code. A
-  refusal no stream matches, or one without a nonce, is logged and sent to none. Any other event naming neither token
-  nor nonce (an issue no stream asked for) goes to every stream. The center emits a code's `qr` under its lock before any
-  hello under that code can be decided, so a stream always holds the nonce first, and a new code's `qr` comes before
-  any refusal of a hello under the code it replaced, so that refusal already finds the stream's newest code moved on.
+  refusal no stream matches, or one without a nonce, is sent to none (logged while a pairing stream is open). Any other
+  event naming neither token nor nonce (an issue no stream asked for) goes to every stream. The center emits a code's
+  `qr` under its lock before any hello under that code can be decided, so a stream always holds the nonce first. A hello
+  under a replaced code is decided after the new code's `qr`, so its refusal finds the asking stream's newest code moved
+  on. The issue of a relay code itself refuses the requests waiting under the CloudKit code it replaces before it emits
+  the new `qr`; those phones had a `sas`, so the stream that showed it hears the refusal, the asking stream included
+  when it asked for both codes.
 - **`hub pair --json --stream` and a replaced request** (#2191). The `sas` line carries `moves_to_relay` (below) and
   `request` (`link.RequestID`, opaque; a replacement has a new one even when it drew the same four digits). The CLI
   reads the stream while the owner decides (`pairStream`) and prints the `sas` line again whenever the request of the

@@ -217,6 +217,15 @@ func TestARefusalReachesOnlyTheStreamsThatShowedItsRequest(t *testing.T) {
 	if ga, gb := events(a), events(b); len(ga)+len(gb) != 0 {
 		t.Fatalf("an unmatched refusal reached A %v, B %v", ga, gb)
 	}
+	// A sas no code names reaches every stream and is recorded without a
+	// nonce; a refusal naming no code still matches none of them.
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "EEEE", Code: "9999"})
+	events(a)
+	events(b)
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "EEEE", Reason: wire.RefusedExpiredCode})
+	if ga, gb := events(a), events(b); len(ga)+len(gb) != 0 {
+		t.Fatalf("a refusal naming no code reached A %v, B %v", ga, gb)
+	}
 	if !s.pairs[a] || !s.pairs[b] {
 		t.Fatal("a stream was dropped")
 	}
