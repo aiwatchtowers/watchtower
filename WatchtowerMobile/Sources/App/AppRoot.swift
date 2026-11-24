@@ -251,10 +251,12 @@ final class AppRoot {
         )
         let relayConfig = RelayConfig.from(bundle: .main)
         let productID = relayConfig.productID
-        let linkOps = HostedRelayLinkOps(relay: relay) {
+        // One StoreKit read at a time, however many scans wait on it.
+        let entitlementRead = SharedEntitlementRead {
             guard let productID else { return false }
             return await StoreKitRelayStore.holdsCurrentEntitlement(productID: productID, now: Date())
         }
+        let linkOps = HostedRelayLinkOps(relay: relay) { await entitlementRead() }
         let root = AppRoot(
             env: env,
             registry: registry,

@@ -104,43 +104,42 @@ final class StoreKitRelayStore: RelaySubscriptionStore, @unchecked Sendable {
 
     /// A verified transaction as a `RelayTransaction`, remembered for `finish`. Unverified → nil, with a code only.
     private func take(_ verification: VerificationResult<StoreKit.Transaction>) -> RelayTransaction? {
-        guard case let (transaction, mapped)? = Self.verified(verification, productID: productID) else { return nil }
+        guard let transaction = Self.verified(verification), transaction.productID == productID,
+              let mapped = Self.mapped(transaction, jws: verification.jwsRepresentation) else { return nil }
         lock.withLock { pending[mapped.id] = transaction }
         return mapped
     }
 
-    /// A verified transaction of `productID` with its `RelayTransaction`. Unverified or without expiry → nil, logged
-    /// with a code only.
-    private static func verified(
-        _ verification: VerificationResult<StoreKit.Transaction>, productID: String
-    ) -> (StoreKit.Transaction, RelayTransaction)? {
+    /// The transaction of a verified result; unverified → nil, logged with a code only.
+    fileprivate static func verified(_ verification: VerificationResult<StoreKit.Transaction>) -> StoreKit.Transaction? {
         guard case .verified(let transaction) = verification else {
             logger.error("relay store: unverified transaction skipped")
             return nil
         }
-        guard transaction.productID == productID else { return nil }
+        return transaction
+    }
+
+    /// `map` of a StoreKit transaction; one without expiry → nil, logged with a code only.
+    fileprivate static func mapped(_ transaction: StoreKit.Transaction, jws: String) -> RelayTransaction? {
         guard let mapped = map(
             id: transaction.id, originalID: transaction.originalID, appAccountToken: transaction.appAccountToken,
-            jws: verification.jwsRepresentation,
+            jws: jws,
             revocationDate: transaction.revocationDate, isRenewal: transaction.reason == .renewal,
             expirationDate: transaction.expirationDate
         ) else {
             logger.error("relay store: transaction without expiry skipped")
             return nil
         }
-        return (transaction, mapped)
+        return mapped
     }
 
     /// Whether this device holds a current entitlement to `productID`, from StoreKit's on-device record only: no
     /// `AppStore.sync()`, so it never asks for an Apple ID. A device whose purchases were never restored answers false.
     /// A period past its expiry still counts while StoreKit reports the subscription in its billing grace period
     /// (`Transaction.subscriptionStatus`, which StoreKit answers without a sign-in; the caller bounds the read).
-    static func holdsCurrentEntitlement(productID: String, now: Date) async -> Bool {
-        guard let verification = await Transaction.currentEntitlement(for: productID),
-              case let (transaction, mapped)? = verified(verification, productID: productID) else { return false }
-        return await isCurrent(mapped, now: now) {
-            await transaction.subscriptionStatus?.state == .inGracePeriod
-        }
+    static func holdsCurrentEntitlement(productID: String, now: Date, reads: RelayEntitlementReads = .live) async -> Bool {
+        guard let entry = await reads.currentEntitlement(productID), entry.productID == productID else { return false }
+        return await isCurrent(entry.transaction, now: now, inGracePeriod: entry.inGracePeriod)
     }
 
     /// A transaction that is not revoked and is either before its expiry or, past it, in billing grace
@@ -159,6 +158,31 @@ final class StoreKitRelayStore: RelaySubscriptionStore, @unchecked Sendable {
             id: id, originalID: originalID, appAccountToken: appAccountToken, jws: jws, revoked: revocationDate != nil, isRenewal: isRenewal,
             expiresAt: expirationDate
         )
+    }
+}
+
+/// A verified current entitlement as StoreKit holds it: its product, its period (nil without an expiry), and the
+/// read of its billing grace.
+struct RelayEntitlementEntry: Sendable {
+    let productID: String
+    let transaction: RelayTransaction?
+    let inGracePeriod: @Sendable () async -> Bool
+}
+
+/// The StoreKit reads behind `StoreKitRelayStore.holdsCurrentEntitlement`: `Transaction.currentEntitlement(for:)`
+/// (verified only) and the entitlement's `subscriptionStatus`. Tests pass fakes.
+struct RelayEntitlementReads: Sendable {
+    var currentEntitlement: @Sendable (_ productID: String) async -> RelayEntitlementEntry?
+
+    static let live = Self { productID in
+        guard let verification = await Transaction.currentEntitlement(for: productID),
+              let transaction = StoreKitRelayStore.verified(verification) else { return nil }
+        return RelayEntitlementEntry(
+            productID: transaction.productID,
+            transaction: StoreKitRelayStore.mapped(transaction, jws: verification.jwsRepresentation)
+        ) {
+            await transaction.subscriptionStatus?.state == .inGracePeriod
+        }
     }
 }
 

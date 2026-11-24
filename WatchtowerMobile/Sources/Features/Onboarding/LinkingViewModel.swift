@@ -256,6 +256,7 @@ final class LinkingViewModel {
         let route = await LinkRoutePolicy.route(
             payload, relay: relay.availability,
             entitled: { [relay] in await relay.holdsRelayEntitlement() },
+            iCloudUsable: { [access] in await access.availability() == .available },
             account: { [relay] in await LinkRoutePolicy.account { try await relay.accountState() } }
         )
         switch route {
@@ -1597,19 +1598,8 @@ extension LinkingViewModel {
         let slot: (slot: String, expiresAt: Date)
         do {
             slot = try await relay.open(mac: code.mac)
-        } catch HostedRelayPairing.Refusal.slotsFull(let macs) {
-            slotsCode = code
-            relaySlots = RelaySlotsState(macs: macs)
-            phase = .slotsFull(macName: payload.macName)
-            return
-        } catch HostedRelayPairing.Refusal.notPaying where payload.offersCloudKit && !LinkRoutePolicy.hubOnRelay(payload) {
-            // The subscription ended between the paying check and `open_pairing`: a Mac on iCloud links over iCloud.
-            await connectICloud(payload, hubKeys: code.hubKeys)
-            return
         } catch {
-            let failure = Self.openFailure(error, code: payload)
-            retryCode = failure.retryTitle == nil ? nil : payload.url()
-            phase = .failed(failure)
+            await openRefused(error, code: code)
             return
         }
         let deviceKeys: DeviceIdentityKeys
@@ -1672,6 +1662,30 @@ extension LinkingViewModel {
             return
         }
         await waitForGrant(pending, code: PairingCode(hubKeys: code.hubKeys, deviceKeys: deviceKeys))
+    }
+
+    /// A refused `open_pairing`, before anything was written. A Mac on iCloud whose answer changed since the route
+    /// check (the subscription ended, or another device took the last slot) links over iCloud instead: after not
+    /// paying always, after slots full only while iCloud is usable (otherwise the slots screen can free a slot).
+    private func openRefused(_ error: any Error, code: RelayCode) async {
+        let payload = code.payload
+        let iCloudHub = payload.offersCloudKit && !LinkRoutePolicy.hubOnRelay(payload)
+        switch error as? HostedRelayPairing.Refusal {
+        case let .slotsFull(macs):
+            if iCloudHub, await access.availability() == .available {
+                await connectICloud(payload, hubKeys: code.hubKeys)
+                return
+            }
+            slotsCode = code
+            relaySlots = RelaySlotsState(macs: macs)
+            phase = .slotsFull(macName: payload.macName)
+        case .notPaying where iCloudHub:
+            await connectICloud(payload, hubKeys: code.hubKeys)
+        default:
+            let failure = Self.openFailure(error, code: payload)
+            retryCode = failure.retryTitle == nil ? nil : payload.url()
+            phase = .failed(failure)
+        }
     }
 
     /// What a refused `open_pairing` (before any hello) shows.

@@ -21,7 +21,7 @@ typealias RelayAccountAnswer = (paying: Bool, macs: [String])
 ///
 /// | Code | Relay on this phone | Paying answer | Route |
 /// |---|---|---|---|
-/// | hub on iCloud, offers Relay | available | yes, but every slot holds another Mac | `.cloudKit` |
+/// | hub on iCloud, offers Relay | available | yes, but every slot holds another Mac, and iCloud is usable | `.cloudKit` |
 /// | offers Relay | available | yes | `.relay` (also for a hub on iCloud) |
 /// | offers Relay | available | none (unreachable, backoff), device entitled | `.refuse(.relayUnreachable)` |
 /// | hub on iCloud | available | none, device not entitled | `.cloudKit` |
@@ -43,18 +43,23 @@ enum LinkRoutePolicy {
         entitled: () async -> Bool = { false },
         paying: () async -> Result<Bool, HostedRelayPairing.Refusal>
     ) async -> LinkRoute {
-        await route(code, relay: relay, entitled: entitled) { await paying().map { (paying: $0, macs: []) } }
+        await route(
+            code, relay: relay, entitled: entitled, iCloudUsable: { true },
+            account: { await paying().map { (paying: $0, macs: []) } }
+        )
     }
 
     /// `account` is asked only when the code offers Relay and the relay is available. On a hub on Relay, an answer
     /// that is not a definite yes or no refuses with `.relayUnreachable`: it is never read as "not paying". On a hub
     /// on iCloud it does so only when `entitled` (the device's StoreKit entitlement, read only then) says this phone
     /// pays; otherwise the phone links over iCloud as before. A paying phone whose slots all hold other Macs links an
-    /// iCloud hub over iCloud rather than stop at the slots screen.
+    /// iCloud hub over iCloud rather than stop at the slots screen, but only when `iCloudUsable` (asked only then):
+    /// without iCloud the slots screen, where a slot can be freed, is the only way on.
     static func route(
         _ code: LinkPayload,
         relay: RelayAvailability,
         entitled: () async -> Bool,
+        iCloudUsable: () async -> Bool,
         account: () async -> Result<RelayAccountAnswer, HostedRelayPairing.Refusal>
     ) async -> LinkRoute {
         guard hubOnRelay(code) else {
@@ -67,7 +72,8 @@ enum LinkRoutePolicy {
             switch await account() {
             case let .success(answer) where answer.paying:
                 let slotsFull = answer.macs.count >= HostedRelayLimits.maxMacSlots && !answer.macs.contains(mac)
-                return slotsFull ? .cloudKit : .relay(mac: mac, authPub: authPub)
+                guard slotsFull, await iCloudUsable() else { return .relay(mac: mac, authPub: authPub) }
+                return .cloudKit
             case .success, .failure(.notPaying): return .cloudKit
             case .failure(.updateRequired): return .refuse(.updateApp)
             case .failure: return await entitled() ? .refuse(.relayUnreachable) : .cloudKit
@@ -116,30 +122,77 @@ enum LinkRoutePolicy {
         }
     }
 
-    /// `read`, or false once `timeout` returns first. The read is left to finish on its own (StoreKit's reads do not
-    /// stop on a cancel), so a hung read never holds the scan.
+    /// `read`, or false once `timeout` returns first or the caller is cancelled. The read is left to finish on its own
+    /// (StoreKit's reads do not stop on a cancel), so a hung read never holds the scan.
     static func bounded(_ read: @escaping @Sendable () async -> Bool, timeout: @escaping @Sendable () async -> Void) async -> Bool {
         let race = FirstAnswer()
-        return await withCheckedContinuation { continuation in
-            race.wait(continuation)
-            race.add(Task { race.answer(await read()) })
-            race.add(Task {
-                await timeout()
-                race.answer(false)
-            })
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                race.wait(continuation)
+                race.add(Task { race.answer(await read()) })
+                race.add(Task {
+                    await timeout()
+                    race.answer(false)
+                })
+            }
+        } onCancel: {
+            race.answer(false)
         }
     }
 }
 
-/// The first answer of `LinkRoutePolicy.bounded`'s two tasks; the other task is cancelled.
+/// One entitlement read shared by every caller while it runs (`HostedRelayLinkOps`): a hung StoreKit read is never
+/// started again by a later scan, and each caller bounds its own wait (`LinkRoutePolicy.bounded`).
+final class SharedEntitlementRead: @unchecked Sendable {
+    private let read: @Sendable () async -> Bool
+    private let lock = NSLock()
+    private var running: (id: UInt64, task: Task<Bool, Never>)?
+    private var started: UInt64 = 0
+
+    init(_ read: @escaping @Sendable () async -> Bool) {
+        self.read = read
+    }
+
+    /// The read in flight, or a new one when none is.
+    func start() -> Task<Bool, Never> {
+        lock.withLock {
+            if let running { return running.task }
+            started += 1
+            let id = started
+            let task = Task { [read] in
+                let value = await read()
+                self.finished(id)
+                return value
+            }
+            running = (id, task)
+            return task
+        }
+    }
+
+    func callAsFunction() async -> Bool {
+        await start().value
+    }
+
+    private func finished(_ id: UInt64) {
+        lock.withLock { if running?.id == id { running = nil } }
+    }
+}
+
+/// The first answer of `LinkRoutePolicy.bounded`'s two tasks (or the caller's cancel); the other task is cancelled.
 private final class FirstAnswer: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
     private var tasks: [Task<Void, Never>] = []
     private var done = false
+    private var result = false
 
+    /// Resumes at once when the answer came first (a caller cancelled before it waited).
     func wait(_ continuation: CheckedContinuation<Bool, Never>) {
-        lock.withLock { self.continuation = continuation }
+        let (answered, value) = lock.withLock {
+            if !done { self.continuation = continuation }
+            return (done, result)
+        }
+        if answered { continuation.resume(returning: value) }
     }
 
     func add(_ task: Task<Void, Never>) {
@@ -154,6 +207,7 @@ private final class FirstAnswer: @unchecked Sendable {
         let (waiter, others): (CheckedContinuation<Bool, Never>?, [Task<Void, Never>]) = lock.withLock {
             guard !done else { return (nil, []) }
             done = true
+            result = value
             defer {
                 continuation = nil
                 tasks = []

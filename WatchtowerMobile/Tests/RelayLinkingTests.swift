@@ -411,6 +411,41 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(host.linkedCalls.last?.record.route, .cloudKit(.private))
     }
 
+    /// Every slot taken and iCloud signed out: the slots screen, where a slot can be freed (review round 2).
+    func testACloudKitCodeWithEverySlotTakenAndNoICloudShowsTheSlotsScreen() async throws {
+        relay.slots = ["m1", "m2", "m3"]
+        container.status = .noAccount
+        let model = makeModel()
+
+        await model.open(iCloudCode().url())
+
+        XCTAssertEqual(model.phase, .slotsFull(macName: "Work Mac"))
+        XCTAssertEqual(model.relaySlots.macs, ["m1", "m2", "m3"])
+    }
+
+    /// The route check saw a free slot, then another device took the last one: `open_pairing` answers slots full. A Mac
+    /// on iCloud links over iCloud while iCloud is usable, and shows the slots screen otherwise (review round 2).
+    func testSlotsFullAtOpenFallsBackToICloudOnlyWhileICloudIsUsable() async throws {
+        let taken = ["m1", "m2", "m3"]
+        relay.fail("open", with: HostedRelayPairing.Refusal.slotsFull(macs: taken))
+        let payload = iCloudCode()
+        let model = makeModel()
+
+        await link(payload, model: model)
+
+        XCTAssertEqual(model.phase, .linked(macName: "Work Mac"))
+        XCTAssertEqual(host.linkedCalls.last?.record.route, .cloudKit(.private))
+        XCTAssertEqual(relay.count("open"), 1)
+
+        await model.finish()
+        container.status = .noAccount
+        relay.fail("open", with: HostedRelayPairing.Refusal.slotsFull(macs: taken))
+        let other = mac.code(hubID: otherHub, macName: "Home Mac", owner: owner, now: clock.now(), transport: .cloudKit)
+        await model.open(other.url())
+        XCTAssertEqual(model.phase, .slotsFull(macName: "Home Mac"))
+        XCTAssertEqual(model.relaySlots.macs, taken)
+    }
+
     /// `open_pairing` answers not paying after the paying check said yes: a Mac on iCloud links over iCloud; a Mac on
     /// Relay keeps its refusal (#2191 review).
     func testNotPayingAtOpenFallsBackToICloudOnlyForAMacOnICloud() async throws {

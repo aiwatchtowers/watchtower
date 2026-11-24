@@ -79,14 +79,78 @@ final class LinkRoutePolicyTests: XCTestCase {
             (["m1", "m2"], .relay(mac: mac.deviceID, authPub: mac.authPub))
         ] {
             let route = await LinkRoutePolicy.route(
-                code(.cloudKit), relay: available, entitled: { true }, account: { .success((paying: true, macs: macs)) }
+                code(.cloudKit), relay: available, entitled: { true }, iCloudUsable: { true },
+                account: { .success((paying: true, macs: macs)) }
             )
             XCTAssertEqual(route, expected, "\(macs)")
         }
         let onRelay = await LinkRoutePolicy.route(
-            code(.relay), relay: available, entitled: { true }, account: { .success((paying: true, macs: others)) }
+            code(.relay), relay: available, entitled: { true }, iCloudUsable: { true },
+            account: { .success((paying: true, macs: others)) }
         )
         XCTAssertEqual(onRelay, .relay(mac: mac.deviceID, authPub: mac.authPub))
+    }
+
+    /// Full slots without a usable iCloud: the relay route, so the slots screen can free a slot (review round 2).
+    func testFullSlotsWithoutICloudKeepTheRelayRoute() async {
+        var iCloudAsks = 0
+        let full = await LinkRoutePolicy.route(
+            code(.cloudKit), relay: available, entitled: { true },
+            iCloudUsable: {
+                iCloudAsks += 1
+                return false
+            },
+            account: { .success((paying: true, macs: ["m1", "m2", "m3"])) }
+        )
+        XCTAssertEqual(full, .relay(mac: mac.deviceID, authPub: mac.authPub))
+        XCTAssertEqual(iCloudAsks, 1)
+        let free = await LinkRoutePolicy.route(
+            code(.cloudKit), relay: available, entitled: { true },
+            iCloudUsable: {
+                iCloudAsks += 1
+                return false
+            },
+            account: { .success((paying: true, macs: ["m1"])) }
+        )
+        XCTAssertEqual(free, .relay(mac: mac.deviceID, authPub: mac.authPub))
+        XCTAssertEqual(iCloudAsks, 1, "iCloud is asked only on full slots")
+    }
+
+    /// A cancelled caller stops waiting at once and reads "not entitled" (review round 2).
+    func testACancelledEntitlementWaitIsNotEntitled() async {
+        let waiting = Task {
+            await LinkRoutePolicy.bounded({
+                try? await Task.sleep(for: .seconds(3600))
+                return true
+            }, timeout: {
+                try? await Task.sleep(for: .seconds(3600))
+            })
+        }
+        waiting.cancel()
+        let answer = await waiting.value
+        XCTAssertFalse(answer)
+    }
+
+    /// Scans while a read hangs share it: one StoreKit read, however many callers (review round 2).
+    func testScansWhileAReadHangsShareIt() async {
+        let gate = AsyncStream<Void>.makeStream()
+        let reads = ReadCount()
+        let shared = SharedEntitlementRead {
+            reads.add()
+            for await _ in gate.stream {}
+            return true
+        }
+        let first = shared.start()
+        let second = shared.start()
+        XCTAssertEqual(first, second, "the second scan waits on the read in flight")
+        let bounded = await LinkRoutePolicy.bounded({ await shared() }, timeout: {})
+        XCTAssertFalse(bounded, "each caller's own bound still applies")
+        gate.continuation.finish()
+        let answer = await first.value
+        XCTAssertTrue(answer)
+        XCTAssertEqual(reads.count, 1)
+        _ = await shared.start().value
+        XCTAssertEqual(reads.count, 2, "a read after the last one finished starts anew")
     }
 
     /// The entitlement read is bounded: a read that outlasts the bound is "not entitled", one that answers first wins.
@@ -238,5 +302,17 @@ final class LinkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(update, .failure(.updateRequired))
         let free = await LinkRoutePolicy.paying { (paying: false, macs: []) }
         XCTAssertEqual(free, .success(false))
+    }
+}
+
+/// How many entitlement reads started.
+private final class ReadCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    var count: Int { lock.withLock { value } }
+
+    func add() {
+        lock.withLock { value += 1 }
     }
 }

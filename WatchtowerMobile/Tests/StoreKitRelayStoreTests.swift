@@ -235,6 +235,45 @@ final class StoreKitRelayStoreTests: XCTestCase {
         XCTAssertEqual(graceAsks, 2, "an unexpired period needs no grace read")
     }
 
+    /// `holdsCurrentEntitlement`'s wiring over faked StoreKit reads: the product asked for, another product's
+    /// entitlement, a missing one, and the grace read past the expiry only (review round 2).
+    func testTheEntitlementReadAsksForItsProductAndReadsGraceOnlyPastExpiry() async {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let log = EntitlementLog()
+        func reads(_ entry: (productID: String, expiresAt: Date, inGrace: Bool)?) -> RelayEntitlementReads {
+            let period = entry.map { transaction(expiresAt: $0.expiresAt) }
+            return RelayEntitlementReads { asked in
+                log.asked(asked)
+                guard let entry else { return nil }
+                return RelayEntitlementEntry(productID: entry.productID, transaction: period) {
+                    log.graceRead()
+                    return entry.inGrace
+                }
+            }
+        }
+        let product = Self.productID
+        let current = await StoreKitRelayStore.holdsCurrentEntitlement(
+            productID: product, now: now, reads: reads((product, now + 60, false)))
+        XCTAssertTrue(current)
+        XCTAssertEqual(log.products, [product])
+        XCTAssertEqual(log.graceReads, 0, "an unexpired period needs no grace read")
+
+        let none = await StoreKitRelayStore.holdsCurrentEntitlement(productID: product, now: now, reads: reads(nil))
+        XCTAssertFalse(none)
+        let other = await StoreKitRelayStore.holdsCurrentEntitlement(
+            productID: product, now: now, reads: reads(("com.example.other", now + 60, true)))
+        XCTAssertFalse(other, "another product's entitlement never counts")
+
+        let inGrace = await StoreKitRelayStore.holdsCurrentEntitlement(
+            productID: product, now: now, reads: reads((product, now - 60, true)))
+        XCTAssertTrue(inGrace)
+        let lapsed = await StoreKitRelayStore.holdsCurrentEntitlement(
+            productID: product, now: now, reads: reads((product, now - 60, false)))
+        XCTAssertFalse(lapsed)
+        XCTAssertEqual(log.graceReads, 2)
+        XCTAssertEqual(log.products, Array(repeating: product, count: 5))
+    }
+
     /// A subscription past its period in billing grace still entitles the phone; a revoked one never does.
     func testABillingGracePeriodStillCounts() async {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -287,5 +326,23 @@ final class StoreKitRelayStoreTests: XCTestCase {
     private static func next(_ iterator: inout AsyncStream<RelayTransaction>.AsyncIterator) async throws -> RelayTransaction {
         guard let value = await iterator.next() else { throw NoUpdate() }
         return value
+    }
+}
+
+/// What the faked entitlement reads were asked.
+private final class EntitlementLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var askedProducts: [String] = []
+    private var reads = 0
+
+    var products: [String] { lock.withLock { askedProducts } }
+    var graceReads: Int { lock.withLock { reads } }
+
+    func asked(_ productID: String) {
+        lock.withLock { askedProducts.append(productID) }
+    }
+
+    func graceRead() {
+        lock.withLock { reads += 1 }
     }
 }
