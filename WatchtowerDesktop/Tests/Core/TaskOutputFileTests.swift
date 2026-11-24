@@ -18,8 +18,13 @@ final class TaskOutputFileTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(testDirName)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // Resolved here, not through `tempBases`: teardown must never be handed a temp root.
-        base = try XCTUnwrap(Self.realPath(dir.path))
-        try XCTSkipUnless((base as NSString).lastPathComponent == testDirName, "the test dir did not resolve to itself")
+        let resolved = Self.realPath(dir.path) ?? ""
+        guard (resolved as NSString).lastPathComponent == testDirName else {
+            // The dir this test just made (its own unique name), removed before skipping.
+            try? FileManager.default.removeItem(at: dir)
+            throw XCTSkip("the test dir did not resolve to itself")
+        }
+        base = resolved
         sessionDir = "\(base)/claude-\(getuid())/-p/\(sid)"
         claudeDir = "\(base)/home/.claude"
         try FileManager.default.createDirectory(atPath: "\(sessionDir)/tasks", withIntermediateDirectories: true)
@@ -37,8 +42,11 @@ final class TaskOutputFileTests: XCTestCase {
         return String(cString: resolved)
     }
 
+    private var projectDir: String { "\(claudeDir)/projects/-p" }
+
     private func read(_ path: String, session: String? = nil, limit: Int = TaskOutputFile.limit) -> TaskOutputFile.Outcome {
-        TaskOutputFile.read(path, claudeSessionID: session ?? sid, bases: [base], claudeDir: claudeDir, limit: limit)
+        TaskOutputFile.read(path, claudeSessionID: session ?? sid, projectDir: projectDir, bases: [base],
+                            claudeDir: claudeDir, limit: limit)
     }
 
     private func write(_ text: String, _ path: String) throws {
@@ -47,8 +55,8 @@ final class TaskOutputFileTests: XCTestCase {
 
     /// Claude Code's layout: `<temp>/claude-<uid>/<project>/<sid>/tasks/<id>.output` links to
     /// `~/.claude/projects/<project>/<sid>/subagents/agent-<id>.jsonl`.
-    private func transcript(session: String, id: String) throws -> String {
-        let dir = "\(claudeDir)/projects/-p/\(session)/subagents"
+    private func transcript(session: String, id: String, project: String = "-p", projects: String? = nil) throws -> String {
+        let dir = "\(projects ?? "\(claudeDir)/projects")/\(project)/\(session)/subagents"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let file = "\(dir)/agent-\(id).jsonl"
         try write("{\"a\":1}\n", file)
@@ -70,9 +78,38 @@ final class TaskOutputFileTests: XCTestCase {
         try write("x", beside)
         try FileManager.default.createSymbolicLink(atPath: "\(sessionDir)/tasks/a3.output", withDestinationPath: beside)
         XCTAssertEqual(read("\(sessionDir)/tasks/a3.output"), .reveal)
-        // Without a Claude dir only the temp dir counts.
-        XCTAssertEqual(TaskOutputFile.read("\(sessionDir)/tasks/a3.output", claudeSessionID: sid, bases: [base],
+    }
+
+    func testSameSessionUnderAnotherProjectIsNotRead() throws {
+        try FileManager.default.createSymbolicLink(atPath: "\(sessionDir)/tasks/q1.output",
+                                                   withDestinationPath: try transcript(session: sid, id: "q1", project: "-q"))
+        XCTAssertEqual(read("\(sessionDir)/tasks/q1.output"), .reveal)
+    }
+
+    func testWithoutAClaudeDirOrAProjectDirNoTranscriptIsRead() throws {
+        let link = "\(sessionDir)/tasks/a4.output"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: try transcript(session: sid, id: "a4"))
+        XCTAssertEqual(read(link), .text("{\"a\":1}\n", cut: false), "readable with both")
+        XCTAssertEqual(TaskOutputFile.read(link, claudeSessionID: sid, projectDir: projectDir, bases: [base],
                                            claudeDir: nil), .reveal)
+        XCTAssertEqual(TaskOutputFile.read(link, claudeSessionID: sid, projectDir: nil, bases: [base],
+                                           claudeDir: claudeDir), .reveal)
+        // A project dir that is not a direct child of `projects` widens nothing.
+        XCTAssertEqual(TaskOutputFile.read(link, claudeSessionID: sid, projectDir: "\(claudeDir)/projects", bases: [base],
+                                           claudeDir: claudeDir), .reveal)
+    }
+
+    func testLinkedProjectsDirStillOpens() throws {
+        let real = "\(base)/real-projects"
+        try FileManager.default.createDirectory(atPath: real, withIntermediateDirectories: true)
+        let linkedClaude = "\(base)/home2/.claude"
+        try FileManager.default.createDirectory(atPath: linkedClaude, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: "\(linkedClaude)/projects", withDestinationPath: real)
+        let link = "\(sessionDir)/tasks/l1.output"
+        try FileManager.default.createSymbolicLink(atPath: link,
+                                                   withDestinationPath: try transcript(session: sid, id: "l1", projects: real))
+        XCTAssertEqual(TaskOutputFile.read(link, claudeSessionID: sid, projectDir: "\(linkedClaude)/projects/-p",
+                                           bases: [base], claudeDir: linkedClaude), .text("{\"a\":1}\n", cut: false))
     }
 
     func testRegularFileInTheSessionTempDirOpens() throws {
@@ -103,11 +140,11 @@ final class TaskOutputFileTests: XCTestCase {
     func testOtherSessionOrNoneIsRevealed() throws {
         try write("x", "\(sessionDir)/tasks/c1.output")
         XCTAssertEqual(read("\(sessionDir)/tasks/c1.output", session: "other"), .reveal)
-        XCTAssertEqual(TaskOutputFile.read("\(sessionDir)/tasks/c1.output", claudeSessionID: nil, bases: [base],
-                                           claudeDir: claudeDir), .reveal)
-        XCTAssertEqual(read("tasks/c1.output"), .reveal)
-        XCTAssertEqual(TaskOutputFile.read("\(sessionDir)/tasks/c1.output", claudeSessionID: sid, uid: getuid() + 1,
+        XCTAssertEqual(TaskOutputFile.read("\(sessionDir)/tasks/c1.output", claudeSessionID: nil, projectDir: projectDir,
                                            bases: [base], claudeDir: claudeDir), .reveal)
+        XCTAssertEqual(read("tasks/c1.output"), .reveal)
+        XCTAssertEqual(TaskOutputFile.read("\(sessionDir)/tasks/c1.output", claudeSessionID: sid, projectDir: projectDir,
+                                           uid: getuid() + 1, bases: [base], claudeDir: claudeDir), .reveal)
     }
 
     func testFIFOIsUnreadableWithoutBlocking() {

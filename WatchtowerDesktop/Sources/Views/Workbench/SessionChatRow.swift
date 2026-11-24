@@ -25,6 +25,8 @@ struct WorkchatFeed {
     var answerPending = false
     /// An artifact card opens the viewer.
     var onOpenArtifact: (ChatArtifactContent) -> Void = { _ in }
+    /// The directory of the session's Claude Code transcript: an agent's output opens from its `subagents/` there.
+    var transcriptProjectDir: String?
     /// A click on a highlighted span of the agent's text (`WorkchatHighlights`); nil = the spans are only coloured.
     var onHighlight: ((AgentTextHighlights.Span, Int64) -> Void)?
     /// Whether a path in an agent message (by id) is a file of the session's folders: only such a path is coloured.
@@ -84,17 +86,18 @@ struct WorkchatFeed {
             }
         }
         let (markdown, expanded, toggle) = (markdown, expandedEvents, onToggle)
-        let openArtifact = onOpenArtifact
+        let (openArtifact, projectDir) = (onOpenArtifact, transcriptProjectDir)
         context.systemRow = { message in
             guard let entry = byID[message.id] else { return AnyView(EmptyView()) }
             return AnyView(
                 SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry), expanded: expanded.contains(entry.id),
+                               outputProjectDir: projectDir,
                                onToggle: { toggle(entry.id) },
                                onOpenOutput: { path in
                                    // The row's own conversation: after /clear or a resume, an older task's output
                                    // is in its own session's temp dir.
                                    AgentFinishedRow.openOutput(path, claudeSessionID: entry.conversation,
-                                                               openArtifact: openArtifact)
+                                                               projectDir: projectDir, openArtifact: openArtifact)
                                })
                 .equatable()
             )
@@ -113,12 +116,15 @@ struct SessionChatRow: View, Equatable {
     let blocks: [MarkdownBlock]
     /// An event's body is shown (events only).
     var expanded = false
+    /// Where Open output reads an agent's transcript (part of `==`, so a late value re-renders the row).
+    var outputProjectDir: String?
     var onToggle: (() -> Void)?
     /// Open output on a task's row (`AgentFinishedRow`); nil hides it.
     var onOpenOutput: ((String) -> Void)?
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.entry == rhs.entry && lhs.blocks == rhs.blocks && lhs.expanded == rhs.expanded
+            && lhs.outputProjectDir == rhs.outputProjectDir
     }
 
     /// Text the owner wrote (directly or through Watchtower) keeps its line

@@ -141,11 +141,17 @@ struct AgentFinishedRow: View {
 
     /// Open output: a file that resolves inside the session's Claude Code temp dir (`TaskOutputFile`) opens read-only
     /// in the chat's artifact viewer (its first 256 KB, as code), any other is revealed in Finder; a file that is gone
-    /// or unreadable beeps. `claudeSessionID` is the row's own conversation, not the pane's latest.
-    static func openOutput(_ path: String, claudeSessionID: String?, openArtifact: @escaping (ChatArtifactContent) -> Void) {
+    /// or unreadable beeps. `claudeSessionID` is the row's own conversation, not the pane's latest; `projectDir` the
+    /// directory of the session's transcript (where its agents' transcripts are).
+    static func openOutput(
+        _ path: String,
+        claudeSessionID: String?,
+        projectDir: String?,
+        openArtifact: @escaping (ChatArtifactContent) -> Void
+    ) {
         Task {
             let outcome = await Task.detached(priority: .userInitiated) {
-                TaskOutputFile.read(path, claudeSessionID: claudeSessionID)
+                TaskOutputFile.read(path, claudeSessionID: claudeSessionID, projectDir: projectDir)
             }.value
             switch outcome {
             case let .text(text, cut):

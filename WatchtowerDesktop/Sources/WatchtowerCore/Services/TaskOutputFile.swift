@@ -5,7 +5,8 @@ import Foundation
 /// read for the read-only viewer only when, every symlink resolved, it is a regular file of the row's own Claude Code
 /// session — inside its temp dir (`<base>/claude-<uid>/<project>/<session id>/…`, a background command's output) or
 /// its subagent transcripts (`~/.claude/projects/<project>/<session id>/subagents/…`, where an agent's
-/// `tasks/<id>.output` link points: it opens as raw JSONL). Anything else is revealed in Finder.
+/// `tasks/<id>.output` link points: it opens as raw JSONL), `<project>` being the one the feed reads the session's
+/// transcript from. Anything else is revealed in Finder.
 package enum TaskOutputFile {
     package enum Outcome: Equatable, Sendable {
         /// The first `limit` bytes as text; `cut` when the file is longer.
@@ -42,11 +43,13 @@ package enum TaskOutputFile {
         home.hasPrefix("/") ? (home as NSString).appendingPathComponent(".claude") : nil
     }
 
-    /// Reads `path` for the viewer when it resolves inside the session's temp dir under one of `bases`, or inside the
-    /// session's `subagents/` under `claudeDir`.
+    /// Reads `path` for the viewer when it resolves inside the session's temp dir under one of `bases`, or inside
+    /// `<projectDir>/<session id>/subagents/` when `projectDir` (the directory of the session's transcript) is a
+    /// project of `claudeDir`'s `projects` — both compared fully resolved, so a linked `projects` still matches.
     package static func read(
         _ path: String,
         claudeSessionID: String?,
+        projectDir: String?,
         uid: uid_t = getuid(),
         bases: [String] = tempBases(),
         claudeDir: String? = defaultClaudeDir(),
@@ -54,10 +57,13 @@ package enum TaskOutputFile {
     ) -> Outcome {
         guard let claudeSessionID, !claudeSessionID.isEmpty, path.hasPrefix("/") else { return .reveal }
         guard let resolved = realPath(path) else { return .unreadable }
-        let projects = claudeDir.flatMap { $0.hasPrefix("/") ? realPath($0) : nil }.map { components($0) + ["projects"] }
+        let subagents = subagentsRoot(projectDir: projectDir, claudeDir: claudeDir).map { $0 + [claudeSessionID, "subagents"] }
         let inside = { (file: String) in
             Self.inside(file, sessionID: claudeSessionID, uid: uid, bases: bases)
-                || projects.map { Self.inSubagents(file, sessionID: claudeSessionID, projects: $0) } == true
+                || subagents.map { root in
+                    let parts = components(file)
+                    return parts.count > root.count && Array(parts.prefix(root.count)) == root
+                } == true
         }
         guard inside(resolved) else { return .reveal }
         // Opened without following a last-component link and without blocking (a FIFO); the descriptor's own path
@@ -90,11 +96,14 @@ package enum TaskOutputFile {
         }
     }
 
-    /// `path` sits in `<projects>/<project>/<sessionID>/subagents/…` (`projects` already resolved, as components).
-    private static func inSubagents(_ path: String, sessionID: String, projects: [String]) -> Bool {
-        let parts = components(path)
-        return parts.count >= projects.count + 4 && Array(parts.prefix(projects.count)) == projects
-            && parts[projects.count + 1] == sessionID && parts[projects.count + 2] == "subagents"
+    /// The resolved project dir as components, when it is a direct child of the resolved `<claudeDir>/projects`.
+    private static func subagentsRoot(projectDir: String?, claudeDir: String?) -> [String]? {
+        guard let projectDir, projectDir.hasPrefix("/"), let claudeDir, claudeDir.hasPrefix("/"),
+              let projects = realPath((claudeDir as NSString).appendingPathComponent("projects")),
+              let project = realPath(projectDir)
+        else { return nil }
+        let (root, parts) = (components(projects), components(project))
+        return parts.count == root.count + 1 && Array(parts.prefix(root.count)) == root ? parts : nil
     }
 
     private static func components(_ path: String) -> [String] {

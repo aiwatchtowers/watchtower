@@ -428,6 +428,8 @@ struct SessionChatView: View {
         workchatFeed.isWorking = working
         workchatFeed.answerPending = !(workchat?.outgoing.isEmpty ?? true)
         workchatFeed.onOpenArtifact = { artifact = $0 }
+        workchatFeed.transcriptProjectDir = vm.session(sessionID, projectID: projectID)?.transcriptPath
+            .flatMap { $0.isEmpty ? nil : ($0 as NSString).deletingLastPathComponent }
         let handlers = highlightHandlers()
         workchatFeed.onHighlight = handlers.open
         workchatFeed.resolvesPath = handlers.resolvesPath

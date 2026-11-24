@@ -46,12 +46,16 @@ final class AgentFinishedPresentationTests: XCTestCase {
         XCTAssertEqual(p.glyph, "stop")
     }
 
-    func testStoppedCommandWithExitZeroIsNotSuccess() {
+    func testStoppedWinsOverAnyExitCode() {
         for status in ["killed", "stopped"] {
-            let p = AgentFinishedPresentation(task: SessionFeedTask(status: status, kind: "command", exitCode: 0),
-                                              fallbackTitle: "")
-            XCTAssertEqual(p.tone, .neutral, status)
-            XCTAssertEqual(p.glyph, "stop", status)
+            for exitCode in [0, 1, 137, 143] {
+                let p = AgentFinishedPresentation(task: SessionFeedTask(status: status, kind: "command", exitCode: exitCode),
+                                                  fallbackTitle: "")
+                XCTAssertEqual(p.tone, .neutral, "\(status) \(exitCode)")
+                XCTAssertEqual(p.glyph, "stop", "\(status) \(exitCode)")
+            }
+            XCTAssertEqual(AgentFinishedPresentation(task: SessionFeedTask(status: status, kind: "agent"), fallbackTitle: "").glyph,
+                           "stop")
         }
     }
 

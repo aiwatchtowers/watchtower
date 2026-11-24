@@ -38,10 +38,11 @@ package struct AgentFinishedPresentation: Equatable, Sendable {
             title = name ?? [fallbackTitle, task.summary].first { !$0.isEmpty } ?? Self.untitled
         }
         let stopped = task.status == "killed" || task.status == "stopped"
-        if task.status == "failed" || (task.exitCode ?? 0) != 0 {
-            tone = .failure
-        } else if stopped {
+        // A stopped task is stopped whatever its exit code (a kill's 137 or 143 is not a failure of the work).
+        if stopped {
             tone = .neutral
+        } else if task.status == "failed" || (task.exitCode ?? 0) != 0 {
+            tone = .failure
         } else if task.status == "completed" || task.exitCode == 0 {
             tone = .success
         } else {

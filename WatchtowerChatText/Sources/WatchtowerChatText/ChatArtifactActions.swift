@@ -81,14 +81,11 @@ public struct ChatArtifactActions: Equatable {
         return longest >= maxFence ? nil : String(repeating: "`", count: max(3, longest + 1))
     }
 
-    /// The text a Markdown kind renders: code in a fence of its language (`codeFence`), or — when no fence can hold
-    /// it — as an indented code block, every line indented, which nothing in the code can close.
-    public static func markdown(_ draft: ArtifactDraft) -> String {
+    /// The text a Markdown kind renders: code in a fence of its language (`codeFence`); nil for code no fence can
+    /// hold (a run of `maxFence` backticks or more), which the viewer shows as literal text, never parsed as Markdown.
+    public static func markdown(_ draft: ArtifactDraft) -> String? {
         guard draft.kind == "code" else { return draft.content }
-        guard let fence = codeFence(for: draft.content) else {
-            let lines = draft.content.split(separator: "\n", omittingEmptySubsequences: false)
-            return lines.map { "    " + $0 }.joined(separator: "\n")
-        }
+        guard let fence = codeFence(for: draft.content) else { return nil }
         return "\(fence)\(draft.meta["language"] ?? "")\n\(draft.content)\n\(fence)"
     }
 }
