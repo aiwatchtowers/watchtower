@@ -175,23 +175,21 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
         return !head.isEmpty && !head.contains("/") && !pathHead(head)
     }
 
-    /// A head that makes the path after it another path: `.`, `..`, a dot-directory (`.hidden`), `~` or `~user`,
-    /// `$NAME` or `${…}` (#2386 fix rounds 1-2). Prose such as `...` or `$19.99` is not one.
+    /// A head that makes the path after it another path, matched whole (#2386 fix rounds 1-3). Prose such as `...`,
+    /// `$19.99` or `.NET:` is not one.
+    private static let pathHeads = try? NSRegularExpression(pattern: "^(?:" + [
+        #"\.\.?"#,                          // . and ..
+        #"\.[A-Za-z0-9_][A-Za-z0-9_.-]*"#,  // a dot-directory: .hidden
+        #"~[A-Za-z0-9_.-]*"#,               // ~ and ~user
+        #"~[+-]"#,                          // ~+ and ~-
+        #"\$[A-Za-z_][A-Za-z0-9_]*"#,       // $NAME
+        #"\$[0-9@*#?$!-]"#,                 // $1, $@ and the other one-character parameters
+        #"\$\{[^}]*\}"#,                   // ${…}
+        #"\$\([^)]*\)"#                    // $(…)
+    ].joined(separator: "|") + ")$")
+
     private static func pathHead(_ head: String) -> Bool {
-        let nameChar: (Character) -> Bool = { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" || $0 == "." }
-        let rest = head.dropFirst()
-        switch head.first {
-        case "."?:
-            return head == "." || head == ".." || rest.first.map { $0.isLetter || $0.isNumber || $0 == "_" } == true
-        case "~"?:
-            return rest.allSatisfy(nameChar)
-        case "$"?:
-            if rest.hasPrefix("{") { return rest.hasSuffix("}") }
-            guard let start = rest.first, start.isLetter || start == "_" else { return false }
-            return rest.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
-        default:
-            return false
-        }
+        pathHeads?.firstMatch(in: head, range: NSRange(head.startIndex..., in: head)) != nil
     }
 
     /// `index` is the end, whitespace or a quote, once any closing punctuation is skipped.
