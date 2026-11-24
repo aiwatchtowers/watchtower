@@ -1566,14 +1566,14 @@ func TestAConfirmForAReplacedRequestIDIsCodeChanged(t *testing.T) {
 		t.Fatalf("request ids: %q then %q", old.Request, current.Request)
 	}
 	// The sas events in order: the first request's, then the replacement's.
-	for _, want := range []string{old.Request, current.Request} {
-		if ev := sasEvent(t, r.c); ev.Request != want {
-			t.Fatalf("the sas event's request %q, want %q", ev.Request, want)
+	for _, want := range []Pending{old, current} {
+		if ev := sasEvent(t, r.c); ev.Code != want.Code || ev.Request != want.Request {
+			t.Fatalf("sas (%q, %q), want (%q, %q)", ev.Code, ev.Request, want.Code, want.Request)
 		}
 	}
 	// The pending snapshot names the same request the sas carried.
 	pending, err := r.c.PendingLinks()
-	if err != nil || len(pending) != 1 || pending[0].Request != current.Request {
+	if err != nil || len(pending) != 1 || pending[0].Request != current.Request || pending[0].Code != current.Code {
 		t.Fatalf("pending links %+v, %v: want request %q", pending, err, current.Request)
 	}
 	device := second.id.String()

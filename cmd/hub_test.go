@@ -1083,10 +1083,12 @@ func pairSend(t *testing.T, p *pairRun, f *scriptedPairHub, a hub.ControlAnswer)
 
 // scriptedPairHub serves one pairing stream on dir's control socket: the
 // test writes its lines (send) and reads the CLI's requests after the pair
-// request (got).
+// request (got); eof closes once the CLI hung up and every request it sent
+// is in got.
 type scriptedPairHub struct {
 	send chan hub.ControlAnswer
 	got  chan hub.ControlRequest
+	eof  chan struct{}
 }
 
 func startScriptedPairHub(t *testing.T, dir string) *scriptedPairHub {
@@ -1094,7 +1096,7 @@ func startScriptedPairHub(t *testing.T, dir string) *scriptedPairHub {
 	require.NoError(t, os.MkdirAll(dir, 0o700))
 	l, err := net.Listen("unix", filepath.Join(dir, hub.SocketName))
 	require.NoError(t, err)
-	f := &scriptedPairHub{send: make(chan hub.ControlAnswer), got: make(chan hub.ControlRequest, 4)}
+	f := &scriptedPairHub{send: make(chan hub.ControlAnswer), got: make(chan hub.ControlRequest, 4), eof: make(chan struct{})}
 	stop, served := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(served)
@@ -1109,6 +1111,7 @@ func startScriptedPairHub(t *testing.T, dir string) *scriptedPairHub {
 			return
 		}
 		go func() {
+			defer close(f.eof)
 			for {
 				var r hub.ControlRequest
 				if dec.Decode(&r) != nil {
@@ -1278,6 +1281,48 @@ func TestHubPairStreamANewNameIsNoReplacement(t *testing.T) {
 // id: after a replacement no yes could name the request, so the pairing
 // ends with an error rather than asking forever, and nothing is confirmed.
 func TestHubPairStreamFailsClosedOnAnOldHub(t *testing.T) {
+	// Even a yes that carries a request id of its own: the line shown has
+	// none, so nothing could bind the yes to it.
+	for name, yes := range map[string]string{
+		"no request":   `{"confirm":true,"code":"2222","moves_to_relay":false,"request":""}`,
+		"some request": `{"confirm":true,"code":"2222","moves_to_relay":false,"request":"r2"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, p, lines := startOldHubReplacement(t)
+			p.answer(yes)
+			select {
+			case m, open := <-lines:
+				if open {
+					t.Fatalf("a line after the yes on an old hub: %v", m)
+				}
+			case r := <-f.got:
+				t.Fatalf("a confirm reached the old hub: %+v", r)
+			}
+			require.ErrorIs(t, p.wait(t), errPairHubTooOld)
+			<-f.eof // every request the CLI sent is in f.got
+			select {
+			case r := <-f.got:
+				t.Fatalf("a confirm reached the old hub: %+v", r)
+			default:
+			}
+		})
+	}
+	// A no still reaches the hub.
+	t.Run("no", func(t *testing.T) {
+		f, p, lines := startOldHubReplacement(t)
+		p.answer(`{"confirm":false}`)
+		assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice}, scriptedGot(t, f, lines))
+		pairSend(t, p, f, hub.ControlAnswer{Op: hub.OpConfirm, OK: true, DeviceID: fakePairDevice})
+		pairSend(t, p, f, hub.ControlAnswer{Event: link.EventRefused, DeviceID: fakePairDevice, Reason: wire.RefusedNotConfirmed})
+		assert.Equal(t, map[string]any{"event": "refused", "reason": wire.RefusedNotConfirmed}, pairLine(t, lines, f))
+		require.NoError(t, p.wait(t))
+	})
+}
+
+// startOldHubReplacement opens a pairing stream to a scripted hub that
+// sends no request ids, up to a replacement's sas line.
+func startOldHubReplacement(t *testing.T) (*scriptedPairHub, *pairRun, <-chan map[string]any) {
+	t.Helper()
 	dir := hubShortDir(t)
 	f := startScriptedPairHub(t, dir)
 	exp := time.Now().Add(10 * time.Minute)
@@ -1290,16 +1335,7 @@ func TestHubPairStreamFailsClosedOnAnOldHub(t *testing.T) {
 	for _, want := range []string{"qr", "waiting", "sas", "sas"} {
 		assert.Equal(t, want, pairLine(t, lines, f)["event"])
 	}
-	p.answer(`{"confirm":true,"code":"2222","moves_to_relay":false,"request":""}`)
-	for m := range lines {
-		t.Fatalf("a line after the ambiguous yes on an old hub: %v", m)
-	}
-	require.ErrorIs(t, p.wait(t), errPairHubTooOld)
-	select {
-	case r := <-f.got:
-		t.Fatalf("a confirm reached the old hub: %+v", r)
-	default:
-	}
+	return f, p, lines
 }
 
 // countStateOpens counts direct sidecar opens for writing until the test ends.

@@ -645,13 +645,11 @@ func pairStream(cmd *cobra.Command, c *hub.ControlClient) error {
 		select {
 		case ans := <-answers:
 			answers = nil
-			req, ok := pairConfirmRequest(device, shown, replaced, ans)
+			req, ok, err := pairConfirmRequest(device, shown, replaced, ans)
+			if err != nil {
+				return err
+			}
 			if !ok {
-				if shown.Request == "" {
-					// A hub older than this command names no request: no
-					// answer could ever be sent, so the pairing ends.
-					return errPairHubTooOld
-				}
 				if err := askAgain(); err != nil {
 					return err
 				}
@@ -753,21 +751,28 @@ func pairStream(cmd *cobra.Command, c *hub.ControlClient) error {
 // errPairHubTooOld ends a pairing whose phone's request was replaced on a
 // running hub that sends no request id (older than this command): no yes
 // could name the request shown.
-var errPairHubTooOld = errors.New("the running hub is older than this command and cannot confirm a replaced link request: restart Watchtower, then link again")
+var errPairHubTooOld = errors.New("the hub is out of date: restart Watchtower, then link again")
 
 // pairConfirmRequest is the confirm for the owner's answer ans to device,
 // whose last printed sas line is shown. A yes that leaves the code,
 // moves_to_relay or request out takes shown's while device's request was
 // never replaced; after a replacement a yes without request is ambiguous
 // (false: nothing is sent), and one with it is sent as given.
-func pairConfirmRequest(device string, shown hubPairSAS, replaced bool, ans pairAnswer) (hub.ControlRequest, bool) {
+//
+// A yes after a replacement on a hub that names no request (shown.Request
+// empty, a hub older than this command) is errPairHubTooOld whatever the
+// answer carries: nothing could bind it to the request shown. A no still
+// goes through.
+func pairConfirmRequest(device string, shown hubPairSAS, replaced bool, ans pairAnswer) (hub.ControlRequest, bool, error) {
 	req := hub.ControlRequest{Op: hub.OpConfirm, Device: device, Confirm: ans.confirm, Code: ans.code,
 		MovesToRelay: ans.movesToRelay, Request: ans.request}
 	switch {
 	case !ans.confirm:
-		return req, true
+		return req, true, nil
+	case replaced && shown.Request == "":
+		return hub.ControlRequest{}, false, errPairHubTooOld
 	case replaced:
-		return req, ans.request != ""
+		return req, ans.request != "", nil
 	}
 	if req.Code == "" {
 		req.Code = shown.Code
@@ -779,7 +784,7 @@ func pairConfirmRequest(device string, shown hubPairSAS, replaced bool, ans pair
 	if req.Request == "" {
 		req.Request = shown.Request
 	}
-	return req, true
+	return req, true, nil
 }
 
 // pairAnswer is the owner's answer: confirm, and the sas line answered (its
