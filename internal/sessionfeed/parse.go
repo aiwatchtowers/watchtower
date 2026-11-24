@@ -287,82 +287,123 @@ func userEntry(rec record) (Entry, bool) {
 // text blocks are all notices (Claude Code delivers several task notifications
 // or teammate messages as sibling blocks of one message), which gives one
 // event per notice. The first keeps the record's uuid as its id, the others
-// add `#<block>`, so each is stable across reads.
+// add `#<index of the content block>`, so each is stable across reads.
+//
+// Blocks are read apart only when no system reminder crosses a block boundary
+// (dropping reminders per block then gives the same text as dropping them from
+// the joined message); otherwise the record is the one joined entry. A leading
+// notice beside other text is likewise read within its own block, so its
+// children cannot run into a later block.
 func userEntries(rec record) []Entry {
-	if parts, ok := noticeBlocks(rec.Message.Content); ok {
-		out := make([]Entry, 0, len(parts))
-		for i, text := range parts {
-			id := rec.UUID
-			if i > 0 {
-				id = rec.UUID + "#" + strconv.Itoa(i)
-			}
-			out = append(out, noticeEntry(id, text))
-		}
-		return out
-	}
-	text, ok := userText(rec.Message.Content)
+	c, ok := decodeUserContent(rec.Message.Content)
 	if !ok {
 		return nil
 	}
-	if e, ok := classifyUserText(rec.UUID, text); ok {
+	if len(c.texts) > 1 {
+		joined := strings.Join(c.texts, "\n")
+		clean := make([]string, len(c.texts))
+		for i, t := range c.texts {
+			clean[i] = reminderRe.ReplaceAllString(t, "")
+		}
+		if strings.Join(clean, "\n") == reminderRe.ReplaceAllString(joined, "") {
+			if es := blockEntries(rec.UUID, c.index, clean); len(es) > 0 {
+				if c.image {
+					es = es[:1] // an image beside the notices: one entry
+				}
+				return es
+			}
+		}
+	}
+	if e, ok := classifyUserText(rec.UUID, c.text()); ok {
 		return []Entry{e}
 	}
 	return nil
 }
 
-// noticeBlocks is the notices of a message made of two or more text blocks,
-// each a notice once its system reminders are dropped (empty blocks skipped);
-// ok is false for any other content.
-func noticeBlocks(content json.RawMessage) ([]string, bool) {
-	var blocks []block
-	if json.Unmarshal(content, &blocks) != nil {
-		return nil, false
-	}
-	var parts []string
-	for _, b := range blocks {
-		if b.Type != "text" {
-			return nil, false
-		}
-		text := strings.TrimSpace(reminderRe.ReplaceAllString(b.Text, ""))
+// blockEntries reads a message's text blocks (reminders already dropped, index
+// = each one's place in the content) apart: every notice when all the non-empty
+// blocks are notices, the leading notice alone when other text follows it, and
+// nothing when the message does not start with a notice.
+func blockEntries(uuid string, index []int, clean []string) []Entry {
+	var out []Entry
+	for i, text := range clean {
+		text = strings.TrimSpace(text)
 		switch {
 		case text == "":
-		case strings.HasPrefix(text, taskOpen), strings.HasPrefix(text, "<teammate-message"):
-			parts = append(parts, text)
+		case isNotice(text):
+			id := uuid
+			if len(out) > 0 {
+				id = uuid + "#" + strconv.Itoa(index[i])
+			}
+			out = append(out, noticeEntry(id, text))
+		case len(out) > 0:
+			return out[:1] // a notice beside other text: one entry
 		default:
-			return nil, false
+			return nil
 		}
 	}
-	return parts, len(parts) > 1
+	return out
+}
+
+func isNotice(text string) bool {
+	return strings.HasPrefix(text, taskOpen) || strings.HasPrefix(text, "<teammate-message")
+}
+
+// userContent is a user message's content decoded once: its text blocks with
+// each one's index in the content (a plain string is one block), and whether
+// an image block came with them.
+type userContent struct {
+	texts []string
+	index []int
+	image bool
+}
+
+// decodeUserContent decodes a user message's content; ok is false for tool
+// results and undecodable content.
+func decodeUserContent(content json.RawMessage) (userContent, bool) {
+	if len(content) > 0 && content[0] == '"' {
+		var text string
+		if json.Unmarshal(content, &text) != nil {
+			return userContent{}, false
+		}
+		return userContent{texts: []string{text}, index: []int{0}}, true
+	}
+	var blocks []block
+	if json.Unmarshal(content, &blocks) != nil {
+		return userContent{}, false
+	}
+	var c userContent
+	for i, b := range blocks {
+		switch b.Type {
+		case "tool_result":
+			return userContent{}, false
+		case "text":
+			c.texts = append(c.texts, b.Text)
+			c.index = append(c.index, i)
+		case "image":
+			c.image = true
+		}
+	}
+	return c, true
+}
+
+// text flattens the content to one string.
+func (c userContent) text() string {
+	text := strings.Join(c.texts, "\n")
+	if c.image && !strings.Contains(text, "[Image #") {
+		text += "\n[image]"
+	}
+	return text
 }
 
 // userText flattens a user message's content; ok is false for tool results
 // and undecodable content.
 func userText(content json.RawMessage) (string, bool) {
-	var text string
-	if err := json.Unmarshal(content, &text); err == nil {
-		return text, true
-	}
-	var blocks []block
-	if json.Unmarshal(content, &blocks) != nil {
+	c, ok := decodeUserContent(content)
+	if !ok {
 		return "", false
 	}
-	var parts []string
-	hasImage := false
-	for _, b := range blocks {
-		switch b.Type {
-		case "tool_result":
-			return "", false
-		case "text":
-			parts = append(parts, b.Text)
-		case "image":
-			hasImage = true
-		}
-	}
-	text = strings.Join(parts, "\n")
-	if hasImage && !strings.Contains(text, "[Image #") {
-		text += "\n[image]"
-	}
-	return text, true
+	return c.text(), true
 }
 
 func classifyUserText(uuid, text string) (Entry, bool) {
@@ -370,7 +411,7 @@ func classifyUserText(uuid, text string) (Entry, bool) {
 	if text == "" {
 		return Entry{}, false
 	}
-	if strings.HasPrefix(text, "<task-notification>") || strings.HasPrefix(text, "<teammate-message") {
+	if isNotice(text) {
 		return noticeEntry(uuid, text), true
 	}
 	e := Entry{ID: uuid, Kind: KindOwner, Text: text}
