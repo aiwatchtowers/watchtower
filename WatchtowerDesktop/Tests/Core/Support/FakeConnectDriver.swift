@@ -322,6 +322,8 @@ final class ConnectTestClock: Clock, @unchecked Sendable {
 
     var now: Instant { lock.withLock { current } }
     var minimumResolution: Duration { .zero }
+    /// Sleeps still registered: a timer cancelled or woken is gone.
+    var sleeperCount: Int { lock.withLock { sleeping.count } }
 
     func sleep(until deadline: Instant, tolerance: Duration?) async throws {
         let id = UUID()

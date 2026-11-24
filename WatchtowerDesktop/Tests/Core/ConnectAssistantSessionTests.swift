@@ -436,6 +436,122 @@ final class ConnectAssistantSessionTests: XCTestCase {
         XCTAssertNil(session.presentation.browserGuide, "no answer offers no guide")
     }
 
+    // MARK: - Probe timeout (#2352)
+
+    /// A browser session whose probe runs on `clock`.
+    private func makeTimed(_ clock: ConnectTestClock) -> ConnectAssistantSession {
+        let session = ConnectAssistantSession(
+            service: "slack", displayName: "Slack", harnesses: [browserHarness, wordsHarness], initial: browserHarness,
+            driver: driver, aiService: ai, probe: ConnectBrowserProbe(aiService: ai, clock: clock),
+            gate: EmbeddedStreamGate())
+        addTeardownBlock { @MainActor in session.close() }
+        return session
+    }
+
+    /// Runs the probe at `call` out of time: its timer registered, then due.
+    private func timeOut(_ clock: ConnectTestClock, call: Int) async {
+        await ai.untilCalls(call + 1)
+        _ = await clock.sleepers(1, orAnswer: [Task<Void, Never>]())
+        clock.advance(by: ConnectBrowserProbe.answerTimeout)
+    }
+
+    /// No answer before the first turn: the run goes on in words, as for a
+    /// failed probe, and the probe's late answer changes nothing.
+    func testProbeTimeoutBeforeFirstTurnGoesOnInWords() async {
+        let clock = ConnectTestClock()
+        let session = makeTimed(clock)
+        session.start()
+        XCTAssertEqual(session.state, .thinking)
+        await timeOut(clock, call: 0)
+        await session.prepared()
+        await session.engine?.started()
+        XCTAssertTrue(ai.terminated[0], "the probe's turn ended at the timeout")
+        XCTAssertEqual(session.mode, .words)
+        XCTAssertEqual(ai.calls[1].connectArgs?.last, "words")
+        XCTAssertNil(session.presentation.browserGuide, "no answer offers no guide")
+
+        answerProbe(#"[{"id":"b1"}]"#, call: 0)
+        XCTAssertEqual(session.mode, .words, "a late answer is never read")
+        XCTAssertEqual(ai.calls.count, 2)
+    }
+
+    /// Check again while paused gets no answer: the pause stays with
+    /// "Couldn't check the browser", and a second Check again probes afresh.
+    func testCheckAgainTimeoutKeepsThePause() async {
+        let clock = ConnectTestClock()
+        let session = makeTimed(clock)
+        session.start()
+        await ai.untilCalls(1)
+        answerProbe("[]", call: 0)
+        await session.prepared()
+        XCTAssertEqual(session.state, .browserMissing)
+
+        session.checkBrowser()
+        await timeOut(clock, call: 1)
+        await session.prepared()
+        XCTAssertTrue(ai.terminated[1])
+        XCTAssertEqual(session.browserCheck, .failed)
+        XCTAssertEqual(session.state, .browserMissing)
+        XCTAssertEqual(session.presentation.browserGuide?.note, "Couldn't check the browser — try again.")
+        XCTAssertEqual(session.presentation.actions, [.checkBrowser, .continueWithoutBrowser, .setUpByHand])
+        answerProbe(#"[{"id":"b1"}]"#, call: 1)
+        XCTAssertEqual(session.state, .browserMissing, "the timed-out check's late answer starts nothing")
+        XCTAssertNil(session.engine)
+
+        session.checkBrowser()
+        await ai.untilCalls(3)
+        answerProbe(#"[{"id":"b1"}]"#, call: 2)
+        await session.prepared()
+        await session.engine?.started()
+        XCTAssertEqual(session.mode, .browser, "the next check is its own probe")
+        XCTAssertEqual(ai.calls[3].connectArgs?.last, "browser")
+    }
+
+    /// Check again mid-run gets no answer: the run stays in words with the
+    /// guide, and no follow-up turn is sent.
+    func testMidRunCheckAgainTimeout() async {
+        let clock = ConnectTestClock()
+        let session = makeTimed(clock)
+        session.start()
+        await ai.untilCalls(1)
+        answerProbe(#"[{"id":"b1"}]"#, call: 0)
+        await session.prepared()
+        await session.engine?.started()
+        let turn = ai.calls.count - 1
+        ai.emit(.toolStart(ChatToolStart(turnID: "t", id: "n1", name: "claude-in-chrome:navigate", argsJSON: "{}")),
+                .toolEnd(ChatToolEnd(turnID: "t", id: "n1", ok: true, summary: ConnectBrowserProbe.lostMarker,
+                                     sources: [])),
+                call: turn)
+        await untilObserved { session.mode == .words }
+        session.checkBrowser()
+        await timeOut(clock, call: turn + 1)
+        await session.browserChecked()
+        XCTAssertTrue(ai.terminated[turn + 1])
+        XCTAssertEqual(session.browserCheck, .failed)
+        XCTAssertEqual(session.mode, .words)
+        XCTAssertEqual(session.presentation.actions, [.cancel, .checkBrowser])
+        answerProbe(#"[{"id":"b1"}]"#, call: turn + 1)
+        XCTAssertEqual(session.mode, .words, "a late answer switches nothing back")
+        XCTAssertEqual(ai.calls.count, turn + 2, "no follow-up turn")
+    }
+
+    /// Cancel while the probe waits wins over the timeout: the probe ends
+    /// at once, and the timer it leaves behind is gone with it.
+    func testCancelDuringProbeBeatsTheTimeout() async {
+        let clock = ConnectTestClock()
+        let session = makeTimed(clock)
+        session.start()
+        await ai.untilCalls(1)
+        _ = await clock.sleepers(1, orAnswer: [Task<Void, Never>]())
+        session.cancel()
+        XCTAssertEqual(session.state, .empty)
+        await untilTurn { self.ai.terminated[0] && clock.sleeperCount == 0 }
+        clock.advance(by: ConnectBrowserProbe.answerTimeout)
+        XCTAssertEqual(session.state, .empty)
+        XCTAssertNil(session.engine)
+        XCTAssertEqual(ai.calls.count, 1)
+    }
+
     // MARK: - Failures
 
     func testQuotaIsErrorWithRetryAndHand() async {
