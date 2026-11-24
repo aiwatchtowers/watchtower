@@ -42,8 +42,12 @@ package enum WorkchatLivePresentation {
         package var agentsSymbol = "person.2"
         /// The badge counts finished agents only: tertiary on a faint capsule.
         package var agentsDimmed = false
-        /// The steps disclosure: "chevron.up" closed, "chevron.down" open, nil without a steps slot.
+        /// The steps disclosure: "chevron.right" closed, "chevron.down" open, nil without a steps slot.
         package var chevron: String?
+        /// Closed steps: the running step's summary, shown beside the turn title; nil open or with none running.
+        package var stepSummary: String?
+        /// The running step's own timer, beside `stepSummary`.
+        package var stepElapsed: String?
     }
     package struct StepRow: Equatable, Identifiable, Sendable {
         package var id: String
@@ -57,6 +61,8 @@ package enum WorkchatLivePresentation {
         package var rows: [StepRow]
         /// "This turn · N steps", counting the steps the cap cut.
         package var title: String
+        /// "N earlier steps" when the cap cut steps off the list's top; nil otherwise.
+        package var earlierLine: String?
     }
     package struct AgentRow: Equatable, Identifiable, Sendable {
         package var agent: SessionLiveAgent
@@ -126,13 +132,15 @@ package enum WorkchatLivePresentation {
             result.retry = false
             result.warning = false
         } else if let snapshot, let slot = stepsSlot(snapshot: snapshot, error: error, working: true, now: now) {
-            result.chevron = stepsOpen ? "chevron.down" : "chevron.up"
-            if stepsOpen {
-                // The list shows the newest step; the line sums up the turn.
-                result.symbol = "list.bullet"
-                result.text = slot.title
-                result.elapsed = elapsed(from: snapshot.turnAt ?? stateAt, now: now)
-                result.pulse = false
+            result.chevron = stepsOpen ? "chevron.down" : "chevron.right"
+            // The line sums up the turn; closed, it also names the running step and its timer.
+            result.symbol = ""
+            result.text = slot.title
+            result.elapsed = elapsed(from: snapshot.turnAt ?? stateAt, now: now)
+            result.pulse = false
+            if !stepsOpen, let running = slot.rows.last(where: \.running) {
+                result.stepSummary = running.summary
+                result.stepElapsed = running.time
             }
         }
         return result
@@ -150,12 +158,23 @@ package enum WorkchatLivePresentation {
         let rows = snapshot.steps.map { step in
             let running = step.completedAt == nil
             let time = step.startedAt.flatMap { start in
-                (running ? now : step.completedAt).flatMap { elapsed(from: start, now: $0) }
+                (running ? now : step.completedAt).map { stepTime($0.timeIntervalSince(start)) }
             }
-            return StepRow(id: step.id, symbol: WorkchatActivityPresenter.symbol(for: step.tool), summary: step.summary,
+            return StepRow(id: step.id, symbol: WorkchatActivityPresenter.symbol(for: step.tool),
+                           summary: WorkchatActivityPresenter.label(forTool: step.tool, summary: step.summary),
                            time: time, running: running)
         }
-        return StepsSlot(rows: rows, title: turnSummary(snapshot.steps.count + snapshot.stepsMore))
+        let earlier = snapshot.stepsMore > 0 ? earlierSteps(snapshot.stepsMore) : nil
+        return StepsSlot(rows: rows, title: turnSummary(snapshot.steps.count + snapshot.stepsMore), earlierLine: earlier)
+    }
+
+    package static func earlierSteps(_ count: Int) -> String { "\(count) earlier \(count == 1 ? "step" : "steps")" }
+
+    /// A step's duration: under a second reads "<1s", else minutes and seconds.
+    package static func stepTime(_ seconds: TimeInterval) -> String {
+        if seconds < 1 { return "<1s" }
+        let whole = Int(seconds)
+        return String(format: "%d:%02d", whole / 60, whole % 60)
     }
 
     /// Busy for the live line and the 👥 list: the turn works, background

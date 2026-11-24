@@ -21,6 +21,9 @@ struct WorkchatStepsList: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    if let earlier = slot.earlierLine {
+                        Text(earlier).foregroundStyle(.tertiary).frame(height: ListLayout.lineMinHeight)
+                    }
                     ForEach(slot.rows) { row in stepRow(row) }
                     Color.clear.frame(height: 0).id(Self.bottomID)
                 }
@@ -49,10 +52,13 @@ struct WorkchatStepsList: View {
                                      .init(color: .black, location: 0.2)],
                              startPoint: .top, endPoint: .bottom))
         .font(.caption)
-        .padding(.horizontal, Spacing.regular)
-        .padding(.vertical, Spacing.small)
-        .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.row))
-        .padding(.horizontal, Spacing.large)
+        // Quiet (#2201 §1): no card, a thin rule under the live line's chevron.
+        .padding(.leading, Spacing.medium)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(.quaternary).frame(width: Stroke.hairline * 2)
+        }
+        .padding(.leading, Spacing.large + IconSize.header / 2)
+        .padding(.trailing, Spacing.large)
         .padding(.bottom, Spacing.small)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(slot.title)
@@ -60,13 +66,17 @@ struct WorkchatStepsList: View {
 
     private func stepRow(_ row: WorkchatLivePresentation.StepRow) -> some View {
         HStack(spacing: Spacing.compact) {
-            Image(systemName: row.symbol)
-                .foregroundStyle(row.running ? .primary : .secondary)
-                .frame(width: IconSize.header)
+            Group {
+                if row.running {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: row.symbol)
+                }
+            }
+            .frame(width: IconSize.header)
             Text(row.summary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .foregroundStyle(row.running ? .primary : .secondary)
                 .help(row.summary)
             Spacer(minLength: Spacing.compact)
             if let time = row.time {
@@ -75,6 +85,7 @@ struct WorkchatStepsList: View {
                     .foregroundStyle(row.running ? .secondary : .tertiary)
             }
         }
+        .foregroundStyle(row.running ? .primary : .tertiary)
         .frame(height: ListLayout.lineMinHeight)
     }
 }

@@ -580,7 +580,13 @@ struct SessionChatView: View {
 
     @ViewBuilder
     private var emptyState: some View {
-        if store.error == nil && !store.runnerMissing {
+        if store.error == nil && !store.runnerMissing && !store.liveLoaded {
+            HStack(spacing: Spacing.compact) {
+                ProgressView().controlSize(.small)
+                Text(SessionChatPresentation.loadingText).font(.caption).foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if store.error == nil && !store.runnerMissing {
             Text("No messages yet")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -592,16 +598,15 @@ struct SessionChatView: View {
     }
 
     private func errorBar(_ message: String, retry: (() -> Void)?) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text(message).font(.callout).lineLimit(3).textSelection(.enabled)
-            Spacer(minLength: 4)
+        HStack(spacing: Spacing.regular) {
+            Image(systemName: "exclamationmark.triangle").foregroundStyle(Tone.warning)
+            Text(message).font(.callout).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+            Spacer(minLength: Spacing.small)
             if let retry {
-                Button("Retry", action: retry)
+                Button(SessionChatPresentation.retryTitle, action: retry).buttonStyle(KitQuietButtonStyle(label: .secondary))
             }
         }
-        .padding(8)
-        .background(Color.orange.opacity(0.1))
+        .padding(Spacing.regular)
     }
 }
 

@@ -85,4 +85,13 @@ final class WorkchatActivityPresenterTests: XCTestCase {
         XCTAssertEqual(WorkchatActivityPresenter.symbol(for: "mcp__x__y"), "powerplug")
         XCTAssertEqual(WorkchatActivityPresenter.symbol(for: "exec"), "gearshape")
     }
+
+    func testToolLabels() {
+        typealias Presenter = WorkchatActivityPresenter
+        XCTAssertEqual(Presenter.label(forTool: "SendMessage", summary: "Codex verify round 3"), "Message to Codex verify round 3")
+        XCTAssertEqual(Presenter.label(forTool: "mcp__watchtower-workbench__update_target", summary: ""), "update target")
+        XCTAssertEqual(Presenter.label(forTool: "TodoWrite", summary: ""), "Update the task list")
+        XCTAssertEqual(Presenter.label(forTool: "TaskOutput", summary: ""), "Read a background task's output")
+        XCTAssertEqual(Presenter.label(forTool: "Bash", summary: "go test ./..."), "go test ./...")
+    }
 }

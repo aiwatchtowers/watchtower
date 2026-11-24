@@ -112,14 +112,50 @@ final class WorkchatStepsPresentationTests: XCTestCase {
         let open = try XCTUnwrap(row(live(steps: eight), stepsOpen: true))
         XCTAssertEqual(open.chevron, "chevron.down")
         XCTAssertEqual(open.text, "This turn · 8 steps")
+        XCTAssertNil(open.stepSummary, "open: the list carries the steps")
         XCTAssertEqual(open.elapsed, "1:00", "the turn timer, not the newest step's")
         XCTAssertFalse(open.pulse)
         let closed = try XCTUnwrap(row(live(steps: eight), stepsOpen: false))
-        XCTAssertEqual(closed.chevron, "chevron.up")
-        XCTAssertNotEqual(closed.text, "This turn · 8 steps")
+        XCTAssertEqual(closed.chevron, "chevron.right")
+        XCTAssertEqual(closed.text, "This turn · 8 steps")
         XCTAssertNil(try XCTUnwrap(row(live(steps: []))).chevron)
         XCTAssertNil(try XCTUnwrap(row(live(steps: eight, turnActive: false), stepsOpen: true)).chevron,
                      "no slot, no chevron")
+    }
+
+    func testCollapsedRowShowsRunningStep() throws {
+        let running = step("r1", "Bash", "Run full Go test suite for #2188 gate", start: now - 214, end: nil)
+        let closed = try XCTUnwrap(row(live(steps: [step("d1", "Read", "a.go", start: now - 300, end: now - 290), running])))
+        XCTAssertEqual(closed.stepSummary, "Run full Go test suite for #2188 gate")
+        XCTAssertEqual(closed.stepElapsed, "3:34")
+        XCTAssertEqual(closed.chevron, "chevron.right")
+        XCTAssertEqual(closed.elapsed, "1:00", "the turn clock stays on the right")
+        let done = try XCTUnwrap(row(live(steps: [step("d1", "Read", "a.go", start: now - 30, end: now - 20)])))
+        XCTAssertNil(done.stepSummary, "no running step, nothing to name")
+    }
+
+    func testSubSecondStep() throws {
+        XCTAssertEqual(WorkchatLivePresentation.stepTime(0.4), "<1s")
+        XCTAssertEqual(WorkchatLivePresentation.stepTime(41), "0:41")
+        let slot = try XCTUnwrap(slot(live(steps: [step("q", "Read", "x.go", start: now - 3, end: now - 2.6)])))
+        XCTAssertEqual(slot.rows.map(\.time), ["<1s"])
+    }
+
+    func testEarlierLine() throws {
+        let cut = try XCTUnwrap(slot(live(steps: steps(6), more: 35)))
+        XCTAssertEqual(cut.earlierLine, "35 earlier steps")
+        XCTAssertEqual(cut.title, "This turn · 41 steps")
+        XCTAssertEqual(WorkchatLivePresentation.earlierSteps(1), "1 earlier step")
+        XCTAssertNil(try XCTUnwrap(slot(live(steps: steps(6)))).earlierLine)
+    }
+
+    func testStepRowsUseToolLabels() throws {
+        let slot = try XCTUnwrap(slot(live(steps: [step("m", "SendMessage", "Codex verify round 3", start: now - 5, end: now - 4)])))
+        XCTAssertEqual(slot.rows.map(\.summary), ["Message to Codex verify round 3"])
+    }
+
+    func testLoadingText() {
+        XCTAssertEqual(SessionChatPresentation.loadingText, "Reading the session…")
     }
 
     func testCardHidesTheChevron() throws {

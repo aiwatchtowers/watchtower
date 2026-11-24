@@ -110,10 +110,22 @@ struct WorkchatLiveLine: View {
                     .foregroundStyle(.tertiary)
                     .frame(width: IconSize.header)
             }
-            Image(systemName: row.symbol)
-                .frame(width: IconSize.header)
-                .symbolEffect(.pulse, isActive: row.pulse && !reduceMotion)
-            Text(row.text).lineLimit(1).truncationMode(.middle).help(row.text)
+            if !row.symbol.isEmpty {
+                Image(systemName: row.symbol)
+                    .frame(width: IconSize.header)
+                    .symbolEffect(.pulse, isActive: row.pulse && !reduceMotion)
+            }
+            Text(row.text)
+                .lineLimit(1)
+                .truncationMode(row.stepSummary == nil ? .middle : .tail)
+                .fixedSize(horizontal: row.stepSummary != nil, vertical: false)
+                .help(row.text)
+            if let step = row.stepSummary {
+                Text("·").foregroundStyle(.tertiary)
+                ProgressView().controlSize(.mini)
+                Text(step).lineLimit(1).truncationMode(.middle).foregroundStyle(.primary).help(step)
+                if let time = row.stepElapsed { Text(time).monospacedDigit().foregroundStyle(.tertiary).fixedSize() }
+            }
         }
     }
 

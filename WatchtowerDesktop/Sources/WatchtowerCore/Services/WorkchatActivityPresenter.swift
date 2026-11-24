@@ -66,4 +66,21 @@ package enum WorkchatActivityPresenter {
         default: tool.hasPrefix("mcp__") ? "powerplug" : "gearshape"
         }
     }
+
+    /// The label for a step the live list shows: the host's summary, or, for a bare
+    /// tool name, plain words (`SendMessage` → "Message to …", `mcp__x__y` → "y").
+    package static func label(forTool tool: String, summary: String) -> String {
+        switch tool {
+        case "SendMessage": return summary.isEmpty ? "Message" : "Message to \(summary)"
+        case "TodoWrite": return "Update the task list"
+        case "TaskOutput": return "Read a background task's output"
+        default: break
+        }
+        guard summary.isEmpty else { return summary }
+        if tool.hasPrefix("mcp__") {
+            let name = tool.components(separatedBy: "__").last ?? tool
+            return name.replacingOccurrences(of: "_", with: " ")
+        }
+        return tool
+    }
 }

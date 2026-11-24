@@ -28,10 +28,10 @@ final class SessionChatViewTests: XCTestCase {
             }
         }
         XCTAssertTrue(toggle(), "a fresh list toggles")
-        XCTAssertFalse(memory.stepsOpen("session-1"))
+        XCTAssertTrue(memory.stepsOpen("session-1"), "closed by default: the toggle opens it")
         now = observed + WorkchatLivePresentation.staleAfter
         XCTAssertFalse(toggle(), "stale now: the key moves the caret")
-        XCTAssertFalse(memory.stepsOpen("session-1"), "the hidden list's state is untouched")
+        XCTAssertTrue(memory.stepsOpen("session-1"), "the hidden list's state is untouched")
     }
 
     func testRowEqualityIgnoresClosures() {

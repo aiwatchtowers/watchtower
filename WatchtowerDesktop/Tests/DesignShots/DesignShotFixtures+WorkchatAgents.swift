@@ -136,8 +136,8 @@ struct WorkchatAgentsRealShot: View {
     init(mock: WorkchatAgentsMock) {
         self.mock = mock
         let memory = WorkchatPaneMemory()
-        // The steps list opens by default (C1); the mock's closed frames are the owner's toggle.
-        if !mock.stepsOpen { memory.toggleSteps(WorkchatAgentsShotFixtures.paneKey) }
+        // The steps list is closed by default (#2201 §1); the mock's open frames are the owner's toggle.
+        if mock.stepsOpen { memory.toggleSteps(WorkchatAgentsShotFixtures.paneKey) }
         // Done follows the production default (collapsed while agents work, open when none do or their status is
         // unknown); only frame 02 is the owner expanding it while agents work.
         if case .agents(doneOpen: true) = mock.list, !mock.working.isEmpty {
