@@ -428,6 +428,7 @@ struct SessionChatView: View {
         workchatFeed.isWorking = working
         workchatFeed.answerPending = !(workchat?.outgoing.isEmpty ?? true)
         workchatFeed.onOpenArtifact = { artifact = $0 }
+        workchatFeed.claudeSessionID = vm.session(sessionID, projectID: projectID)?.claudeSessionID
         let handlers = highlightHandlers()
         workchatFeed.onHighlight = handlers.open
         workchatFeed.resolvesPath = handlers.resolvesPath

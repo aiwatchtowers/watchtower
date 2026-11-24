@@ -25,6 +25,8 @@ struct WorkchatFeed {
     var answerPending = false
     /// An artifact card opens the viewer.
     var onOpenArtifact: (ChatArtifactContent) -> Void = { _ in }
+    /// The session's Claude Code id: a task's output under its temp dir opens in the viewer (`AgentFinishedRow`).
+    var claudeSessionID: String?
     /// A click on a highlighted span of the agent's text (`WorkchatHighlights`); nil = the spans are only coloured.
     var onHighlight: ((AgentTextHighlights.Span, Int64) -> Void)?
     /// Whether a path in an agent message (by id) is a file of the session's folders: only such a path is coloured.
@@ -84,12 +86,16 @@ struct WorkchatFeed {
             }
         }
         let (markdown, expanded, toggle) = (markdown, expandedEvents, onToggle)
+        let (claudeSessionID, openArtifact) = (claudeSessionID, onOpenArtifact)
         context.systemRow = { message in
             guard let entry = byID[message.id] else { return AnyView(EmptyView()) }
             return AnyView(
-                SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry), expanded: expanded.contains(entry.id)) {
-                    toggle(entry.id)
-                }
+                SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry), expanded: expanded.contains(entry.id),
+                               onToggle: { toggle(entry.id) },
+                               onOpenOutput: { path in
+                                   AgentFinishedRow.openOutput(path, claudeSessionID: claudeSessionID,
+                                                               openArtifact: openArtifact)
+                               })
                 .equatable()
             )
         }
@@ -108,6 +114,8 @@ struct SessionChatRow: View, Equatable {
     /// An event's body is shown (events only).
     var expanded = false
     var onToggle: (() -> Void)?
+    /// Open output on a task's row (`AgentFinishedRow`); nil hides it.
+    var onOpenOutput: ((String) -> Void)?
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.entry == rhs.entry && lhs.blocks == rhs.blocks && lhs.expanded == rhs.expanded
@@ -152,9 +160,20 @@ struct SessionChatRow: View, Equatable {
         MarkdownBlocksView(blocks: blocks).textSelection(.enabled)
     }
 
-    /// A Claude Code notice (a background task finished, a message from
-    /// another session): one centered grey line; a click shows its body.
-    private var eventLine: some View {
+    /// A Claude Code notice: a task notification from a newer CLI is the quiet agent-finished row
+    /// (`AgentFinishedRow`); any other (a message from another session, an older CLI's task) one centered grey line,
+    /// a click shows its body.
+    @ViewBuilder private var eventLine: some View {
+        if let task = entry.task {
+            AgentFinishedRow(presentation: AgentFinishedPresentation(task: task, fallbackTitle: entry.title ?? ""),
+                             outputFile: task.outputFile, expanded: expanded, onToggle: onToggle,
+                             onOpenOutput: onOpenOutput)
+        } else {
+            noticeLine
+        }
+    }
+
+    private var noticeLine: some View {
         VStack(spacing: Spacing.small) {
             Button {
                 onToggle?()
