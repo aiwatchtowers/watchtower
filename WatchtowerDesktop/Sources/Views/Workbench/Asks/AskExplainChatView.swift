@@ -51,11 +51,15 @@ struct AskExplainChatView: View {
         }
     }
 
-    /// A first turn that failed before its reply row existed (the CLI
+    /// The hidden first turn failed before its reply row existed (the CLI
     /// exited early): no row carries it or offers Retry, so the chat does.
-    /// A failure after a reply row keeps the feed's own card.
+    /// An owner send that failed the same way put its text back into the
+    /// draft: then only the composer's own error status shows, and Retry
+    /// (which would send the explanation prompt instead) does not. A failure
+    /// after a reply row keeps the feed's own card.
     static func startFailure(_ engine: EmbeddedChatEngine) -> String? {
-        guard engine.messages.isEmpty, !engine.isBusy else { return nil }
+        guard engine.messages.isEmpty, !engine.isBusy,
+              engine.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return engine.bannerError
     }
 
@@ -70,7 +74,7 @@ struct AskExplainChatView: View {
 }
 
 /// The drawer's chat layer: the chat once its engine is in the center,
-/// before that the strip (with the open's failure, if any). It makes the
+/// before that the strip over a spinner or the open's failure. It makes the
 /// engine again when the center let an idle one go (`.task`, never the body).
 struct AskExplainPane: View {
     let asks: OwnerAsksViewModel
@@ -78,21 +82,38 @@ struct AskExplainPane: View {
     let onBack: () -> Void
 
     var body: some View {
+        let engine = asks.explainEngine(for: ask)
         Group {
-            if let engine = asks.explainEngine(for: ask) {
-                chat(engine)
-            } else {
+            switch Self.shown(hasEngine: engine != nil, error: asks.explainErrors[ask.id]) {
+            case .chat:
+                if let engine { chat(engine) }
+            case let .failure(error):
                 VStack(alignment: .leading, spacing: 0) {
                     AskExplainStrip(title: ask.title, onBack: onBack)
-                    if let error = asks.explainErrors[ask.id] {
-                        AskExplainErrorRow(message: error, onRetry: retry)
-                            .padding(.vertical, Spacing.regular)
-                    }
+                    AskExplainErrorRow(message: error, onRetry: retry)
+                        .padding(.vertical, Spacing.regular)
                     Spacer(minLength: 0)
+                }
+            case .finding:
+                VStack(spacing: 0) {
+                    AskExplainStrip(title: ask.title, onBack: onBack)
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
         .task(id: ask.id) { asks.ensureExplainEngine(ask) }
+    }
+
+    /// What the pane shows: the chat once the engine is there (its own
+    /// feed and composer indicate a turn), else the open's failure, else a
+    /// spinner while the conversation is found or created.
+    enum Shown: Equatable { case chat, failure(String), finding }
+
+    static func shown(hasEngine: Bool, error: String?) -> Shown {
+        if hasEngine { return .chat }
+        return error.map(Shown.failure) ?? .finding
     }
 
     @ViewBuilder

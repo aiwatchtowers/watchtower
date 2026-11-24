@@ -76,6 +76,36 @@ final class AskExplainViewTests: XCTestCase {
         XCTAssertNil(AskExplainChatView.startFailure(engine))
     }
 
+    /// An owner send that fails before any row put its text back into the
+    /// draft: no Retry row (it would send the explanation prompt instead);
+    /// the composer keeps its own error status and the restored draft.
+    func testOwnerSendFailingBeforeStartOffersNoRetryRow() async throws {
+        struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
+        let ask = try fx.insertAsk()
+        fx.ai.persistStartError = EarlyExit()
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await engine.finished()
+        XCTAssertNotNil(AskExplainChatView.startFailure(engine), "the hidden first turn failed")
+
+        XCTAssertTrue(engine.send("Will my scripts be queued?"))
+        await engine.finished()
+        XCTAssertTrue(engine.messages.isEmpty)
+        XCTAssertEqual(engine.draft, "Will my scripts be queued?", "the owner's text is back in the composer")
+        XCTAssertNotNil(engine.bannerError, "the composer's own status says it")
+        XCTAssertNil(AskExplainChatView.startFailure(engine))
+    }
+
+    /// Before the engine: a spinner while the conversation is found or
+    /// created, the open's failure once it failed; the chat's own
+    /// indicators take over once the engine is there.
+    func testPaneShowsASpinnerWhileFindingTheChat() {
+        XCTAssertEqual(AskExplainPane.shown(hasEngine: false, error: nil), .finding)
+        XCTAssertEqual(AskExplainPane.shown(hasEngine: false, error: "gone"), .failure("gone"))
+        XCTAssertEqual(AskExplainPane.shown(hasEngine: true, error: nil), .chat)
+        XCTAssertEqual(AskExplainPane.shown(hasEngine: true, error: "gone"), .chat, "the chat shows the error itself")
+    }
+
     /// A failure after the reply row exists keeps the feed's own card.
     func testFailureWithAReplyRowKeepsTheFeedCard() async throws {
         let ask = try fx.insertAsk()
