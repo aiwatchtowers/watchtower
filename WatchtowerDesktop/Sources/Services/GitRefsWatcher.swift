@@ -29,10 +29,19 @@ struct GitRefsChange: Equatable, Sendable {
 /// delivers the first one at once). `stop()` silences it for good.
 @MainActor
 final class GitRefsWatcher: GitRefsWatching {
-    /// FSEvents holds this, not the watcher, so a callback after the watcher
-    /// is gone finds nil instead of a freed object.
+    /// What FSEvents holds instead of the watcher: it points back weakly,
+    /// so a callback after the watcher is gone finds nil instead of a freed
+    /// object.
     final class Relay {
         weak var watcher: GitRefsWatcher?
+
+        /// One FSEvents batch, as the stream's callback hands it over. Tests
+        /// feed batches here: the real fseventsd can take seconds to deliver
+        /// on a busy machine (#2389).
+        @MainActor
+        func deliver(paths: [String], flags: [FSEventStreamEventFlags], ids: [FSEventStreamEventId]) {
+            watcher?.handle(paths: paths, flags: flags, ids: ids)
+        }
     }
 
     private static let log = Logger(subsystem: Constants.bundleID, category: "git-refs-watcher")
@@ -45,7 +54,13 @@ final class GitRefsWatcher: GitRefsWatching {
     nonisolated(unsafe) private var stream: FSEventStreamRef?
     /// The journal's last event id when the stream started: fseventsd can
     /// still hand over a change made just before, which is not news.
-    private var startEventID: FSEventStreamEventId = 0
+    private(set) var startEventID: FSEventStreamEventId = 0
+    /// What the stream's callback delivers to; FSEvents holds it too.
+    let relay = Relay()
+
+    /// Whether FSEvents accepted and started the stream, and `stop()` has
+    /// not been called.
+    var isWatching: Bool { stream != nil }
 
     init(gitDir: String, commonDir: String, latency: TimeInterval = 0.5, onChange: @escaping @MainActor (GitRefsChange) -> Void) {
         self.gitDir = Self.realPath(gitDir)
@@ -183,7 +198,7 @@ final class GitRefsWatcher: GitRefsWatching {
             let flagList = Array(UnsafeBufferPointer(start: flags, count: count))
             let idList = Array(UnsafeBufferPointer(start: ids, count: count))
             // The stream is scheduled on the main queue.
-            MainActor.assumeIsolated { relay.watcher?.handle(paths: list, flags: flagList, ids: idList) }
+            MainActor.assumeIsolated { relay.deliver(paths: list, flags: flagList, ids: idList) }
         }
         let flags = kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
             | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagUseCFTypes
@@ -197,7 +212,6 @@ final class GitRefsWatcher: GitRefsWatching {
     }
 
     private func start(latency: TimeInterval) {
-        let relay = Relay()
         relay.watcher = self
         let watched = Self.watchedPaths(gitDir: gitDir, commonDir: commonDir)
         startEventID = FSEventsGetCurrentEventId()
