@@ -414,7 +414,8 @@ const pairQueue = 64
 // nonce first. Against a replacement: a hello under a replaced code is
 // decided after the new code's qr (decideHello waits on the lock the issue
 // holds while it emits), so its refusal finds the asking stream's newest
-// code moved on and reaches only a stream that showed the phone. The issue
+// code moved on: it reaches the streams that showed the phone, and any
+// other stream that still shows the replaced code as its newest. The issue
 // itself refuses the requests waiting under the CloudKit code a relay code
 // replaces before it emits the new qr (link.Center.issue); those phones had
 // a sas, so a stream that showed it hears the refusal — the asking stream

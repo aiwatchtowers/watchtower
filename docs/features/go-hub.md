@@ -525,7 +525,8 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   event naming neither token nor nonce (an issue no stream asked for) goes to every stream. The center emits a code's
   `qr` under its lock before any hello under that code can be decided, so a stream always holds the nonce first. A hello
   under a replaced code is decided after the new code's `qr`, so its refusal finds the asking stream's newest code moved
-  on. The issue of a relay code itself refuses the requests waiting under the CloudKit code it replaces before it emits
+  on: it reaches the streams that showed the phone, and any other stream that still shows the replaced code as its
+  newest. The issue of a relay code itself refuses the requests waiting under the CloudKit code it replaces before it emits
   the new `qr`; those phones had a `sas`, so the stream that showed it hears the refusal, the asking stream included
   when it asked for both codes.
 - **`hub pair --json --stream` and a replaced request** (#2191). The `sas` line carries `moves_to_relay` (below) and
