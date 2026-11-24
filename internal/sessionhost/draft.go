@@ -8,13 +8,14 @@ import "bytes"
 // WatchtowerCore's DraftModel; both follow testdata/draft_cases.json.
 //
 // Only keys whose effect on the prompt is certain keep it exact: printable
-// runes and a single-line bracketed paste add their runes, Backspace takes
-// one, Ctrl+U over a single-line draft (exact implies one line: a line
-// break turns it inexact) empties it, a submitting Return empties it and
-// Shift+Tab changes nothing. Everything else — cursor and word-edit keys,
-// Esc, Tab, a line break, a multi-line or unterminated paste, the owner's
-// Ctrl+C (in Claude Code 2.1.331 it interrupts a working turn and keeps the
-// text, spec C11) and any key under a profile without ExactDraft — makes it
+// runes and a single-line bracketed paste add their runes (a paste may come
+// as several chunks: its brackets and its text are separate writes), Backspace
+// takes one, a submitting Return empties it and Shift+Tab changes nothing.
+// Everything else — cursor and word-edit keys, Ctrl+U (in Claude Code
+// 2.1.331 it erases only the last screen row of a wrapped draft), Esc, Tab, a
+// line break, a multi-line paste, the owner's Ctrl+C (it interrupts a working
+// turn and keeps the text, spec C11), the app's own interrupt Esc
+// (appInterrupt) and any key under a profile without ExactDraft — makes it
 // inexact: from then on only a submit (or the app's clear) empties it. An
 // inexact draft always holds text, so an unknown prompt holds a line as
 // before (PROJ-16, PROJ-23).
@@ -25,6 +26,8 @@ type draftModel struct {
 	// backslash: the last printable input was `\`, with only escape
 	// sequences or paste brackets since — a Return there is a line break.
 	backslash bool
+	// inPaste: a bracketed paste began and its end bracket has not come.
+	inPaste bool
 }
 
 // draftKey is what one fed chunk was.
@@ -48,16 +51,22 @@ func (d draftModel) holdsText() bool { return d.count > 0 || d.inexact }
 // empty and exact, whatever the draft was.
 func (d *draftModel) clearedByApp() { *d = draftModel{} }
 
+// appInterrupt is the app's own Esc into the session (the phone's
+// Interrupt, an InputTo): Claude Code may move a queued message back into
+// the prompt, so the draft's length is no longer known.
+func (d *draftModel) appInterrupt() { d.inexact = true }
+
 // feed reads one chunk of the owner's input. Input while a dialog is up
 // changes nothing (it answers the dialog).
 func (d *draftModel) feed(b []byte, prof Profile, dialog bool) draftKey {
 	if len(b) == 0 || dialog {
 		return keyIgnored
 	}
-	if IsShiftTab(b) {
+	if !d.inPaste && IsShiftTab(b) {
 		return keyNeutral
 	}
-	submit := IsSubmit(b, d.backslash, prof)
+	// A Return inside a paste's text is the paste's, never a submit.
+	submit := !d.inPaste && IsSubmit(b, d.backslash, prof)
 	d.backslash = EndsAfterBackslash(b, d.backslash)
 	if submit {
 		d.count, d.inexact = 0, false
@@ -76,20 +85,15 @@ var shiftTab = []byte("\x1b[Z")
 // edit applies the key table to a chunk that is no submit.
 func (d *draftModel) edit(b []byte) {
 	for i := 0; i < len(b); {
+		if d.inPaste {
+			i += d.pasted(b[i:])
+			continue
+		}
 		c := b[i]
 		switch {
 		case c == 0x1B && bytes.HasPrefix(b[i:], pasteStart):
-			body := b[i+len(pasteStart):]
-			end := bytes.Index(body, pasteEnd)
-			if end < 0 {
-				d.inexact = true // the rest is the paste's, of unknown length
-				return
-			}
-			d.add(body[:end])
-			if bytes.ContainsAny(body[:end], "\r\n") {
-				d.inexact = true
-			}
-			i += len(pasteStart) + end + len(pasteEnd)
+			d.inPaste = true
+			i += len(pasteStart)
 		case c == 0x1B:
 			if !bytes.HasPrefix(b[i:], shiftTab) {
 				d.inexact = true // a cursor or word-edit key, Esc, Option+key
@@ -98,14 +102,12 @@ func (d *draftModel) edit(b []byte) {
 		case c == 0x7F || c == 0x08: // Backspace, Ctrl+H
 			if !d.inexact && d.count > 0 {
 				d.count--
+				if d.count == 0 {
+					d.backslash = false // the `\` went with the rest
+				}
 			}
 			i++
-		case c == 0x15: // Ctrl+U: the whole line, the cursor being at its end
-			if !d.inexact {
-				d.count = 0
-			}
-			i++
-		case c < 0x20: // a line break, Ctrl+C, Tab, Ctrl+A/E/W/K, …
+		case c < 0x20: // a line break, Ctrl+C, Ctrl+U, Tab, Ctrl+A/E/W/K, …
 			d.inexact = true
 			i++
 		default:
@@ -113,6 +115,21 @@ func (d *draftModel) edit(b []byte) {
 			i++
 		}
 	}
+}
+
+// pasted reads a paste's text up to its end bracket and returns the bytes
+// it took; a line break in it makes the draft inexact.
+func (d *draftModel) pasted(b []byte) int {
+	text, n := b, len(b)
+	if end := bytes.Index(b, pasteEnd); end >= 0 {
+		text, n = b[:end], end+len(pasteEnd)
+		d.inPaste = false
+	}
+	d.add(text)
+	if bytes.ContainsAny(text, "\r\n") {
+		d.inexact = true
+	}
+	return n
 }
 
 // add counts the runes of b: every byte but a UTF-8 continuation byte (a

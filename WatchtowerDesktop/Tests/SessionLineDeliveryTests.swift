@@ -310,9 +310,17 @@ final class SessionLineDeliveryTests: XCTestCase {
     /// on the next state read — and goes, submitted, once the owner erased
     /// the draft with Backspace; while any of it is left nothing is typed.
     func testHeldAnswerGoesWhenDraftErased() async throws {
-        let (_, s, _) = try await seed()
+        let (project, _, _) = try await seed()
+        // Exact erase is Claude Code's only (a shell's draft stays inexact).
+        let acme = folder.path
+        let s = try await pool.write { d in
+            try TerminalSessionQueries.create(d, .init(projectID: project, kind: .claude, title: "c",
+                                                       folderPath: acme,
+                                                       claudeSessionID: UUID().uuidString.lowercased()))
+        }
+        center.start(s, fresh: true)
         let vm = makeVM()
-        let process = try XCTUnwrap(processes.first)
+        let process = try XCTUnwrap(processes.last)
         process.host.tracksDrafts = true
         let owner = try XCTUnwrap(process.onOwnerInput)
         owner(Array("a".utf8))

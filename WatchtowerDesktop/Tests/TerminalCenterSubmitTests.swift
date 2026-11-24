@@ -106,8 +106,13 @@ final class TerminalCenterSubmitTests: XCTestCase {
         XCTAssertEqual(center.agent(of: codex.id), .codex)
         XCTAssertEqual(center.inputProfile(codex.id), .codex)
         XCTAssertNil(center.agent(of: shell.id))
-        XCTAssertEqual(center.inputProfile(shell.id), .claude)
-        XCTAssertEqual(center.inputProfile(9999), .claude, "an unknown session")
+        XCTAssertEqual(center.inputProfile(shell.id), .unidentified)
+        XCTAssertEqual(center.inputProfile(9999), .unidentified, "an unknown session")
+        let typing = AgentInputProfile.unidentified
+        XCTAssertEqual([typing.submit, typing.newline ?? []], [AgentInputProfile.claude.submit, []], "typed as Claude Code's")
+        XCTAssertEqual([typing.pasteSettle, typing.submitSettle],
+                       [AgentInputProfile.claude.pasteSettle, AgentInputProfile.claude.submitSettle])
+        XCTAssertFalse(typing.exactDraft, "a draft it cannot vouch for is never erased")
         XCTAssertEqual(TerminalCenter.submitDelay, AgentInputProfile.claude.pasteSettle)
         XCTAssertEqual(TerminalCenter.answerSubmitDelay, AgentInputProfile.claude.submitSettle)
     }

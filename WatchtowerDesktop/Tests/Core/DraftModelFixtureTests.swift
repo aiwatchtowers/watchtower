@@ -40,7 +40,11 @@ final class DraftModelFixtureTests: XCTestCase {
         XCTAssertFalse(fixture.claudeCodeChecked.isEmpty)
         XCTAssertFalse(fixture.cases.isEmpty)
         for c in fixture.cases {
-            let profile: AgentInputProfile = c.profile == "codex" ? .codex : .claude
+            let profile: AgentInputProfile = switch c.profile {
+            case "claude": .claude
+            case "codex": .codex
+            default: .unidentified // Go `ProfileFor` of a shell or an unknown agent
+            }
             var draft = DraftModel()
             for key in c.keys {
                 draft.feed(Array(key.utf8), profile: profile, dialog: c.dialog)

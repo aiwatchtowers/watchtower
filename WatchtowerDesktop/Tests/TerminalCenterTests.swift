@@ -1141,6 +1141,44 @@ final class TerminalCenterTests: XCTestCase {
     /// the empty prompt and no bar asks for one; text they type after it
     /// is their own draft. A Return into a permission dialog sends nothing
     /// of the line and keeps the app's Return.
+    /// Review round 1: once the owner's own Return sent the pasted line in
+    /// its pause, their next keys are a draft of their own, kept exact —
+    /// typed and erased within the same pause, the prompt holds nothing.
+    func testAfterTheOwnersReturnInThePauseTheNextDraftStaysExact() async throws {
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+        onSleep = { [weak self] in
+            self?.sessions[0].onOwnerInput?([0x0D])
+            self?.sessions[0].onOwnerInput?(Array("n".utf8))
+            self?.sessions[0].onOwnerInput?([0x7F])
+        }
+
+        let delivery = await center.deliver("x", sessionID: s.id) { true }
+
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertNil(center.drafts[s.id], "typed and erased after the line went: an empty prompt")
+        XCTAssertFalse(center.promptHoldsText(s.id))
+    }
+
+    /// Controller ruling, review round 1: the app's own interrupt Esc may
+    /// make Claude Code move a queued message back into the prompt, so the
+    /// mirror's empty draft turns inexact (held) until the owner submits.
+    func testTheAppsInterruptMakesTheDraftInexact() throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        XCTAssertFalse(center.promptHoldsText(s.id))
+
+        XCTAssertTrue(center.sendInterrupt(sessionID: s.id))
+
+        XCTAssertEqual(sessions[0].inputs.last, [0x1B])
+        XCTAssertEqual(center.drafts[s.id]?.exact, false)
+        XCTAssertTrue(center.promptHoldsText(s.id))
+        sessions[0].onOwnerInput?([0x0D])
+        XCTAssertFalse(center.promptHoldsText(s.id))
+    }
+
     func testTheOwnersReturnDuringThePauseSkipsOurs() async throws {
         let center = makeCenter(v1Host: true)
         let s = try row()

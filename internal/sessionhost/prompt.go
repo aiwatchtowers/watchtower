@@ -32,8 +32,9 @@ type promptState struct {
 // TerminalCenter.ownerInput's twin): input while a permission dialog is up
 // changes nothing; a submitting Return (IsSubmit) empties the prompt and,
 // during a line's pause, sent that line; Shift+Tab (IsShiftTab) leaves it as
-// it was. Any other key during a line's pause reaches the pasted line, so the
-// draft turns inexact: the line is left typed, never submitted with it.
+// it was. Any other key while the pasted line still waits in its pause (no
+// Return of the owner's sent it yet) reaches that line, so the draft turns
+// inexact: the line is left typed, never submitted with it.
 func (p *promptState) ownerInput(b []byte, prof Profile) {
 	switch p.draft.feed(b, prof, p.dialog) {
 	case keySubmit:
@@ -42,7 +43,7 @@ func (p *promptState) ownerInput(b []byte, prof Profile) {
 			p.ownerReturnInPause = true
 		}
 	case keyEdit:
-		if p.pendingReturn {
+		if p.pendingReturn && !p.ownerReturnInPause {
 			p.draft.inexact = true
 		}
 	case keyIgnored, keyNeutral:

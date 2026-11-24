@@ -24,11 +24,10 @@ type Profile struct {
 	PasteSettle time.Duration
 	// SubmitSettle is the same pause for an ask's answer.
 	SubmitSettle time.Duration
-	// ExactDraft: the owner's Backspace and Ctrl+U are known to erase
-	// typed text one rune / the whole line, so an erased draft frees the
-	// prompt (draftModel). Claude Code's, and a shell's or an unknown
-	// agent's typed into as Claude Code's; any other agent's draft stays
-	// inexact after any key until a submit.
+	// ExactDraft: the owner's Backspace is known to erase one typed rune,
+	// so an erased draft frees the prompt (draftModel). Only Claude Code's;
+	// a shell's, an unknown agent's and Codex's draft stays inexact after
+	// any key until a submit.
 	ExactDraft bool
 }
 
@@ -37,8 +36,7 @@ type Profile struct {
 // (sessionagent.Adapter.ComposerNewline). A shell or an unknown agent is
 // typed into as Claude Code's, as TerminalCenter.inputProfile does.
 func ProfileFor(agent string) Profile {
-	p := Profile{Submit: []byte{0x0D}, PasteSettle: 150 * time.Millisecond, SubmitSettle: 500 * time.Millisecond,
-		ExactDraft: true}
+	p := Profile{Submit: []byte{0x0D}, PasteSettle: 150 * time.Millisecond, SubmitSettle: 500 * time.Millisecond}
 	if a, ok := sessionagent.Of(agent); ok {
 		p.Newline = a.ComposerNewline()
 		p.ExactDraft = a.Kind() == agentkind.Claude

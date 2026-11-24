@@ -4,14 +4,15 @@
 /// authority); both follow `internal/sessionhost/testdata/draft_cases.json`.
 ///
 /// Only keys whose effect on the prompt is certain keep it exact: printable
-/// characters and a single-line bracketed paste add theirs, Backspace takes
-/// one, Ctrl+U over a single-line draft (exact implies one line: a line
-/// break makes it inexact) empties it, a submitting Return empties it and
-/// Shift+Tab changes nothing. Everything else — cursor and word-edit keys,
-/// Esc, Tab, a line break, a multi-line or unterminated paste, the owner's
-/// Ctrl+C (in Claude Code 2.1.331 it interrupts a working turn and keeps the
-/// text, spec C11) and any key under a profile without `exactDraft` — makes
-/// it inexact: from then on only a submit (or the app's clear) empties it.
+/// characters and a single-line bracketed paste add theirs (a paste may come
+/// as several chunks: its brackets and its text are separate writes),
+/// Backspace takes one, a submitting Return empties it and Shift+Tab changes
+/// nothing. Everything else — cursor and word-edit keys, Ctrl+U (in Claude
+/// Code 2.1.331 it erases only the last screen row of a wrapped draft), Esc,
+/// Tab, a line break, a multi-line paste, the owner's Ctrl+C (it interrupts a
+/// working turn and keeps the text, spec C11), the app's own interrupt Esc
+/// and any key under a profile without `exactDraft` — makes it inexact: from
+/// then on only a submit (or the app's clear) empties it.
 /// An inexact draft always holds text, so an unknown prompt holds a line as
 /// before (PROJ-16, PROJ-23).
 package struct DraftModel: Equatable, Sendable {
@@ -20,6 +21,8 @@ package struct DraftModel: Equatable, Sendable {
     /// The last printable input was `\`, with only escape sequences or
     /// paste brackets since: a Return there is a line break.
     private var backslash = false
+    /// A bracketed paste began and its end bracket has not come.
+    private var inPaste = false
 
     /// What one fed chunk was.
     package enum Key: Equatable, Sendable {
@@ -47,8 +50,9 @@ package struct DraftModel: Equatable, Sendable {
     @discardableResult
     package mutating func feed(_ bytes: [UInt8], profile: AgentInputProfile, dialog: Bool) -> Key {
         guard !bytes.isEmpty, !dialog else { return .ignored }
-        if PromptKeys.isShiftTab(bytes) { return .neutral }
-        let submit = PromptKeys.isSubmit(bytes, backslashBefore: backslash, profile: profile)
+        if !inPaste, PromptKeys.isShiftTab(bytes) { return .neutral }
+        // A Return inside a paste's text is the paste's, never a submit.
+        let submit = !inPaste && PromptKeys.isSubmit(bytes, backslashBefore: backslash, profile: profile)
         backslash = PromptKeys.endsAfterBackslash(bytes, backslashBefore: backslash)
         if submit {
             count = 0
@@ -68,29 +72,26 @@ package struct DraftModel: Equatable, Sendable {
     private mutating func edit(_ bytes: [UInt8]) {
         var index = 0
         while index < bytes.count {
+            if inPaste {
+                index = pasted(bytes[index...])
+                continue
+            }
             let byte = bytes[index]
             let rest = bytes[index...]
             switch byte {
             case 0x1B where rest.starts(with: Self.pasteStart):
-                let body = bytes[(index + Self.pasteStart.count)...]
-                guard let end = Self.firstIndex(of: Self.pasteEnd, in: body) else {
-                    exact = false // the rest is the paste's, of unknown length
-                    return
-                }
-                let pasted = body[body.startIndex..<end]
-                add(pasted)
-                if pasted.contains(0x0D) || pasted.contains(0x0A) { exact = false }
-                index = end + Self.pasteEnd.count
+                inPaste = true
+                index += Self.pasteStart.count
             case 0x1B:
                 if !rest.starts(with: Self.shiftTab) { exact = false } // cursor/word-edit key, Esc, Option+key
                 index = PromptKeys.escapeSequenceEnd(in: bytes, after: index + 1)
             case 0x7F, 0x08: // Backspace, Ctrl+H
-                if exact, count > 0 { count -= 1 } // swiftlint:disable:this empty_count
+                if exact, count > 0 { // swiftlint:disable:this empty_count
+                    count -= 1
+                    if count == 0 { backslash = false } // swiftlint:disable:this empty_count
+                }
                 index += 1
-            case 0x15: // Ctrl+U: the whole line, the cursor being at its end
-                if exact { count = 0 }
-                index += 1
-            case ..<0x20: // a line break, Ctrl+C, Tab, Ctrl+A/E/W/K, …
+            case ..<0x20: // a line break, Ctrl+C, Ctrl+U, Tab, Ctrl+A/E/W/K, …
                 exact = false
                 index += 1
             default:
@@ -98,6 +99,21 @@ package struct DraftModel: Equatable, Sendable {
                 index += 1
             }
         }
+    }
+
+    /// Reads a paste's text up to its end bracket; returns the index past
+    /// what it took. A line break in it makes the draft inexact.
+    private mutating func pasted(_ bytes: ArraySlice<UInt8>) -> Int {
+        var text = bytes
+        var next = bytes.endIndex
+        if let end = Self.firstIndex(of: Self.pasteEnd, in: bytes) {
+            text = bytes[bytes.startIndex..<end]
+            next = end + Self.pasteEnd.count
+            inPaste = false
+        }
+        add(text)
+        if text.contains(0x0D) || text.contains(0x0A) { exact = false }
+        return next
     }
 
     /// Counts the characters of `bytes`: every byte but a UTF-8

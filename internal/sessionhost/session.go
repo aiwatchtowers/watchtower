@@ -188,6 +188,13 @@ func (s *session) ownerInput(b []byte) {
 	s.prompt.ownerInput(b, s.profile)
 }
 
+// appInterrupt records the app's own interrupt Esc (draftModel.appInterrupt).
+func (s *session) appInterrupt() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prompt.draft.appInterrupt()
+}
+
 // setDialog records a PromptHint: whether a permission dialog is up.
 func (s *session) setDialog(on bool) {
 	s.mu.Lock()

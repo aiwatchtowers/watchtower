@@ -189,12 +189,10 @@ final class TerminalCenter {
     /// answers the prompt; input into a permission dialog changes none),
     /// Dismiss, the next delivery or the process's exit.
     private(set) var answerHints: [Int64: AnswerHint] = [:]
-    /// Each session's draft model (`DraftModel`; none: an empty prompt) as
-    /// the app sees it: the owner's keys since their last submitting Return,
-    /// or a line the host left typed (`left_typed`, inexact). Only the app's
-    /// own pre-checks read it (PROJ-16's hold, the Workchat's, the
-    /// chat-question escalation); the delivery is the session host's, whose
-    /// prompt state is the authority (PROJ-12, `internal/sessionhost/prompt.go`).
+    /// Each session's draft model (`DraftModel`; none: an empty prompt): the owner's keys
+    /// since their last submitting Return, or a line left typed (`left_typed`, inexact).
+    /// Only the app's own pre-checks read it (PROJ-16's hold, the Workchat's, the chat
+    /// escalation); the session host's prompt state is the authority (PROJ-12, `prompt.go`).
     @ObservationIgnored private(set) var drafts: [Int64: DraftModel] = [:]
     /// The session's draft model changed through the owner's keys.
     @ObservationIgnored var onDraftChanged: ((Int64) -> Void)?
@@ -730,6 +728,7 @@ final class TerminalCenter {
     func sendInterrupt(sessionID: Int64) -> Bool {
         guard states[sessionID] == .running, let process = processes[sessionID] else { return false }
         process.sendInput([0x1B])
+        leaveDraftInexact(sessionID) // Claude Code may move a queued message back into the prompt
         return true
     }
 
@@ -745,10 +744,10 @@ final class TerminalCenter {
         rows[sessionID]?.kind.agent
     }
 
-    /// How lines are typed into the session (spec 2026-10-12 §8): its
-    /// agent's profile; Claude Code's when it runs none.
+    /// How lines are typed into the session (spec 2026-10-12 §8): its agent's
+    /// profile; `.unidentified` (Claude Code's typing, no exact draft) for none.
     func inputProfile(_ sessionID: Int64) -> AgentInputProfile {
-        agent(of: sessionID).map(AgentInputProfile.for) ?? .claude
+        agent(of: sessionID).map(AgentInputProfile.for) ?? .unidentified
     }
 
     /// How a line reached the session.
@@ -977,7 +976,7 @@ final class TerminalCenter {
     private func ownerInput(_ sessionID: Int64, _ bytes: [UInt8]) {
         var draft = drafts[sessionID] ?? DraftModel()
         let before = draft
-        let inPause = runs[sessionID].map(pendingReturns.contains) ?? false
+        let inPause = runs[sessionID].map { pendingReturns.contains($0) && !ownerReturnsInPause.contains($0) } ?? false // line unsent
         switch draft.feed(bytes, profile: inputProfile(sessionID), dialog: inputAnswersDialog(sessionID)) {
         case .ignored:
             return

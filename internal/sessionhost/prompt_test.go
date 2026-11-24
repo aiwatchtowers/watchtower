@@ -322,9 +322,10 @@ func TestDeliverWhileOwnerTypesInAnotherClientLeavesTyped(t *testing.T) {
 	a.outputUntil(func(s string) bool { return strings.Contains(s, "z") })
 }
 
-// InputTo is not the owner's typing (the phone's Interrupt sends its Esc
-// that way, as Desktop writes it past ownerInput today), so it never touches
-// the prompt state; an attached pane's Input keystroke still leaves a draft.
+// InputTo is not the owner's typing (the terminal's own replies, such as a
+// focus report, go that way), so it adds no draft; an attached pane's Input
+// keystroke still leaves one. The app's lone interrupt Esc is the one
+// exception (TestInputToInterruptMakesTheDraftInexact).
 func TestInputToDoesNotCreateADraft(t *testing.T) {
 	path, srv := startHost(t, Options{})
 	a := dial(t, path)
@@ -332,10 +333,10 @@ func TestInputToDoesNotCreateADraft(t *testing.T) {
 	sess := hostSession(t, srv, 1)
 	b := dial(t, path)
 
-	b.send(InputTo, InputToReq{Row: 1, Run: "r1", Launch: info.Launch, Data: []byte{0x1B}})
+	b.send(InputTo, InputToReq{Row: 1, Run: "r1", Launch: info.Launch, Data: []byte("\x1b[I")})
 	b.expectNoError()
 	if sess.promptHoldsText() {
-		t.Fatal("an InputTo Esc left a draft")
+		t.Fatal("an InputTo focus report left a draft")
 	}
 	a.typeChunks([]byte("x"))
 	if !sess.promptHoldsText() {

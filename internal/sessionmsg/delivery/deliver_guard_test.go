@@ -125,7 +125,7 @@ func TestPreClaimFailuresNeverTouchAClaimedRow(t *testing.T) {
 // to hold over text; once the owner erased it the next try delivers it, once.
 // The host's side — an erased draft answers no hold — is
 // sessionhost.TestPromptState_ReleaseRetriesHeld.
-func TestProj23_ErasedDraftReleases(t *testing.T) {
+func TestProj23_ReleasedPromptDeliversOnNextTry(t *testing.T) {
 	w := newWorld(t)
 	from, to := w.session(t, "Planner", "waiting", 0), w.session(t, "Worker", "waiting", 0)
 	w.port.setRun(to, runStart, true)

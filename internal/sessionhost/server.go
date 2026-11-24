@@ -1,6 +1,7 @@
 package sessionhost
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -511,9 +512,11 @@ func (s *Server) running(c *conn, op string, row int64, run string, launch uint6
 
 // inputTo writes to a session's PTY without binding the connection: the
 // attached client (if any) keeps its session and sees the echo. The bytes are
-// not the owner's typing (the phone's Interrupt Esc, say), so they never touch
-// the prompt state: only an attached pane's Input does, as Desktop's
-// ownerInput counts only the owner's keystrokes. Nothing is answered on
+// not the owner's typing (the phone's Interrupt Esc, say), so they never add
+// a draft: only an attached pane's Input does, as Desktop's ownerInput counts
+// only the owner's keystrokes. One exception: a lone Esc (an interrupt) may
+// make Claude Code move a queued message back into the prompt, so it makes
+// the draft inexact (draftModel.appInterrupt). Nothing is answered on
 // success.
 func (s *Server) inputTo(c *conn, p []byte) {
 	var req InputToReq
@@ -526,6 +529,9 @@ func (s *Server) inputTo(c *conn, p []byte) {
 		return
 	}
 	sess.wmu.Lock()
+	if bytes.Equal(req.Data, []byte{0x1B}) {
+		sess.appInterrupt()
+	}
 	_, err := sess.ptmx.Write(req.Data)
 	sess.wmu.Unlock()
 	if err != nil {
