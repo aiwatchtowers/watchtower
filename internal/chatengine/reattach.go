@@ -363,6 +363,11 @@ func (e *Engine) dialSpawned(path string, exited <-chan struct{}) (net.Conn, err
 		if err == nil {
 			return conn, nil
 		}
+		if e.stopCtx.Err() != nil {
+			// A stop that cut the dial or its greeting is the engine
+			// closing, not a broken session (#2388).
+			return nil, ErrClosed
+		}
 		if !errors.Is(err, errStaleSocket) {
 			return nil, err
 		}
