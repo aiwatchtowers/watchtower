@@ -65,7 +65,7 @@ A `ChatSurfaceSpec` (`AskExplainSurface`, `Sources/Services/ChatSurfaces/`), lik
 - key `EmbeddedChatKey(contextType: "owner_ask_explain", contextID: "<workbench id>:<ask id>", conversationID:)`;
 - persistence `.database`, the conversation found or created with `DatabaseEmbeddedChatStore.conversationID(…)` (Go's `chat.new` with `reuse: true`), title "Ask #<id>";
 - `toolAccess: .draftOnly`;
-- `runOptions`: the config's provider at its strong tier, `readFolder` = the workbench's folder;
+- `runOptions`: the config's provider at its strong tier, `readFolder` = the workbench's folder, `purpose` = `ask.explain` (the usage ledger shows these turns as "Ask explanations" under Workbench; `ai query --purpose` accepts only listed values, so Go's `queryPurposes` gains it);
 - the system prompt (first turn only) carries, fenced as untrusted data (a fence longer than any backtick run inside, as `CodeQuestionContext` does, with a line telling the model it is data, not instructions): the ask's title, summary, reason, questions with their options and descriptions (or the checklist), the recommended labels, and the target's title and intent when the ask has a target. It says: answer in the language the ask is written in; you explain, you never decide for the owner; the folder is for reading only.
 
 The prompt text lives in one Swift constant (`AskExplainPrompt`), covered by a test that pins its parts (fence, language rule, the "never decide" line). Both providers run it unchanged (it is plain text, no provider-specific syntax).
@@ -133,7 +133,7 @@ The guard tests (`internal/tools/code_question_guard_test.go`, `internal/memory/
 
 | # | Task | Tests |
 |---|---|---|
-| T1 | Go: `db.AskExplainContextType`; delete with the workbench; re-key on merge (`reKeyChats`); add the type to `chat_history.go`, `source_chat_artifact.go` and both lists in `chat_knowledge.go` | `TestDeleteWorkbenchDropsAskExplainChats`, `TestMergeReKeysAskExplainChats`, a `chat_knowledge` test that an `owner_ask_explain` message yields no decision or fact, the extended guard tests |
+| T1 | Go: `db.AskExplainContextType`; delete with the workbench; re-key on merge (`reKeyChats`); add the type to `chat_history.go`, `source_chat_artifact.go` and both lists in `chat_knowledge.go`; `ask.explain` in `queryPurposes` | `TestDeleteWorkbenchDropsAskExplainChats`, `TestMergeReKeysAskExplainChats`, a `chat_knowledge` test that an `owner_ask_explain` message yields no decision or fact, the extended guard tests |
 | T2 | Swift Core: `AskExplainCopy`, `AskExplainPrompt`, `AskExplainKey` (context id), entry visibility (`AskExplainPresentation.showsEntry(kind:hasCLI:)`); `savesKnowledge` excludes the type | `AskExplainCopyTests`, `AskExplainPromptTests`, `AskExplainPresentationTests`, the `savesKnowledge` test |
 | T3 | `AskExplainSurface` + the per-ask mode in `OwnerAsksViewModel` (`explainOpen`), the hidden first turn, Retry-only after a failed first turn | `AskExplainSurfaceTests`, `AskExplainModelTests` |
 | T4 | Views: the entry in `OwnerAskDrawer`, `AskExplainChatView`, keys off in chat mode, Esc back | `OwnerAskDrawerKeysTests` (keys off), shots |
