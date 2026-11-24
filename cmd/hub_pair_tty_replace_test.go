@@ -1,0 +1,307 @@
+package cmd
+
+import (
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/hub"
+	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/wire"
+)
+
+// ttyScripted opens a terminal pairing against a scripted hub up to the
+// phone's first prompt (code 1111, request r1, or none on an old hub).
+func ttyScripted(t *testing.T, request string) (*scriptedPairHub, *ttyPair) {
+	t.Helper()
+	f, r := ttyScriptedWaiting(t)
+	ttySend(t, r, f, hub.ControlAnswer{Event: link.EventSAS, DeviceID: fakePairDevice, Name: "acme phone", Code: "1111", Request: request})
+	r.waitFor(t, "Confirm code 1111 on your phone? [y/N] ")
+	return f, r
+}
+
+// ttyScriptedWaiting opens a terminal pairing against a scripted hub up to
+// the waiting line.
+func ttyScriptedWaiting(t *testing.T) (*scriptedPairHub, *ttyPair) {
+	t.Helper()
+	dir := hubShortDir(t)
+	f := startScriptedPairHub(t, dir)
+	exp := time.Now().Add(10 * time.Minute)
+	r := startPairTTY(t, 120)
+	ttySend(t, r, f, hub.ControlAnswer{Event: link.EventQR, URL: testLinkURL(t), ExpiresAt: &exp})
+	ttySend(t, r, f, hub.ControlAnswer{Event: link.EventWaiting})
+	r.waitFor(t, hubPairWaiting)
+	return f, r
+}
+
+// ttySend hands the scripted hub's next line to the CLI; the CLI ending
+// first fails the test at once.
+func ttySend(t *testing.T, r *ttyPair, f *scriptedPairHub, a hub.ControlAnswer) {
+	t.Helper()
+	select {
+	case f.send <- a:
+	case err := <-r.done:
+		r.finished, r.err = true, err
+		t.Fatalf("the CLI ended (%v) before %+v; output:\n%s", err, a, r.out.String())
+	}
+}
+
+// ttyGot is the CLI's next request to the scripted hub; the CLI ending
+// first fails the test at once.
+func ttyGot(t *testing.T, r *ttyPair, f *scriptedPairHub) hub.ControlRequest {
+	t.Helper()
+	select {
+	case req := <-f.got:
+		return req
+	case err := <-r.done:
+		r.finished, r.err = true, err
+		t.Fatalf("the CLI ended (%v) before its request; output:\n%s", err, r.out.String())
+		return hub.ControlRequest{}
+	}
+}
+
+// ttyNothingSent: no request reached the scripted hub so far. The CLI
+// sends a confirm in the step that would otherwise print the line the test
+// waited for, so once that line is on screen no request is on its way.
+func ttyNothingSent(t *testing.T, f *scriptedPairHub) {
+	t.Helper()
+	select {
+	case req := <-f.got:
+		t.Fatalf("a request reached the hub: %+v", req)
+	default:
+	}
+}
+
+// ttyLink ends a scripted terminal pairing: the hub accepts and links.
+func ttyLink(t *testing.T, r *ttyPair, f *scriptedPairHub) {
+	t.Helper()
+	ttySend(t, r, f, hub.ControlAnswer{Op: hub.OpConfirm, OK: true, DeviceID: fakePairDevice})
+	ttySend(t, r, f, hub.ControlAnswer{Event: link.EventLinked, DeviceID: fakePairDevice})
+	code, err := r.wait(t)
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	r.waitFor(t, " typing|start_sessions\n") // the pty may still hold the last lines
+}
+
+// ttyRefuse ends a scripted terminal pairing after the owner's no: the hub
+// accepts it and refuses the phone.
+func ttyRefuse(t *testing.T, r *ttyPair, f *scriptedPairHub) {
+	t.Helper()
+	ttySend(t, r, f, hub.ControlAnswer{Op: hub.OpConfirm, OK: true, DeviceID: fakePairDevice})
+	ttySend(t, r, f, hub.ControlAnswer{Event: link.EventRefused, DeviceID: fakePairDevice, Reason: wire.RefusedNotConfirmed})
+	code, err := r.wait(t)
+	assert.Equal(t, 1, code)
+	assert.EqualError(t, err, "Not linked: the code was not confirmed.")
+}
+
+func ttyYes(code, request string, moves bool) hub.ControlRequest {
+	return hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Confirm: true, Code: code, MovesToRelay: &moves, Request: request}
+}
+
+// ttySAS is the phone's sas for request with code.
+func ttySAS(code, request string) hub.ControlAnswer {
+	return hub.ControlAnswer{Event: link.EventSAS, DeviceID: fakePairDevice, Name: "acme phone", Code: code, Request: request}
+}
+
+// #2384: the owner's y names the code and the request the prompt showed.
+func TestHubPairTTYYesNamesTheRequestShown(t *testing.T) {
+	f, r := ttyScripted(t, "r1")
+	r.typeLine(t, "y\n")
+	assert.Equal(t, ttyYes("1111", "r1", false), ttyGot(t, r, f))
+	ttyLink(t, r, f)
+}
+
+// #2384: a no, stdin closing and Ctrl-C name the request shown too, so they
+// never refuse a newer request the owner did not see.
+func TestHubPairTTYNoNamesTheRequestShown(t *testing.T) {
+	no := hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Request: "r1"}
+	t.Run("n", func(t *testing.T) {
+		f, r := ttyScripted(t, "r1")
+		r.typeLine(t, "n\n")
+		assert.Equal(t, no, ttyGot(t, r, f))
+		ttyRefuse(t, r, f)
+	})
+	t.Run("stdin closed", func(t *testing.T) {
+		f, r := ttyScripted(t, "r1")
+		r.typeLine(t, "\x04")
+		assert.Equal(t, no, ttyGot(t, r, f))
+		ttyRefuse(t, r, f)
+	})
+	t.Run("Ctrl-C", func(t *testing.T) {
+		f, r := ttyScripted(t, "r1")
+		r.sigs <- os.Interrupt
+		code, _ := r.wait(t)
+		assert.Equal(t, 130, code)
+		<-f.eof // the CLI hung up: every request it sent is in got
+		assert.Equal(t, no, <-f.got)
+	})
+}
+
+// #2384: the phone's request is replaced while the prompt is open. The new
+// code is printed; the line the owner types next was being read while the
+// prompt changed, so it may answer the earlier code: nothing is sent, the
+// owner is told and asked again, and the next answer names the new request.
+func TestHubPairTTYReplacedWhileThePromptIsOpen(t *testing.T) {
+	for name, first := range map[string]string{"a yes": "y\n", "a no": "n\n"} {
+		t.Run(name, func(t *testing.T) {
+			f, r := ttyScripted(t, "r1")
+			replaced := ttySAS("2222", "r2")
+			replaced.MovesToRelay = true
+			ttySend(t, r, f, replaced)
+			r.waitFor(t, "Confirm code 2222 on your phone? [y/N] ")
+			r.typeLine(t, first)
+			r.waitFor(t, hubPairStaleAnswer+"\nConfirm code 2222 on your phone? [y/N] ")
+			ttyNothingSent(t, f)
+			r.typeLine(t, "y\n")
+			assert.Equal(t, ttyYes("2222", "r2", true), ttyGot(t, r, f))
+			ttyLink(t, r, f)
+			assertInOrder(t, r.out.String(),
+				"Confirm code 1111 on your phone? [y/N] \n",
+				hubPairReplaced+"\n",
+				"\"acme phone\" wants to link.\n",
+				"Confirm code 2222 on your phone? [y/N] "+first,
+				hubPairStaleAnswer+"\n",
+				"Confirm code 2222 on your phone? [y/N] y\n",
+				"Linked \"acme phone\".\n")
+		})
+	}
+}
+
+// #2384: the replacement arrives before the owner answers anything: the
+// earlier code is never confirmed, even when the owner types y only once
+// the new code is on screen (the line was being read across the change).
+func TestHubPairTTYReplacedBeforeTheAnswer(t *testing.T) {
+	f, r := ttyScriptedWaiting(t)
+	ttySend(t, r, f, ttySAS("1111", "r1"))
+	ttySend(t, r, f, ttySAS("2222", "r2"))
+	r.waitFor(t, "Confirm code 2222 on your phone? [y/N] ")
+	r.typeLine(t, "y\n")
+	r.waitFor(t, hubPairStaleAnswer)
+	ttyNothingSent(t, f)
+	r.typeLine(t, "y\n")
+	assert.Equal(t, ttyYes("2222", "r2", false), ttyGot(t, r, f))
+	ttyLink(t, r, f)
+}
+
+// #2384: a replacement that drew the same four digits is still another
+// request: printed again, and the answer typed across it is not sent.
+func TestHubPairTTYReplacedWithTheSameCode(t *testing.T) {
+	f, r := ttyScripted(t, "r1")
+	ttySend(t, r, f, ttySAS("1111", "r2"))
+	r.waitFor(t, hubPairReplaced)
+	r.typeLine(t, "y\n")
+	r.waitFor(t, hubPairStaleAnswer)
+	ttyNothingSent(t, f)
+	r.typeLine(t, "y\n")
+	assert.Equal(t, ttyYes("1111", "r2", false), ttyGot(t, r, f))
+	ttyLink(t, r, f)
+}
+
+// A sas that repeats the request shown, or only renames the phone, is not
+// a replacement: nothing is printed again and the owner's y goes through.
+func TestHubPairTTYUnchangedRequestIsNoReplacement(t *testing.T) {
+	f, r := ttyScripted(t, "r1")
+	ttySend(t, r, f, ttySAS("1111", "r1"))
+	renamed := ttySAS("1111", "r1")
+	renamed.Name = "acme phone 2"
+	ttySend(t, r, f, renamed)
+	r.typeLine(t, "y\n")
+	assert.Equal(t, ttyYes("1111", "r1", false), ttyGot(t, r, f))
+	ttyLink(t, r, f)
+	assert.NotContains(t, r.out.String(), hubPairReplaced)
+}
+
+// #2384: the replacement reaches the hub after the owner's y was sent: the
+// hub refuses it code_changed, and the terminal prints the new code and
+// asks again instead of confirming it.
+func TestHubPairTTYReplacedAfterTheAnswer(t *testing.T) {
+	f, r := ttyScripted(t, "r1")
+	r.typeLine(t, "y\n")
+	assert.Equal(t, ttyYes("1111", "r1", false), ttyGot(t, r, f))
+	ttySend(t, r, f, ttySAS("2222", "r2"))
+	ttySend(t, r, f, hub.ControlAnswer{Op: hub.OpConfirm, Error: hub.ErrClassCodeChanged})
+	r.waitFor(t, hubPairCodeChanged+"\n\"acme phone\" wants to link.\nConfirm code 2222 on your phone? [y/N] ")
+	ttyNothingSent(t, f)
+	r.typeLine(t, "y\n")
+	assert.Equal(t, ttyYes("2222", "r2", false), ttyGot(t, r, f))
+	ttyLink(t, r, f)
+}
+
+// #2384: the hub refused the answer code_changed before the replacing sas
+// reached the terminal: the code shown is asked again, the replacement
+// prints when it comes, and only an answer read after it is sent.
+func TestHubPairTTYCodeChangedBeforeTheReplacement(t *testing.T) {
+	f, r := ttyScripted(t, "r1")
+	r.typeLine(t, "y\n")
+	ttyGot(t, r, f)
+	ttySend(t, r, f, hub.ControlAnswer{Op: hub.OpConfirm, Error: hub.ErrClassCodeChanged})
+	r.waitFor(t, hubPairCodeChanged+"\n\"acme phone\" wants to link.\nConfirm code 1111 on your phone? [y/N] ")
+	ttySend(t, r, f, ttySAS("2222", "r2"))
+	r.waitFor(t, "Confirm code 2222 on your phone? [y/N] ")
+	r.typeLine(t, "y\n")
+	r.waitFor(t, hubPairStaleAnswer)
+	ttyNothingSent(t, f)
+	r.typeLine(t, "y\n")
+	assert.Equal(t, ttyYes("2222", "r2", false), ttyGot(t, r, f))
+	ttyLink(t, r, f)
+}
+
+// #2384: stdin closing is the owner's no whichever code was on screen: it
+// is sent, named after the request shown last, even across a replacement.
+func TestHubPairTTYStdinClosedAfterAReplacement(t *testing.T) {
+	f, r := ttyScripted(t, "r1")
+	ttySend(t, r, f, ttySAS("2222", "r2"))
+	r.waitFor(t, "Confirm code 2222 on your phone? [y/N] ")
+	r.typeLine(t, "\x04")
+	assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Request: "r2"}, ttyGot(t, r, f))
+	ttyRefuse(t, r, f)
+}
+
+// The request moved to another pairing stream, or is gone: no_request ends
+// the terminal pairing as an expired code.
+func TestHubPairTTYNoRequestEnds(t *testing.T) {
+	f, r := ttyScripted(t, "r1")
+	r.typeLine(t, "y\n")
+	ttyGot(t, r, f)
+	ttySend(t, r, f, hub.ControlAnswer{Op: hub.OpConfirm, Error: hub.ErrClassNoRequest})
+	code, err := r.wait(t)
+	assert.Equal(t, 1, code)
+	assert.EqualError(t, err, "This code expired. Run watchtower hub pair for a new one.")
+}
+
+// #2384: a running hub older than the command names no request, so no yes
+// could be bound to the request shown: the yes ends the pairing with
+// errPairHubTooOld and nothing is confirmed. A no still goes through.
+func TestHubPairTTYFailsClosedOnAnOldHub(t *testing.T) {
+	t.Run("yes", func(t *testing.T) {
+		f, r := ttyScripted(t, "")
+		r.typeLine(t, "y\n")
+		_, err := r.wait(t)
+		require.ErrorIs(t, err, errPairHubTooOld)
+		assertNothingMoreSent(t, f)
+	})
+	t.Run("no", func(t *testing.T) {
+		f, r := ttyScripted(t, "")
+		r.typeLine(t, "n\n")
+		assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice}, ttyGot(t, r, f))
+		ttyRefuse(t, r, f)
+	})
+}
+
+// #2384: a line typed before the prompt (while the phone was still on its
+// way) never answers it.
+func TestHubPairTTYTypeAheadIsDropped(t *testing.T) {
+	f, r := ttyScriptedWaiting(t)
+	r.typeLine(t, "y\n")
+	r.waitFor(t, hubPairWaiting+"\ny\n") // echoed: it is in the terminal's input queue
+	ttySend(t, r, f, ttySAS("1111", "r1"))
+	r.waitFor(t, "Confirm code 1111 on your phone? [y/N] ")
+	r.typeLine(t, "n\n")
+	assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Request: "r1"}, ttyGot(t, r, f))
+	ttyRefuse(t, r, f)
+	assert.True(t, strings.Contains(r.out.String(), "[y/N] n\n"))
+}

@@ -229,7 +229,7 @@ func fakePairOpening(t *testing.T, exp time.Time, name string) (string, []hub.Co
 	return url, []hub.ControlAnswer{
 		{Event: link.EventQR, URL: url, ExpiresAt: &exp},
 		{Event: link.EventWaiting},
-		{Event: link.EventSAS, DeviceID: fakePairDevice, Name: name, Code: "4827"},
+		{Event: link.EventSAS, DeviceID: fakePairDevice, Name: name, Code: "4827", Request: "r1"},
 	}
 }
 
