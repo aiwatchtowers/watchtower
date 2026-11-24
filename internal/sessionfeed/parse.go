@@ -75,12 +75,9 @@ type block struct {
 	IsError   bool            `json:"is_error"`
 }
 
-// recordPeerResults hands the tool_results of a user record to the peer tracker.
-func (st *state) recordPeerResults(rec record, at time.Time) {
-	var blocks []block
-	if json.Unmarshal(rec.Message.Content, &blocks) != nil {
-		return
-	}
+// recordPeerResults hands the tool_results of a user record's content blocks
+// to the peer tracker.
+func (st *state) recordPeerResults(blocks []block, at time.Time) {
 	for _, b := range blocks {
 		if b.Type == "tool_result" {
 			st.peers.result(b.ToolUseID, resultText(b.Content), b.IsError, at)
@@ -230,9 +227,11 @@ func (st *state) handleUser(rec record, at time.Time) {
 	if rec.IsMeta || rec.IsCompact || rec.IsSidechain != st.sidechain {
 		return
 	}
-	st.recordParentReport(rec)
+	// one decode of the content for all three readers
+	c, blocks, ok := decodeUserContent(rec.Message.Content)
+	st.recordParentReport(blocks)
 	if !st.sidechain {
-		st.recordPeerResults(rec, at)
+		st.recordPeerResults(blocks, at)
 	}
 	if st.sidechain {
 		// only the first plain-string record is the task
@@ -242,7 +241,10 @@ func (st *state) handleUser(rec record, at time.Time) {
 		}
 		st.hasTask = true
 	}
-	for _, e := range userEntries(rec) {
+	if !ok {
+		return
+	}
+	for _, e := range contentEntries(rec.UUID, c) {
 		e.At, e.Conversation = at, st.conv
 		st.res.Entries = append(st.res.Entries, e)
 	}
@@ -283,38 +285,49 @@ func userEntry(rec record) (Entry, bool) {
 	return Entry{}, false
 }
 
-// userEntries is the entries of a user record: one, except for a message whose
-// text blocks are all notices (Claude Code delivers several task notifications
-// or teammate messages as sibling blocks of one message), which gives one
-// event per notice. The first keeps the record's uuid as its id, the others
-// add `#<index of the content block>`, so each is stable across reads.
-//
-// Blocks are read apart only when no system reminder crosses a block boundary
-// (dropping reminders per block then gives the same text as dropping them from
-// the joined message); otherwise the record is the one joined entry. A leading
-// notice beside other text is likewise read within its own block, so its
-// children cannot run into a later block.
+// userEntries is the entries of a user record (contentEntries of its content).
 func userEntries(rec record) []Entry {
-	c, ok := decodeUserContent(rec.Message.Content)
+	c, _, ok := decodeUserContent(rec.Message.Content)
 	if !ok {
 		return nil
 	}
-	if len(c.texts) > 1 {
-		joined := strings.Join(c.texts, "\n")
-		clean := make([]string, len(c.texts))
-		for i, t := range c.texts {
-			clean[i] = reminderRe.ReplaceAllString(t, "")
-		}
-		if strings.Join(clean, "\n") == reminderRe.ReplaceAllString(joined, "") {
-			if es := blockEntries(rec.UUID, c.index, clean); len(es) > 0 {
-				if c.image {
-					es = es[:1] // an image beside the notices: one entry
+	return contentEntries(rec.UUID, c)
+}
+
+// contentEntries is the entries of a user message: one, except for a message
+// whose text blocks are all notices (Claude Code delivers several task
+// notifications or teammate messages as sibling blocks of one message), which
+// gives one event per notice. The first keeps the record's uuid as its id, the
+// others add `#<index of the content block>`, so each is stable across reads.
+//
+// A message that starts with a notice is an event of the notice alone (no
+// image marker). Its blocks are read apart only when no system reminder
+// crosses a block boundary (dropping reminders per block then gives the same
+// text as dropping them from the joined message) and every notice is complete
+// in its own block; otherwise it is the one notice read from the joined text.
+func contentEntries(uuid string, c userContent) []Entry {
+	joined := strings.Join(c.texts, "\n")
+	if strings.Contains(joined, taskOpen) || strings.Contains(joined, mateOpen) {
+		stripped := reminderRe.ReplaceAllString(joined, "")
+		if text := strings.TrimSpace(stripped); isNotice(text) {
+			if len(c.texts) > 1 {
+				clean := make([]string, len(c.texts))
+				for i, t := range c.texts {
+					clean[i] = reminderRe.ReplaceAllString(t, "")
 				}
-				return es
+				if strings.Join(clean, "\n") == stripped {
+					if es := blockEntries(uuid, c.index, clean); len(es) > 0 {
+						if c.image {
+							es = es[:1] // an image beside the notices: one entry
+						}
+						return es
+					}
+				}
 			}
+			return []Entry{noticeEntry(uuid, text)}
 		}
 	}
-	if e, ok := classifyUserText(rec.UUID, c.text()); ok {
+	if e, ok := classifyUserText(uuid, c.marked(joined)); ok {
 		return []Entry{e}
 	}
 	return nil
@@ -323,7 +336,8 @@ func userEntries(rec record) []Entry {
 // blockEntries reads a message's text blocks (reminders already dropped, index
 // = each one's place in the content) apart: every notice when all the non-empty
 // blocks are notices, the leading notice alone when other text follows it, and
-// nothing when the message does not start with a notice.
+// nothing when the message does not start with a notice or a notice is not
+// complete in its block (it may continue in the next one).
 func blockEntries(uuid string, index []int, clean []string) []Entry {
 	var out []Entry
 	for i, text := range clean {
@@ -331,6 +345,9 @@ func blockEntries(uuid string, index []int, clean []string) []Entry {
 		switch {
 		case text == "":
 		case isNotice(text):
+			if !noticeComplete(text) {
+				return nil
+			}
 			id := uuid
 			if len(out) > 0 {
 				id = uuid + "#" + strconv.Itoa(index[i])
@@ -345,8 +362,23 @@ func blockEntries(uuid string, index []int, clean []string) []Entry {
 	return out
 }
 
+const (
+	mateOpen  = "<teammate-message"
+	mateClose = "</teammate-message>"
+)
+
 func isNotice(text string) bool {
-	return strings.HasPrefix(text, taskOpen) || strings.HasPrefix(text, "<teammate-message")
+	return strings.HasPrefix(text, taskOpen) || strings.HasPrefix(text, mateOpen)
+}
+
+// noticeComplete reports whether a notice is whole within text: a task
+// notification whose children parse, a teammate message with its close tag.
+func noticeComplete(text string) bool {
+	if strings.HasPrefix(text, taskOpen) {
+		_, ok := parseTaskChildren(text)
+		return ok
+	}
+	return strings.Contains(text, mateClose)
 }
 
 // userContent is a user message's content decoded once: its text blocks with
@@ -358,25 +390,26 @@ type userContent struct {
 	image bool
 }
 
-// decodeUserContent decodes a user message's content; ok is false for tool
-// results and undecodable content.
-func decodeUserContent(content json.RawMessage) (userContent, bool) {
+// decodeUserContent decodes a user message's content once: its text content
+// and its blocks (nil for a plain string). ok is false for tool results and
+// undecodable content; the blocks decoded are returned either way.
+func decodeUserContent(content json.RawMessage) (userContent, []block, bool) {
 	if len(content) > 0 && content[0] == '"' {
 		var text string
 		if json.Unmarshal(content, &text) != nil {
-			return userContent{}, false
+			return userContent{}, nil, false
 		}
-		return userContent{texts: []string{text}, index: []int{0}}, true
+		return userContent{texts: []string{text}, index: []int{0}}, nil, true
 	}
 	var blocks []block
 	if json.Unmarshal(content, &blocks) != nil {
-		return userContent{}, false
+		return userContent{}, nil, false
 	}
 	var c userContent
 	for i, b := range blocks {
 		switch b.Type {
 		case "tool_result":
-			return userContent{}, false
+			return userContent{}, blocks, false
 		case "text":
 			c.texts = append(c.texts, b.Text)
 			c.index = append(c.index, i)
@@ -384,26 +417,26 @@ func decodeUserContent(content json.RawMessage) (userContent, bool) {
 			c.image = true
 		}
 	}
-	return c, true
+	return c, blocks, true
 }
 
-// text flattens the content to one string.
-func (c userContent) text() string {
-	text := strings.Join(c.texts, "\n")
-	if c.image && !strings.Contains(text, "[Image #") {
-		text += "\n[image]"
+// marked adds the image marker to the content's joined text when an image
+// came with it and the text names none.
+func (c userContent) marked(joined string) string {
+	if c.image && !strings.Contains(joined, "[Image #") {
+		joined += "\n[image]"
 	}
-	return text
+	return joined
 }
 
 // userText flattens a user message's content; ok is false for tool results
 // and undecodable content.
 func userText(content json.RawMessage) (string, bool) {
-	c, ok := decodeUserContent(content)
+	c, _, ok := decodeUserContent(content)
 	if !ok {
 		return "", false
 	}
-	return c.text(), true
+	return c.marked(strings.Join(c.texts, "\n")), true
 }
 
 func classifyUserText(uuid, text string) (Entry, bool) {

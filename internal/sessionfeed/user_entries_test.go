@@ -3,8 +3,10 @@ package sessionfeed
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,17 +81,18 @@ func TestNoticeTask_SiblingIDIsTheSourceBlockIndex(t *testing.T) {
 	assert.Equal(t, "b2", res.Entries[1].Task.TaskID)
 }
 
-// Fix round 4 (codex P2): a user record's content is decoded once, tool
-// results included. Relative: reading a record of many tool results allocates
-// less than two decodes of its content would.
-func TestUserEntries_DecodesContentOnce(t *testing.T) {
+// Fix rounds 4–5 (codex P2): a user record's content is decoded once for all
+// of handleUser's readers, tool results included. Relative: handling a record
+// of many tool results allocates less than 1.5 times one decode of its content
+// plus the read of each result.
+func TestHandleUser_DecodesContentOnce(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteByte('[')
 	for i := range 300 {
 		if i > 0 {
 			sb.WriteByte(',')
 		}
-		fmt.Fprintf(&sb, `{"type":"tool_result","tool_use_id":"t%d","content":"out %d"}`, i, i)
+		fmt.Fprintf(&sb, `{"type":"tool_result","tool_use_id":"t%d","is_error":true,"content":"out %d"}`, i, i)
 	}
 	sb.WriteByte(']')
 	var rec record
@@ -98,13 +101,14 @@ func TestUserEntries_DecodesContentOnce(t *testing.T) {
 	once := testing.AllocsPerRun(20, func() {
 		var bs []block
 		_ = json.Unmarshal(rec.Message.Content, &bs)
-	})
-	got := testing.AllocsPerRun(20, func() {
-		if len(userEntries(rec)) != 0 {
-			t.Fatal("a tool-result record gives no entry")
+		for _, b := range bs {
+			_ = resultText(b.Content)
 		}
 	})
-	assert.Less(t, got, once*1.5, "one decode of the content, not two (one decode = %v allocations)", once)
+	st := newState("conv1", 0, false)
+	got := testing.AllocsPerRun(20, func() { st.handleUser(rec, time.Time{}) })
+	assert.Empty(t, st.res.Entries, "a tool-result record gives no entry")
+	assert.Less(t, got, once*1.5, "one decode of the content, not three (one decode = %v allocations)", once)
 }
 
 // Notices beside an image stay one entry, the leading notice read in its block.
@@ -114,4 +118,79 @@ func TestNoticeTask_NoticesBesideAnImageStayOneEntry(t *testing.T) {
 	assert.Equal(t, "n1", res.Entries[0].ID)
 	require.NotNil(t, res.Entries[0].Task)
 	assert.Equal(t, "done A", res.Entries[0].Task.Result)
+}
+
+// Fix round 5 (codex P2): a notice that continues in the next block is read
+// from the joined text, so its later children are kept.
+func TestNoticeTask_NoticeContinuingInTheNextBlockIsJoined(t *testing.T) {
+	res := parseStr(t, userBlocks("n1",
+		textBlock("<task-notification>\n<task-id>a1</task-id>\n<summary>Agent \"A\" finished</summary>"),
+		textBlock("<result>done A</result>\n</task-notification>"),
+	), 0)
+	require.Len(t, res.Entries, 1)
+	e := res.Entries[0]
+	assert.Equal(t, "n1", e.ID)
+	require.NotNil(t, e.Task)
+	assert.Equal(t, "a1", e.Task.TaskID)
+	assert.Equal(t, "done A", e.Task.Result)
+}
+
+// The same when the continuation itself starts with a quoted notification.
+func TestNoticeTask_IncompleteNoticeBlockIsNotSplit(t *testing.T) {
+	res := parseStr(t, userBlocks("n1",
+		textBlock("<task-notification>\n<task-id>a1</task-id>\n<result>"),
+		textBlock(siblingB+"\n</result>\n<status>completed</status>\n</task-notification>"),
+	), 0)
+	require.Len(t, res.Entries, 1)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, "a1", res.Entries[0].Task.TaskID)
+	assert.Equal(t, "completed", res.Entries[0].Task.Status)
+}
+
+// Fix round 5 (codex P2): one notice beside an image is the notice alone — no
+// image marker and no close tag in the event's text.
+func TestNotice_SingleNoticeBesideAnImage(t *testing.T) {
+	mate := `<teammate-message teammate_id="rev" summary="Review done">` + "\nLooks good.\n</teammate-message>"
+	res := parseStr(t, join(
+		userBlocks("m1", textBlock(mate), map[string]any{"type": "image"}),
+		userBlocks("t1", textBlock(siblingA), map[string]any{"type": "image"}),
+	), 0)
+	require.Len(t, res.Entries, 2)
+	assert.Equal(t, KindEvent, res.Entries[0].Kind)
+	assert.Equal(t, "Review done", res.Entries[0].Title)
+	assert.Equal(t, "Looks good.", res.Entries[0].Text)
+	require.NotNil(t, res.Entries[1].Task)
+	assert.Equal(t, "done A", res.Entries[1].Task.Result)
+	assert.NotContains(t, res.Entries[1].Text, "[image]")
+}
+
+// An ordinary message of several blocks with an image keeps its marker.
+func TestParse_MultiBlockOwnerTextWithImage(t *testing.T) {
+	res := parseStr(t, userBlocks("u1", textBlock("first"), textBlock("second"), map[string]any{"type": "image"}), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Equal(t, KindOwner, res.Entries[0].Kind)
+	assert.Equal(t, "first\nsecond\n[image]", res.Entries[0].Text)
+}
+
+// Fix round 5 (codex P2): an ordinary message of several blocks is joined
+// once. Relative: its entry costs less than two joins more than a one-block
+// message of the same text.
+func TestUserEntries_OrdinaryBlocksJoinedOnce(t *testing.T) {
+	part := strings.Repeat("ordinary words ", 4000)
+	var one, many record
+	one.Message.Content, _ = json.Marshal([]map[string]any{textBlock(part + "\n" + part)})
+	many.Message.Content, _ = json.Marshal([]map[string]any{textBlock(part), textBlock(part)})
+	size := func(rec record) float64 {
+		var m0, m1 runtime.MemStats
+		runtime.ReadMemStats(&m0)
+		for range 20 {
+			if len(userEntries(rec)) != 1 {
+				t.Fatal("one owner entry")
+			}
+		}
+		runtime.ReadMemStats(&m1)
+		return float64(m1.TotalAlloc-m0.TotalAlloc) / 20
+	}
+	joined := float64(2*len(part) + 1)
+	assert.Less(t, size(many)-size(one), 1.5*joined, "one join of %v bytes, not three", joined)
 }

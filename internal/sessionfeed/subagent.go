@@ -36,12 +36,9 @@ func (st *state) marker(b block, at time.Time) {
 	})
 }
 
-// recordParentReport stores the tool_result text of an Agent call on its marker.
-func (st *state) recordParentReport(rec record) {
-	var blocks []block
-	if json.Unmarshal(rec.Message.Content, &blocks) != nil {
-		return
-	}
+// recordParentReport stores the tool_result text of an Agent call, among a user
+// record's content blocks, on its marker.
+func (st *state) recordParentReport(blocks []block) {
 	for _, b := range blocks {
 		i, ok := st.markers[b.ToolUseID]
 		if b.Type != "tool_result" || !ok {
