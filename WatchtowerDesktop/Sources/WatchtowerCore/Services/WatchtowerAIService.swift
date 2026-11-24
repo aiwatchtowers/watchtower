@@ -522,7 +522,7 @@ final class WatchtowerProcessHandle: @unchecked Sendable {
             self.process = process
             return terminated
         }
-        if stoppedMeanwhile { process.terminate() }
+        if stoppedMeanwhile, process.isRunning { process.terminate() }
         return true
     }
 

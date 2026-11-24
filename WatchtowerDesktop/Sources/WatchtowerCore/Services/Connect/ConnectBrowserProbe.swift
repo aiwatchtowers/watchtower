@@ -95,7 +95,7 @@ package struct ConnectBrowserProbe: Sendable {
         return await withTaskGroup(of: Void.self) { group in
             group.addTask {
                 do { try await sleep(timeout) } catch { return }  // answered, ended or cancelled first
-                print("[connect-probe] no answer within \(timeout): the run goes on in words")
+                print("[connect-probe] no answer within \(timeout): the browser check is unknown")
                 answer.yield(.unknown)
             }
             group.addTask {
