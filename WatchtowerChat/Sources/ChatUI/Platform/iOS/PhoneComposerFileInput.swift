@@ -39,6 +39,7 @@ enum ComposerPlatform {
 /// The paperclip: opens the shell's attachment menu.
 struct ComposerAttachButton: View {
     let help: String
+    var anchor: ComposerMenuAnchor?
     let action: () -> Void
 
     var body: some View {
@@ -51,8 +52,13 @@ struct ComposerAttachButton: View {
 /// The phone's paperclip opens the shell's own menu (`onAttachMenu`); no paste item.
 enum ComposerAttachMenu {
     @MainActor
-    static func show(paste: @escaping () -> Void, attach: @escaping () -> Void) { attach() }
+    static func show(anchor: ComposerMenuAnchor, paste: @escaping () -> Void, attach: @escaping () -> Void) {
+        attach()
+    }
 }
+
+/// The Mac's menu anchor; the phone has no paperclip menu.
+final class ComposerMenuAnchor {}
 
 /// The phone picks files in its own menu (`onAttach`); there is no open panel.
 enum ComposerFilePanel {

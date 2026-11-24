@@ -222,10 +222,17 @@ public struct ExpandingTextInput: NSViewRepresentable {
             context.coordinator.focusRequest = focusRequest
             if focusRequest != nil { Self.focus(textView) }
         }
-        if pasteRequest != context.coordinator.pasteRequest {
-            context.coordinator.pasteRequest = pasteRequest
-            if pasteRequest != nil { Self.paste(into: textView) }
-        }
+        Self.takePasteRequest(pasteRequest, seen: &context.coordinator.pasteRequest, into: textView)
+    }
+
+    /// A `pasteRequest` other than the last one `seen` pastes into `textView` on the next turn; true when it does.
+    @discardableResult
+    static func takePasteRequest(_ request: UUID?, seen: inout UUID?, into textView: NSTextView) -> Bool {
+        guard request != seen else { return false }
+        seen = request
+        guard request != nil else { return false }
+        paste(into: textView)
+        return true
     }
 
     /// Next run-loop turn (out of the view update the request came in): first responder, then the paste.

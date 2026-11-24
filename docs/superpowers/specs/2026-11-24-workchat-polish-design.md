@@ -166,9 +166,16 @@ menu path and found no failure in the field itself:
   `validateUserInterfaceItem` with a private pasteboard, not `paste(nil)`. xctest's app is
   never active, so its window never becomes key and `to: nil` finds no responder: the
   action goes to the window's first responder.
-- Paperclip menu: "Paste screenshot" / "Paste N files" / "Paste text" from
-  `PasteClassifier` on the menu's open (a user action — no TCC concern), disabled when
-  the classifier says nothing usable.
+- Paperclip menu: "Paste screenshot" / "Paste N files" / "Paste text" (and "Paste PDF"),
+  disabled ("Paste from clipboard") when nothing usable is advertised. Opening the menu reads
+  only the clipboard's advertised types and the count of items carrying a file URL
+  (`PasteboardAdvert`), never its content: macOS's paste-privacy prompt ties a content read
+  to a paste command, not to a click. The content is read only by the Paste action, through
+  the field's `paste(_:)`. From types alone, text beside an image is guessed as the image
+  only when a URL type is there too ("Copy Image"); the paste itself classifies for real.
+  The menu opens under the paperclip, not at the mouse.
+- Validation also enables Paste for any advertised type `PasteClassifier.isImageType`
+  accepts (GIF, WebP…), so ⌘V and the menu agree.
 
 ### §5 Stuck line — root cause
 

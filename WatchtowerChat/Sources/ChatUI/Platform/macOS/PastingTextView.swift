@@ -55,12 +55,16 @@ public final class PastingTextView: NSTextView {
     }
 
     /// Paste is enabled for an editable field whose `pasteboard` holds a readable type — the stock rule, read
-    /// from the field's own pasteboard (a test's private one) and with `attachableTypes` when it takes them.
+    /// from the field's own pasteboard (a test's private one) — or, when it takes attachments, any image type
+    /// `PasteClassifier.isImageType` accepts (GIF, WebP, BMP… beyond `attachableTypes`). Types only: the content
+    /// is read by `paste(_:)`.
     override public func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         guard item.action == #selector(paste(_:)), onPasteData != nil || pasteboard !== NSPasteboard.general else {
             return super.validateUserInterfaceItem(item)
         }
-        return isEditable && pasteboard.availableType(from: readablePasteboardTypes) != nil
+        guard isEditable else { return false }
+        if pasteboard.availableType(from: readablePasteboardTypes) != nil { return true }
+        return onPasteData != nil && (pasteboard.types ?? []).contains { PasteClassifier.isImageType($0.rawValue) }
     }
 
     override public func paste(_ sender: Any?) {

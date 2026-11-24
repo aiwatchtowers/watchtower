@@ -402,9 +402,60 @@ final class PastingTextViewTests: XCTestCase {
 
         XCTAssertTrue(menuPaste(view))
 
-        XCTAssertEqual(attachedFiles.flatMap { $0 }.map { $0.resolvingSymlinksInPath().path },
-                       [file.resolvingSymlinksInPath().path])
+        let attached = attachedFiles.flatMap { $0 }
+        XCTAssertEqual(attached.count, 1)
+        XCTAssertFalse(attached.contains { $0.path.hasPrefix("/.file/") }, "the reference is resolved to a path")
+        XCTAssertEqual(attached.first?.lastPathComponent, file.lastPathComponent)
         XCTAssertEqual(view.string, "", "the file name is not typed in")
+    }
+
+    /// A plain file URL beside the file's name and its icon as TIFF (another shape a Finder copy takes): the file.
+    func testFinderFileWithNameAndIconPastesTheFile() throws {
+        let file = URL(fileURLWithPath: "/tmp/report.pdf")
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: try onePixelPNG()))
+        let item = NSPasteboardItem()
+        item.setString(file.absoluteString, forType: .fileURL)
+        item.setString(file.lastPathComponent, forType: .string)
+        item.setData(try XCTUnwrap(rep.tiffRepresentation), forType: .tiff)
+        pasteboard.writeObjects([item])
+        let view = makeInlineView(label: "[Image #1]")
+        _ = inKeyWindow(view)
+
+        XCTAssertTrue(menuPaste(view))
+
+        XCTAssertEqual(attachedFiles, [[file]])
+        XCTAssertTrue(inlinePastes.isEmpty, "the icon is not pasted as an image")
+        XCTAssertEqual(view.string, "")
+    }
+
+    /// GIF or WebP alone: types `PasteClassifier.isImageType` accepts beyond the readable list.
+    func testGIFAndWebPOnlyPasteIsEnabled() {
+        let view = makeView()
+        for type in ["com.compuserve.gif", "org.webmproject.webp"] {
+            pasteboard.clearContents()
+            pasteboard.setData(Data([0x47, 0x49, 0x46]), forType: NSPasteboard.PasteboardType(type))
+            XCTAssertTrue(view.validateUserInterfaceItem(pasteItem()), type)
+            XCTAssertTrue(view.validateMenuItem(pasteItem()), type)
+        }
+        let unwired = makeView(wired: false)
+        XCTAssertFalse(unwired.validateUserInterfaceItem(pasteItem()), "a field without attachments takes no GIF")
+    }
+
+    /// The paperclip's "Paste …" item: a new `pasteRequest` pastes into the field, once.
+    func testPasteRequestPastesOnce() async {
+        pasteboard.setString("hello", forType: .string)
+        let view = makeView()
+        _ = inKeyWindow(view)
+        var seen: UUID?
+        let request = UUID()
+
+        XCTAssertTrue(ExpandingTextInput.takePasteRequest(request, seen: &seen, into: view))
+        XCTAssertFalse(ExpandingTextInput.takePasteRequest(request, seen: &seen, into: view), "the same request again")
+        XCTAssertFalse(ExpandingTextInput.takePasteRequest(nil, seen: &seen, into: view))
+
+        let pasted = await eventually { view.string == "hello" }
+        XCTAssertTrue(pasted)
+        XCTAssertTrue(view.window?.firstResponder === view)
     }
 
     /// A file URL alone, with no name beside it.
@@ -416,7 +467,9 @@ final class PastingTextViewTests: XCTestCase {
         XCTAssertTrue(view.validateUserInterfaceItem(pasteItem()))
     }
 
-    func testNoPasteDataKeepsStockValidation() throws {
+    /// Without `onPasteData` the field reads only the stock plain-text types (checked on its private pasteboard:
+    /// the app's `.general` branch goes to `super`, which a test cannot drive without the owner's clipboard).
+    func testUnwiredViewDoesNotEnableImagePaste() throws {
         pasteboard.setData(try onePixelPNG(), forType: .png)
         let view = makeView(wired: false)
         XCTAssertFalse(view.validateUserInterfaceItem(pasteItem()))

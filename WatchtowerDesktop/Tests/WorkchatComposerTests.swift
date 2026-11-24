@@ -51,6 +51,7 @@ final class WorkchatComposerTests: XCTestCase {
         XCTAssertEqual(ComposerPasteMenu.title(for: .attachFiles([URL(fileURLWithPath: "/tmp/a")]), fileCount: 1),
                        "Paste 1 file")
         XCTAssertEqual(ComposerPasteMenu.title(for: .attachFiles([]), fileCount: 3), "Paste 3 files")
+        XCTAssertEqual(ComposerPasteMenu.title(for: .attachFiles([]), fileCount: 0), "Paste files")
         XCTAssertEqual(ComposerPasteMenu.title(for: .insertText(offerAsFile: false), fileCount: 0), "Paste text")
         XCTAssertEqual(ComposerPasteMenu.title(for: .insertText(offerAsFile: true), fileCount: 0), "Paste text")
         XCTAssertEqual(ComposerPasteMenu.title(for: .attachPDF, fileCount: 0), "Paste PDF")
@@ -59,23 +60,75 @@ final class WorkchatComposerTests: XCTestCase {
         XCTAssertEqual(ComposerPasteMenu.attachTitle, "Attach files…")
     }
 
-    /// The clipboard read when the menu opens, on private pasteboards (never the owner's clipboard).
-    func testPasteMenuActionFromPasteboard() throws {
+    /// The clipboard as the menu sees it: types and the file-item count, each access counted.
+    private final class AdvertSpy: PasteboardAdvert {
+        let types: [String]
+        let files: Int
+        private(set) var reads = 0
+
+        init(_ types: [String], files: Int = 0) {
+            self.types = types
+            self.files = files
+        }
+
+        var advertisedTypes: [String] {
+            reads += 1
+            return types
+        }
+
+        var fileItemCount: Int {
+            reads += 1
+            return files
+        }
+    }
+
+    /// The paste item's title comes from the advertised types only (`PasteboardAdvert` has no content accessor).
+    func testPasteMenuActionFromAdvertisedTypes() {
+        XCTAssertNil(ComposerPasteMenu.action(advertised: AdvertSpy([])), "empty: nothing usable")
+        XCTAssertEqual(ComposerPasteMenu.action(advertised: AdvertSpy(["public.utf8-plain-text"])),
+                       .insertText(offerAsFile: false))
+        XCTAssertEqual(ComposerPasteMenu.action(advertised: AdvertSpy(["public.png"])), .attachImage)
+        XCTAssertEqual(ComposerPasteMenu.action(advertised: AdvertSpy(["com.compuserve.gif"])), .attachImage)
+        XCTAssertEqual(ComposerPasteMenu.action(advertised: AdvertSpy(["com.adobe.pdf"])), .attachPDF)
+        XCTAssertEqual(ComposerPasteMenu.action(advertised: AdvertSpy(["public.utf8-plain-text", "public.png"])),
+                       .insertText(offerAsFile: false), "text beside an image: the text")
+        XCTAssertEqual(
+            ComposerPasteMenu.action(advertised: AdvertSpy(["public.utf8-plain-text", "public.url", "public.png"])),
+            .attachImage, "a link beside an image (Copy Image): the image"
+        )
+        let files = AdvertSpy(["public.file-url", "public.utf8-plain-text"], files: 2)
+        XCTAssertEqual(ComposerPasteMenu.action(advertised: files), .attachFiles([]))
+        XCTAssertNil(ComposerPasteMenu.action(advertised: AdvertSpy(["com.example.private"])))
+    }
+
+    func testAttachMenuItemsAndActions() {
+        var pastes = 0
+        var attaches = 0
+        let spy = AdvertSpy(["public.file-url", "public.utf8-plain-text"], files: 2)
+        let control = ComposerAttachMenu(advertised: spy, paste: { pastes += 1 }, attach: { attaches += 1 })
+        XCTAssertGreaterThan(spy.reads, 0)
+        XCTAssertEqual(control.menu.items.map(\.title), ["Paste 2 files", "Attach files…"])
+        XCTAssertEqual(control.menu.items.map(\.isEnabled), [true, true])
+        XCTAssertEqual(control.menu.items.first?.keyEquivalent, "v")
+
+        control.menu.performActionForItem(at: 0)
+        XCTAssertEqual(pastes, 1)
+        control.menu.performActionForItem(at: 1)
+        XCTAssertEqual(attaches, 1)
+
+        let empty = ComposerAttachMenu(advertised: AdvertSpy([]), paste: { pastes += 1 }, attach: {})
+        XCTAssertEqual(empty.menu.items.first?.title, "Paste from clipboard")
+        XCTAssertEqual(empty.menu.items.first?.isEnabled, false)
+    }
+
+    /// The real pasteboard's advert, on a private pasteboard (never the owner's clipboard).
+    func testPasteboardAdvertCountsFileItems() {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("wt-test-\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
         pasteboard.clearContents()
-        XCTAssertNil(ComposerPasteMenu.action(in: pasteboard), "empty: nothing usable")
-        pasteboard.setString("", forType: .string)
-        XCTAssertNil(ComposerPasteMenu.action(in: pasteboard), "an empty string pastes nothing")
-        pasteboard.clearContents()
-        pasteboard.setString("hello", forType: .string)
-        XCTAssertEqual(ComposerPasteMenu.action(in: pasteboard), .insertText(offerAsFile: false))
-        pasteboard.clearContents()
-        pasteboard.setData(Data([0x89, 0x50, 0x4E, 0x47]), forType: .png)
-        XCTAssertEqual(ComposerPasteMenu.action(in: pasteboard), .attachImage)
-        pasteboard.clearContents()
-        let urls = [URL(fileURLWithPath: "/tmp/a.png"), URL(fileURLWithPath: "/tmp/b.md")]
-        pasteboard.writeObjects(urls as [NSURL])
-        XCTAssertEqual(ComposerPasteMenu.action(in: pasteboard), .attachFiles(urls))
+        XCTAssertEqual(pasteboard.fileItemCount, 0)
+        pasteboard.writeObjects([URL(fileURLWithPath: "/tmp/a.png"), URL(fileURLWithPath: "/tmp/b.md")] as [NSURL])
+        XCTAssertEqual(pasteboard.fileItemCount, 2)
+        XCTAssertTrue(pasteboard.advertisedTypes.contains("public.file-url"))
     }
 }

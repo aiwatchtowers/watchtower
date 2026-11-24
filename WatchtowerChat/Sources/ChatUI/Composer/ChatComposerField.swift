@@ -109,6 +109,8 @@ public struct ChatComposerField: View {
     @State private var refusedNotice: String?
     /// Set by the paperclip's "Paste …" item: the field pastes the clipboard.
     @State private var pasteRequest: UUID?
+    /// The paperclip's view, where its menu opens.
+    @State private var attachAnchor = ComposerMenuAnchor()
 
     public init(
         text: Binding<String>,
@@ -199,13 +201,13 @@ public struct ChatComposerField: View {
     private var row: some View {
         HStack(alignment: .bottom, spacing: ComposerMetrics.rowSpacing) {
             if let onAttachFiles {
-                ComposerAttachButton(help: attachHelp) {
+                ComposerAttachButton(help: attachHelp, anchor: config.pasteMenu ? attachAnchor : nil) {
                     let pick = {
                         ComposerFilePanel.pick(attach: config.attachUnavailableReason,
                                                pdf: config.pdfUnavailableReason, onAttachFiles)
                     }
                     if config.pasteMenu {
-                        ComposerAttachMenu.show(paste: { pasteRequest = UUID() }, attach: pick)
+                        ComposerAttachMenu.show(anchor: attachAnchor, paste: { pasteRequest = UUID() }, attach: pick)
                     } else {
                         pick()
                     }
