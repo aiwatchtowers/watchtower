@@ -302,9 +302,17 @@ type pairListener struct {
 	queue   chan ControlAnswer // guarded by supervisor.pairMu for sends and close
 	mu      sync.Mutex
 	codes   map[string]string
-	// qrSeen: the stream has received a qr. Until then it is shown no SAS
-	// and records none: a phone pairing under an earlier code is not its.
-	qrSeen bool
+	// issued: this stream's own pair request issued its code (supervisor.pair).
+	// Until then it is shown no SAS and records none: a phone pairing under
+	// another stream's or an earlier code is not its.
+	issued bool
+}
+
+// markIssued records that this stream's own code was issued.
+func (p *pairListener) markIssued() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.issued = true
 }
 
 func (p *pairListener) code(device string) (string, bool) {
@@ -320,8 +328,8 @@ const pairQueue = 64
 
 // broadcast hands a pairing event to every pairing stream without waiting
 // on any of them: a stream whose queue is full is dropped, the others get
-// every event — but a SAS only once the stream received a qr (qrSeen), and
-// a ShownOnly event only where that phone's SAS was shown.
+// every event — but a SAS only once the stream's own code was issued
+// (issued), and a ShownOnly event only where that phone's SAS was shown.
 func (s *supervisor) broadcast(ev link.PairEvent) {
 	a := ControlAnswer{Event: ev.Kind, OK: true, URL: ev.URL, DeviceID: ev.DeviceID, Name: ev.Name, Code: ev.Code, Reason: ev.Reason}
 	if !ev.ExpiresAt.IsZero() {
@@ -332,17 +340,11 @@ func (s *supervisor) broadcast(ev link.PairEvent) {
 	defer s.pairMu.Unlock()
 	var to func(*pairListener) bool
 	switch {
-	case ev.Kind == link.EventQR:
-		for p := range s.pairs {
-			p.mu.Lock()
-			p.qrSeen = true
-			p.mu.Unlock()
-		}
 	case ev.Kind == link.EventSAS:
 		shownTo := map[*pairListener]bool{}
 		for p := range s.pairs {
 			p.mu.Lock()
-			if p.qrSeen {
+			if p.issued {
 				p.codes[strings.ToUpper(ev.DeviceID)] = ev.Code
 				shownTo[p] = true
 			}
@@ -792,8 +794,19 @@ func (s *supervisor) withHubOr(fn func(*hubRuntime) ControlAnswer, off func() Co
 // past the bridge's start) and the hub's relay is connected, it issues a
 // relay code instead (iCloud is not needed for linking,
 // hubRuntime.relayCodeFallback); otherwise the refusal stands. Any other hub
-// issues a relay code under hubMu (hubRuntime.handle).
+// issues a relay code under hubMu (hubRuntime.handle). A code issued marks
+// the asking stream (pairListener.issued): from then on it is shown SAS.
 func (s *supervisor) pair(r ControlRequest, pl *pairListener) ControlAnswer {
+	a := s.issueCode(r, pl)
+	if a.OK && pl != nil {
+		pl.markIssued()
+	}
+	return a
+}
+
+// issueCode is pair's issue: the CloudKit code, its relay-code fallback, or
+// a relay code.
+func (s *supervisor) issueCode(r ControlRequest, pl *pairListener) ControlAnswer {
 	var (
 		h      *hubRuntime
 		shares transport.Shares

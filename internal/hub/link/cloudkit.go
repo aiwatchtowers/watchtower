@@ -420,6 +420,13 @@ func (c *Center) openPublicLink(ctx context.Context, s transport.Shares) (data, 
 	} else if !written {
 		return fail("set_public_link", errSuperseded)
 	}
+	// Marked again once open: a close's sweep that took its snapshot after
+	// the first mark may have closed the link and cleared the mark while this
+	// open landed behind it. The new epoch stops a clear still to come; a
+	// clear already made is undone, so the participants are swept later.
+	if err := c.st.WithTx(ctx, markSweepTx); err != nil {
+		log.Printf("hub link: share sweep mark not set again (%s)", shareErrorClass(err))
+	}
 	c.ck.mu.Lock()
 	c.ck.sharing, c.ck.linkOpened = SharingAvailable, true
 	c.ck.mu.Unlock()
@@ -682,16 +689,22 @@ func (c *Center) SkipStartClose() {
 // public URLs do not outlive the hub; the participants' sweep is left to the
 // next start's close (the sweep mark stays). A CloudKit code a relay code
 // replaced counts as on screen until a close of its link lands
-// (closeAtStop), its retries spent or not — when an open of the link was
-// tried and the writer has not settled on closed since (linkOpenTried, not
-// the sweep mark, which a sweep can clear behind a reopen). Nothing, and no
-// share call, otherwise: a failed close of a used code is left to the next
-// start.
+// (closeAtStop), its retries spent or not — when the link may be open: an
+// open of this run that the writer has not settled on closed since
+// (linkOpenTried), or the durable sweep mark (a link an earlier run left
+// open). Nothing, and no share call, otherwise: a failed close of a used
+// code is left to the next start.
 func (c *Center) CloseOnStop(ctx context.Context, s transport.Shares) error {
 	c.ck.mu.Lock()
 	open := c.ck.open != nil
-	replaced := c.ck.closeAtStop && c.ck.linkOpenTried
+	replaced, openTried := c.ck.closeAtStop, c.ck.linkOpenTried
 	c.ck.mu.Unlock()
+	if replaced && !openTried {
+		// A link an earlier run left open (its start's close failed) has no
+		// open of this run behind it: the durable sweep mark says so.
+		pending, err := c.sweepPending()
+		replaced = err != nil || pending
+	}
 	switch {
 	case open:
 		return c.CloseLink(ctx, s, CloseSheetClosed)

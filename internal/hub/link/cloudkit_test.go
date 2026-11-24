@@ -1731,6 +1731,58 @@ func TestTheStopClosesAReplacedLinkWhoseSweepMarkWasCleared(t *testing.T) {
 	}
 }
 
+// A public link an earlier run left open (its start's close failed: the
+// sweep mark stays) is closed at the stop once a relay code replaced this
+// run's code, though this run never opened it (a private-only code).
+func TestTheStopClosesAnInheritedLinkBehindAReplacedCode(t *testing.T) {
+	r := newCKRig(t)
+	if err := r.st.SetMeta(MetaShareSweepPending, "1"); err != nil {
+		t.Fatal(err)
+	}
+	r.s.mu.Lock()
+	r.s.open = true // left open by the earlier run
+	r.s.mu.Unlock()
+	r.s.setFailing("ensure_shares")
+	r.issueCK() // private-only: no open tried
+	r.s.setFailing()
+	r.issue()
+	if err := r.c.CloseOnStop(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() {
+		t.Error("the inherited link outlived the stop")
+	}
+}
+
+// A close's sweep that clears the mark while an issue's open lands behind
+// it (the issue marked, the sweep snapshotted, closed and cleared) leaves
+// the mark set again: a participant who joined after the sweep looked is
+// still swept after the replaced code's grace.
+func TestAReopenBehindASweepKeepsTheSweepMark(t *testing.T) {
+	r := newCKRig(t)
+	r.s.once("set_public_link", func() {
+		// The concurrent sweep's clear, landing during the issue's open.
+		if err := r.st.SetMeta(MetaShareSweepPending, "0"); err != nil {
+			t.Error(err)
+		}
+	})
+	r.issueCK()
+	if m := r.sweepMark(); m != "1" {
+		t.Fatalf("mark %q after the reopen, want 1", m)
+	}
+	r.s.join("_late")
+	r.issue()
+	r.advance(DefaultSweep.AnswerGrace)
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	for _, z := range ckZones {
+		if got := r.s.names(z); len(got) != 0 {
+			t.Errorf("%s: %v not swept", z, got)
+		}
+	}
+}
+
 // A replaced CloudKit code whose shares never opened (no sweep mark: the
 // open was never tried) makes the stop no share call.
 func TestTheStopMakesNoShareCallForAReplacedCodeThatNeverOpened(t *testing.T) {

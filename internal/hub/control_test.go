@@ -123,29 +123,39 @@ func TestDesktopWatchHearsPairStepsWithoutCodes(t *testing.T) {
 	}
 }
 
-// A pairing stream that has not received its first qr is shown no SAS and
-// records none: an earlier code's phone pairing while it waits for its own
-// code is not its phone, so that phone's shown-only refusal never reaches it
-// (a stream bound by that SAS would end at it). After its qr it is shown the
-// next SAS and that phone's refusal.
-func TestAStreamBeforeItsQRIsShownNoSAS(t *testing.T) {
-	early := &pairListener{queue: make(chan ControlAnswer, 8), codes: map[string]string{}}
-	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{early: true}, watches: map[*pairListener]bool{}}
+// Two pairing streams at once: A's code is issued, B's not yet. A's qr and
+// its phone's SAS reach B, but B records no SAS and is shown none before its
+// own code is issued, so that phone's shown-only refusal never reaches B (a
+// stream bound by that SAS would end at it). Once B's own code is issued it
+// is shown the next SAS and that phone's refusal.
+func TestAStreamIsShownNoSASBeforeItsOwnCode(t *testing.T) {
+	a := &pairListener{queue: make(chan ControlAnswer, 8), codes: map[string]string{}}
+	b := &pairListener{queue: make(chan ControlAnswer, 8), codes: map[string]string{}}
+	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{a: true, b: true}, watches: map[*pairListener]bool{}}
+	a.markIssued() // A's pair answered with its code
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/a"})
 	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "AAAA", Code: "1234"})
 	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedExpiredCode, ShownOnly: true})
-	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/l"})
+	b.markIssued() // B's own code
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/b"})
 	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "BBBB", Code: "5678"})
 	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "BBBB", Reason: wire.RefusedExpiredCode, ShownOnly: true})
-	var got []string
-	for len(early.queue) > 0 {
-		a := <-early.queue
-		got = append(got, a.Event+":"+a.DeviceID)
+	events := func(p *pairListener) []string {
+		var got []string
+		for len(p.queue) > 0 {
+			ev := <-p.queue
+			got = append(got, ev.Event+":"+ev.DeviceID)
+		}
+		return got
 	}
-	if want := []string{"qr:", "sas:BBBB", "refused:BBBB"}; !slices.Equal(got, want) {
-		t.Fatalf("events %v, want %v", got, want)
+	if got, want := events(b), []string{"qr:", "qr:", "sas:BBBB", "refused:BBBB"}; !slices.Equal(got, want) {
+		t.Fatalf("B's events %v, want %v", got, want)
 	}
-	if _, ok := early.code("AAAA"); ok {
-		t.Error("the SAS before the qr was recorded")
+	if _, ok := b.code("AAAA"); ok {
+		t.Error("B recorded A's SAS before its own code")
+	}
+	if got, want := events(a), []string{"qr:", "sas:AAAA", "refused:AAAA", "qr:", "sas:BBBB", "refused:BBBB"}; !slices.Equal(got, want) {
+		t.Fatalf("A's events %v, want %v", got, want)
 	}
 }
 
