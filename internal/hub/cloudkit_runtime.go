@@ -318,22 +318,29 @@ func (h *hubRuntime) removePhone(device string) error {
 	return nil
 }
 
-// afterConfirm follows a confirm that linked device. It asks the switcher
-// for its relay-link check at once (a phone that linked over a Relay pairing
-// slot and pays moves a CloudKit hub to the relay now, not at the check's
-// next NoPayerPoll), and closes the CloudKit link in the background
-// (CloseUsed): the public link closes now, the participants after the
-// answer grace. A failure keeps the sweep pending (retried by SweepShares,
-// and by the next start's restart close).
-func (h *hubRuntime) afterConfirm(device string) {
-	if _, linked, err := h.st.Device(device); err != nil || !linked {
-		return
-	}
-	if h.sw != nil {
+// afterConfirm follows the owner's answer for device; linkedNow is whether
+// this answer linked it (a refusal, or an expired or used code, did not).
+// A link asks the switcher for its relay-link check at once (a phone that
+// linked over a Relay pairing slot and pays moves a CloudKit hub to the
+// relay now, not at the check's next NoPayerPoll). While device is linked,
+// the CloudKit link closes in the background (CloseUsed): the public link
+// closes now, the participants after the answer grace. A failure keeps the
+// sweep pending (retried by SweepShares, and by the next start's restart
+// close).
+func (h *hubRuntime) afterConfirm(device string, linkedNow bool) {
+	if linkedNow && h.sw != nil {
 		h.sw.RelayLinkSoon()
 	}
 	s, ok := h.shares()
 	if !ok {
+		return
+	}
+	_, linked, err := h.st.Device(device)
+	if err != nil {
+		log.Printf("hub: reading the phone after a confirm failed (%s): the link stays open", errClass(err))
+		return
+	}
+	if !linked {
 		return
 	}
 	h.inBackground(func(ctx context.Context) {

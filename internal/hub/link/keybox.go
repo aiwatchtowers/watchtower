@@ -25,6 +25,14 @@ import (
 // refusal and no keys. ErrNoRequest when nothing waits (it was refused,
 // unlinked or swept first).
 func (c *Center) Confirm(device, code string, ok bool) error {
+	_, err := c.ConfirmLinked(device, code, ok)
+	return err
+}
+
+// ConfirmLinked is Confirm that also reports whether this answer linked the
+// phone (a refusal, an expired or used code and a repeat of a confirm that
+// already linked it report false).
+func (c *Center) ConfirmLinked(device, code string, ok bool) (linked bool, err error) {
 	c.mu.Lock()
 	defer c.unlock()
 	now := c.now()
@@ -32,10 +40,9 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 		request pendingDevice
 		reason  string
 		others  []pendingDevice
-		linked  bool
 		asks    bool
 	)
-	err := c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+	err = c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
 		p, found, err := pendingTx(tx, device)
 		if err != nil {
 			return err
@@ -91,14 +98,14 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 		return nil
 	})
 	if errors.Is(err, ErrNoRequest) {
-		return err
+		return false, err
 	}
 	if errors.Is(err, ErrCodeChanged) {
 		log.Printf("hub link: link request of %s changed before Link: kept for a fresh decision", request.deviceID)
-		return err
+		return false, err
 	}
 	if err != nil {
-		return fmt.Errorf("link: confirming a request: %w", err)
+		return false, fmt.Errorf("link: confirming a request: %w", err)
 	}
 	switch {
 	case linked:
@@ -116,7 +123,7 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 		log.Printf("hub link: link request of %s refused (%s)", request.deviceID, reason)
 		c.refusedEvent(request, reason)
 	}
-	return nil
+	return linked, nil
 }
 
 // linkPending links p in tx (the Swift linkDevice + the key columns): the

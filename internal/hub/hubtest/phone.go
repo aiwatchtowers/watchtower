@@ -202,6 +202,17 @@ func (p *Phone) Relink() error {
 	return nil
 }
 
+// Rescan is the phone scanning l, a new code of the same hub (a re-link with
+// the same device keys): its next hello carries l's nonce.
+func (p *Phone) Rescan(l wire.LinkPayload) error {
+	nonce, err := base64.RawURLEncoding.DecodeString(l.Nonce)
+	if err != nil {
+		return fmt.Errorf("hubtest: link nonce: %w", err)
+	}
+	p.nonce = nonce
+	return nil
+}
+
 // ID is the phone's device id.
 func (p *Phone) ID() secure.ID { return p.id }
 

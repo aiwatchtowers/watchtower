@@ -1,7 +1,7 @@
 package hub
 
 import (
-	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,18 +15,41 @@ import (
 )
 
 // #2191 Task 3: the runtime asks the switcher for its relay-link check on a
-// confirm and when an account read newly lists a linked phone, so a phone
-// that linked a CloudKit Mac over a Relay pairing slot and pays moves the
-// hub to the relay at once, not at the check's next NoPayerPoll.
+// confirm that links and when an account read newly lists a linked phone, so
+// a phone that linked a CloudKit Mac over a Relay pairing slot and pays moves
+// the hub to the relay at once, not at the check's next NoPayerPoll.
+
+// kicked bounds the bubble time from a confirm to the switch it leads to.
+// With holdUpkeep the only other path to the check is the switcher's own
+// cadence (OtherPoll, then NoPayerPoll between reads), so only the confirm's
+// kick meets it.
+const kicked = time.Second
+
+// holdUpkeep keeps the link upkeep's account reads out of the way (its short
+// retry after a link never fires, its backstop is an hour): such a read newly
+// lists a phone and kicks the check through markAdmitted, a second path that
+// would hide a missing confirm kick.
+func holdUpkeep(o *Options) {
+	o.linkEvery = time.Hour
+	o.soonTimer = func(time.Duration) (<-chan time.Time, func()) { return nil, func() {} }
+}
 
 // slotCode asks for a code on c (a CloudKit code, or the relay code a Mac
 // without iCloud falls back to), parses it and makes the phone that scans it
-// (over the relay fake). The bubble's clock moves on a second first: a
-// relay-linked candidate is linked after hub_meta relay_link_since (written
-// at the hub's start, whole seconds), as any code shown to a person is.
+// (over the relay fake).
 func slotCode(t *testing.T, r *deskRig, c *ControlClient) (wire.LinkPayload, *hubtest.Phone) {
 	t.Helper()
-	time.Sleep(time.Second)
+	lp := newCode(t, c)
+	phone, err := hubtest.FromLink(lp, r.fake, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lp, phone
+}
+
+// newCode asks for a code on c and parses it.
+func newCode(t *testing.T, c *ControlClient) wire.LinkPayload {
+	t.Helper()
 	qr := pairStep(t, c, ControlRequest{Op: OpPair}, link.EventQR)[link.EventQR]
 	lp, err := wire.ParseLinkURL(qr.URL)
 	if err != nil {
@@ -35,25 +58,21 @@ func slotCode(t *testing.T, r *deskRig, c *ControlClient) (wire.LinkPayload, *hu
 	if lp.RelayDeviceID == "" {
 		t.Fatalf("the code names no relay: %+v", lp)
 	}
-	phone, err := hubtest.FromLink(lp, r.fake, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return lp, phone
+	return lp
 }
 
-// pairOverSlot links phone through a Relay pairing slot,
-// the way a paying iPhone does with a CloudKit code that offers Relay: its
-// hello (a relay device id, no iCloud user) in pair/slot1, PAIRING_OPENED,
-// the SAS on c's stream, then the owner's confirm. It returns the bubble's
-// time just before the confirm was sent.
-func pairOverSlot(t *testing.T, r *deskRig, c *ControlClient, phone *hubtest.Phone) time.Time {
+// answerOverSlot brings phone's hello to the hub through the Relay pairing
+// slot slot, the way a paying iPhone does with a CloudKit code that offers
+// Relay: the hello (a relay device id, no iCloud user) in pair/<slot>,
+// PAIRING_OPENED, the SAS on c's stream; then the owner's answer, Link when
+// confirm. It returns the bubble's time just before the answer was sent.
+func answerOverSlot(t *testing.T, r *deskRig, c *ControlClient, phone *hubtest.Phone, slot string, confirm bool) time.Time {
 	t.Helper()
-	pair := transport.PairZone("slot1")
+	pair := transport.PairZone(slot)
 	if err := phone.Hello(pair); err != nil {
 		t.Fatal(err)
 	}
-	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: "slot1"}})
+	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: slot}})
 	for {
 		a, err := c.Next()
 		if err != nil {
@@ -65,6 +84,12 @@ func pairOverSlot(t *testing.T, r *deskRig, c *ControlClient, phone *hubtest.Pho
 		if a.Event == link.EventSAS {
 			break
 		}
+	}
+	req := ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: confirm}
+	if !confirm {
+		at := time.Now()
+		pairStep(t, c, req)
+		return at
 	}
 	var awaiting wire.Keybox
 	eventually(t, "the awaiting keybox in the pair zone", func() bool {
@@ -79,36 +104,45 @@ func pairOverSlot(t *testing.T, r *deskRig, c *ControlClient, phone *hubtest.Pho
 		t.Fatal(err)
 	}
 	at := time.Now()
-	pairStep(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}, link.EventLinked)
+	pairStep(t, c, req, link.EventLinked)
 	return at
 }
 
-// payingAccount lists the phone's relay id in the hub's slot, paying.
-func payingAccount(p *hubtest.Phone) *relayv1.AccountState {
-	return &relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: p.RelayDeviceID(), Paying: true}}}
+// pairOverSlot links phone through pair/slot1 (answerOverSlot, Link).
+func pairOverSlot(t *testing.T, r *deskRig, c *ControlClient, phone *hubtest.Phone) time.Time {
+	t.Helper()
+	return answerOverSlot(t, r, c, phone, "slot1", true)
 }
 
-// kicked bounds the bubble time from a confirm to the switch it leads to:
-// far under the switcher's own cadence (OtherPoll), so only a kick meets it.
-const kicked = time.Second
+// account lists the phone's relay id in the hub's slot, paying or not.
+func account(p *hubtest.Phone, paying bool) *relayv1.AccountState {
+	return &relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: p.RelayDeviceID(), Paying: paying}}}
+}
 
-// onRelayBy waits until the hub runs on the relay and checks the switch was
-// made by phone less than within after since: a kick, not the switcher's
-// own cadence, ran the check.
+// onRelayBy waits until the hub runs on the relay, failing once the bubble
+// passes since+within (with the last status) instead of waiting for ever,
+// and checks the switch was made by phone.
 func onRelayBy(t *testing.T, r *deskRig, phone *hubtest.Phone, since time.Time, within time.Duration) Status {
 	t.Helper()
-	var got Status
-	r.waitStatus("running on the relay", func(s Status) bool {
-		got = s
-		return s.State == StateRunning && s.Transport == string(transport.KindRelay)
-	})
-	if took := time.Since(since); took >= within {
-		t.Fatalf("the switch came %v after its cause, want under %v: no kick", took, within)
+	deadline := since.Add(within)
+	for {
+		s, changed := r.rec.lastAndChanged()
+		if s.State == StateRunning && s.Transport == string(transport.KindRelay) {
+			if !strings.EqualFold(s.SwitchedBy, phone.ID().String()) {
+				t.Fatalf("switched_by %q, want the phone %s", s.SwitchedBy, phone.ID())
+			}
+			return s
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			t.Fatalf("not on the relay %v after the cause (no kick): last status %s/%s on %s",
+				within, s.State, s.Reason, s.Transport)
+		}
+		select {
+		case <-changed:
+		case <-time.After(left):
+		}
 	}
-	if !strings.EqualFold(got.SwitchedBy, phone.ID().String()) {
-		t.Fatalf("switched_by %q, want the phone %s", got.SwitchedBy, phone.ID())
-	}
-	return got
 }
 
 // The phone is not in the hub's slot at the confirm: the confirm's check
@@ -132,48 +166,70 @@ func TestRelayPairingOnACloudKitDesktopSwitches(t *testing.T) {
 			t.Fatalf("moved before the phone was listed paying: %+v", s)
 		}
 		at := time.Now()
-		r.fake.SetAccountState(payingAccount(phone))
+		r.fake.SetAccountState(account(phone, true))
 		r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.SlotAdded}})
 		onRelayBy(t, r, phone, at, switcher.OtherPoll)
 	})
 }
 
 // The account already lists the phone paying when the owner confirms: the
-// confirm alone (no SLOT_ADDED) runs the check.
+// confirm alone (no SLOT_ADDED, the link upkeep held) runs the check.
 func TestRelayPairingKicksOnTheConfirm(t *testing.T) {
 	bubble(t, func(t *testing.T) {
-		r, _, c := startPairDesk(t, transport.KindCloudKit)
+		r, _, c := startPairDesk(t, transport.KindCloudKit, holdUpkeep)
 		_, phone := slotCode(t, r, c)
-		r.fake.SetAccountState(payingAccount(phone))
+		r.fake.SetAccountState(account(phone, true))
 		onRelayBy(t, r, phone, pairOverSlot(t, r, c, phone), kicked)
+	})
+}
+
+// A confirm that links nothing kicks nothing: the owner declines a re-link
+// of a phone linked over a slot (its row is there, linked) after its
+// account started paying. The check already read it not paying, so with no
+// kick it does not read again before NoPayerPoll and the hub stays on
+// CloudKit.
+func TestRelayPairingDeclinedRelinkDoesNotKick(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, _, c := startPairDesk(t, transport.KindCloudKit, holdUpkeep)
+		_, phone := slotCode(t, r, c)
+		r.fake.SetAccountState(account(phone, false))
+		pairOverSlot(t, r, c, phone)
+		r.cycles(1) // the confirm's check read it not paying
+		r.fake.SetAccountState(account(phone, true))
+		if err := phone.Rescan(newCode(t, c)); err != nil {
+			t.Fatal(err)
+		}
+		answerOverSlot(t, r, c, phone, "slot2", false)
+		time.Sleep(10 * kicked)
+		if s := r.rec.last(); s.Transport != string(transport.KindCloudKit) {
+			t.Fatalf("a declined re-link moved the hub: %s/%s on %s", s.State, s.Reason, s.Transport)
+		}
 	})
 }
 
 // F7 at runtime (Review Focus): iCloud is gone before the code is asked for,
 // so the Mac shows a relay code; the phone links over the slot, and the hub
 // moves to the relay with its CloudKit side held: the status leaves
-// paused/no_icloud and the publisher writes the relay data zone.
+// paused/no_icloud and the publisher writes its heartbeat into the relay
+// data zone.
 func TestRelayPairingOnADesktopWithoutICloudSwitches(t *testing.T) {
 	bubble(t, func(t *testing.T) {
-		r, ck, c := startPairDesk(t, transport.KindCloudKit)
+		r, ck, c := startPairDesk(t, transport.KindCloudKit, holdUpkeep)
 		ck.acct.Store(transport.AccountNoAccount)
+		r.cycles(1)
 		r.waitState(StatePaused, ReasonNoICloud)
 		lp, phone := slotCode(t, r, c)
 		if lp.Transport != wire.TransportRelay {
 			t.Fatalf("want the relay code fallback, got %q", lp.Transport)
 		}
-		r.fake.SetAccountState(payingAccount(phone))
+		r.fake.SetAccountState(account(phone, true))
 		s := onRelayBy(t, r, phone, pairOverSlot(t, r, c, phone), kicked)
 		if s.Reason != "" {
 			t.Fatalf("still %s/%s on the relay", s.State, s.Reason)
 		}
 		zone := transport.DataZone(s.RelayDeviceID)
-		eventually(t, "a record in the relay data zone", func() bool {
-			b, err := r.fake.Changes(context.Background(), zone, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return len(b.Changed) > 0
+		eventually(t, "the heartbeat in the relay data zone", func() bool {
+			return slices.Contains(liveRecords(t, r.fake, zone), "heartbeat")
 		})
 	})
 }

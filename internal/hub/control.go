@@ -923,10 +923,11 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		if !ok {
 			return ControlAnswer{Error: ErrClassNoCode}
 		}
-		if err := h.center.Confirm(r.Device, code, r.Confirm); err != nil {
+		linked, err := h.center.ConfirmLinked(r.Device, code, r.Confirm)
+		if err != nil {
 			return ControlAnswer{Error: LinkErrClass(err)}
 		}
-		h.afterConfirm(r.Device)
+		h.afterConfirm(r.Device, linked)
 		if r.Confirm {
 			// The code is used (afterConfirm closes it CloseUsed) or was
 			// expired or used meanwhile: the stream's end closes nothing.
