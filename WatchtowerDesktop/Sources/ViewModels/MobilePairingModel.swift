@@ -99,6 +99,19 @@ final class MobilePairingModel: Identifiable {
     /// decides it); cleared by `start()` and every step after the code.
     private(set) var relayMoveWarning: String?
 
+    /// What one `sas` line asks: the owner's answer names exactly these.
+    struct Question: Equatable {
+        let code: String
+        /// False when the line has no key (an older CLI).
+        let movesToRelay: Bool
+        /// The waiting request's opaque id; empty from an older CLI or hub.
+        let request: String
+    }
+
+    /// The question on screen (only in `.sas`). Link and Refuse capture it
+    /// when the sheet is drawn and hand it back to `confirm`.
+    private(set) var question: Question?
+
     var countdownText: String { Self.expiresText(remainingSeconds) }
     /// The code is on screen: the QR shows, with its countdown.
     var showsCode: Bool {
@@ -117,10 +130,8 @@ final class MobilePairingModel: Identifiable {
     @ObservationIgnored private var countdown: Task<Void, Never>?
     @ObservationIgnored private var expiresAt: Date?
     @ObservationIgnored private var phone = ""
-    /// The shown `sas` line's `moves_to_relay` (false when absent), sent back with the answer.
-    @ObservationIgnored private var shownMovesToRelay = false
-    /// The shown `sas` line's opaque `request` id, sent back with the answer.
-    @ObservationIgnored private var shownRequest: String?
+    /// The `request` of the last answer sent, while its outcome is awaited.
+    @ObservationIgnored private var answeredRequest = ""
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var closed = false
 
@@ -145,8 +156,8 @@ final class MobilePairingModel: Identifiable {
         step = .starting
         qrImage = nil
         phone = ""
-        shownMovesToRelay = false
-        shownRequest = nil
+        question = nil
+        answeredRequest = ""
         relayMoveWarning = nil
         guard let streamer else {
             step = .failed(CLIRunnerError.binaryNotFound.localizedDescription)
@@ -175,42 +186,44 @@ final class MobilePairingModel: Identifiable {
         }
     }
 
-    /// Link (true) or Refuse (false) for the code on screen. The answer names
-    /// that `sas` line's code and `moves_to_relay`: if the phone's request
-    /// changed meanwhile, the hub answers `code_changed`, the CLI prints the
-    /// current `sas` line and waits, and the sheet asks again (see `receive`).
-    func confirm(_ ok: Bool) async {
-        guard case let .sas(code, _) = step, let session else { return }
-        session.send(Self.answerLine(confirm: ok, code: code, movesToRelay: shownMovesToRelay, request: shownRequest))
+    /// Link (true) or Refuse (false) for `shown`, the question the owner saw
+    /// when the sheet was drawn. Sends nothing unless `shown` is still the
+    /// question on screen: a click queued behind a newer `sas` line, or a
+    /// second click, answers nothing. If the phone's request changed after
+    /// the answer, the hub answers `code_changed`, the CLI prints the current
+    /// `sas` line and waits, and the sheet asks again (see `receive`).
+    func confirm(_ ok: Bool, answering shown: Question) {
+        guard case .sas = step, question == shown, let session else { return }
+        session.send(Self.answerLine(confirm: ok, shown))
+        answeredRequest = shown.request
         markConfirmed()
     }
 
     /// `{"code":…,"confirm":…,"moves_to_relay":…,"request":…}` on the
-    /// child's stdin (sorted keys, one line), copied from the `sas` line the
-    /// owner answered; the keys go with a no as well. An older CLI's line has
-    /// no `request`, and the answer then has none.
-    nonisolated static func answerLine(confirm: Bool, code: String, movesToRelay: Bool, request: String?) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        let answer = Answer(confirm: confirm, code: code, movesToRelay: movesToRelay, request: request)
-        // Bools and Strings always encode; were it ever to fail, the line
-        // says no (a no may omit the keys), never an unchecked yes.
-        guard let data = try? encoder.encode(answer),
-              let line = String(bytes: data, encoding: .utf8)
-        else { return #"{"confirm":false}"# }
-        return line
+    /// child's stdin (one line), every key copied from the `sas` line the
+    /// owner answered, with a no as well. `request` is empty when the line
+    /// had none or an empty one (an older CLI or hub); the CLI then decides
+    /// whether the answer can stand.
+    ///
+    /// Built by hand, so it cannot fail: two literal Bools and two strings
+    /// quoted by `jsonString`, which escapes every character JSON requires.
+    nonisolated static func answerLine(confirm: Bool, _ shown: Question) -> String {
+        "{\"code\":\(jsonString(shown.code)),\"confirm\":\(confirm),"
+            + "\"moves_to_relay\":\(shown.movesToRelay),\"request\":\(jsonString(shown.request))}"
     }
 
-    private struct Answer: Encodable {
-        let confirm: Bool
-        let code: String
-        let movesToRelay: Bool
-        let request: String?
-
-        enum CodingKeys: String, CodingKey {
-            case confirm, code, request
-            case movesToRelay = "moves_to_relay"
+    /// A JSON string literal: quotes, backslash and control characters escaped.
+    nonisolated static func jsonString(_ text: String) -> String {
+        var out = "\""
+        for scalar in text.unicodeScalars {
+            switch scalar {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case _ where scalar.value < 0x20: out += String(format: "\\u%04x", scalar.value)
+            default: out.unicodeScalars.append(scalar)
+            }
         }
+        return out + "\""
     }
 
     /// The step after an answer was sent: waiting for the phone, no code, no
@@ -218,6 +231,7 @@ final class MobilePairingModel: Identifiable {
     func markConfirmed() {
         qrImage = nil
         relayMoveWarning = nil
+        question = nil
         step = .waiting
     }
 
@@ -267,20 +281,25 @@ final class MobilePairingModel: Identifiable {
             let expires = line.expiresAt.flatMap(MobileHubCLI.date) ?? now().addingTimeInterval(600)
             expiresAt = expires
             relayMoveWarning = nil
+            question = nil
             qrImage = LinkQRCode.cgImage(for: raw)
             step = .qr(url, expires: expires)
             startCountdown()
         case "waiting":
             if case .qr = step { step = .waiting }
         case "sas":
-            // The latest line is current: a reprint replaces the code and the
-            // warning, and after Link it asks again (`code_changed`).
+            // The latest line is current: a new line replaces the code and the
+            // warning, and after an answer it asks again (`code_changed`, or a
+            // yes the CLI could not bind). A reprint of the request already
+            // answered keeps waiting: that answer is still on its way.
             phone = line.name ?? ""
+            let request = line.request ?? ""
+            if case .waiting = step, !request.isEmpty, request == answeredRequest { return }
             countdown?.cancel()
-            shownMovesToRelay = line.movesToRelay == true
-            shownRequest = line.request
-            relayMoveWarning = shownMovesToRelay ? Self.relayMoveWarning(macName) : nil
-            step = .sas(code: line.code ?? "", phone: phone)
+            let asked = Question(code: line.code ?? "", movesToRelay: line.movesToRelay == true, request: request)
+            question = asked
+            relayMoveWarning = asked.movesToRelay ? Self.relayMoveWarning(macName) : nil
+            step = .sas(code: asked.code, phone: phone)
         case "linked":
             finish(.linked(phone))
         case "refused":
@@ -302,6 +321,7 @@ final class MobilePairingModel: Identifiable {
     private func finish(_ last: Step) {
         step = last
         relayMoveWarning = nil
+        question = nil
         countdown?.cancel()
         countdown = nil
         session = nil

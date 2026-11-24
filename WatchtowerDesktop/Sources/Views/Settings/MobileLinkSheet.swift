@@ -59,9 +59,14 @@ struct MobilePairingSheet: View {
                 .font(.largeTitle.weight(.semibold))
                 .monospacedDigit()
                 .kerning(Spacing.small)
+            // The buttons answer the question drawn here, not whatever is on
+            // screen when the click lands (a newer line may have replaced it).
+            let shown = model.question
             buttons {
-                Button(Copy.refuseTitle) { Task { await model.confirm(false) } }.buttonStyle(.kitSecondary)
-                Button(Copy.linkTitle) { Task { await model.confirm(true) } }.buttonStyle(.kitPrimary)
+                Button(Copy.refuseTitle) { if let shown { model.confirm(false, answering: shown) } }
+                    .buttonStyle(.kitSecondary)
+                Button(Copy.linkTitle) { if let shown { model.confirm(true, answering: shown) } }
+                    .buttonStyle(.kitPrimary)
             }
         case .linked(let phone):
             header(Copy.linkedTitle(phone), tone: Tone.success)

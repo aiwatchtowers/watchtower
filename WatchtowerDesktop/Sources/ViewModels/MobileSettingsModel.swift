@@ -262,7 +262,8 @@ final class MobileSettingsModel {
         macName = status.name ?? macName
         recordingsOn = status.recordings == "on"
         // A hub paused only for iCloud still links when it has a relay: it
-        // issues a Relay code (#2191, ask #1813).
+        // issues a Relay code (#2191, ask #1813). The app bundles its own hub,
+        // and that fallback ships in the same release as this rule.
         let hasRelay = status.relay != nil
         let linkable = status.state == "running"
             || (status.state == "paused" && status.reason == "no_icloud" && hasRelay)

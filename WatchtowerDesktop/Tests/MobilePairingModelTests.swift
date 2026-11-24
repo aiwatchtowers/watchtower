@@ -60,8 +60,10 @@ final class MobilePairingModelTests: XCTestCase {
         await waitUntil("the code") { model.step == .sas(code: "4827", phone: "Phone A") }
         XCTAssertEqual(Model.linkQuestion("Phone A"), "Link \u{201C}Phone A\u{201D}?")
 
-        await model.confirm(true)
-        XCTAssertEqual(session.sent, [#"{"code":"4827","confirm":true,"moves_to_relay":false}"#], "an older CLI's line: no move")
+        model.confirm(true, answering: try XCTUnwrap(model.question))
+        XCTAssertEqual(
+            session.sent, [#"{"code":"4827","confirm":true,"moves_to_relay":false,"request":""}"#], "an older CLI's line: no move, no request"
+        )
         XCTAssertFalse(model.showsCode)
 
         session.push(#"{"event":"linked","device_id":"AAAA0001"}"#)
@@ -75,12 +77,13 @@ final class MobilePairingModelTests: XCTestCase {
         let model = makeModel(streamer, clock: Clock(start))
         await model.start()
         let session = try XCTUnwrap(streamer.sessions.first)
-        await model.confirm(false)
+        XCTAssertNil(model.question, "no question before a code is on screen")
+        model.confirm(false, answering: Model.Question(code: "4827", movesToRelay: false, request: ""))
         XCTAssertTrue(session.sent.isEmpty, "no answer before a code is on screen")
         session.push(#"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827"}"#)
         await waitUntil("the code") { if case .sas = model.step { true } else { false } }
-        await model.confirm(false)
-        XCTAssertEqual(session.sent, [#"{"code":"4827","confirm":false,"moves_to_relay":false}"#])
+        model.confirm(false, answering: try XCTUnwrap(model.question))
+        XCTAssertEqual(session.sent, [#"{"code":"4827","confirm":false,"moves_to_relay":false,"request":""}"#])
         session.push(#"{"event":"refused","reason":"not_confirmed"}"#)
         await waitUntil("refused") { model.step == .refused("not_confirmed") }
     }
@@ -199,11 +202,10 @@ final class MobilePairingModelTests: XCTestCase {
     }
 
     /// #2191 Task 4 contract: the hub prints a new `sas` line when the phone's
-    /// request changes its code or `moves_to_relay`, and reprints the current
-    /// one before it waits for another answer (`code_changed`, an ambiguous
-    /// yes). Every `sas` line means "answer this one": the latest is shown,
-    /// also after Link, and each answer carries that line's code and
-    /// `moves_to_relay` and `request` (the final Task 4 contract).
+    /// request changes, and reprints the current one before it waits for
+    /// another answer. Every new line asks again, also after Link; an answer
+    /// names the question the owner saw (`code`, `moves_to_relay`, `request`)
+    /// and goes out only while that question is still on screen.
     func testEverySASLineAsksAndTheAnswerCarriesWhatWasShown() async throws {
         let streamer = FakePairStreamer()
         let model = Model(streamer: streamer, macName: "Work Mac", now: { self.start }, sleep: { _ in
@@ -218,12 +220,19 @@ final class MobilePairingModelTests: XCTestCase {
 
         model.receive(first)
         XCTAssertEqual(model.step, .sas(code: "4827", phone: "Phone A"))
+        XCTAssertEqual(model.question, Model.Question(code: "4827", movesToRelay: false, request: "0123456789abcdef"))
         XCTAssertNil(model.relayMoveWarning)
+        let drawnOnFirst = try XCTUnwrap(model.question)
 
         // A changed request before the answer: the new code and warning replace the shown ones.
         model.receive(second)
         XCTAssertEqual(model.step, .sas(code: "1093", phone: "Phone A"))
         XCTAssertEqual(model.relayMoveWarning, Model.relayMoveWarning("Work Mac"))
+
+        // A Link click on the first line that runs after the second arrived answers nothing.
+        model.confirm(true, answering: drawnOnFirst)
+        XCTAssertTrue(session.sent.isEmpty, "a yes for a request the owner no longer sees")
+        XCTAssertEqual(model.step, .sas(code: "1093", phone: "Phone A"))
 
         // An identical reprint while asking changes nothing and sends nothing.
         model.receive(second)
@@ -231,44 +240,87 @@ final class MobilePairingModelTests: XCTestCase {
         XCTAssertEqual(model.relayMoveWarning, Model.relayMoveWarning("Work Mac"))
         XCTAssertTrue(session.sent.isEmpty)
 
-        await model.confirm(true)
-        XCTAssertEqual(session.sent, [secondYes], "the answer names the line on screen")
+        // A double click: one answer.
+        let drawnOnSecond = try XCTUnwrap(model.question)
+        model.confirm(true, answering: drawnOnSecond)
+        model.confirm(true, answering: drawnOnSecond)
+        XCTAssertEqual(session.sent, [secondYes], "the answer names the line on screen, once")
         XCTAssertEqual(model.step, .waiting)
-        await model.confirm(true)
-        XCTAssertEqual(session.sent.count, 1, "a second press while waiting sends nothing")
 
-        // An identical reprint after Link (an ambiguous yes): asked again with
-        // the same values; the next answer goes out, nothing is lost.
+        // A reprint of the request just answered: that answer is still on its way, keep waiting.
         model.receive(second)
-        XCTAssertEqual(model.step, .sas(code: "1093", phone: "Phone A"))
-        XCTAssertEqual(model.relayMoveWarning, Model.relayMoveWarning("Work Mac"))
-        await model.confirm(true)
-        XCTAssertEqual(session.sent, [secondYes, secondYes])
+        XCTAssertEqual(model.step, .waiting)
+        XCTAssertNil(model.relayMoveWarning)
+        XCTAssertEqual(session.sent, [secondYes])
 
         // The request changed after Link (code_changed): the new line asks
         // again with its own values. Not a failure.
         model.receive(first)
         XCTAssertEqual(model.step, .sas(code: "4827", phone: "Phone A"))
         XCTAssertNil(model.relayMoveWarning, "the newest line moves nothing")
-        await model.confirm(true)
-        XCTAssertEqual(session.sent, [secondYes, secondYes, firstYes])
+        model.confirm(true, answering: try XCTUnwrap(model.question))
+        XCTAssertEqual(session.sent, [secondYes, firstYes])
 
+        // Refuse follows the same rule: a stale no sends nothing; the shown one carries the keys.
         model.receive(second)
-        await model.confirm(false)
+        let refuseDrawn = try XCTUnwrap(model.question)
+        model.receive(first.replacingOccurrences(of: "Phone A", with: "Phone A (renamed)"))
+        XCTAssertEqual(model.step, .sas(code: "4827", phone: "Phone A (renamed)"), "a new name shows")
+        model.confirm(false, answering: refuseDrawn)
+        XCTAssertEqual(session.sent.count, 2, "a no for a request the owner no longer sees")
+        model.confirm(false, answering: try XCTUnwrap(model.question))
         XCTAssertEqual(
-            session.sent.last, #"{"code":"1093","confirm":false,"moves_to_relay":true,"request":"fedcba9876543210"}"#,
-            "a no carries them too"
+            session.sent.last, #"{"code":"4827","confirm":false,"moves_to_relay":false,"request":"0123456789abcdef"}"#,
+            "a no carries the keys too"
         )
 
-        // A name-only change is no replacement: the new name shows, the same request is answered.
-        model.receive(first.replacingOccurrences(of: "Phone A", with: "Phone A (renamed)"))
-        XCTAssertEqual(model.step, .sas(code: "4827", phone: "Phone A (renamed)"))
-        await model.confirm(true)
-        XCTAssertEqual(session.sent.last, firstYes)
-
-        model.receive(#"{"event":"linked","device_id":"AAAA0001"}"#)
-        XCTAssertEqual(model.step, .linked("Phone A (renamed)"))
+        model.receive(#"{"event":"refused","reason":"not_confirmed"}"#)
+        XCTAssertEqual(model.step, .refused("not_confirmed"))
+        XCTAssertNil(model.question)
         XCTAssertNil(model.relayMoveWarning)
+    }
+
+    /// A new CLI on an older hub prints `"request":""`. The answer stays a
+    /// valid line with an empty `request`; a reprint after it asks again (no
+    /// id ties it to the answer), and the CLI's "out of date" failure shows
+    /// as a failure with its text.
+    func testAnEmptyRequestStillAnswersAndAnOldHubFailsWithItsText() async throws {
+        let streamer = FakePairStreamer()
+        let model = makeModel(streamer, clock: Clock(start))
+        await model.start()
+        let session = try XCTUnwrap(streamer.sessions.first)
+        let line = #"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827","moves_to_relay":true,"request":""}"#
+        let yes = #"{"code":"4827","confirm":true,"moves_to_relay":true,"request":""}"#
+
+        model.receive(line)
+        model.confirm(true, answering: try XCTUnwrap(model.question))
+        XCTAssertEqual(session.sent, [yes])
+        let decoded = try JSONSerialization.jsonObject(with: Data(yes.utf8)) as? [String: Any]
+        XCTAssertEqual(decoded?["request"] as? String, "", "a valid JSON line")
+
+        model.receive(line)
+        XCTAssertEqual(model.step, .sas(code: "4827", phone: "Phone A"), "no request id: the reprint asks again")
+        model.confirm(true, answering: try XCTUnwrap(model.question))
+        XCTAssertEqual(session.sent, [yes, yes])
+
+        let stderr = "Error: the hub is out of date: restart Watchtower, then link again\n"
+        session.failureText = MobileHubCLI.reason(CLIRunnerError.nonZeroExit(code: 1, stderr: stderr))
+        session.end()
+        await waitUntil("failed") { if case .failed = model.step { true } else { false } }
+        XCTAssertEqual(model.step, .failed("The hub is out of date: restart Watchtower, then link again."))
+    }
+
+    /// The answer line is built by hand: every string is escaped, so any
+    /// code or request still makes one valid JSON line.
+    func testTheAnswerLineEscapesItsStrings() throws {
+        let odd = Model.Question(code: "12\"3\\4", movesToRelay: false, request: "a\nb\u{1}")
+        let text = Model.answerLine(confirm: true, odd)
+        XCTAssertFalse(text.contains("\n"), "one line")
+        let decoded = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertEqual(decoded["code"] as? String, odd.code)
+        XCTAssertEqual(decoded["request"] as? String, odd.request)
+        XCTAssertEqual(decoded["confirm"] as? Bool, true)
+        XCTAssertEqual(decoded["moves_to_relay"] as? Bool, false)
     }
 
     /// Q6 (#2191): the `sas` line's `moves_to_relay` decides the warning; an
