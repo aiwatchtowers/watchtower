@@ -40,7 +40,7 @@ A colleague who installs Watchtower at a company that already ran **Set up for m
 
 ## Bot user — REJECTED (second spike)
 
-Slack refuses an authorize request with bot scopes to a non-web redirect: "Bot scopes are not allowed when redirecting to a non-web URI." Our sign-in is PKCE to `http://127.0.0.1:18551/callback`, and a PKCE app shows no **Install to Workspace** button, so a bot user cannot be installed without a web redirect and a `client_secret` exchange — a server. Next candidate: the workspace app directory (`<workspace>.slack.com/apps/manage` → the app's page shows `long_description`).
+Slack refuses an authorize request with bot scopes to a non-web redirect: "Bot scopes are not allowed when redirecting to a non-web URI." Our sign-in is PKCE to `http://127.0.0.1:18551/callback`, and a PKCE app shows no **Install to Workspace** button, so a bot user cannot be installed without a web redirect and a `client_secret` exchange — a server. An `https://127.0.0.1` redirect does not help: Slack counts loopback as non-web under any scheme ("Must use PKCE to redirect to a non-web URI"), and an external https redirect breaks local-first (owner, 2026-11-24). Next candidate: the workspace app directory (`<workspace>.slack.com/apps/manage` → the app's page shows `long_description`).
 
 ## Workspace Marketplace page (third spike, from the admin's account)
 
