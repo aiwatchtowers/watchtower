@@ -201,6 +201,7 @@ New log lines (daemon log, not UI):
 
 ## Decisions
 
+- The spec is approved as written, with no answers to Q1–Q6, so every open question takes the default written here: Q1 keeps the relay-code fallback with the existing text; Q2 and Q5 take the defaults under "Defaults pending the owner"; Q3 keeps the existing state; Q4 keeps the path through Connection → **Relay**; Q6 keeps the warning line on the Mac (ask #1756).
 - Relay pairing on an iCloud Mac: the phone links over Relay, and the Mac moves to Relay after the owner's **Link**, on a fresh read that lists this phone as paying. Free iCloud phones get `hub_on_relay` (ask #1744).
 - iCloud must not be needed for linking: the phone takes the relay route, and a Mac whose iCloud fails issues a relay code (ask #1743, "iCloud может не работать").
 - The Mac learns of the paying phone at scan time (`PAIRING_OPENED`) but switches only after the confirm and promote (ask #1744, "мы никак про релей не узнаем пока телефон не свяжем"; the timing is the agent's reading of the "fresh read for this phone" requirement).
