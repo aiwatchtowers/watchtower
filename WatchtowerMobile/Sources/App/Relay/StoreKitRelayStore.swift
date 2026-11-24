@@ -104,41 +104,50 @@ final class StoreKitRelayStore: RelaySubscriptionStore, @unchecked Sendable {
 
     /// A verified transaction as a `RelayTransaction`, remembered for `finish`. Unverified → nil, with a code only.
     private func take(_ verification: VerificationResult<StoreKit.Transaction>) -> RelayTransaction? {
+        guard case let (transaction, mapped)? = Self.verified(verification, productID: productID) else { return nil }
+        lock.withLock { pending[mapped.id] = transaction }
+        return mapped
+    }
+
+    /// A verified transaction of `productID` with its `RelayTransaction`. Unverified or without expiry → nil, logged
+    /// with a code only.
+    private static func verified(
+        _ verification: VerificationResult<StoreKit.Transaction>, productID: String
+    ) -> (StoreKit.Transaction, RelayTransaction)? {
         guard case .verified(let transaction) = verification else {
-            Self.logger.error("relay store: unverified transaction skipped")
+            logger.error("relay store: unverified transaction skipped")
             return nil
         }
         guard transaction.productID == productID else { return nil }
-        guard let mapped = Self.map(
+        guard let mapped = map(
             id: transaction.id, originalID: transaction.originalID, appAccountToken: transaction.appAccountToken,
             jws: verification.jwsRepresentation,
             revocationDate: transaction.revocationDate, isRenewal: transaction.reason == .renewal,
             expirationDate: transaction.expirationDate
         ) else {
-            Self.logger.error("relay store: transaction without expiry skipped")
+            logger.error("relay store: transaction without expiry skipped")
             return nil
         }
-        lock.withLock { pending[mapped.id] = transaction }
-        return mapped
+        return (transaction, mapped)
     }
 
-    /// Whether this device holds a current entitlement to `productID`, from StoreKit's local record only: no
+    /// Whether this device holds a current entitlement to `productID`, from StoreKit's on-device record only: no
     /// `AppStore.sync()`, so it never asks for an Apple ID. A device whose purchases were never restored answers false.
+    /// A period past its expiry still counts while StoreKit reports the subscription in its billing grace period
+    /// (`Transaction.subscriptionStatus`, which StoreKit answers without a sign-in; the caller bounds the read).
     static func holdsCurrentEntitlement(productID: String, now: Date) async -> Bool {
         guard let verification = await Transaction.currentEntitlement(for: productID),
-              case .verified(let transaction) = verification, transaction.productID == productID else { return false }
-        let mapped = map(
-            id: transaction.id, originalID: transaction.originalID, appAccountToken: transaction.appAccountToken,
-            jws: verification.jwsRepresentation, revocationDate: transaction.revocationDate,
-            isRenewal: transaction.reason == .renewal, expirationDate: transaction.expirationDate
-        )
-        return isCurrent(mapped, now: now)
+              case let (transaction, mapped)? = verified(verification, productID: productID) else { return false }
+        return await isCurrent(mapped, now: now) {
+            await transaction.subscriptionStatus?.state == .inGracePeriod
+        }
     }
 
-    /// A transaction that is neither revoked nor past its expiry.
-    static func isCurrent(_ transaction: RelayTransaction?, now: Date) -> Bool {
-        guard let transaction else { return false }
-        return !transaction.revoked && transaction.expiresAt > now
+    /// A transaction that is not revoked and is either before its expiry or, past it, in billing grace
+    /// (`inGracePeriod`, asked only then).
+    static func isCurrent(_ transaction: RelayTransaction?, now: Date, inGracePeriod: () async -> Bool) async -> Bool {
+        guard let transaction, !transaction.revoked else { return false }
+        return transaction.expiresAt > now ? true : await inGracePeriod()
     }
 
     /// The plain-field mapping. A transaction with no expiry is not a subscription period: nil.

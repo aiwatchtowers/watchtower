@@ -209,32 +209,39 @@ final class StoreKitRelayStoreTests: XCTestCase {
         XCTAssertEqual(mapped?.expiresAt, Date(timeIntervalSince1970: 9))
     }
 
-    func testOnlyAnUnrevokedUnexpiredTransactionIsCurrent() {
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        func transaction(revoked: Bool = false, expiresAt: Date) -> RelayTransaction {
-            RelayTransaction(id: 1, originalID: 1, appAccountToken: nil, jws: "x", revoked: revoked, isRenewal: false, expiresAt: expiresAt)
-        }
-        XCTAssertFalse(StoreKitRelayStore.isCurrent(nil, now: now), "no entitlement")
-        XCTAssertFalse(StoreKitRelayStore.isCurrent(transaction(revoked: true, expiresAt: now.addingTimeInterval(60)), now: now), "revoked")
-        XCTAssertFalse(StoreKitRelayStore.isCurrent(transaction(expiresAt: now), now: now), "expires now")
-        XCTAssertFalse(StoreKitRelayStore.isCurrent(transaction(expiresAt: now.addingTimeInterval(-1)), now: now), "expired")
-        XCTAssertTrue(StoreKitRelayStore.isCurrent(transaction(expiresAt: now.addingTimeInterval(1)), now: now))
+    private func transaction(revoked: Bool = false, expiresAt: Date) -> RelayTransaction {
+        RelayTransaction(id: 1, originalID: 1, appAccountToken: nil, jws: "x", revoked: revoked, isRenewal: false, expiresAt: expiresAt)
     }
 
-    /// The scan's entitlement read, without `AppStore.sync`: false before a purchase and for another product, true after.
-    func testTheEntitlementReadFollowsThePurchase() async throws {
-        let before = await StoreKitRelayStore.holdsCurrentEntitlement(productID: Self.productID, now: Date())
-        XCTAssertFalse(before)
-        guard case .purchased(let bought) = try await store.purchase(accountToken: UUID()) else {
-            return XCTFail("expected a purchase")
+    func testOnlyAnUnrevokedUnexpiredTransactionIsCurrent() async {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var graceAsks = 0
+        let notInGrace = { () async -> Bool in
+            graceAsks += 1
+            return false
         }
-        await store.finish(bought)
-        let held = await eventually { () -> String? in
-            await StoreKitRelayStore.holdsCurrentEntitlement(productID: Self.productID, now: Date()) ? "current" : nil
-        }
-        XCTAssertEqual(held, "current")
-        let other = await StoreKitRelayStore.holdsCurrentEntitlement(productID: "com.example.no.such.product", now: Date())
-        XCTAssertFalse(other)
+        let noEntitlement = await StoreKitRelayStore.isCurrent(nil, now: now, inGracePeriod: notInGrace)
+        XCTAssertFalse(noEntitlement)
+        let revoked = await StoreKitRelayStore.isCurrent(transaction(revoked: true, expiresAt: now + 60), now: now, inGracePeriod: notInGrace)
+        XCTAssertFalse(revoked)
+        XCTAssertEqual(graceAsks, 0, "grace is asked only past the expiry")
+        let expiresNow = await StoreKitRelayStore.isCurrent(transaction(expiresAt: now), now: now, inGracePeriod: notInGrace)
+        XCTAssertFalse(expiresNow)
+        let expired = await StoreKitRelayStore.isCurrent(transaction(expiresAt: now - 1), now: now, inGracePeriod: notInGrace)
+        XCTAssertFalse(expired)
+        XCTAssertEqual(graceAsks, 2)
+        let current = await StoreKitRelayStore.isCurrent(transaction(expiresAt: now + 1), now: now, inGracePeriod: notInGrace)
+        XCTAssertTrue(current)
+        XCTAssertEqual(graceAsks, 2, "an unexpired period needs no grace read")
+    }
+
+    /// A subscription past its period in billing grace still entitles the phone; a revoked one never does.
+    func testABillingGracePeriodStillCounts() async {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let inGrace = await StoreKitRelayStore.isCurrent(transaction(expiresAt: now - 60), now: now) { true }
+        XCTAssertTrue(inGrace)
+        let revokedInGrace = await StoreKitRelayStore.isCurrent(transaction(revoked: true, expiresAt: now - 60), now: now) { true }
+        XCTAssertFalse(revokedInGrace)
     }
 
     func testARenewalIsMarked() async throws {

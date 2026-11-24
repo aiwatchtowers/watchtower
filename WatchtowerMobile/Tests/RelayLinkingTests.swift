@@ -380,6 +380,7 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(model.phase, .linked(macName: "Work Mac"))
         XCTAssertEqual(relay.ops, ["accountState", "open \(mac.deviceID)", "vouch \(mac.deviceID)", "promote slot-1"])
         XCTAssertEqual(container.accountAsks, 0, "no iCloud account read on the relay path")
+        XCTAssertEqual(relay.entitlementAsks, 0, "a definite yes needs no entitlement read")
         XCTAssertTrue(container.accepted.isEmpty)
         XCTAssertEqual(host.linkedCalls.last?.record.route, .hostedRelay(macDeviceID: mac.deviceID))
         XCTAssertTrue(try keysHeld())
@@ -395,6 +396,41 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(LinkFailure.macNotOnRelay(macName: "Work Mac").retryTitle, "Try Again")
         XCTAssertEqual(container.accountAsks, 0)
         XCTAssertFalse(try keysHeld())
+    }
+
+    /// Every slot holds another Mac: the iCloud Mac links over iCloud, no slot opened (#2191 review F1).
+    func testACloudKitCodeOnAPayingPhoneWithEverySlotTakenLinksOverICloud() async throws {
+        relay.slots = ["m1", "m2", "m3"]
+        let payload = iCloudCode()
+        let model = makeModel()
+
+        await link(payload, model: model)
+
+        XCTAssertEqual(model.phase, .linked(macName: "Work Mac"))
+        XCTAssertEqual(relay.count("open"), 0)
+        XCTAssertEqual(host.linkedCalls.last?.record.route, .cloudKit(.private))
+    }
+
+    /// `open_pairing` answers not paying after the paying check said yes: a Mac on iCloud links over iCloud; a Mac on
+    /// Relay keeps its refusal (#2191 review).
+    func testNotPayingAtOpenFallsBackToICloudOnlyForAMacOnICloud() async throws {
+        relay.fail("open", with: HostedRelayPairing.Refusal.notPaying)
+        let payload = iCloudCode()
+        let model = makeModel()
+
+        await link(payload, model: model)
+
+        XCTAssertEqual(model.phase, .linked(macName: "Work Mac"))
+        XCTAssertEqual(host.linkedCalls.last?.record.route, .cloudKit(.private))
+        XCTAssertEqual(relay.count("open"), 1)
+
+        await model.finish()
+        relay.fail("open", with: HostedRelayPairing.Refusal.notPaying)
+        let onRelay = relayCode(otherHub, macName: "Home Mac", cloudKit: true, by: otherMac)
+        macLinks(onRelay)
+        await model.open(onRelay.url())
+        XCTAssertEqual(model.phase, .failed(.macOnRelay(macName: "Home Mac")))
+        XCTAssertEqual(model.links.map(\.hubID), [hub])
     }
 
     func testAnEntitledPhoneWhoseCheckFailsIsRelayUnreachableOnACloudKitCode() async throws {
@@ -1185,13 +1221,15 @@ final class RelayLinkingTests: XCTestCase {
 
     func testScanningAnotherHubLinksNormallyWhileOneIsPromoted() async throws {
         try seedPromoted(relayCode(), state: .needsOwner(.notPaying))
-        let iCloud = mac.code(hubID: otherHub, macName: "Work Mac", owner: owner, now: clock.now(), transport: nil)
+        // An iCloud-only code (no relay in `transports`): it links over iCloud on this paying phone.
+        let iCloud = mac.code(hubID: otherHub, macName: "Work Mac", owner: owner, now: clock.now(), transport: nil, transports: ["cloudkit"])
         let viaRelay = relayCode(thirdHub, macName: "Home Mac", by: otherMac)
         macLinks([iCloud, viaRelay])
         let model = makeModel()
 
         await model.open(iCloud.url())
         XCTAssertEqual(model.phase, .linked(macName: "Work Mac"))
+        XCTAssertEqual(host.linkedCalls.last?.record.route, .cloudKit(.private))
         await model.finish()
         await model.open(viaRelay.url())
         XCTAssertEqual(model.phase, .linked(macName: "Home Mac"))
@@ -1686,7 +1724,8 @@ final class RelayLinkingTests: XCTestCase {
     }
 
     func testAPayingPhoneNeverEndsAnICloudLinkThisWay() async throws {
-        let payload = mac.code(hubID: hub, macName: "Work Mac", owner: owner, now: clock.now(), transport: nil)
+        // An iCloud-only code, so a paying phone links it over iCloud and the fetch then finds the hub on Relay.
+        let payload = mac.code(hubID: hub, macName: "Work Mac", owner: owner, now: clock.now(), transport: nil, transports: ["cloudkit"])
         macLinks(payload)
         host.onRelay = [hub]
         let model = makeModel()
@@ -1694,6 +1733,7 @@ final class RelayLinkingTests: XCTestCase {
         await model.open(payload.url())
 
         XCTAssertEqual(model.phase, .linked(macName: "Work Mac"), "it follows the switch instead (Task 11)")
+        XCTAssertGreaterThan(relay.count("accountState"), 0, "the paying check behind the guard ran")
     }
 }
 

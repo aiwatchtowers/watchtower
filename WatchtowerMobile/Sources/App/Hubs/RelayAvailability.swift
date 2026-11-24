@@ -158,8 +158,9 @@ struct HostedRelayLinkOps: RelayLinkOps {
 
     var availability: RelayAvailability { relay.availability }
 
+    /// `entitlement`, bounded by `LinkRoutePolicy.entitlementBound`: a read that takes longer is "not entitled".
     func holdsRelayEntitlement() async -> Bool {
-        await entitlement()
+        await LinkRoutePolicy.bounded(entitlement) { try? await Task.sleep(for: LinkRoutePolicy.entitlementBound) }
     }
 
     private func pairing() throws -> HostedRelayPairing {

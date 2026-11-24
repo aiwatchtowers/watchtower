@@ -62,10 +62,44 @@ final class LinkRoutePolicyTests: XCTestCase {
 
     func testAPayingPhoneLinksACloudKitMacOverRelay() async {
         for cloudKitCode in [code(.cloudKit), code(nil)] {
-            let (route, asked, _) = await decide(cloudKitCode, relay: available, entitled: false, paying: .success(true))
+            let (route, asked, entitlementAsked) = await decide(cloudKitCode, relay: available, entitled: true, paying: .success(true))
             XCTAssertEqual(route, .relay(mac: mac.deviceID, authPub: mac.authPub), "\(String(describing: cloudKitCode.transport))")
             XCTAssertEqual(asked, 1)
+            XCTAssertEqual(entitlementAsked, 0, "a definite yes needs no entitlement read")
         }
+    }
+
+    /// A paying phone whose slots all hold other Macs links an iCloud Mac over iCloud, as before #2191; a Mac already
+    /// in its slots, or a free slot, still goes over Relay. A hub on Relay is unchanged (the slots screen follows).
+    func testAPayingPhoneWithEverySlotTakenLinksAnICloudMacOverICloud() async {
+        let others = ["m1", "m2", "m3"]
+        for (macs, expected) in [
+            (others, LinkRoute.cloudKit),
+            (["m1", "m2", mac.deviceID], .relay(mac: mac.deviceID, authPub: mac.authPub)),
+            (["m1", "m2"], .relay(mac: mac.deviceID, authPub: mac.authPub))
+        ] {
+            let route = await LinkRoutePolicy.route(
+                code(.cloudKit), relay: available, entitled: { true }, account: { .success((paying: true, macs: macs)) }
+            )
+            XCTAssertEqual(route, expected, "\(macs)")
+        }
+        let onRelay = await LinkRoutePolicy.route(
+            code(.relay), relay: available, entitled: { true }, account: { .success((paying: true, macs: others)) }
+        )
+        XCTAssertEqual(onRelay, .relay(mac: mac.deviceID, authPub: mac.authPub))
+    }
+
+    /// The entitlement read is bounded: a read that outlasts the bound is "not entitled", one that answers first wins.
+    func testASlowEntitlementReadCountsAsNotEntitled() async {
+        let hung = await LinkRoutePolicy.bounded({
+            try? await Task.sleep(for: .seconds(3600))
+            return true
+        }, timeout: {})
+        XCTAssertFalse(hung)
+        let answered = await LinkRoutePolicy.bounded({ true }, timeout: {
+            try? await Task.sleep(for: .seconds(3600))
+        })
+        XCTAssertTrue(answered)
     }
 
     func testAnUnknownPayingAnswerWithAnEntitlementIsRelayUnreachable() async {

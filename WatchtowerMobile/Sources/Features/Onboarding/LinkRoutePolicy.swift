@@ -13,11 +13,15 @@ enum LinkRoute: Equatable {
     case refuse(LinkFailure)
 }
 
+/// The paying check's answer: paying, and the Macs in this account's slots.
+typealias RelayAccountAnswer = (paying: Bool, macs: [String])
+
 /// The link route rule (R4; #2191), pure. A code *offers Relay* when its relay identity is coherent and its
 /// `transports` lists `relay` (a code without `transports` goes by the identity alone). In order:
 ///
 /// | Code | Relay on this phone | Paying answer | Route |
 /// |---|---|---|---|
+/// | hub on iCloud, offers Relay | available | yes, but every slot holds another Mac | `.cloudKit` |
 /// | offers Relay | available | yes | `.relay` (also for a hub on iCloud) |
 /// | offers Relay | available | none (unreachable, backoff), device entitled | `.refuse(.relayUnreachable)` |
 /// | hub on iCloud | available | none, device not entitled | `.cloudKit` |
@@ -29,28 +33,42 @@ enum LinkRoute: Equatable {
 /// An iCloud link to a Mac on Relay would only ever receive `hub_on_relay`, so a hub on Relay is never linked over
 /// iCloud.
 enum LinkRoutePolicy {
-    /// `paying` is asked only when the code offers Relay and the relay is available. On a hub on Relay, an answer that
-    /// is not a definite yes or no refuses with `.relayUnreachable`: it is never read as "not paying". On a hub on
-    /// iCloud it does so only when `entitled` (the device's StoreKit entitlement, read only then) says this phone
-    /// pays; otherwise the phone links over iCloud as before.
+    /// How long the device's entitlement read may take before it counts as "not entitled".
+    static let entitlementBound = Duration.seconds(5)
+
+    /// `decide` with a paying answer that carries no slots (the route tests).
     static func decide(
         _ code: LinkPayload,
         relay: RelayAvailability,
         entitled: () async -> Bool = { false },
         paying: () async -> Result<Bool, HostedRelayPairing.Refusal>
     ) async -> LinkRoute {
-        let offersRelay = code.offersRelay && (code.transports.map { $0.contains("relay") } ?? true)
-        let onRelay = code.transport == .relay || (code.transport == nil && !code.offersCloudKit && code.offersRelay)
-        guard onRelay else {
+        await route(code, relay: relay, entitled: entitled) { await paying().map { (paying: $0, macs: []) } }
+    }
+
+    /// `account` is asked only when the code offers Relay and the relay is available. On a hub on Relay, an answer
+    /// that is not a definite yes or no refuses with `.relayUnreachable`: it is never read as "not paying". On a hub
+    /// on iCloud it does so only when `entitled` (the device's StoreKit entitlement, read only then) says this phone
+    /// pays; otherwise the phone links over iCloud as before. A paying phone whose slots all hold other Macs links an
+    /// iCloud hub over iCloud rather than stop at the slots screen.
+    static func route(
+        _ code: LinkPayload,
+        relay: RelayAvailability,
+        entitled: () async -> Bool,
+        account: () async -> Result<RelayAccountAnswer, HostedRelayPairing.Refusal>
+    ) async -> LinkRoute {
+        guard hubOnRelay(code) else {
             guard code.offersCloudKit else {
                 // A code that names no route this phone can use (a v4 code with neither iCloud nor a relay identity).
                 return .refuse(.refused)
             }
-            guard offersRelay, case .available = relay, let mac = code.relayDeviceID,
+            guard offersRelay(code), case .available = relay, let mac = code.relayDeviceID,
                   let authPub = code.relayAuthPub.flatMap(WireBytes.fromBase64URL) else { return .cloudKit }
-            switch await paying() {
-            case .success(true): return .relay(mac: mac, authPub: authPub)
-            case .success(false), .failure(.notPaying): return .cloudKit
+            switch await account() {
+            case let .success(answer) where answer.paying:
+                let slotsFull = answer.macs.count >= HostedRelayLimits.maxMacSlots && !answer.macs.contains(mac)
+                return slotsFull ? .cloudKit : .relay(mac: mac, authPub: authPub)
+            case .success, .failure(.notPaying): return .cloudKit
             case .failure(.updateRequired): return .refuse(.updateApp)
             case .failure: return await entitled() ? .refuse(.relayUnreachable) : .cloudKit
             }
@@ -60,25 +78,89 @@ enum LinkRoutePolicy {
         // A Mac on Relay that also offers iCloud is a Mac switched to Relay; one that does not is a headless host.
         let cannotUse: LinkRoute = .refuse(code.offersCloudKit ? .macOnRelay(macName: code.macName) : .needsRelay(macName: code.macName))
         guard case .available = relay else { return cannotUse }
-        switch await paying() {
-        case .success(true): return .relay(mac: mac, authPub: authPub)
-        case .success(false), .failure(.notPaying): return cannotUse
+        switch await account() {
+        case let .success(answer): return answer.paying ? .relay(mac: mac, authPub: authPub) : cannotUse
+        case .failure(.notPaying): return cannotUse
         case .failure(.updateRequired): return .refuse(.updateApp)
         case .failure: return .refuse(.relayUnreachable)
         }
     }
 
+    /// Whether the code's hub runs over Relay (`transport` relay, or a v4 code that offers only the relay).
+    static func hubOnRelay(_ code: LinkPayload) -> Bool {
+        code.transport == .relay || (code.transport == nil && !code.offersCloudKit && code.offersRelay)
+    }
+
+    /// Whether a code offers a Relay pairing: a coherent relay identity, and `relay` in its `transports` when it
+    /// lists them. Every further condition on the code (a capability the Mac declares) joins here.
+    static func offersRelay(_ code: LinkPayload) -> Bool {
+        code.offersRelay && (code.transports.map { $0.contains("relay") } ?? true)
+    }
+
     /// The paying check over the relay's account state. Only `.updateRequired` keeps its meaning; every other
     /// failure, mapped or not, is transient (`.unreachable`).
-    static func paying(_ accountState: () async throws -> (paying: Bool, macs: [String])) async -> Result<Bool, HostedRelayPairing.Refusal> {
+    static func paying(_ accountState: () async throws -> RelayAccountAnswer) async -> Result<Bool, HostedRelayPairing.Refusal> {
+        await account(accountState).map(\.paying)
+    }
+
+    /// `paying` with the account's slots kept.
+    static func account(_ accountState: () async throws -> RelayAccountAnswer) async -> Result<RelayAccountAnswer, HostedRelayPairing.Refusal> {
         do {
-            return .success(try await accountState().paying)
+            return .success(try await accountState())
         } catch HostedRelayPairing.Refusal.updateRequired {
             return .failure(.updateRequired)
         } catch HostedRelayPairing.Refusal.notPaying {
-            return .success(false)
+            return .success((paying: false, macs: []))
         } catch {
             return .failure(.unreachable)
         }
+    }
+
+    /// `read`, or false once `timeout` returns first. The read is left to finish on its own (StoreKit's reads do not
+    /// stop on a cancel), so a hung read never holds the scan.
+    static func bounded(_ read: @escaping @Sendable () async -> Bool, timeout: @escaping @Sendable () async -> Void) async -> Bool {
+        let race = FirstAnswer()
+        return await withCheckedContinuation { continuation in
+            race.wait(continuation)
+            race.add(Task { race.answer(await read()) })
+            race.add(Task {
+                await timeout()
+                race.answer(false)
+            })
+        }
+    }
+}
+
+/// The first answer of `LinkRoutePolicy.bounded`'s two tasks; the other task is cancelled.
+private final class FirstAnswer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var tasks: [Task<Void, Never>] = []
+    private var done = false
+
+    func wait(_ continuation: CheckedContinuation<Bool, Never>) {
+        lock.withLock { self.continuation = continuation }
+    }
+
+    func add(_ task: Task<Void, Never>) {
+        let late = lock.withLock {
+            if !done { tasks.append(task) }
+            return done
+        }
+        if late { task.cancel() }
+    }
+
+    func answer(_ value: Bool) {
+        let (waiter, others): (CheckedContinuation<Bool, Never>?, [Task<Void, Never>]) = lock.withLock {
+            guard !done else { return (nil, []) }
+            done = true
+            defer {
+                continuation = nil
+                tasks = []
+            }
+            return (continuation, tasks)
+        }
+        waiter?.resume(returning: value)
+        for task in others { task.cancel() }
     }
 }

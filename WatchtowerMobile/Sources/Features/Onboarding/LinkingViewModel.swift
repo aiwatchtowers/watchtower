@@ -253,29 +253,30 @@ final class LinkingViewModel {
         }
         // The route (R4, #2191): the paying check for any code that offers Relay while the relay is available; the
         // device's entitlement only when that check gets no answer on an iCloud Mac's code.
-        let route = await LinkRoutePolicy.decide(
+        let route = await LinkRoutePolicy.route(
             payload, relay: relay.availability,
             entitled: { [relay] in await relay.holdsRelayEntitlement() },
-            paying: { [relay] in await LinkRoutePolicy.paying { try await relay.accountState() } }
+            account: { [relay] in await LinkRoutePolicy.account { try await relay.accountState() } }
         )
-        let ownerUser: String
         switch route {
         case let .refuse(failure):
             phase = .failed(failure)
-            return
         case let .relay(mac, authPub):
             if let row = row(payload.hubID), !ending.contains(row.hubID) {
                 report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
             }
             await connectRelay(RelayCode(payload: payload, mac: mac, authPub: authPub, hubKeys: hubKeys))
-            return
         case .cloudKit:
-            // The route rule sends only a code that offers iCloud here, and such a code names its owner.
-            guard let owner = payload.ownerUser else {
-                phase = .failed(.refused)
-                return
-            }
-            ownerUser = owner
+            await connectICloud(payload, hubKeys: hubKeys)
+        }
+    }
+
+    /// Steps 2–5 over iCloud: the owner's iCloud account, the re-pair of a saved link, then the share and the wait.
+    private func connectICloud(_ payload: LinkPayload, hubKeys: ScannedHubKeys) async {
+        // The route rule sends only a code that offers iCloud here, and such a code names its owner.
+        guard let ownerUser = payload.ownerUser else {
+            phase = .failed(.refused)
+            return
         }
         // Step 2.
         guard await access.availability() == .available else {
@@ -1600,6 +1601,10 @@ extension LinkingViewModel {
             slotsCode = code
             relaySlots = RelaySlotsState(macs: macs)
             phase = .slotsFull(macName: payload.macName)
+            return
+        } catch HostedRelayPairing.Refusal.notPaying where payload.offersCloudKit && !LinkRoutePolicy.hubOnRelay(payload) {
+            // The subscription ended between the paying check and `open_pairing`: a Mac on iCloud links over iCloud.
+            await connectICloud(payload, hubKeys: code.hubKeys)
             return
         } catch {
             let failure = Self.openFailure(error, code: payload)
