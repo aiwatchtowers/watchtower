@@ -921,6 +921,20 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(host.linkedCalls.count, 1)
     }
 
+    /// Ask #1804's "already linked" answer comes after the confirmed Relay link: a hub with both a linked row and a
+    /// confirmed link still finishing takes an expired code to that finish, as before.
+    func testAnExpiredCodeOfALinkedHubWithAConfirmedLinkStillFinishesIt() async throws {
+        seedRelayRow(hub, macName: "build-box", relayMac: mac)
+        try seedPromoted(relayCode(), state: .confirmed)
+        let model = makeModel()
+
+        await model.open(relayCode(issuedAgo: Double(LinkPayload.lifetime) + 121).url())
+
+        XCTAssertEqual(relay.ops, ["vouch \(mac.deviceID)", "promote slot-0"])
+        XCTAssertTrue(store.promoted.isEmpty)
+        XCTAssertEqual(model.phase, .linked(macName: "build-box"))
+    }
+
     func testPromoteSentWithTheMacInSlotsBecomesPromotedWithoutPromoting() async throws {
         try seedPromoted(relayCode(), state: .promoteSent)
         relay.slots = [mac.deviceID]
