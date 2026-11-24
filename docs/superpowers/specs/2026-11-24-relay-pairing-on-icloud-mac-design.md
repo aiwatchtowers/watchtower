@@ -33,7 +33,8 @@ A code **offers Relay** when its relay identity is coherent (`offersRelay`) and 
 | Code | Relay on this phone | Paying answer | Route |
 |---|---|---|---|
 | any code that offers Relay | `.available` | yes | `.relay(mac:authPub:)` (**new** for a CloudKit code) |
-| any code that offers Relay | `.available` | no answer (unreachable, attestation backoff) | `.refuse(.relayUnreachable)`: never iCloud by default (**new** for a CloudKit code) |
+| any code that offers Relay | `.available` | no answer (unreachable, attestation backoff), and the phone holds a current Relay entitlement on the device (StoreKit) | `.refuse(.relayUnreachable)` (**new** for a CloudKit code; default pending Q2) |
+| hub on iCloud | `.available` | no answer, and no current entitlement on the device | `.cloudKit`, as today (default pending Q2) |
 | any code that offers Relay | `.available` | `.updateRequired` | `.refuse(.updateApp)` |
 | hub on iCloud (v3, v4 `transport` absent or `cloudkit`) | `.off`, or `.available` and not paying | n/a | `.cloudKit`, as today |
 | hub on Relay | `.off`, or not paying | n/a | `.macOnRelay` / `.needsRelay`, as today |
@@ -41,9 +42,9 @@ A code **offers Relay** when its relay identity is coherent (`offersRelay`) and 
 
 A CloudKit code whose `transports` does not list `relay` (a Mac with no relay origin) never asks the relay and links over iCloud. The paying check now runs for every code that offers Relay while the relay is `.available`, not only for a hub on Relay. A free phone pays one extra account read per scan.
 
-The App Store build keeps the relay `.off(.notConfigured)` (`RelayAvailability.evaluate`). That build therefore never reaches the new rows, and its free phones keep linking over iCloud even when the relay is down. Only builds with an origin (TestFlight, dev) get `.relayUnreachable` for an unanswered paying check (see Q2).
+The App Store build keeps the relay `.off(.notConfigured)` (`RelayAvailability.evaluate`). That build therefore never reaches the new rows, and its free phones keep linking over iCloud even when the relay is down. Only builds with an origin (TestFlight, dev) get `.relayUnreachable` for an unanswered paying check, and only on a phone whose device holds a current Relay entitlement: a phone that never subscribed links over iCloud as today. This keeps everything that works today working until the owner answers Q2.
 
-`LinkingViewModel.open` takes the `.relay` route into `connectRelay(RelayCode(…))` unchanged. That path does not read `payload.transport`. After the promote, the link is a relay route (`LinkRecord.transport = .relay`) and the phone waits for data like any new relay link.
+`LinkingViewModel.open` takes the `.relay` route into `connectRelay(RelayCode(…))`; this spec changes nothing in it. #2189 (the hello sent at once, its resend on resume) and #2190 (refusals shown on the phone) rewrite parts of `LinkingViewModel` in the same umbrella, so the plan for this spec is written after both are merged into it and re-checks every reference to that file against the merged code. That path does not read `payload.transport`. After the promote, the link is a relay route (`LinkRecord.transport = .relay`) and the phone waits for data like any new relay link.
 
 **Hub side of the code.** `IssueCloudKit` hard-codes `transports: ["cloudkit","relay"]` (`internal/hub/link/codes.go`, `issue`). It is changed to carry `cloudkit` plus the host's own `relay` entry: `HostInfo.Transports`, which `desktopTransportList` fills only when `o.RelayOrigin` is set (`internal/hub/desktop.go`). Without this change, a paying phone would scan the code of a Mac that has no relay, get `NOT_FOUND` at `open_pairing`, and reach the dead end `.macNotOnRelay`.
 
@@ -55,7 +56,7 @@ The App Store build keeps the relay `.off(.notConfigured)` (`RelayAvailability.e
 
 - it has a `relay_device_id`;
 - it has no iCloud route (`ICloudRoutes` false: it linked through a pairing slot);
-- its `linked_at` is later than the last switch's `switched_at`, or no switch was ever made.
+- its `linked_at` is later than both the last switch's `switched_at` (if any) and `hub_meta.relay_link_since`. That key is written once, with the time the first build carrying this change starts the hub (a `hub_meta` row, no migration), so a phone linked over a pairing slot before the update never moves the Mac by itself (default pending Q5).
 
 The last condition makes a later decision win. If the Mac moved to iCloud after this phone linked (a lapse under rule 16, a person's switch to iCloud), the phone is no candidate any more, and the hub does not move back by itself.
 
@@ -137,13 +138,19 @@ Every path names its outcome and its test (see the test plan).
 
 ### 6. User-visible text and screens
 
-**No new user-visible text, and no screen changes, on the phone or the Mac.** Every outcome reuses existing copy pinned by its model's tests:
+**One new line on the Mac (proposed, Q6); no other new text or screen change.** Pressing **Link** for a phone that paired over Relay can cut off this Mac's phones that run over iCloud without Relay (a family member's phone, for example), so the Mac says so before the press. In the Link confirmation (Settings → Mobile, the pairing sheet's "Link “<phone>”?" step), when the phone paired over Relay, the Mac runs on iCloud and at least one other linked phone has an iCloud route, the sheet adds:
+
+> Linking this iPhone moves <Mac> to Relay. iPhones linked over iCloud without Relay lose their connection until they subscribe.
+
+The text lives in `MobilePairingModel` with its test. The sheet gets DesignShotCatalog mockups for its states: the line absent (no other iCloud phone), the line present, the confirm busy, and an error with Retry; the plan adds them and the screen is compared with them after implementation. The Mac cannot tell which iCloud phones pay (it reads only the relay account's phones), so the line names the group, not a count.
+
+Every other outcome reuses existing copy pinned by its model's tests:
 
 - `LinkFailure`: `.relayUnreachable`, `.macNotOnRelay`, `.noAnswer`, `.needsRelay`, `.updateApp`;
 - the follower's banners: the lapse term, S59;
 - the Mac's existing `switched` watch event and its Settings → Mobile rows (**iCloud**, **Relay**, **Waiting for Relay**).
 
-With no screen change, no DesignShotCatalog mockups are needed. If the owner wants new copy (Q1, Q3), that copy is a new model text with its test and mockups for each state, and it goes into a follow-up.
+Q1 and Q3 may add more copy. Each such text goes into its model with a test and DesignShotCatalog mockups for each state, in this same target, once the owner answers.
 
 New log lines (daemon log, not UI):
 
@@ -163,7 +170,9 @@ New log lines (daemon log, not UI):
 | Promise | Test |
 |---|---|
 | A paying phone routes a CloudKit code that offers Relay to `.relay` | `LinkRoutePolicyTests.testAPayingPhoneLinksACloudKitMacOverRelay` (`make mobile-test MOBILE_FILTER=LinkRoutePolicyTests`) |
-| Unknown paying on a CloudKit code → `.relayUnreachable`, never iCloud | `…testAnUnknownPayingAnswerOnACloudKitCodeIsRelayUnreachable` |
+| Unknown paying on a CloudKit code → `.relayUnreachable` with a device entitlement, `.cloudKit` without | `…testAnUnknownPayingAnswerWithAnEntitlementIsRelayUnreachable`, `…testAnUnknownPayingAnswerWithoutAnEntitlementLinksOverICloud` |
+| Links confirmed before the update never move the Mac | `internal/hub/switcher` `TestRelayLinkBeforeTheUpdateIsNoCandidate` (`relay_link_since` written once, kept across restarts) |
+| The Link confirmation warns only when another phone has an iCloud route | `MobilePairingModelTests.testTheRelayLinkWarningShowsOnlyWithICloudPhones` + DesignShotCatalog shots |
 | A free phone, or relay `.off`, keeps `.cloudKit` and is never asked when off | `…testAFreePhoneLinksACloudKitCodeOverICloud`, `…testRelayOffNeverAsksOnACloudKitCode` |
 | A CloudKit code without `relay` in `transports` never asks the relay | `…testACloudKitCodeWithoutRelayNeverAsks` |
 | The existing rows are unchanged | the current `LinkRoutePolicyTests` stay green unedited, except `testACloudKitCodeLinksOverICloud`, which gains the free/off precondition and keeps its name |
@@ -195,7 +204,7 @@ New log lines (daemon log, not UI):
 - Relay pairing on an iCloud Mac: the phone links over Relay, and the Mac moves to Relay after the owner's **Link**, on a fresh read that lists this phone as paying. Free iCloud phones get `hub_on_relay` (ask #1744).
 - iCloud must not be needed for linking: the phone takes the relay route, and a Mac whose iCloud fails issues a relay code (ask #1743, "iCloud может не работать").
 - The Mac learns of the paying phone at scan time (`PAIRING_OPENED`) but switches only after the confirm and promote (ask #1744, "мы никак про релей не узнаем пока телефон не свяжем"; the timing is the agent's reading of the "fresh read for this phone" requirement).
-- An unknown paying answer on a code that offers Relay is `.relayUnreachable`, never iCloud (ask #1744, brief for #2191).
+- Fix everything found in this area, one item after another (ask #1743, "все чиним"). This covers the defect found while designing: `IssueCloudKit` lists `relay` in `transports` only when the host has a relay origin.
 - The hub decides the switch through `Switcher.accept` with `by` = the linked phone, and the candidate is derived from `devices` and `switched_at`. No new field, no new wire message (decided by the agent, #2191, to keep it simple).
 
 ## Out of scope
@@ -205,6 +214,14 @@ New log lines (daemon log, not UI):
 - A proof on the hello's `relay_device_id` (ask #980), unchanged.
 - Any change to rule 16, G2, the departure check or anti-flap.
 
+## Defaults pending the owner
+
+These defaults keep today's behaviour wherever the owner has not decided; each changes only with the answer to its question.
+
+- Q2: an unanswered paying check refuses with `.relayUnreachable` only on a phone holding a current Relay entitlement; any other phone links over iCloud.
+- Q5: only links confirmed after the update can move the Mac (`hub_meta.relay_link_since`).
+- Q6: the Mac's Link confirmation carries the warning line (proposed; dropped if the owner says no).
+
 ## Open questions for the owner
 
 1. **Free phone vs. a Mac whose iCloud is broken.** With the relay-code fallback (§4), a free phone sees "<Mac> works over Relay only / Relay isn't available on this iPhone", which is not quite true for a Mac whose iCloud is only down. Keep the existing text, add a Mac-side line under the code ("iCloud isn't working: only an iPhone with Relay can link now"; a new text and mockups), or drop the fallback and keep `no_icloud`/`icloud_unreachable`?
@@ -212,3 +229,4 @@ New log lines (daemon log, not UI):
 3. **When the Mac does not move.** If the Mac cannot read the relay account (or the phone was not paying), the new relay phone shows an empty, never-live Mac with no explanation. Is the existing state enough for v1, or do you want a phone notice such as "<Mac> hasn't moved to Relay yet" (new text and mockups)?
 4. **Already-linked paying phones.** Should re-scanning a code on a paying phone that is already linked over iCloud re-link it over Relay and move the Mac, or should it keep pointing at Connection → **Relay**, as now?
 5. **Links made before this change.** A paying phone that linked over a pairing slot to a CloudKit Mac before #1092, and never saw a switch, is a candidate under the derived rule: after the update the Mac moves to Relay without a new **Link**. Is that wanted (it is the same situation), or should only links confirmed after the update count?
+6. **A warning on the Mac before Link.** Should the Link confirmation say "Linking this iPhone moves <Mac> to Relay. iPhones linked over iCloud without Relay lose their connection until they subscribe." when other phones run over iCloud (§6)? Recommended: yes.
