@@ -378,6 +378,24 @@ final class AskExplainModelTests: XCTestCase {
         }
     }
 
+    /// A session being deleted (PROJ-17) counts as gone: its live second
+    /// folder is not read, the home folder is.
+    func testDeletingSessionFallsBackToHome() async throws {
+        let projectID = fx.projectID
+        let sessionID = try await fx.pool.write { db -> Int64 in
+            let folderID = try Self.insertFolder(db, projectID: projectID, path: "/tmp/acme-explain-api")
+            let id = try Self.insertSession(db, projectID: projectID, folderID: folderID)
+            try db.execute(sql: "UPDATE terminal_sessions SET delete_requested_at = '2026-11-24T00:00:00Z' WHERE id = ?",
+                           arguments: [id])
+            return id
+        }
+        let ask = try fx.insertAsk(sessionID: sessionID)
+        let folder = try await fx.pool.read {
+            try AskExplainSurface.readFolder($0, ask: ask, homeFolder: "/tmp/acme-explain")
+        }
+        XCTAssertEqual(folder, "/tmp/acme-explain")
+    }
+
     nonisolated private static func insertFolder(_ db: Database, projectID: Int64, path: String) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
