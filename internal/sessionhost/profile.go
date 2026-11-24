@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"time"
 
-	"watchtower/internal/agentkind"
 	"watchtower/internal/sessionagent"
 )
 
@@ -32,14 +31,14 @@ type Profile struct {
 }
 
 // ProfileFor returns the agent's profile: Return submits, the pauses are
-// the same for every agent, and the newline key is the agent's own
-// (sessionagent.Adapter.ComposerNewline). A shell or an unknown agent is
+// the same for every agent, and the newline key and exact Backspace are the
+// agent's own (sessionagent.Adapter.ComposerNewline, ComposerExactBackspace). A shell or an unknown agent is
 // typed into as Claude Code's, as TerminalCenter.inputProfile does.
 func ProfileFor(agent string) Profile {
 	p := Profile{Submit: []byte{0x0D}, PasteSettle: 150 * time.Millisecond, SubmitSettle: 500 * time.Millisecond}
 	if a, ok := sessionagent.Of(agent); ok {
 		p.Newline = a.ComposerNewline()
-		p.ExactDraft = a.Kind() == agentkind.Claude
+		p.ExactDraft = a.ComposerExactBackspace()
 	}
 	return p
 }
