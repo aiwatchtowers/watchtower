@@ -9,7 +9,7 @@ import WatchtowerCore
 /// the whole panel. Static sample data; no production view or model is used
 /// or changed.
 struct AskExplainMock {
-    enum Feed { case queued, loading, explained, long, busy, error, closed }
+    enum Feed { case queued, loading, explained, long, busy, error }
 
     var chat: Feed?
     var narrow = false
@@ -23,7 +23,6 @@ struct AskExplainMock {
     static let queued = "Waiting — other chats are answering."
     static let errorLine = "Couldn't explain: the provider did not answer in time."
     static let retry = "Retry"
-    static let closedLine = "This question is closed. The chat stays for reading."
     static let emptyHint = "The assistant reads the workbench folder and never changes it."
 
     // MARK: - Sample ask
@@ -59,7 +58,6 @@ struct AskExplainMock {
     static let longState = Self(chat: .long)
     static let busyState = Self(chat: .busy)
     static let errorState = Self(chat: .error)
-    static let closedState = Self(chat: .closed)
     static let narrowState = Self(chat: .explained, narrow: true)
 }
 
@@ -73,7 +71,6 @@ enum AskExplainMockShotFixtures {
         shot("long", .longState),
         shot("busy", .busyState),
         shot("error", .errorState),
-        shot("closed", .closedState),
         shot("narrow", .narrowState, width: 320)
     ]
 
@@ -186,15 +183,7 @@ struct AskExplainMockShot: View {
             .padding(.bottom, Spacing.small)
             .frame(maxWidth: .infinity, alignment: .leading)
             rows(feed)
-            if feed == .closed {
-                Text(AskExplainMock.closedLine)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(Spacing.medium)
-            } else {
-                composer(streaming: feed == .busy || feed == .loading)
-            }
+            composer(streaming: feed == .busy || feed == .loading)
         }
     }
 
@@ -234,7 +223,7 @@ struct AskExplainMockShot: View {
 
     private func followUpCount(_ feed: AskExplainMock.Feed) -> Int {
         switch feed {
-        case .long, .busy, .closed: AskExplainMock.followUps.count
+        case .long, .busy: AskExplainMock.followUps.count
         default: 0
         }
     }

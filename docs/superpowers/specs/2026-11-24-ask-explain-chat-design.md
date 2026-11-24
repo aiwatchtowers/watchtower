@@ -12,33 +12,31 @@ One quiet control on the ask, **Not clear?**. It turns the whole ask panel into 
 
 ## Non-goals (v1)
 
-- No question to the ask's author session from this chat, no draft answer built from the chat, no quick-question chips (all three were in the first mockup and the owner dropped them: "дохуя кнопок", ask #1784).
+- No question to the ask's author session from this chat, no draft answer built from the chat, no quick-question chips (D4).
 - No answering from inside the chat: the options stay on the question view.
-- Not on the phone.
-- Not on review asks: a spec or plan review has its own Discuss threads (spec review, 2026-11-08), and a classic document review is read in its document.
-- The assistant does not read the session's transcript (only the ask, its target and the workbench folder).
+- Not on the phone (D8).
+- Not on review asks (D7).
+- The assistant does not read the session's transcript (D9).
 
 ## Decisions
 
 | # | Decision | Source |
 |---|---|---|
-| D1 | One quiet entry, **Not clear?**, under the ask's options; no other new controls on the ask | ask #1784, conversation |
-| D2 | The chat takes the whole ask panel, with **‹ Back to question** at the top | conversation, ask #1785 |
-| D3 | The first message is the explanation, started on open without the owner typing | ask #1784 |
-| D4 | No question to the author, no answer drafting, no chips in v1 | ask #1784 (supersedes ask #1782) |
-| D5 | The chat is kept per ask: reopening it continues where it stopped | conversation (mockup text approved in ask #1785) |
-| D6 | The assistant reads the workbench folder, never changes anything (`.draftOnly`) | decided by the agent, same boundary as code questions |
-| D7 | Question and check asks only | decided by the agent (review asks have their own threads) |
+| D1 | One quiet entry, **Not clear?**, under the ask's options; no other new controls on the ask | conversation (the owner rejected the first mockup: too many buttons, keep it unobtrusive) |
+| D2 | The chat takes the whole ask panel, with **‹ Back to question** at the top | conversation; approved in ask #1785 |
+| D3 | The first message is the explanation, started on open without the owner typing | conversation (mockup); approved in ask #1785 |
+| D4 | No question to the author, no answer drafting, no chips in v1 | conversation (ask #1782 that offered them was superseded unanswered) |
+| D5 | The chat is kept per ask: reopening it continues where it stopped | conversation; approved in ask #1785 |
+| D6 | The assistant reads the workbench folder and never changes anything (`.draftOnly`), at the provider's strong tier | decided by the agent: the same boundary as code questions; the strong tier because a weak explanation defeats the feature, and a turn starts only on the owner's click, never in the background |
+| D7 | Question and check asks, open or closed; not review asks | decided by the agent: a spec or plan review has its own Discuss threads, a classic review is read in its document; a closed ask's chat helps understand a past decision |
+| D8 | Mac only in v1 | decided by the agent: the phone has no embedded chat engine (spec review threads are Mac-only too) |
+| D9 | No session transcript in the context | decided by the agent: the ask's summary is the agent's own statement of the question; the transcript is large, may hold other sources' text, and `ai query` has no reader for it today. A follow-up can add it |
 
 ## Behaviour
 
 ### Where the control is
 
-On the question view of an ask drawer (`OwnerAskDrawer`), for an ask of kind `question` or `check`:
-- open ask: **Not clear?** (`questionmark.circle`, `KitQuietButtonStyle(label: .secondary)` — grey, not the accent —, `.caption`), trailing, under the question card, above the note field;
-- closed ask (answered, withdrawn): shown only when the ask already has a chat, to reread it.
-
-Tooltip: "Ask the assistant to explain this question".
+On the question view of an ask drawer (`OwnerAskDrawer`), for an ask of kind `question` or `check`, open or closed: **Not clear?** (`questionmark.circle`, `KitQuietButtonStyle(label: .secondary)` — grey, not the accent —, `.caption`), trailing, under the question card. Tooltip: "Ask the assistant to explain this question".
 
 ### The chat view
 
@@ -50,6 +48,8 @@ Pressing it replaces the drawer's body **and** its answer bar with the chat view
 **Back to question** (also Esc while the composer is empty or not focused; ⌘[ stays Back to Workbenches) returns to the question view with everything there as it was: picked options, the note draft, the scroll position.
 
 The mode is per ask: `OwnerAsksViewModel.explainOpen: Set<Int64>` (ask ids, in memory, not persisted). "k of N ›" to another ask shows that ask's own mode; coming back shows this one's. Closing the drawer forgets the mode (the chat itself is kept, D5). While the chat is shown the drawer's bare keys (`OwnerAskDrawerKeys`) are off, and ⌘↩ does not answer the ask.
+
+A closed ask's chat works the same as an open one's: the owner can ask about a decision already taken.
 
 ### The first message
 
@@ -82,7 +82,6 @@ The prompt text lives in one Swift constant (`AskExplainPrompt`), covered by a t
 | queued | Waiting — other chats are answering. |
 | errorPrefix | Couldn't explain: |
 | retry | Retry |
-| closedLine | This question is closed. The chat stays for reading. |
 | emptyHint | The assistant reads the workbench folder and never changes it. |
 
 ## States (each has a shot)
@@ -96,7 +95,6 @@ The prompt text lives in one Swift constant (`AskExplainPrompt`), covered by a t
 | Long | `ask-explain-long` | Several turns, scrolled to the latest |
 | Busy | `ask-explain-busy` | A follow-up sent, its reply streaming, composer shows Stop |
 | Error | `ask-explain-error` | "Couldn't explain: <reason>" with **Retry** |
-| Closed | `ask-explain-closed` | A closed ask's chat: the closed line instead of the composer |
 | Narrow | `ask-explain-narrow` | The chat in a drawer at its least width (320) |
 
 Colours come from `Tone` and the kit; no stock chrome, no row dividers (style guide). The shots are drawn by a design-only mock (`Tests/DesignShots/DesignShotFixtures+AskExplainMock.swift`); T5 renders the same states from the built views and compares them with these.
@@ -113,22 +111,30 @@ Colours come from `Tone` and the kit; no stock chrome, no row dividers (style gu
 | App quit mid-turn | `finishAllAsPartial` ends it `partial`; next launch shows it with Retry, no new hidden turn | `AskExplainModelTests.testPartialFirstTurnOffersRetryOnly` |
 | Turn fails mid-stream (provider error, process exit) | Error row with the real text and Retry | `AskExplainModelTests.testErrorRow` |
 | Two windows open the same ask's chat | One engine per key; Go's `reuse: true` returns one conversation even if both create at once | `AskExplainSurfaceTests.testSameKeySameConversation` |
-| The ask is answered or withdrawn while the chat is open (phone, agent, another window) | The drawer's poll sees the status; a running turn finishes; the composer gives way to the closed line | `AskExplainModelTests.testClosedAskIsReadOnly` |
+| The ask is answered or withdrawn while the chat is open (phone, agent, another window) | Nothing changes in the chat; the question view behind it shows the closed ask as today | `AskExplainModelTests.testChatSurvivesAskClosing` |
 | The workbench is deleted | `db.DeleteWorkbench` also deletes its `owner_ask_explain` conversations (prefix `<id>:`, like code questions) — PROJ-02 | `TestDeleteWorkbenchDropsAskExplainChats` |
+| The workbench is merged into another (`workbenchfolders` merge) | `reKeyChats` re-keys `owner_ask_explain` together with `code_question` and `spec_review_thread`: `<from>:<ask>` → `<into>:<ask>` (ask ids are global, so no clash) | `TestMergeReKeysAskExplainChats` |
 | No CLI (a host without it) | No entry is shown | `AskExplainModelTests.testNoCLINoEntry` |
 
-**Writers of the same data.** The conversation row: `chat.new` (Desktop, find-or-create; Go dedupes). Its messages: each turn's `ai query --persist` process, and the Mac's `chat.reply.finish` / `chat.message.append` after a turn — the existing embedded chat rules, one turn at a time per key. Deletion: only `db.DeleteWorkbench`. No other writer; the ask itself is never written by this feature.
+**Writers of the same data.** The conversation row: `chat.new` (Desktop, find-or-create; Go dedupes); its `context_id` later only `reKeyChats`, inside the merge's transaction. Its messages: each turn's `ai query --persist` process, and the Mac's `chat.reply.finish` / `chat.message.append` after a turn — the existing embedded chat rules, one turn at a time per key. Deletion: only `db.DeleteWorkbench`. A merge while a turn streams: the turn writes by conversation id, which the re-key does not change, so the reply lands in the re-keyed chat; the Desktop's key for an open chat is rebuilt on the next open. No other writer; the ask itself is never written by this feature.
 
 ## Guards to extend
 
-`owner_ask_explain` holds the ask's and the folder's text, so it stays out of every reader that `spec_review_thread` is kept out of: `internal/tools/chat_history.go`, `internal/kb/source_chat_artifact.go`, memory ingestion; the guard tests (`internal/tools/code_question_guard_test.go`, `internal/memory/code_question_guard_test.go`) gain the new type. The main chat's history list never shows it.
+`owner_ask_explain` holds the ask's and the folder's text, so it stays out of every reader that `spec_review_thread` is kept out of:
+- `internal/tools/chat_history.go` (the history tool);
+- `internal/kb/source_chat_artifact.go` (chat artifacts into knowledge);
+- `internal/db/chat_knowledge.go`, both `NOT IN` lists (chat decisions and facts);
+- `EmbeddedChatWiring.savesKnowledge` (Swift: a knowledge prefix typed there saves nothing);
+- memory ingestion (pinned by `internal/memory/code_question_guard_test.go`).
+
+The guard tests (`internal/tools/code_question_guard_test.go`, `internal/memory/code_question_guard_test.go`, the `chat_knowledge` tests, the `savesKnowledge` test) gain the new type. The main chat's history list shows only `context_type IS NULL` conversations, so it never shows this one.
 
 ## Tasks
 
 | # | Task | Tests |
 |---|---|---|
-| T1 | Go: `db.AskExplainContextType`, delete with the workbench, add the type to the history / knowledge / memory filters and their guard tests | `TestDeleteWorkbenchDropsAskExplainChats`, the extended guard tests |
-| T2 | Swift Core: `AskExplainCopy`, `AskExplainPrompt`, `AskExplainKey` (context id), entry visibility (`AskExplainPresentation.showsEntry(kind:isOpen:hasChat:hasCLI:)`) | `AskExplainCopyTests`, `AskExplainPromptTests`, `AskExplainPresentationTests` |
-| T3 | `AskExplainSurface` + the per-ask mode in `OwnerAsksViewModel` (`explainOpen`), the hidden first turn, Retry-only after a failed first turn, read-only on a closed ask | `AskExplainSurfaceTests`, `AskExplainModelTests` |
+| T1 | Go: `db.AskExplainContextType`; delete with the workbench; re-key on merge (`reKeyChats`); add the type to `chat_history.go`, `source_chat_artifact.go` and both lists in `chat_knowledge.go` | `TestDeleteWorkbenchDropsAskExplainChats`, `TestMergeReKeysAskExplainChats`, a `chat_knowledge` test that an `owner_ask_explain` message yields no decision or fact, the extended guard tests |
+| T2 | Swift Core: `AskExplainCopy`, `AskExplainPrompt`, `AskExplainKey` (context id), entry visibility (`AskExplainPresentation.showsEntry(kind:hasCLI:)`); `savesKnowledge` excludes the type | `AskExplainCopyTests`, `AskExplainPromptTests`, `AskExplainPresentationTests`, the `savesKnowledge` test |
+| T3 | `AskExplainSurface` + the per-ask mode in `OwnerAsksViewModel` (`explainOpen`), the hidden first turn, Retry-only after a failed first turn | `AskExplainSurfaceTests`, `AskExplainModelTests` |
 | T4 | Views: the entry in `OwnerAskDrawer`, `AskExplainChatView`, keys off in chat mode, Esc back | `OwnerAskDrawerKeysTests` (keys off), shots |
 | T5 | DesignShotCatalog shots from the real views, compared with the mockups; guide page (`docs/guide/`) and the feature note | shots reviewed, `go test ./docs/guide` |
