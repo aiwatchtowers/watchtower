@@ -25,16 +25,33 @@ struct UpdateAvailableView: View {
         return rawValue == sceneID || rawValue.hasPrefix("\(sceneID)-")
     }
 
-    /// Fronts an already-created Software Update window on the active Space.
-    /// `openWindow` on a `Window` scene whose window exists but is minimized
-    /// or left on another Space shows nothing, so the update button looked
-    /// dead; a window still to be created is `openWindow`'s job.
-    static func frontExistingWindow(in windows: [NSWindow]) {
-        for window in windows where isWindowIdentifier(window.identifier?.rawValue) {
+    /// `UpdateService.presentUpdateWindow`: shows the Software Update window
+    /// on the active Space. `openWindow` on a `Window` scene whose window
+    /// exists but is minimized or left on another Space shows nothing, so the
+    /// update button looked dead: an existing window is moved to the active
+    /// Space and restored *before* the app activates (activation could
+    /// otherwise switch to the window's old Space), then fronted; `open`
+    /// runs only when there is no window yet.
+    static func present(
+        windows: [NSWindow],
+        activate: () -> Void,
+        open: () -> Void
+    ) -> Bool {
+        // A closed window SwiftUI still holds is reopened by `open`, not fronted.
+        let existing = windows.filter {
+            isWindowIdentifier($0.identifier?.rawValue) && ($0.isVisible || $0.isMiniaturized)
+        }
+        for window in existing {
             window.collectionBehavior.insert(.moveToActiveSpace)
             if window.isMiniaturized { window.deminiaturize(nil) }
-            window.makeKeyAndOrderFront(nil)
         }
+        activate()
+        if existing.isEmpty {
+            open()
+        } else {
+            existing.forEach { $0.makeKeyAndOrderFront(nil) }
+        }
+        return true
     }
 
     @Environment(AppState.self) private var appState

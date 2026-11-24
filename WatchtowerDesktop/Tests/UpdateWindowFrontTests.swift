@@ -2,7 +2,7 @@ import XCTest
 import AppKit
 @testable import WatchtowerDesktop
 
-/// The update button fronts a Software Update window that already exists:
+/// The update button shows a Software Update window that already exists:
 /// `openWindow` alone left a minimized window, or one on another Space,
 /// out of sight, so the click looked dead.
 @MainActor
@@ -15,51 +15,73 @@ final class UpdateWindowFrontTests: XCTestCase {
         XCTAssertFalse(UpdateAvailableView.isWindowIdentifier(nil))
     }
 
-    func testMinimizedUpdateWindowIsRestoredMovedToTheActiveSpaceAndFronted() {
-        let update = RecordingWindow(identifier: "update-available-AppWindow-1", miniaturized: true)
-        let other = RecordingWindow(identifier: "main", miniaturized: true)
+    func testMinimizedWindowIsMovedAndRestoredBeforeActivationThenFronted() {
+        var log: [String] = []
+        let update = RecordingWindow(identifier: "update-available-AppWindow-1", state: .minimized) { log.append($0) }
+        let other = RecordingWindow(identifier: "main", state: .minimized) { log.append("other " + $0) }
 
-        UpdateAvailableView.frontExistingWindow(in: [other, update])
+        let shown = UpdateAvailableView.present(
+            windows: [other, update],
+            activate: { log.append("activate") },
+            open: { log.append("open") }
+        )
 
-        XCTAssertEqual(update.deminiaturized, 1)
-        XCTAssertEqual(update.fronted, 1)
-        XCTAssertTrue(update.collectionBehavior.contains(.moveToActiveSpace))
-        XCTAssertEqual(other.deminiaturized, 0, "other windows are left alone")
-        XCTAssertEqual(other.fronted, 0)
-        XCTAssertFalse(other.collectionBehavior.contains(.moveToActiveSpace))
+        XCTAssertTrue(shown)
+        XCTAssertEqual(log, ["deminiaturize moveToActiveSpace", "activate", "front moveToActiveSpace"],
+                       "the window is on the active Space before the app activates; no new window is opened")
+        XCTAssertFalse(other.collectionBehavior.contains(.moveToActiveSpace), "other windows are left alone")
     }
 
     func testWindowOnAnotherSpaceIsFrontedWithoutDeminiaturizing() {
-        let update = RecordingWindow(identifier: "update-available", miniaturized: false)
+        var log: [String] = []
+        let update = RecordingWindow(identifier: "update-available", state: .visible) { log.append($0) }
 
-        UpdateAvailableView.frontExistingWindow(in: [update])
+        _ = UpdateAvailableView.present(windows: [update], activate: { log.append("activate") }, open: { log.append("open") })
 
-        XCTAssertEqual(update.deminiaturized, 0)
-        XCTAssertEqual(update.fronted, 1)
-        XCTAssertTrue(update.collectionBehavior.contains(.moveToActiveSpace))
+        XCTAssertEqual(log, ["activate", "front moveToActiveSpace"])
     }
 
-    func testNoUpdateWindowYetDoesNothing() {
-        let other = RecordingWindow(identifier: "main", miniaturized: false)
-        UpdateAvailableView.frontExistingWindow(in: [other])
-        XCTAssertEqual(other.fronted, 0, "a window still to be created is openWindow's job")
+    func testNoWindowYetIsOpened() {
+        var log: [String] = []
+        let other = RecordingWindow(identifier: "main", state: .visible) { log.append("other " + $0) }
+
+        _ = UpdateAvailableView.present(windows: [other], activate: { log.append("activate") }, open: { log.append("open") })
+
+        XCTAssertEqual(log, ["activate", "open"])
+    }
+
+    func testClosedWindowStillHeldIsReopenedNotFronted() {
+        var log: [String] = []
+        let closed = RecordingWindow(identifier: "update-available", state: .closed) { log.append($0) }
+
+        _ = UpdateAvailableView.present(windows: [closed], activate: { log.append("activate") }, open: { log.append("open") })
+
+        XCTAssertEqual(log, ["activate", "open"])
     }
 }
 
-/// Records restoring and fronting, without a real window server.
+/// Records restoring and fronting (with whether it was on the active Space
+/// by then), without a real window server.
 private final class RecordingWindow: NSWindow {
-    private let startsMinimized: Bool
-    private(set) var deminiaturized = 0
-    private(set) var fronted = 0
+    enum State { case visible, minimized, closed }
 
-    init(identifier: String, miniaturized: Bool) {
-        self.startsMinimized = miniaturized
+    private let state: State
+    private let record: (String) -> Void
+
+    init(identifier: String, state: State, record: @escaping (String) -> Void) {
+        self.state = state
+        self.record = record
         super.init(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: true)
         self.identifier = NSUserInterfaceItemIdentifier(identifier)
         isReleasedWhenClosed = false
     }
 
-    override var isMiniaturized: Bool { startsMinimized }
-    override func deminiaturize(_ sender: Any?) { deminiaturized += 1 }
-    override func makeKeyAndOrderFront(_ sender: Any?) { fronted += 1 }
+    private var spaceNote: String {
+        collectionBehavior.contains(.moveToActiveSpace) ? "moveToActiveSpace" : "staysOnItsSpace"
+    }
+
+    override var isVisible: Bool { state == .visible }
+    override var isMiniaturized: Bool { state == .minimized }
+    override func deminiaturize(_ sender: Any?) { record("deminiaturize \(spaceNote)") }
+    override func makeKeyAndOrderFront(_ sender: Any?) { record("front \(spaceNote)") }
 }
