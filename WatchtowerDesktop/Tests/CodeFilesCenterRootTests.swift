@@ -412,6 +412,31 @@ final class CodeFilesCenterRootTests: XCTestCase {
         XCTAssertEqual(buffer.text, "all: agent\n", "shown again: the disk is read again")
     }
 
+    /// #2386 final review (codex #1): the folder's stream starts before the disk is read again, so a file written
+    /// as the stream starts is in the reread (a stream started after the reread would miss it — it reports only
+    /// what changes after it starts).
+    func testAWorktreeShownAgainStartsItsStreamBeforeReadingTheDisk() throws {
+        var starts = 0
+        let makefile = worktreeA.appendingPathComponent("Makefile")
+        let startStream: (URL, @escaping @MainActor (FolderWatcher.Batch) -> Void) -> FolderWatcher? = { _, _ in
+            starts += 1
+            if starts == 2 { try? "all: as the stream starts\n".write(to: makefile, atomically: false, encoding: .utf8) }
+            return nil
+        }
+        let center = CodeFilesCenter(
+            defaults: defaults, trash: { _ in }, gitRead: { _ in .noRepository }, gitMinInterval: .zero,
+            watchesFolders: true, makeWatcher: startStream
+        )
+        center.startWatching(rootA)
+        let buffer = center.buffer(for: rootA, relPath: "Makefile")
+        buffer.loadIfNeeded()
+        center.stopShowing(rootA)
+
+        center.startWatching(rootA)
+        XCTAssertEqual(starts, 2)
+        XCTAssertEqual(buffer.text, "all: as the stream starts\n", "the reread comes after the stream starts")
+    }
+
     func testAGitRunOfAWorktreeHiddenMeanwhileLandsNothing() async throws {
         let gate = RootGate()
         let center = makeCenter { _ in

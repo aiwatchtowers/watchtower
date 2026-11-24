@@ -197,7 +197,7 @@ extension TerminalCenter {
         answerHints[sessionID] = nil
     }
 
-    func dropPasteHint(_ sessionID: Int64) {
+    private func dropPasteHint(_ sessionID: Int64) {
         pasteHints.remove(sessionID)
         sharedPrompts.remove(sessionID)
     }

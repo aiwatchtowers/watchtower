@@ -220,7 +220,7 @@ final class TerminalCenter {
     /// #380): another delivery meanwhile only pastes, as over a draft.
     /// Keyed by run, so a relaunch during the pause starts with an empty
     /// prompt (board #387).
-    @ObservationIgnored var pendingReturns: Set<Int> = []
+    @ObservationIgnored private(set) var pendingReturns: Set<Int> = []
     /// The `pendingReturns` runs where the owner's own submitting Return
     /// came during the pause (board #388): it sent the line.
     @ObservationIgnored var ownerReturnsInPause: Set<Int> = []
@@ -251,7 +251,7 @@ final class TerminalCenter {
     @ObservationIgnored private(set) var runs: [Int64: Int] = [:]
     @ObservationIgnored private var lastRun = 0
     @ObservationIgnored var now: () -> Date = Date.init
-    @ObservationIgnored var processes: [Int64: any TerminalSessionProcess] = [:]
+    @ObservationIgnored private(set) var processes: [Int64: any TerminalSessionProcess] = [:]
     /// The row each process was started from, so a project's sessions can be
     /// found (and closed) after the project's rows are gone.
     @ObservationIgnored private var rows: [Int64: TerminalSession] = [:]
@@ -1003,8 +1003,9 @@ final class TerminalCenter {
         wire(process, session: session, startedAt: Date(timeIntervalSince1970: Double(info.startedAtMs) / 1000))
         // The run's prompt may hold text typed before the restart. A v2 host knows it and holds a line by itself,
         // so the mirror starts exact and empty; with a v1-only host the Mac types and adds its own Return, so the
-        // mirror cannot vouch for an empty prompt until a submit (final review, codex #1).
-        if !process.hostDelivers { leaveDraftInexact(session.id) }
+        // mirror cannot vouch for an empty prompt until a submit (final review, codex #1) — nor for what precedes the
+        // cursor: a saved prompt ending in `\` makes the owner's Return a line break (#2386 N1).
+        if !process.hostDelivers { drafts[session.id, default: DraftModel()].markUnknown() }
         process.attach(info)
     }
 

@@ -27,6 +27,27 @@ final class WorkbenchCodeIndexTests: XCTestCase {
         XCTAssertEqual(index.symbols(in: "a.swift").map(\.name), ["Buffer", "save"])
     }
 
+    /// #2386 fix round 1: each full run re-indexes every file and kills its old symbol slots; the corpus is
+    /// compacted once the dead outgrow the live, so repeated runs (a root shown again) keep it bounded.
+    func testRepeatedFullRunsKeepTheCorpusBounded() {
+        let index = WorkbenchCodeIndex()
+        let lines = (0..<100).map { n in
+            file("f\(n).swift", (0..<50).map { k in symbol("s\(n)_\(k)", .function, "f\(n).swift", line: k + 1) })
+        }
+        let live = 100 * 52
+        for _ in 0..<6 {
+            index.beginFullRun()
+            index.applyIndexLines(lines, from: .fullRun)
+            index.finishFullRun()
+        }
+        XCTAssertLessThanOrEqual(index.corpusSlotCount, 2 * live + 4096, "slots: \(index.corpusSlotCount)")
+        XCTAssertEqual(index.symbols(named: "s7_3").map(\.path), ["f7.swift"], "still found after compaction")
+        guard case let .symbol(found)? = index.query("s7_3", scope: .symbols, boosts: .none).first?.item else {
+            return XCTFail("Open Quickly finds the symbol after compaction")
+        }
+        XCTAssertEqual(found.path, "f7.swift")
+    }
+
     /// A batch in which a file joins or leaves bumps the revision once; a re-index of a known file does not.
     func testTheFilesRevisionFollowsMembership() {
         let index = WorkbenchCodeIndex()

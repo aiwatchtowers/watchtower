@@ -483,3 +483,26 @@ func TestDraftRunIsKeptOnlyWhereRead(t *testing.T) {
 		t.Fatalf("after an inexact key the run keeps a buffer of %d", cap(d.run))
 	}
 }
+
+// #2386 codex #5: an escape sequence that never completes keeps at most
+// maxEscapeBytes pending, however long the input runs: the work per byte stays
+// bounded and the draft holds (inexact) instead of growing a buffer.
+func TestDraftEscapeSequenceBufferIsBounded(t *testing.T) {
+	prof := ProfileFor("claude")
+	for _, n := range []int{1_000, 100_000} {
+		var d draftModel
+		d.feed([]byte("\x1b["), prof, false)
+		chunk := []byte(strings.Repeat("1", 7))
+		longest := 0
+		for fed := 0; fed < n; fed += len(chunk) {
+			d.feed(chunk, prof, false)
+			longest = max(longest, len(d.esc))
+		}
+		if longest >= maxEscapeBytes {
+			t.Fatalf("n=%d: pending escape reached %d bytes, cap %d", n, longest, maxEscapeBytes)
+		}
+		if !d.inexact || !d.holdsText() {
+			t.Fatalf("n=%d: a dropped sequence leaves the draft inexact and holding", n)
+		}
+	}
+}

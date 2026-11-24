@@ -444,6 +444,9 @@ final class TerminalCenterReattachTests: XCTestCase {
 
         XCTAssertEqual(center.drafts[row.id]?.exact, false)
         XCTAssertTrue(center.promptHoldsText(row.id), "a line of the app's waits for the owner's Return")
+        // #2386 N1: the saved prompt may end in `\`, so the owner's Return may be a line break, not a submit.
+        center.ownerInput(row.id, [0x0D])
+        XCTAssertTrue(center.promptHoldsText(row.id), "a Return after a possible `\\` is no sure submit")
         let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
         XCTAssertFalse(hosted.hostDelivers)
         await hosted.connecting?.value
