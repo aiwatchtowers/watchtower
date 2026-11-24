@@ -1565,8 +1565,16 @@ func TestAConfirmForAReplacedRequestIDIsCodeChanged(t *testing.T) {
 	if old.Request == "" || current.Request == "" || old.Request == current.Request {
 		t.Fatalf("request ids: %q then %q", old.Request, current.Request)
 	}
-	if ev := sasEventFor(t, r.c, current.Code); ev.Request != current.Request {
-		t.Fatalf("the sas event's request %q, want %q", ev.Request, current.Request)
+	// The sas events in order: the first request's, then the replacement's.
+	for _, want := range []string{old.Request, current.Request} {
+		if ev := sasEvent(t, r.c); ev.Request != want {
+			t.Fatalf("the sas event's request %q, want %q", ev.Request, want)
+		}
+	}
+	// The pending snapshot names the same request the sas carried.
+	pending, err := r.c.PendingLinks()
+	if err != nil || len(pending) != 1 || pending[0].Request != current.Request {
+		t.Fatalf("pending links %+v, %v: want request %q", pending, err, current.Request)
 	}
 	device := second.id.String()
 	if err := r.c.ConfirmRequest(device, current.Code, old.Request, true); !errors.Is(err, ErrCodeChanged) {
@@ -1580,15 +1588,5 @@ func TestAConfirmForAReplacedRequestIDIsCodeChanged(t *testing.T) {
 	}
 	if !r.linked(second) {
 		t.Fatal("not linked on the current request")
-	}
-}
-
-// sasEventFor drains c's events up to the sas showing code.
-func sasEventFor(t *testing.T, c *Center, code string) PairEvent {
-	t.Helper()
-	for {
-		if ev := sasEvent(t, c); ev.Code == code {
-			return ev
-		}
 	}
 }

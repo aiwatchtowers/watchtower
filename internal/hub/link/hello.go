@@ -415,7 +415,8 @@ func (c *Center) PendingLinks() ([]Pending, error) {
 	}
 	out := make([]Pending, 0, len(list))
 	for _, p := range list {
-		out = append(out, Pending{DeviceID: strings.ToUpper(p.deviceID), Name: p.name, Code: p.sas, ReceivedAt: p.receivedAt})
+		out = append(out, Pending{DeviceID: strings.ToUpper(p.deviceID), Name: p.name, Code: p.sas,
+			Request: RequestID(p.confirmNonce), ReceivedAt: p.receivedAt})
 	}
 	return out, nil
 }

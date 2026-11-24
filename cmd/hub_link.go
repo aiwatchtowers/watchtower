@@ -647,6 +647,11 @@ func pairStream(cmd *cobra.Command, c *hub.ControlClient) error {
 			answers = nil
 			req, ok := pairConfirmRequest(device, shown, replaced, ans)
 			if !ok {
+				if shown.Request == "" {
+					// A hub older than this command names no request: no
+					// answer could ever be sent, so the pairing ends.
+					return errPairHubTooOld
+				}
 				if err := askAgain(); err != nil {
 					return err
 				}
@@ -716,7 +721,9 @@ func pairStream(cmd *cobra.Command, c *hub.ControlClient) error {
 			if device != "" && line == shown {
 				continue
 			}
-			// A new name alone is the same request.
+			// A new name alone is the same request. Defensive: the hub
+			// emits no sas for an unchanged request (pendingUnchanged), so
+			// a name-only line does not come from it today.
 			replaced = replaced || device != "" && (line.Code != shown.Code ||
 				line.MovesToRelay != shown.MovesToRelay || line.Request != shown.Request)
 			device, shown = a.DeviceID, line
@@ -742,6 +749,11 @@ func pairStream(cmd *cobra.Command, c *hub.ControlClient) error {
 		}
 	}
 }
+
+// errPairHubTooOld ends a pairing whose phone's request was replaced on a
+// running hub that sends no request id (older than this command): no yes
+// could name the request shown.
+var errPairHubTooOld = errors.New("the running hub is older than this command and cannot confirm a replaced link request: restart Watchtower, then link again")
 
 // pairConfirmRequest is the confirm for the owner's answer ans to device,
 // whose last printed sas line is shown. A yes that leaves the code,

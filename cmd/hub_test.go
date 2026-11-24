@@ -918,7 +918,18 @@ type pairRun struct {
 	out   *bufio.Reader
 	in    *io.PipeWriter
 	done  chan error
-	lines []string
+	mu    sync.Mutex
+	lines []string // the output lines read so far (next, pairLines)
+}
+
+// seen records line as read and returns every line read so far.
+func (p *pairRun) seen(line string) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if line != "" {
+		p.lines = append(p.lines, line)
+	}
+	return slices.Clone(p.lines)
 }
 
 func startPair(t *testing.T) *pairRun {
@@ -950,8 +961,8 @@ func startPair(t *testing.T) *pairRun {
 func (p *pairRun) next(t *testing.T) map[string]any {
 	t.Helper()
 	line, err := p.out.ReadString('\n')
-	require.NoError(t, err, "pair output so far: %v", p.lines)
-	p.lines = append(p.lines, line)
+	require.NoError(t, err, "pair output so far: %v", p.seen(""))
+	p.seen(line)
 	var m map[string]any
 	require.NoError(t, json.Unmarshal([]byte(line), &m), line)
 	return m
@@ -1054,7 +1065,7 @@ func pairGot(t *testing.T, p *pairRun, got <-chan hub.ControlRequest) hub.Contro
 	case r := <-got:
 		return r
 	case err := <-p.done:
-		t.Fatalf("the CLI ended (%v) before its request; output: %v", err, p.lines)
+		t.Fatalf("the CLI ended (%v) before its request; output: %v", err, p.seen(""))
 		return hub.ControlRequest{}
 	}
 }
@@ -1066,7 +1077,7 @@ func pairSend(t *testing.T, p *pairRun, f *scriptedPairHub, a hub.ControlAnswer)
 	select {
 	case f.send <- a:
 	case err := <-p.done:
-		t.Fatalf("the CLI ended (%v) before %+v; output: %v", err, a, p.lines)
+		t.Fatalf("the CLI ended (%v) before %+v; output: %v", err, a, p.seen(""))
 	}
 }
 
@@ -1130,6 +1141,7 @@ func pairLines(p *pairRun) <-chan map[string]any {
 			if err != nil {
 				return
 			}
+			p.seen(line)
 			var m map[string]any
 			if json.Unmarshal([]byte(line), &m) != nil {
 				m = map[string]any{"unparsed": line}
@@ -1260,6 +1272,34 @@ func TestHubPairStreamANewNameIsNoReplacement(t *testing.T) {
 	assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Confirm: true, Code: "1111",
 		MovesToRelay: &no, Request: "r1"}, scriptedGot(t, f, lines))
 	linkScripted(t, f, p, lines)
+}
+
+// A running hub older than the command sends sas lines without a request
+// id: after a replacement no yes could name the request, so the pairing
+// ends with an error rather than asking forever, and nothing is confirmed.
+func TestHubPairStreamFailsClosedOnAnOldHub(t *testing.T) {
+	dir := hubShortDir(t)
+	f := startScriptedPairHub(t, dir)
+	exp := time.Now().Add(10 * time.Minute)
+	p := startPair(t)
+	lines := pairLines(p)
+	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventQR, URL: testLinkURL(t), ExpiresAt: &exp})
+	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventWaiting})
+	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventSAS, DeviceID: fakePairDevice, Name: "acme phone", Code: "1111"})
+	pairSend(t, p, f, hub.ControlAnswer{Event: link.EventSAS, DeviceID: fakePairDevice, Name: "acme phone", Code: "2222"})
+	for _, want := range []string{"qr", "waiting", "sas", "sas"} {
+		assert.Equal(t, want, pairLine(t, lines, f)["event"])
+	}
+	p.answer(`{"confirm":true,"code":"2222","moves_to_relay":false,"request":""}`)
+	for m := range lines {
+		t.Fatalf("a line after the ambiguous yes on an old hub: %v", m)
+	}
+	require.ErrorIs(t, p.wait(t), errPairHubTooOld)
+	select {
+	case r := <-f.got:
+		t.Fatalf("a confirm reached the old hub: %+v", r)
+	default:
+	}
 }
 
 // countStateOpens counts direct sidecar opens for writing until the test ends.
