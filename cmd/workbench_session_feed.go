@@ -263,7 +263,13 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 		maps.Copy(out.UnknownRecords, res.Unknown)
 		return out, nil
 	}
-	feed, err := sessionfeed.Build(convs, after, lookup)
+	var feed *sessionfeed.Feed
+	var err error
+	if tail > 0 {
+		feed, out.Before, err = sessionfeed.BuildTail(convs, after, lookup, before, tail)
+	} else {
+		feed, err = sessionfeed.Build(convs, after, lookup)
+	}
 	if err != nil {
 		return out, err
 	}
@@ -276,14 +282,7 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 		out.Activity = sessionFeedActivity(last.Path, last.Codex, false)
 		setSessionFeedLive(&out, last, false)
 	}
-	entries := feed.Entries
-	if tail > 0 {
-		entries, out.Before, err = sessionfeed.TailPage(entries, before, tail)
-		if err != nil {
-			return out, err
-		}
-	}
-	out.Entries, out.Subagents = toSessionFeedEntries(entries), toSessionFeedSubagentItems(feed.Subagents)
+	out.Entries, out.Subagents = toSessionFeedEntries(feed.Entries), toSessionFeedSubagentItems(feed.Subagents)
 	out.Skipped = feed.Skipped
 	maps.Copy(out.UnknownRecords, feed.Unknown)
 	return out, nil
