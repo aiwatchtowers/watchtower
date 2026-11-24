@@ -46,6 +46,9 @@ protocol RelayLinkOps: Sendable {
     /// The three relay fields of this phone's `device` record for `hubID` (`RelayIDProof`, R22): its relay id, its
     /// `relay_auth` key and that key's signature, by the phone's relay identity.
     func relayIDProof(hubID: UUID, deviceID: UUID) throws -> RelayIDClaim
+    /// Whether this device holds a current Relay entitlement (StoreKit), read without an App Store sync: the route
+    /// rule's tie-breaker when the paying check gets no answer on an iCloud Mac's code.
+    func holdsRelayEntitlement() async -> Bool
 }
 
 /// A phone's claim of its relay id in its `device` record (`RelayIDProof.sign`).
@@ -68,6 +71,7 @@ struct OffRelayLinkOps: RelayLinkOps {
     func removeSlot(mac: String) async throws { throw HostedRelayPairing.Refusal.unreachable }
     func addSlot(mac: String) async throws { throw HostedRelayPairing.Refusal.unreachable }
     func relayIDProof(hubID: UUID, deviceID: UUID) throws -> RelayIDClaim { throw HostedRelayPairing.Refusal.unreachable }
+    func holdsRelayEntitlement() async -> Bool { false }
 }
 
 /// The link flow's clock: the grant wait and the expiry check run on it.

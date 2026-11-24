@@ -28,10 +28,11 @@ final class LinkRoutePolicyTests: XCTestCase {
     }
 
     func testACloudKitCodeLinksOverICloud() async {
+        // A code that offers Relay asks while the relay is available: a free phone links over iCloud.
         for (transport, relay) in [(nil, available), (TransportKind.cloudKit, available), (nil, .off(.notConfigured))] {
-            let (route, asked) = await decide(code(transport), relay: relay)
+            let (route, asked) = await decide(code(transport), relay: relay, paying: .success(false))
             XCTAssertEqual(route, .cloudKit, "\(String(describing: transport))")
-            XCTAssertEqual(asked, 0, "a hub on iCloud never asks the relay")
+            XCTAssertEqual(asked, relay == available ? 1 : 0, "a hub on iCloud asks the relay only while it is available")
         }
         // A v3 code (no relay fields at all).
         let v3 = LinkPayload(
@@ -41,6 +42,284 @@ final class LinkRoutePolicyTests: XCTestCase {
         let (route, asked) = await decide(v3, relay: available)
         XCTAssertEqual(route, .cloudKit)
         XCTAssertEqual(asked, 0)
+    }
+
+    /// `decide` with an entitlement answer: the route, the paying asks and the entitlement reads.
+    private func decide(
+        _ code: LinkPayload, relay: RelayAvailability, entitled: Bool, paying answer: Result<Bool, HostedRelayPairing.Refusal>
+    ) async -> (LinkRoute, asked: Int, entitlementAsked: Int) {
+        var asked = 0
+        var entitlementAsked = 0
+        let route = await LinkRoutePolicy.decide(code, relay: relay, entitled: {
+            entitlementAsked += 1
+            return entitled
+        }, paying: {
+            asked += 1
+            return answer
+        })
+        return (route, asked, entitlementAsked)
+    }
+
+    func testAPayingPhoneLinksACloudKitMacOverRelay() async {
+        for cloudKitCode in [code(.cloudKit), code(nil)] {
+            let (route, asked, entitlementAsked) = await decide(cloudKitCode, relay: available, entitled: true, paying: .success(true))
+            XCTAssertEqual(route, .relay(mac: mac.deviceID, authPub: mac.authPub), "\(String(describing: cloudKitCode.transport))")
+            XCTAssertEqual(asked, 1)
+            XCTAssertEqual(entitlementAsked, 0, "a definite yes needs no entitlement read")
+        }
+    }
+
+    /// A paying phone whose slots all hold other Macs links an iCloud Mac over iCloud, as before #2191; a Mac already
+    /// in its slots, or a free slot, still goes over Relay. A hub on Relay is unchanged (the slots screen follows).
+    func testAPayingPhoneWithEverySlotTakenLinksAnICloudMacOverICloud() async {
+        let others = ["m1", "m2", "m3"]
+        for (macs, expected) in [
+            (others, LinkRoute.cloudKit),
+            (["m1", "m2", mac.deviceID], .relay(mac: mac.deviceID, authPub: mac.authPub)),
+            (["m1", "m2"], .relay(mac: mac.deviceID, authPub: mac.authPub))
+        ] {
+            let route = await LinkRoutePolicy.route(
+                code(.cloudKit), relay: available, entitled: { true }, iCloudUsable: { true },
+                account: { .success((paying: true, macs: macs)) }
+            )
+            XCTAssertEqual(route, expected, "\(macs)")
+        }
+        let onRelay = await LinkRoutePolicy.route(
+            code(.relay), relay: available, entitled: { true }, iCloudUsable: { true },
+            account: { .success((paying: true, macs: others)) }
+        )
+        XCTAssertEqual(onRelay, .relay(mac: mac.deviceID, authPub: mac.authPub))
+    }
+
+    /// Full slots without a usable iCloud: the relay route, so the slots screen can free a slot (review round 2).
+    func testFullSlotsWithoutICloudKeepTheRelayRoute() async {
+        var iCloudAsks = 0
+        let full = await LinkRoutePolicy.route(
+            code(.cloudKit), relay: available, entitled: { true },
+            iCloudUsable: {
+                iCloudAsks += 1
+                return false
+            },
+            account: { .success((paying: true, macs: ["m1", "m2", "m3"])) }
+        )
+        XCTAssertEqual(full, .relay(mac: mac.deviceID, authPub: mac.authPub))
+        XCTAssertEqual(iCloudAsks, 1)
+        let free = await LinkRoutePolicy.route(
+            code(.cloudKit), relay: available, entitled: { true },
+            iCloudUsable: {
+                iCloudAsks += 1
+                return false
+            },
+            account: { .success((paying: true, macs: ["m1"])) }
+        )
+        XCTAssertEqual(free, .relay(mac: mac.deviceID, authPub: mac.authPub))
+        XCTAssertEqual(iCloudAsks, 1, "iCloud is asked only on full slots")
+    }
+
+    /// A cancelled caller stops waiting at once and reads "not entitled"; the shared read goes on (review rounds 2, 3).
+    func testACancelledEntitlementWaitIsNotEntitled() async {
+        let readGate = Gate()
+        let shared = SharedEntitlementRead(clock: FakeLinkClock(now: now)) {
+            await readGate.wait()
+            return true
+        }
+        let (registered, signal) = AsyncStream<Void>.makeStream()
+        let timeoutGate = Gate()
+        let waiting = Task {
+            await shared {
+                signal.yield()
+                await timeoutGate.wait()
+            }
+        }
+        var signals = registered.makeAsyncIterator()
+        _ = await signals.next()
+
+        waiting.cancel()
+        let answer = await waiting.value
+
+        XCTAssertFalse(answer)
+        XCTAssertEqual(shared.waiting, 0, "the cancelled caller left")
+        XCTAssertEqual(shared.readsStarted, 1)
+        readGate.open()
+    }
+
+    /// A caller already cancelled starts no read (review round 3).
+    func testAnAlreadyCancelledCallerStartsNoRead() async {
+        let shared = SharedEntitlementRead(clock: FakeLinkClock(now: now)) { true }
+        let answer = await Task { () -> Bool in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await shared {}
+        }.value
+        XCTAssertFalse(answer)
+        XCTAssertEqual(shared.readsStarted, 0)
+    }
+
+    /// Scans while a read hangs share it: one StoreKit read, however many callers. A caller that times out leaves
+    /// (no waiter kept), and its leaving never cancels the shared read (review rounds 2, 3).
+    func testScansWhileAReadHangsShareIt() async {
+        let readGate = Gate()
+        let shared = SharedEntitlementRead(clock: FakeLinkClock(now: now)) {
+            await readGate.wait()
+            return !Task.isCancelled
+        }
+        let (registered, signal) = AsyncStream<Void>.makeStream()
+        let firstTimeout = Gate()
+        let secondTimeout = Gate()
+        let first = Task {
+            await shared {
+                signal.yield()
+                await firstTimeout.wait()
+            }
+        }
+        let second = Task {
+            await shared {
+                signal.yield()
+                await secondTimeout.wait()
+            }
+        }
+        var signals = registered.makeAsyncIterator()
+        _ = await signals.next()
+        _ = await signals.next()
+        XCTAssertEqual(shared.readsStarted, 1, "the second scan waits on the read in flight")
+        XCTAssertEqual(shared.waiting, 2)
+
+        firstTimeout.open()
+        let timedOut = await first.value
+        XCTAssertFalse(timedOut, "each caller's own bound applies")
+        XCTAssertEqual(shared.waiting, 1, "the timed-out caller left")
+
+        readGate.open()
+        let answered = await second.value
+        XCTAssertTrue(answered, "no caller cancelled the read")
+        XCTAssertEqual(shared.waiting, 0)
+        XCTAssertEqual(shared.readsStarted, 1)
+    }
+
+    /// A read older than its age limit is abandoned when the next caller joins: a new read starts for it, and the old
+    /// read's answer, arriving while that caller waits, is dropped (review rounds 3, 4).
+    func testAHungReadPastItsAgeIsReplaced() async throws {
+        let clock = FakeLinkClock(now: now)
+        let reads = ReadCount()
+        let oldEntered = Gate()
+        let oldGate = Gate()
+        let newEntered = Gate()
+        let newGate = Gate()
+        let never = Gate()
+        let oldCancelled = Flag()
+        let shared = SharedEntitlementRead(maxAge: 60, clock: clock) {
+            if reads.add() == 1 {
+                oldEntered.open()
+                await oldGate.wait()
+                oldCancelled.set(Task.isCancelled)
+                return false
+            }
+            newEntered.open()
+            await newGate.wait()
+            return true
+        }
+        // The first caller leaves only once the read has entered its closure.
+        let early = await shared { await oldEntered.wait() }
+        XCTAssertFalse(early)
+        let oldRead = try XCTUnwrap(shared.inFlight)
+        clock.advance(by: 30)
+        _ = await shared {}
+        XCTAssertEqual(shared.readsStarted, 1, "a read younger than its limit is shared")
+
+        clock.advance(by: 31)
+        // The late caller's timeout runs only after its join returned: a waiter on the new read.
+        let lateJoined = Gate()
+        let late = Task {
+            await shared {
+                lateJoined.open()
+                await never.wait()
+            }
+        }
+        await lateJoined.wait()
+        await newEntered.wait()
+        XCTAssertEqual(shared.readsStarted, 2, "the late caller started a new read")
+        oldGate.open()
+        await oldRead.value
+        XCTAssertEqual(shared.waiting, 1, "the old read's answer reached no one")
+
+        newGate.open()
+        let fresh = await late.value
+        XCTAssertTrue(fresh, "the new read's answer")
+        XCTAssertEqual(shared.waiting, 0)
+        XCTAssertTrue(oldCancelled.value, "the replaced read's task was cancelled")
+    }
+
+    func testAnUnknownPayingAnswerWithAnEntitlementIsRelayUnreachable() async {
+        for answer in [Result<Bool, HostedRelayPairing.Refusal>.failure(.unreachable), .failure(.attestationBackoff(until: now))] {
+            let (route, _, entitlementAsked) = await decide(code(.cloudKit), relay: available, entitled: true, paying: answer)
+            XCTAssertEqual(route, .refuse(.relayUnreachable), "\(answer)")
+            XCTAssertEqual(entitlementAsked, 1)
+        }
+    }
+
+    func testAnUnknownPayingAnswerWithoutAnEntitlementLinksOverICloud() async {
+        for answer in [Result<Bool, HostedRelayPairing.Refusal>.failure(.unreachable), .failure(.attestationBackoff(until: now))] {
+            let (route, _, entitlementAsked) = await decide(code(.cloudKit), relay: available, entitled: false, paying: answer)
+            XCTAssertEqual(route, .cloudKit, "\(answer)")
+            XCTAssertEqual(entitlementAsked, 1)
+        }
+    }
+
+    func testAFreePhoneLinksACloudKitCodeOverICloud() async {
+        for answer in [Result<Bool, HostedRelayPairing.Refusal>.success(false), .failure(.notPaying)] {
+            let (route, asked, entitlementAsked) = await decide(code(.cloudKit), relay: available, entitled: true, paying: answer)
+            XCTAssertEqual(route, .cloudKit, "\(answer)")
+            XCTAssertEqual(asked, 1)
+            XCTAssertEqual(entitlementAsked, 0, "a definite answer needs no entitlement read")
+        }
+    }
+
+    func testRelayOffNeverAsksOnACloudKitCode() async {
+        for relay in [RelayAvailability.off(.notConfigured), .off(.unsupportedDevice)] {
+            let (route, asked, entitlementAsked) = await decide(code(.cloudKit), relay: relay, entitled: true, paying: .success(true))
+            XCTAssertEqual(route, .cloudKit, "\(relay)")
+            XCTAssertEqual(asked, 0)
+            XCTAssertEqual(entitlementAsked, 0)
+        }
+    }
+
+    func testACloudKitCodeWithoutRelayNeverAsks() async {
+        let iCloudOnly = mac.code(hubID: hub, macName: "Work Mac", owner: "_owner-acme", now: now, transport: .cloudKit, transports: ["cloudkit"])
+        let (route, asked, entitlementAsked) = await decide(iCloudOnly, relay: available, entitled: true, paying: .success(true))
+        XCTAssertEqual(route, .cloudKit)
+        XCTAssertEqual(asked, 0)
+        XCTAssertEqual(entitlementAsked, 0)
+    }
+
+    /// An older Mac's code (relay in `transports`, no `relay_switch`, ask #1827) links over iCloud as before #2191 and
+    /// never asks the relay: that Mac would not move itself to Relay after the pairing. A hub already on Relay is
+    /// unaffected; a current Mac's code (`relay_switch: true`) goes over Relay on a paying phone.
+    func testAnOlderMacsICloudCodeWithoutRelaySwitchLinksOverICloud() async {
+        for transport in [TransportKind.cloudKit, nil] {
+            let older = mac.code(hubID: hub, macName: "Work Mac", owner: "_owner-acme", now: now, transport: transport, relaySwitch: false)
+            XCTAssertEqual(older.transports ?? ["cloudkit", "relay"], ["cloudkit", "relay"])
+            let (route, asked, entitlementAsked) = await decide(older, relay: available, entitled: true, paying: .success(true))
+            XCTAssertEqual(route, .cloudKit, "\(String(describing: transport))")
+            XCTAssertEqual(asked, 0, "an older Mac's code never asks the paying check")
+            XCTAssertEqual(entitlementAsked, 0)
+        }
+        let switching = mac.code(hubID: hub, macName: "Work Mac", owner: "_owner-acme", now: now, transport: .cloudKit, relaySwitch: true)
+        let (current, asked, _) = await decide(switching, relay: available, entitled: false, paying: .success(true))
+        XCTAssertEqual(current, .relay(mac: mac.deviceID, authPub: mac.authPub))
+        XCTAssertEqual(asked, 1)
+        let onRelay = mac.code(hubID: hub, macName: "Work Mac", owner: "_owner-acme", now: now, transport: .relay, relaySwitch: false)
+        let (relayRoute, _, _) = await decide(onRelay, relay: available, entitled: false, paying: .success(true))
+        XCTAssertEqual(relayRoute, .relay(mac: mac.deviceID, authPub: mac.authPub), "a hub on Relay needs no relay_switch")
+        // A headless host's code (no iCloud fields, no `transport`) without the key: still over Relay, never refused.
+        let headless = mac.code(
+            hubID: hub, macName: "build-box", owner: "_owner-acme", now: now, transport: nil, cloudKit: false, relaySwitch: false)
+        let (headlessRoute, headlessAsked, _) = await decide(headless, relay: available, entitled: false, paying: .success(true))
+        XCTAssertEqual(headlessRoute, .relay(mac: mac.deviceID, authPub: mac.authPub), "a headless host needs no relay_switch")
+        XCTAssertEqual(headlessAsked, 1)
+    }
+
+    func testUpdateRequiredOnACloudKitCodeIsUpdateApp() async {
+        let (route, _, _) = await decide(code(.cloudKit), relay: available, entitled: false, paying: .failure(.updateRequired))
+        XCTAssertEqual(route, .refuse(.updateApp))
     }
 
     func testAPayingPhoneLinksAMacOnRelayOverAPairingSlot() async {
@@ -132,5 +411,44 @@ final class LinkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(update, .failure(.updateRequired))
         let free = await LinkRoutePolicy.paying { (paying: false, macs: []) }
         XCTAssertEqual(free, .success(false))
+    }
+}
+
+/// How many entitlement reads started.
+private final class ReadCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    /// Counts one read; its number.
+    func add() -> Int {
+        lock.withLock {
+            value += 1
+            return value
+        }
+    }
+}
+
+/// A flag a fake sets from its task.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = false
+
+    var value: Bool { lock.withLock { stored } }
+
+    func set(_ value: Bool) {
+        lock.withLock { stored = value }
+    }
+}
+
+/// A gate a fake waits on until the test opens it. Never opened, it waits until its task is cancelled. One waiter.
+private final class Gate: Sendable {
+    private let pair = AsyncStream<Void>.makeStream()
+
+    func wait() async {
+        for await _ in pair.stream {}
+    }
+
+    func open() {
+        pair.continuation.finish()
     }
 }

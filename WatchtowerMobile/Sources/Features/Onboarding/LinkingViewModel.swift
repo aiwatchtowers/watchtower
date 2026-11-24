@@ -260,50 +260,66 @@ final class LinkingViewModel {
             phase = .failed(.tooManyMacs)
             return
         }
-        // The route (R4): the paying check only for a hub on the relay with the relay available.
-        let route = await LinkRoutePolicy.decide(payload, relay: relay.availability) { [relay] in
-            await LinkRoutePolicy.paying { try await relay.accountState() }
-        }
-        let ownerUser: String
+        // The route (R4, #2191): the paying check for any code that offers Relay while the relay is available; the
+        // device's entitlement only when that check gets no answer on an iCloud Mac's code.
+        // The iCloud check the full-slot decision made, kept so the iCloud path reads the account only once.
+        var iCloudCheck: ICloudLinkCheck?
+        let route = await LinkRoutePolicy.route(
+            payload, relay: relay.availability,
+            entitled: { [relay] in await relay.holdsRelayEntitlement() },
+            iCloudUsable: {
+                let check = await self.checkICloudLink(payload)
+                iCloudCheck = check
+                return check.canLink(payload)
+            },
+            account: { [relay] in await LinkRoutePolicy.account { try await relay.accountState() } }
+        )
         switch route {
         case let .refuse(failure):
             phase = .failed(failure)
-            return
         case let .relay(mac, authPub):
-            if let row = row(payload.hubID), !ending.contains(row.hubID) {
-                report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
-            }
-            await connectRelay(RelayCode(payload: payload, mac: mac, authPub: authPub, hubKeys: hubKeys))
-            return
+            // A saved link to this Mac ends only once the pairing slot is open (`connectRelay`): a refused slot, or
+            // the slots screen closed without a removal, leaves it as it was.
+            await connectRelay(RelayCode(payload: payload, mac: mac, authPub: authPub, hubKeys: hubKeys), iCloudCheck: iCloudCheck)
         case .cloudKit:
-            // The route rule sends only a code that offers iCloud here, and such a code names its owner.
-            guard let owner = payload.ownerUser else {
-                phase = .failed(.refused)
-                return
-            }
-            ownerUser = owner
+            await connectICloud(payload, hubKeys: hubKeys, check: iCloudCheck)
         }
-        // Step 2.
-        guard await access.availability() == .available else {
-            phase = .failed(.signIn)
+    }
+
+    /// Steps 2–5 over iCloud: the owner's iCloud account (`check` when this attempt already read it), the re-pair of
+    /// a saved link, then the share and the wait.
+    private func connectICloud(_ payload: LinkPayload, hubKeys: ScannedHubKeys, check: ICloudLinkCheck? = nil) async {
+        let resolved: ICloudLinkCheck
+        if let check { resolved = check } else { resolved = await checkICloudLink(payload) }
+        guard case let .ready(linker) = resolved else {
+            if case let .cannot(failure) = resolved { phase = .failed(failure) }
             return
         }
-        let userRecordName: String
+        await endRepairedLink(payload.hubID)
+        await connect(payload, linker: linker, hubKeys: hubKeys)
+    }
+
+    /// Step 2, read once per attempt: the code's owner, an iCloud account and its identity, or the failure that
+    /// stops an iCloud link. Step 3's share precondition is `ICloudLinkCheck.canLink`.
+    private func checkICloudLink(_ payload: LinkPayload) async -> ICloudLinkCheck {
+        // The route rule sends only a code that offers iCloud here, and such a code names its owner.
+        guard let ownerUser = payload.ownerUser else { return .cannot(.refused) }
+        guard await access.availability() == .available else { return .cannot(.signIn) }
         do {
-            userRecordName = try await access.identity()
+            return .ready(ICloudLinker(ownerUser: ownerUser, userRecordName: try await access.identity()))
         } catch {
-            phase = .failed(.iCloud(error.localizedDescription))
-            return
+            return .cannot(.iCloud(error.localizedDescription))
         }
-        // A saved link to this Mac whose keybox does not say "linked" (a
-        // missed removal, an absent keybox) or that the Mac removed (frozen):
-        // a re-pair. That link ends first, its keys with it, reporting what
-        // its removal lost, so a refused or unanswered re-pair leaves no row
-        // whose keys open nothing. Other hubs are untouched.
-        if let row = row(payload.hubID), !ending.contains(row.hubID) {
-            report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
-        }
-        await connect(payload, ownerUser: ownerUser, hubKeys: hubKeys, userRecordName: userRecordName)
+    }
+
+    /// A saved link to this Mac whose keybox does not say "linked" (a
+    /// missed removal, an absent keybox) or that the Mac removed (frozen):
+    /// a re-pair. That link ends before the new one writes anything, its keys
+    /// with it, reporting what its removal lost, so a refused or unanswered
+    /// re-pair leaves no row whose keys open nothing. Other hubs are untouched.
+    private func endRepairedLink(_ hubID: String) async {
+        guard let row = row(hubID), !ending.contains(row.hubID) else { return }
+        report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
     }
 
     /// The scanned code and its hub keys; nil with the failure shown when the code cannot be used.
@@ -347,17 +363,17 @@ final class LinkingViewModel {
     }
 
     /// Steps 3–5 for a valid code.
-    private func connect(_ payload: LinkPayload, ownerUser: String, hubKeys: ScannedHubKeys, userRecordName: String) async {
+    private func connect(_ payload: LinkPayload, linker: ICloudLinker, hubKeys: ScannedHubKeys) async {
+        let ownerUser = linker.ownerUser
+        let userRecordName = linker.userRecordName
         // Step 3: same Apple ID → the private database, share URLs ignored
         // (an owner cannot accept their own share). Another Apple ID → both
         // shares, then the shared database.
         let route: HubRoute
-        if userRecordName == ownerUser {
+        if linker.isOwner {
             route = .cloudKit(.private)
         } else {
-            guard payload.dataShare.flatMap(URL.init(string:)) != nil,
-                  payload.relayShare.flatMap(URL.init(string:)) != nil
-            else {
+            guard linker.canLink(payload) else {
                 phase = .failed(.cannotShare)
                 return
             }
@@ -1581,6 +1597,31 @@ final class LinkingViewModel {
 
 // MARK: - Linking over the relay (relay client Phase 3 Task 10)
 
+/// Who links an iCloud code: the Mac's owner (from the code) and this phone's Apple ID.
+struct ICloudLinker {
+    let ownerUser: String
+    let userRecordName: String
+
+    /// The owner links through the private database.
+    var isOwner: Bool { userRecordName == ownerUser }
+
+    /// Step 3's precondition: the owner, or another Apple ID with both share URLs in the code.
+    func canLink(_ payload: LinkPayload) -> Bool {
+        isOwner || (payload.dataShare.flatMap(URL.init(string:)) != nil && payload.relayShare.flatMap(URL.init(string:)) != nil)
+    }
+}
+
+/// Step 2's answer for one attempt: who links, or why iCloud cannot.
+enum ICloudLinkCheck {
+    case ready(ICloudLinker)
+    case cannot(LinkFailure)
+
+    func canLink(_ payload: LinkPayload) -> Bool {
+        guard case let .ready(linker) = self else { return false }
+        return linker.canLink(payload)
+    }
+}
+
 /// A scanned code that links over a relay pairing slot: the code, the Mac's relay id and `relay_auth` key, and the
 /// hub's keys from it.
 struct RelayCode {
@@ -1614,22 +1655,16 @@ extension LinkingViewModel {
     /// The relay path of steps 2–5 (R3): the slot (`open_pairing`, after its pre-check), the keys, the pairing
     /// transport, the hello with this phone's relay id in `pair/<slot>`, the wait. Nothing is written before the
     /// slot opens; a failure before the owner confirmed closes it and removes what the link wrote.
-    private func connectRelay(_ code: RelayCode) async {
+    private func connectRelay(_ code: RelayCode, iCloudCheck: ICloudLinkCheck? = nil) async {
         let payload = code.payload
         let slot: (slot: String, expiresAt: Date)
         do {
             slot = try await relay.open(mac: code.mac)
-        } catch HostedRelayPairing.Refusal.slotsFull(let macs) {
-            slotsCode = code
-            relaySlots = RelaySlotsState(macs: macs)
-            phase = .slotsFull(macName: payload.macName)
-            return
         } catch {
-            let failure = Self.openFailure(error, code: payload)
-            retryCode = failure.retryTitle == nil ? nil : payload.url()
-            phase = .failed(failure)
+            await openRefused(error, code: code, iCloudCheck: iCloudCheck)
             return
         }
+        await endRepairedLink(payload.hubID)
         let deviceKeys: DeviceIdentityKeys
         let relayDeviceID: String
         do {
@@ -1690,6 +1725,35 @@ extension LinkingViewModel {
             return
         }
         await waitForGrant(pending, code: PairingCode(hubKeys: code.hubKeys, deviceKeys: deviceKeys))
+    }
+
+    /// A refused `open_pairing`, before anything was written. A Mac on iCloud whose answer changed since the route
+    /// check (the subscription ended, or another device took the last slot) links over iCloud instead: after not
+    /// paying always, after slots full only while iCloud is usable (otherwise the slots screen can free a slot).
+    /// `iCloudCheck` is the attempt's step 2 when the route rule already read it; it is read here only when not.
+    private func openRefused(_ error: any Error, code: RelayCode, iCloudCheck: ICloudLinkCheck?) async {
+        let payload = code.payload
+        let iCloudHub = payload.offersCloudKit && !LinkRoutePolicy.hubOnRelay(payload)
+        switch error as? HostedRelayPairing.Refusal {
+        case let .slotsFull(macs):
+            if iCloudHub {
+                let check: ICloudLinkCheck
+                if let iCloudCheck { check = iCloudCheck } else { check = await checkICloudLink(payload) }
+                if check.canLink(payload) {
+                    await connectICloud(payload, hubKeys: code.hubKeys, check: check)
+                    return
+                }
+            }
+            slotsCode = code
+            relaySlots = RelaySlotsState(macs: macs)
+            phase = .slotsFull(macName: payload.macName)
+        case .notPaying where iCloudHub:
+            await connectICloud(payload, hubKeys: code.hubKeys, check: iCloudCheck)
+        default:
+            let failure = Self.openFailure(error, code: payload)
+            retryCode = failure.retryTitle == nil ? nil : payload.url()
+            phase = .failed(failure)
+        }
     }
 
     /// What a refused `open_pairing` (before any hello) shows.
