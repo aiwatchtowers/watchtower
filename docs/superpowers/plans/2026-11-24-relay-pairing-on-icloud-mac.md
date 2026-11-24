@@ -36,9 +36,9 @@
 
 ## Owner decisions this plan asks for (ask #1809)
 
-The plan goes past the approved spec in three places. Each is the smallest change that makes the spec work. Implementation of the affected task waits for the owner's answer in the plan review:
+The plan goes past the approved spec in three places. Each is the smallest change that makes the spec work. No task of this plan starts before the plan review is approved, and that approval answers these three (an approval without comments is "yes" to all three; a "no" changes the affected task before it starts):
 
-1. **Task 4:** a new local key, `moves_to_relay`, on the `sas` line of `hub pair --json --stream`, plus `OverRelay`/`MovesToRelay` on `link.PairEvent`. The hub decides the Q6 condition because the Mac cannot read it. This is the Mac's local CLI contract, not the phone wire (`TestHubContractFixture` stays green). The alternative is no warning.
+1. **Task 4:** a new local key, `moves_to_relay`, on the `sas` line of `hub pair --json --stream`, plus `OverRelay`/`MovesToRelay` on `link.PairEvent`. The hub decides the Q6 condition because the Mac cannot read it. This is the Mac's local CLI contract, not the phone wire (`TestHubContractFixture` stays green). Q6's warning stays either way (ask #1756). The alternative keeps the warning without the key: the Mac shows it whenever it runs on iCloud and another linked phone has an iCloud route, without knowing whether this phone paired over Relay. It would then also warn on an iCloud link that moves nothing.
 2. **Task 6:** **Link** stays available on a Mac whose iCloud is unusable (`paused`/`no_icloud`) when the hub has a relay, so the spec's relay-code fallback (F7) is reachable from the UI, following "iCloud must not be needed for linking" (ask #1743). The alternative is a CLI-only fallback.
 3. **Task 5:** the Q2 default reads the device's StoreKit entitlement without `AppStore.sync()`, so a scan never asks the person to sign in to the App Store. Known limit: on a new device, before purchases are restored, a paying phone whose relay check gets no answer links over iCloud (the conservative Q2 default). It moves to Relay later through Connection → **Relay**.
 
@@ -56,9 +56,9 @@ The plan goes past the approved spec in three places. Each is the smallest chang
 
 | Lane | Tasks | Worktree |
 |---|---|---|
-| A — Go hub | Task 1 and Task 2 in parallel. Task 4 in parallel with both. Then Task 3 (after 1 and 2). | one worktree per parallel task, merged by the controller |
-| B — phone | Task 5 | own worktree, own `-derivedDataPath` |
-| C — Mac UI | Task 6 | own worktree (copy main's `WatchtowerDesktop/.build` without `ModuleCache`) |
+| A — Go hub | After the plan is approved: Task 1 and Task 2 in parallel. Task 4 in parallel with both. Then Task 3 (after 1 and 2). | one worktree per parallel task, merged by the controller |
+| B — phone | Task 5, after the plan is approved | own worktree, own `-derivedDataPath` |
+| C — Mac UI | Task 6, after the plan is approved; its view step merges after Task 4 (it reads Task 4's key) | own worktree (copy main's `WatchtowerDesktop/.build` without `ModuleCache`) |
 | — | Task 7 (docs) after 1–6, then the phase gate | umbrella worktree |
 
 Every implementer brief carries `docs/review/review-rules.md` (Go sections; for Task 6 also "Swift / Desktop conventions") and this plan's Global Constraints. The implementer self-reviews against both before hand-back. Each task's review runs a Claude reviewer and the `codex-review` agent in parallel on the same diff (owner's global rule).
@@ -254,7 +254,7 @@ The default keeps every existing `LinkRoutePolicyTests` call compiling unedited.
 
 ### Task 6: The Mac's Link confirmation warns before the move (Q6), and Link stays available without iCloud
 
-**Depends on:** none (consumes Task 4's `moves_to_relay` key as fixed in its Interfaces block)
+**Depends on:** Task 4 for merging: the model and mockup steps can run in parallel against Task 4's Interfaces block, but Task 6 merges into the umbrella only after Task 4, and its end-to-end check runs on a tree that has Task 4.
 
 **Files:**
 - Modify: `WatchtowerDesktop/Sources/ViewModels/MobilePairingModel.swift`
