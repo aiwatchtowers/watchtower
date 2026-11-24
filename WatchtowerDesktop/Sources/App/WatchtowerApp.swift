@@ -425,6 +425,7 @@ struct WatchtowerApp: App {
                 appState.updateService.presentUpdateWindow = {
                     ActivationPolicyDecision.becomeRegularAndActivate()
                     openWindow(id: UpdateAvailableView.sceneID)
+                    UpdateAvailableView.frontExistingWindow(in: NSApp.windows)
                     return true
                 }
             }
@@ -616,6 +617,7 @@ struct WatchtowerApp: App {
                 appState.updateService.presentUpdateWindow = {
                     ActivationPolicyDecision.becomeRegularAndActivate()
                     openWindow(id: UpdateAvailableView.sceneID)
+                    UpdateAvailableView.frontExistingWindow(in: NSApp.windows)
                     return true
                 }
             }

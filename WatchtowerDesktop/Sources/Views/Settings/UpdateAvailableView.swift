@@ -18,6 +18,25 @@ import ChatUI
 struct UpdateAvailableView: View {
     static let sceneID = "update-available"
 
+    /// Whether a window identifier is this scene's (`sceneID`, or SwiftUI's
+    /// `sceneID-…` variant).
+    static func isWindowIdentifier(_ rawValue: String?) -> Bool {
+        guard let rawValue else { return false }
+        return rawValue == sceneID || rawValue.hasPrefix("\(sceneID)-")
+    }
+
+    /// Fronts an already-created Software Update window on the active Space.
+    /// `openWindow` on a `Window` scene whose window exists but is minimized
+    /// or left on another Space shows nothing, so the update button looked
+    /// dead; a window still to be created is `openWindow`'s job.
+    static func frontExistingWindow(in windows: [NSWindow]) {
+        for window in windows where isWindowIdentifier(window.identifier?.rawValue) {
+            window.collectionBehavior.insert(.moveToActiveSpace)
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
 
