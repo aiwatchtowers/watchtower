@@ -409,8 +409,9 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         let stdin = Pipe()
         process.standardInput = stdin
 
-        processHandle.set(process)
-        try process.run()
+        // A consumer that stopped before the launch (a timeout or Cancel
+        // while the CLI was looked up) gets no process at all.
+        guard try processHandle.launch(process) else { throw CancellationError() }
 
         // On a thread of its own (never the caller's actor or the concurrency
         // pool, see ProcessPipes): a prompt larger than the pipe buffer blocks
@@ -502,20 +503,35 @@ extension WatchtowerAIService {
 
 // MARK: - Process Handle
 
-private final class WatchtowerProcessHandle: @unchecked Sendable {
+/// The `ai query` child of one stream. `terminate()` is sticky: one that
+/// lands before `launch` (the consumer stopped while the CLI was looked up)
+/// keeps the process from starting at all, and one that lands while it is
+/// starting stops it as soon as it runs, so nothing runs on unread. The lock
+/// guards the flag and the process only; `run()` and `terminate()` of the
+/// child are called outside it, so a cancel never waits on a launch.
+final class WatchtowerProcessHandle: @unchecked Sendable {
     private var process: Process?
+    private var terminated = false
     private let lock = NSLock()
 
-    func set(_ process: Process) {
-        lock.lock()
-        self.process = process
-        lock.unlock()
+    /// Runs `process` unless the handle was terminated first; false then.
+    func launch(_ process: Process) throws -> Bool {
+        guard !lock.withLock({ terminated }) else { return false }
+        try process.run()
+        let stoppedMeanwhile = lock.withLock {
+            self.process = process
+            return terminated
+        }
+        if stoppedMeanwhile, process.isRunning { process.terminate() }
+        return true
     }
 
     func terminate() {
-        lock.lock()
-        if let proc = process, proc.isRunning { proc.terminate() }
-        lock.unlock()
+        let running = lock.withLock {
+            terminated = true
+            return process
+        }
+        if let running, running.isRunning { running.terminate() }
     }
 }
 
