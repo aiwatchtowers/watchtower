@@ -433,3 +433,15 @@ func TestNoticeTask_ResultQuotingWholeNotification(t *testing.T) {
 	assert.Equal(t, "It printed: "+quoted, res.Entries[0].Task.Result)
 	assert.Equal(t, 43545, res.Entries[0].Task.Tokens)
 }
+
+func TestNoticeTask_AdversarialCloseTagsIsFast(t *testing.T) {
+	for _, n := range []int{5000, 10000} {
+		text := "<task-notification>\n<task-id>a</task-id>\n<result>" + strings.Repeat("</result></status>", n) + "<status>x</task-notification>"
+		budget := maxTaskCloseAttempts
+		_, ok := taskChildren(text[len(taskOpen):], map[string]string{}, &budget)
+		assert.False(t, ok)
+		assert.Less(t, budget, 0, "attempts are capped, whatever the input size")
+		assert.GreaterOrEqual(t, budget, -1)
+		assert.Nil(t, parseTaskNotification(text))
+	}
+}

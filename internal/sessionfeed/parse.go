@@ -399,11 +399,15 @@ var taskReportBoilerplate = []string{
 	"This agent\u2019s report was delivered to you as a message",
 }
 
+// maxTaskCloseAttempts bounds the close tags one notification may try, so
+// untrusted text with many repeated close tags parses in linear time.
+const maxTaskCloseAttempts = 64
+
 // taskChildren consumes the children of a notification from rest up to its
 // closing tag, which it takes after the last child (a result may quote a whole
 // notification, so a child's close is tried at each occurrence until the rest
 // parses).
-func taskChildren(rest string, kids map[string]string) (map[string]string, bool) {
+func taskChildren(rest string, kids map[string]string, budget *int) (map[string]string, bool) {
 	rest = strings.TrimSpace(rest)
 	if strings.HasPrefix(rest, taskClose) {
 		return kids, true
@@ -424,11 +428,14 @@ func taskChildren(rest string, kids map[string]string) (map[string]string, bool)
 			return nil, false
 		}
 		i += off
+		if *budget--; *budget < 0 {
+			return nil, false // crafted text with many close tags: give up
+		}
 		next := maps.Clone(kids)
 		if _, dup := next[name]; !dup {
 			next[name] = strings.TrimSpace(body[:i])
 		}
-		if got, ok := taskChildren(body[i+len(closeTag):], next); ok {
+		if got, ok := taskChildren(body[i+len(closeTag):], next, budget); ok {
 			return got, true
 		}
 		off = i + len(closeTag)
@@ -445,7 +452,8 @@ const (
 // "read the output file" line, is ignored). Every child must close with its
 // own element name; a truncated or mismatched notification yields nil.
 func parseTaskNotification(text string) *TaskRef {
-	kids, ok := taskChildren(text[len(taskOpen):], map[string]string{})
+	budget := maxTaskCloseAttempts
+	kids, ok := taskChildren(text[len(taskOpen):], map[string]string{}, &budget)
 	if !ok || len(kids) == 0 {
 		return nil
 	}
