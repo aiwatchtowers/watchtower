@@ -97,12 +97,13 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 	switch {
 	case linked:
 		log.Printf("hub link: linked phone %s, %d other requests refused", request.deviceID, len(others))
-		c.emit(PairEvent{Kind: EventLinked, DeviceID: request.deviceID, Name: request.name})
+		c.emit(PairEvent{Kind: EventLinked, DeviceID: request.deviceID, Name: request.name, Nonce: request.linkNonce})
 		if asks {
 			c.typingAsks = append(c.typingAsks, TypingAsk{DeviceID: strings.ToUpper(request.deviceID), Name: displayName(request.name)})
 		}
 		for _, o := range others {
-			c.emit(PairEvent{Kind: EventRefused, DeviceID: o.deviceID, Name: o.name, Reason: wire.RefusedUsedCode})
+			c.emit(PairEvent{Kind: EventRefused, DeviceID: o.deviceID, Name: o.name, Reason: wire.RefusedUsedCode,
+				Nonce: o.linkNonce})
 		}
 		c.changed()
 	case reason != "":

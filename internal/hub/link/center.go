@@ -469,7 +469,7 @@ func (c *Center) Sweep() error {
 }
 
 func (c *Center) refusedEvent(p pendingDevice, reason string) {
-	c.emit(PairEvent{Kind: EventRefused, DeviceID: p.deviceID, Name: p.name, Reason: reason})
+	c.emit(PairEvent{Kind: EventRefused, DeviceID: p.deviceID, Name: p.name, Reason: reason, Nonce: p.linkNonce})
 	c.changed()
 }
 

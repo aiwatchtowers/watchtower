@@ -40,14 +40,20 @@ type cloudKitFields struct {
 // and transports; no CloudKit fields): every unused code still open is
 // retired first, so only the newest links, and link_codes keeps the newest
 // KeptCodes. It returns the payload and its URL and emits qr then waiting.
-func (c *Center) Issue() (wire.LinkPayload, string, error) { return c.issue(nil) }
+func (c *Center) Issue() (wire.LinkPayload, string, error) { return c.IssueFor("") }
 
-// issue is Issue; ck set makes a CloudKit code (IssueCloudKit): the
+// IssueFor is Issue for the pairing stream token: its qr and waiting events
+// carry token, and every event carries the code's nonce (PairEvent).
+func (c *Center) IssueFor(token string) (wire.LinkPayload, string, error) {
+	return c.issue(nil, token)
+}
+
+// issue is IssueFor; ck set makes a CloudKit code (IssueCloudKit): the
 // CloudKit fields, transport cloudkit and transports ["cloudkit"], plus
 // "relay" only when the host has a relay (HostInfo.Transports): a Mac
 // without one never sends a paying phone to a relay that is not there. The
 // relay identity stays on the code either way.
-func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
+func (c *Center) issue(ck *cloudKitFields, token string) (wire.LinkPayload, string, error) {
 	c.mu.Lock()
 	defer c.unlock()
 	raw := make([]byte, linkNonceLength)
@@ -125,11 +131,9 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 		return wire.LinkPayload{}, "", fmt.Errorf("link: storing the code: %w", err)
 	}
 	for _, pd := range refused {
-		// Only to the streams shown its SAS (ShownOnly): the stream asking for
-		// this code has no phone bound yet and would end at a refusal.
-		c.emit(PairEvent{Kind: EventRefused, DeviceID: pd.deviceID, Name: pd.name,
-			Reason: wire.RefusedExpiredCode, ShownOnly: true})
-		c.changed() // its keybox is republished
+		// Under the replaced code's nonce: only the stream that asked for that
+		// code hears it, never the one asking for this code.
+		c.refusedEvent(pd, wire.RefusedExpiredCode)
 	}
 	if len(refused) > 0 {
 		log.Printf("hub link: a relay code replaced the CloudKit code: %d waiting requests refused", len(refused))
@@ -167,8 +171,10 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 		}
 	}
 	c.ck.mu.Unlock()
-	c.emit(PairEvent{Kind: EventQR, URL: url, ExpiresAt: time.Unix(p.Exp, 0).UTC()})
-	c.emit(PairEvent{Kind: EventWaiting})
+	// Emitted under c.mu, before any hello under this code can be decided
+	// (decideHello takes c.mu): the asking stream learns the nonce first.
+	c.emit(PairEvent{Kind: EventQR, URL: url, ExpiresAt: time.Unix(p.Exp, 0).UTC(), Nonce: p.Nonce, Token: token})
+	c.emit(PairEvent{Kind: EventWaiting, Nonce: p.Nonce, Token: token})
 	return p, url, nil
 }
 

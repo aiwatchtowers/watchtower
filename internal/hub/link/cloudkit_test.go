@@ -1653,29 +1653,38 @@ func TestARelayCodeRefusesTheReplacedCodesWaitingPhone(t *testing.T) {
 	}
 }
 
-// The replaced code's refusal goes out as a pair event only for the streams
-// shown that phone's SAS (ShownOnly).
-func TestARelayCodesRefusalOfTheReplacedCodesPhoneIsShownOnly(t *testing.T) {
+// Every pair event names its code: a code's qr and waiting carry its nonce
+// and the asking stream's token; the phone's SAS carries the nonce its hello
+// came under; the replaced code's refusal carries the replaced code's nonce,
+// never the new code's or its asking stream's token.
+func TestPairEventsCarryTheirCodeAndAskingStream(t *testing.T) {
 	r := newCKRig(t)
-	code := r.issueCK()
+	code, _, err := r.c.IssueCloudKitFor(r.ctx, r.s, "stream-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{EventQR, EventWaiting} {
+		if ev := <-r.c.Events(); ev.Kind != kind || ev.Nonce != code.Nonce || ev.Token != "stream-a" {
+			t.Fatalf("%s event %+v, want the code's nonce and stream-a", kind, ev)
+		}
+	}
 	a := newPhone(t)
 	if got, err := r.ckHello(a, code.Nonce); err != nil || got.Code == "" {
 		t.Fatalf("not waiting: %+v %v", got, err)
 	}
-	for drained := false; !drained; {
-		select {
-		case <-r.c.Events():
-		default:
-			drained = true
-		}
+	if ev := <-r.c.Events(); ev.Kind != EventSAS || ev.Nonce != code.Nonce || ev.Token != "" {
+		t.Fatalf("sas %+v, want the hello's code nonce", ev)
 	}
-	r.issue()
-	ev := <-r.c.Events()
-	if ev.Kind != EventRefused || ev.DeviceID != a.id.String() || ev.Reason != wire.RefusedExpiredCode || !ev.ShownOnly {
-		t.Fatalf("first event %+v, want a shown-only expired_code refusal of the waiting phone", ev)
+	next, _, err := r.c.IssueFor("stream-b")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if ev := <-r.c.Events(); ev.Kind != EventQR || ev.ShownOnly {
-		t.Fatalf("then %+v, want the relay code's qr for every stream", ev)
+	if ev := <-r.c.Events(); ev.Kind != EventRefused || ev.DeviceID != a.id.String() ||
+		ev.Reason != wire.RefusedExpiredCode || ev.Nonce != code.Nonce || ev.Token != "" {
+		t.Fatalf("refusal %+v, want the replaced code's expired_code", ev)
+	}
+	if ev := <-r.c.Events(); ev.Kind != EventQR || ev.Nonce != next.Nonce || ev.Token != "stream-b" {
+		t.Fatalf("then %+v, want the relay code's qr for stream-b", ev)
 	}
 }
 
@@ -1780,6 +1789,56 @@ func TestAReopenBehindASweepKeepsTheSweepMark(t *testing.T) {
 		if got := r.s.names(z); len(got) != 0 {
 			t.Errorf("%s: %v not swept", z, got)
 		}
+	}
+}
+
+// An open that lands after its caller gave up (the caller's ctx ended, the
+// writer's did not) still sets the sweep mark: the writer marks every open
+// it lands.
+func TestALateOpenStillSetsTheSweepMark(t *testing.T) {
+	r := newCKRig(t)
+	if err := r.st.SetMeta(MetaShareSweepPending, "0"); err != nil {
+		t.Fatal(err)
+	}
+	entered, gate := make(chan struct{}), make(chan struct{})
+	r.s.once("set_public_link", func() { close(entered); <-gate })
+	ctx, cancel := context.WithCancel(r.ctx)
+	done := make(chan error, 1)
+	go func() { _, err := r.c.setLink(ctx, r.s, true, CloseRestart, closeScope{}); done <- err }()
+	<-entered
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the caller's wait: %v, want its ctx's end", err)
+	}
+	r.c.ck.mu.Lock()
+	writer := r.c.ck.writer
+	r.c.ck.mu.Unlock()
+	close(gate) // the open lands now, the caller long gone
+	if writer != nil {
+		<-writer
+	}
+	if !r.s.isOpen() || r.sweepMark() != "1" {
+		t.Fatalf("open %v mark %q, want the late open marked", r.s.isOpen(), r.sweepMark())
+	}
+}
+
+// A close's sweep whose clear comes after an open landed behind it (and
+// re-marked the sweep) does not clear the mark: the open's epoch bump stops
+// it, so the reopened link's participants are swept later.
+func TestASweepClearAfterAReopenIsStoppedByTheEpoch(t *testing.T) {
+	r := newCKRig(t)
+	r.issueCK()
+	r.s.join("_stranger")
+	r.s.once("participants", func() {
+		// The sweep closed the link and lists the participants: an issue's
+		// open lands now.
+		if _, err := r.c.setLink(r.ctx, r.s, true, CloseRestart, closeScope{}); err != nil {
+			t.Error(err)
+		}
+	})
+	_ = r.c.CloseLink(r.ctx, r.s, CloseAccountChanged)
+	if !r.s.isOpen() || r.sweepMark() != "1" {
+		t.Fatalf("open %v mark %q: the sweep cleared the mark behind the reopen", r.s.isOpen(), r.sweepMark())
 	}
 }
 

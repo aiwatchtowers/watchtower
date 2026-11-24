@@ -28,10 +28,12 @@ type PairEvent struct {
 	Name      string
 	Code      string
 	Reason    string
-	// ShownOnly: only for the streams that were shown DeviceID's SAS (a
-	// refusal no other stream asked about: one with no phone bound yet would
-	// end at it).
-	ShownOnly bool
+	// Nonce is the link code the event is about: the code issued (qr,
+	// waiting) or the one the phone's hello came in under (sas, linked,
+	// refused). Token is the pairing stream that asked for that code (qr and
+	// waiting only; "" when none did): the control socket shows a code's
+	// events only to that stream.
+	Nonce, Token string
 }
 
 // Events is the pairing narration; one reader at a time.

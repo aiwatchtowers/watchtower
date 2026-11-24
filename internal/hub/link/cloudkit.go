@@ -272,6 +272,11 @@ type retiredCode struct{ nonce, reason string }
 // newest code (the one that links), as two New code clicks did in Swift — so
 // one issue's close never shuts another's link.
 func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.LinkPayload, string, error) {
+	return c.IssueCloudKitFor(ctx, s, "")
+}
+
+// IssueCloudKitFor is IssueCloudKit for the pairing stream token (IssueFor).
+func (c *Center) IssueCloudKitFor(ctx context.Context, s transport.Shares, token string) (wire.LinkPayload, string, error) {
 	// Not bounded by ctx: the issue in flight ends within its share timeouts.
 	c.issueSem <- struct{}{}
 	defer func() { <-c.issueSem }()
@@ -320,7 +325,7 @@ func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.Li
 		err = c.beforeIssueStore()
 	}
 	if err == nil {
-		p, url, err = c.issue(fields)
+		p, url, err = c.issue(fields, token)
 	}
 	if err != nil {
 		// No code links, so the link just opened must not stay open.
@@ -419,13 +424,6 @@ func (c *Center) openPublicLink(ctx context.Context, s transport.Shares) (data, 
 		return fail("set_public_link", err)
 	} else if !written {
 		return fail("set_public_link", errSuperseded)
-	}
-	// Marked again once open: a close's sweep that took its snapshot after
-	// the first mark may have closed the link and cleared the mark while this
-	// open landed behind it. The new epoch stops a clear still to come; a
-	// clear already made is undone, so the participants are swept later.
-	if err := c.st.WithTx(ctx, markSweepTx); err != nil {
-		log.Printf("hub link: share sweep mark not set again (%s)", shareErrorClass(err))
 	}
 	c.ck.mu.Lock()
 	c.ck.sharing, c.ck.linkOpened = SharingAvailable, true
@@ -568,6 +566,20 @@ func (c *Center) writeLink(ctx context.Context, s transport.Shares, done chan st
 		c.ck.mu.Lock()
 		if err == nil {
 			c.ck.linkWritten = writtenAs(target)
+			if target {
+				// Marked again once an open lands, however late (ctx outlives
+				// the caller): a close's sweep that took its snapshot after the
+				// issue's first mark may have closed the link and cleared the
+				// mark while this open landed behind it. The new epoch stops a
+				// clear still to come; a clear already made is undone, so the
+				// participants are swept later. Off ck.mu: a transaction may
+				// wait for it.
+				c.ck.mu.Unlock()
+				if err := c.st.WithTx(ctx, markSweepTx); err != nil {
+					log.Printf("hub link: share sweep mark not set at an open (%s)", shareErrorClass(err))
+				}
+				c.ck.mu.Lock()
+			}
 			continue
 		}
 		c.ck.linkWriteErr = err

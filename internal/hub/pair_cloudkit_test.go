@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -312,6 +313,45 @@ func TestARelayCodeRefusesTheReplacedPhoneOnlyOnItsSASStream(t *testing.T) {
 				t.Fatalf("refusal %+v, want the waiting phone's expired_code", a)
 			}
 			break
+		}
+	})
+}
+
+// Two pairing streams at once: A asks for a code, then B. A is shown neither
+// B's qr nor the SAS of B's phone, and B's phone links through B alone.
+func TestTwoPairStreamsSeeOnlyTheirOwnCodes(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, ck, a := startPairDesk(t, transport.KindCloudKit)
+		pairCode(t, a)
+		b := r.dial()
+		t.Cleanup(func() { _ = b.Close() })
+		lp := pairCode(t, b)
+		phone, err := hubtest.FromLink(lp, ck.Fake, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := phone.Hello(transport.SharedMailboxZone(lp.RelayDeviceID)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			ev, err := b.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ev.Event == link.EventSAS {
+				if !strings.EqualFold(ev.DeviceID, phone.ID().String()) {
+					t.Fatalf("B's SAS %+v, want its phone", ev)
+				}
+				break
+			}
+		}
+		// A has read its own code's lines; anything more before the deadline
+		// (on the bubble's clock) is another stream's.
+		_ = a.c.SetReadDeadline(time.Now().Add(time.Minute))
+		ev, err := a.Next()
+		var ne net.Error
+		if err == nil || !errors.As(err, &ne) || !ne.Timeout() {
+			t.Fatalf("A was shown %+v (err %v): another stream's event", ev, err)
 		}
 	})
 }

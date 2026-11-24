@@ -123,39 +123,58 @@ func TestDesktopWatchHearsPairStepsWithoutCodes(t *testing.T) {
 	}
 }
 
-// Two pairing streams at once: A's code is issued, B's not yet. A's qr and
-// its phone's SAS reach B, but B records no SAS and is shown none before its
-// own code is issued, so that phone's shown-only refusal never reaches B (a
-// stream bound by that SAS would end at it). Once B's own code is issued it
-// is shown the next SAS and that phone's refusal.
-func TestAStreamIsShownNoSASBeforeItsOwnCode(t *testing.T) {
-	a := &pairListener{queue: make(chan ControlAnswer, 8), codes: map[string]string{}}
-	b := &pairListener{queue: make(chan ControlAnswer, 8), codes: map[string]string{}}
+// Two pairing streams at once: each is shown only its own code (the qr and
+// waiting carrying its token) and the events of phones under that code (by
+// nonce); neither sees the other's qr, SAS or refusal, and neither records
+// the other's SAS. An earlier code's refusal reaches only the stream that
+// asked for that code.
+func TestPairStreamsSeeOnlyTheirOwnCodes(t *testing.T) {
+	a := &pairListener{token: "stream-a", queue: make(chan ControlAnswer, 8), codes: map[string]string{}, nonces: map[string]bool{}}
+	b := &pairListener{token: "stream-b", queue: make(chan ControlAnswer, 8), codes: map[string]string{}, nonces: map[string]bool{}}
 	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{a: true, b: true}, watches: map[*pairListener]bool{}}
-	a.markIssued() // A's pair answered with its code
-	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/a"})
-	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "AAAA", Code: "1234"})
-	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedExpiredCode, ShownOnly: true})
-	b.markIssued() // B's own code
-	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/b"})
-	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "BBBB", Code: "5678"})
-	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "BBBB", Reason: wire.RefusedExpiredCode, ShownOnly: true})
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/a", Nonce: "na", Token: "stream-a"})
+	s.broadcast(link.PairEvent{Kind: link.EventWaiting, Nonce: "na", Token: "stream-a"})
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "AAAA", Code: "1234", Nonce: "na"})
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/b", Nonce: "nb", Token: "stream-b"})
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedExpiredCode, Nonce: "na"})
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "BBBB", Code: "5678", Nonce: "nb"})
 	events := func(p *pairListener) []string {
 		var got []string
 		for len(p.queue) > 0 {
 			ev := <-p.queue
-			got = append(got, ev.Event+":"+ev.DeviceID)
+			got = append(got, ev.Event+":"+ev.DeviceID+ev.URL)
 		}
 		return got
 	}
-	if got, want := events(b), []string{"qr:", "qr:", "sas:BBBB", "refused:BBBB"}; !slices.Equal(got, want) {
+	if got, want := events(a), []string{"qr:https://example.com/a", "waiting:", "sas:AAAA", "refused:AAAA"}; !slices.Equal(got, want) {
+		t.Fatalf("A's events %v, want %v", got, want)
+	}
+	if got, want := events(b), []string{"qr:https://example.com/b", "sas:BBBB"}; !slices.Equal(got, want) {
 		t.Fatalf("B's events %v, want %v", got, want)
 	}
 	if _, ok := b.code("AAAA"); ok {
-		t.Error("B recorded A's SAS before its own code")
+		t.Error("B recorded A's SAS")
 	}
-	if got, want := events(a), []string{"qr:", "sas:AAAA", "refused:AAAA", "qr:", "sas:BBBB", "refused:BBBB"}; !slices.Equal(got, want) {
-		t.Fatalf("A's events %v, want %v", got, want)
+	if _, ok := a.code("BBBB"); ok {
+		t.Error("A recorded B's SAS")
+	}
+}
+
+// A phone's SAS that the link center emits before the pair request that
+// asked for its code has even been answered reaches that stream: the stream
+// holds the code's nonce from its qr, which the center emits first, not
+// from anything done once the issue call returns.
+func TestASASBeforeThePairAnswerReachesItsStream(t *testing.T) {
+	a := &pairListener{token: "stream-a", queue: make(chan ControlAnswer, 4)}
+	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{a: true}, watches: map[*pairListener]bool{}}
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/a", Nonce: "na", Token: "stream-a"})
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "AAAA", Code: "1234", Nonce: "na"})
+	<-a.queue
+	if sas := <-a.queue; sas.Event != link.EventSAS || sas.DeviceID != "AAAA" {
+		t.Fatalf("got %+v, want the SAS", sas)
+	}
+	if code, ok := a.code("AAAA"); !ok || code != "1234" {
+		t.Fatalf("code %q %v: the confirm would find none", code, ok)
 	}
 }
 
