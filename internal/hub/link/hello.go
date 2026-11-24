@@ -6,8 +6,10 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,12 +28,27 @@ import (
 // reached, or the phone is linked already and keeps its link). Neither is set
 // when the hello changes nothing (the linked phone re-sent the code it used).
 type Pending struct {
-	DeviceID   string
-	Name       string
-	Code       string
+	DeviceID string
+	Name     string
+	Code     string
+	// Request names the waiting request (RequestID of its confirm nonce);
+	// Nonce is the link code it came in under (PendingLinks only).
+	Request    string
+	Nonce      string
 	ReceivedAt time.Time
 	Refused    string
 	Unanswered bool
+}
+
+// RequestID names one waiting link request for the owner's confirm: a short
+// hash of its confirm nonce, which a replacement request draws anew, so a
+// confirm naming it is bound to the request the owner was shown even when
+// a replacement drew the same four-digit code. It never reveals the nonce.
+func RequestID(confirmNonce []byte) string {
+	h := sha256.New()
+	h.Write([]byte("watchtower link request v1\x00"))
+	h.Write(confirmNonce)
+	return hex.EncodeToString(h.Sum(nil)[:8])
 }
 
 // openedHello is a hello opened and checked.
@@ -62,15 +79,17 @@ func (c *Center) HandleHello(zone, wireName string, env []byte) (Pending, error)
 	if err != nil {
 		return Pending{}, err
 	}
-	return c.decideHello(opened, "")
+	return c.decideHello(opened, "", opened.relayID != "")
 }
 
 // decideHello is HandleHello after the hello opened: user is the iCloud
 // user the request is bound to on CloudKit ("" elsewhere), kept with it so
-// the participant sweep spares a linked shared phone's user. A code an
-// answering CloudKit close retired reads that close's refusal (retired),
-// not expired_code.
-func (c *Center) decideHello(opened openedHello, user string) (Pending, error) {
+// the participant sweep spares a linked shared phone's user. overRelay: the
+// hello came through a Relay pairing slot (its sas event's OverRelay); a
+// CloudKit hello never did, even a private one whose owner read came back
+// empty. A code an answering CloudKit close retired reads that close's
+// refusal (retired), not expired_code.
+func (c *Center) decideHello(opened openedHello, user string, overRelay bool) (Pending, error) {
 	c.mu.Lock()
 	defer c.unlock()
 	payload := opened.hello.Device
@@ -119,7 +138,7 @@ func (c *Center) decideHello(opened openedHello, user string) (Pending, error) {
 		switch saved {
 		case pendingUnchanged:
 			stored, _, err := pendingTx(tx, opened.device)
-			out.Code, out.ReceivedAt = stored.sas, stored.receivedAt
+			out.Code, out.ReceivedAt, out.Request = stored.sas, stored.receivedAt, RequestID(stored.confirmNonce)
 			return err
 		case pendingCapped:
 			out.Refused = wire.RefusedTooManyRequests
@@ -128,7 +147,7 @@ func (c *Center) decideHello(opened openedHello, user string) (Pending, error) {
 			return err
 		case pendingSaved:
 		}
-		out.Code, waiting = sas, true
+		out.Code, out.Request, waiting = sas, RequestID(confirm), true
 		return nil
 	})
 	if err != nil {
@@ -137,13 +156,15 @@ func (c *Center) decideHello(opened openedHello, user string) (Pending, error) {
 	switch {
 	case waiting:
 		log.Printf("hub link: link request from phone %s waits for the owner", out.DeviceID)
-		c.emit(PairEvent{Kind: EventSAS, DeviceID: out.DeviceID, Name: out.Name, Code: out.Code})
+		c.emit(PairEvent{Kind: EventSAS, DeviceID: out.DeviceID, Name: out.Name, Code: out.Code, Request: out.Request,
+			OverRelay: overRelay, Nonce: opened.code.nonce})
 		c.changed()
 	case out.Refused != "" && out.Unanswered:
 		log.Printf("hub link: hello from phone %s refused (%s), unanswered", out.DeviceID, out.Refused)
 	case out.Refused != "":
 		log.Printf("hub link: hello from phone %s refused (%s)", out.DeviceID, out.Refused)
-		c.emit(PairEvent{Kind: EventRefused, DeviceID: out.DeviceID, Name: out.Name, Reason: out.Refused})
+		c.emit(PairEvent{Kind: EventRefused, DeviceID: out.DeviceID, Name: out.Name, Reason: out.Refused,
+			Nonce: opened.code.nonce})
 		c.changed()
 	}
 	return out, nil
@@ -398,7 +419,8 @@ func (c *Center) PendingLinks() ([]Pending, error) {
 	}
 	out := make([]Pending, 0, len(list))
 	for _, p := range list {
-		out = append(out, Pending{DeviceID: strings.ToUpper(p.deviceID), Name: p.name, Code: p.sas, ReceivedAt: p.receivedAt})
+		out = append(out, Pending{DeviceID: strings.ToUpper(p.deviceID), Name: p.name, Code: p.sas,
+			Request: RequestID(p.confirmNonce), Nonce: p.linkNonce, ReceivedAt: p.receivedAt})
 	}
 	return out, nil
 }

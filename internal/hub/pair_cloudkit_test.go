@@ -5,11 +5,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/state"
@@ -23,8 +27,9 @@ import (
 
 // startPairDesk runs a desktop host over an acctCK with an available iCloud
 // account, active the transport given, no phone linked, and dials its
-// control socket.
-func startPairDesk(t *testing.T, active transport.Kind) (*deskRig, *acctCK, *ControlClient) {
+// control socket. edit changes the rig's options before the start (noRelay
+// takes the relay away).
+func startPairDesk(t *testing.T, active transport.Kind, edit ...func(*Options)) (*deskRig, *acctCK, *ControlClient) {
 	t.Helper()
 	policytest.Set(t, nil)
 	r := newDeskRig(t, shortDir(t))
@@ -39,6 +44,9 @@ func startPairDesk(t *testing.T, active transport.Kind) (*deskRig, *acctCK, *Con
 		r.ckDial.Add(1)
 		return ck
 	}
+	for _, e := range edit {
+		e(&o)
+	}
 	r.start(o)
 	r.waitStatus("running on "+string(active), func(s Status) bool {
 		return s.State == StateRunning && s.Transport == string(active) &&
@@ -48,6 +56,9 @@ func startPairDesk(t *testing.T, active transport.Kind) (*deskRig, *acctCK, *Con
 	t.Cleanup(func() { _ = c.Close() })
 	return r, ck, c
 }
+
+// noRelay is a desktop host without a relay origin: CloudKit only.
+func noRelay(o *Options) { o.RelayOrigin = "" }
 
 // pairCode asks for a code and parses the qr event's link.
 func pairCode(t *testing.T, c *ControlClient) wire.LinkPayload {
@@ -99,6 +110,15 @@ func TestPairOnACloudKitDesktopIssuesACloudKitCode(t *testing.T) {
 			t.Fatalf("the shares' public link opened %d times, want 1", n)
 		}
 	})
+	// A Mac without a relay offers CloudKit alone: a paying phone is never
+	// sent to a relay that is not there.
+	bubble(t, func(t *testing.T) {
+		_, _, c := startPairDesk(t, transport.KindCloudKit, noRelay)
+		lp := pairCode(t, c)
+		if lp.Transport != wire.TransportCloudKit || !slices.Equal(lp.Transports, []string{wire.TransportCloudKit}) {
+			t.Fatalf("without a relay: transport %q, transports %v, want cloudkit only", lp.Transport, lp.Transports)
+		}
+	})
 }
 
 // On the relay the desktop host keeps the relay code and makes no share call.
@@ -115,11 +135,11 @@ func TestPairOnARelayDesktopIssuesARelayCode(t *testing.T) {
 	})
 }
 
-// With CloudKit active and the iCloud account gone, the pair is refused
-// no_icloud and no code is issued.
+// With CloudKit active, no relay and the iCloud account gone, the pair is
+// refused no_icloud and no code is issued.
 func TestPairOnACloudKitDesktopWithoutICloudIsRefused(t *testing.T) {
 	bubble(t, func(t *testing.T) {
-		r, ck, c := startPairDesk(t, transport.KindCloudKit)
+		r, ck, c := startPairDesk(t, transport.KindCloudKit, noRelay)
 		ck.acct.Store(transport.AccountNoAccount)
 		if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
 			t.Fatal(err)
@@ -172,11 +192,211 @@ func TestLinkErrClassForCloudKitCodes(t *testing.T) {
 	}
 }
 
+// pairRelayCode asks for a code and wants a relay code (no CloudKit fields)
+// answered OK, one code stored and the shares' public link never opened.
+func pairRelayCode(t *testing.T, r *deskRig, ck *acctCK, c *ControlClient) {
+	t.Helper()
+	if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
+		t.Fatal(err)
+	}
+	var (
+		qr     *ControlAnswer
+		answer *ControlAnswer
+	)
+	for qr == nil || answer == nil {
+		a, err := c.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case a.Event == link.EventQR:
+			qr = &a
+		case a.Event == "" && a.Op == OpPair:
+			if !a.OK || a.Error != "" {
+				t.Fatalf("answer %+v, want OK", a)
+			}
+			answer = &a
+		}
+	}
+	lp, err := wire.ParseLinkURL(qr.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lp.Transport != wire.TransportRelay || lp.Container != "" || lp.OwnerUser != "" ||
+		lp.DataShare != nil || lp.RelayShare != nil || lp.RelayDeviceID == "" {
+		t.Fatalf("want a relay code, got %+v", lp)
+	}
+	if n := codesStored(t, r.dir); n != 1 {
+		t.Fatalf("%d codes stored, want 1", n)
+	}
+	if n := ck.count("set_public_link:open"); n != 0 {
+		t.Fatalf("the public link opened %d times", n)
+	}
+}
+
+// F7: with CloudKit active and iCloud unusable (gone, or reported
+// unavailable), a Mac with a relay answers like a relay hub: a relay code
+// over a pairing slot, and the public link never opens.
+func TestPairOnACloudKitDesktopWithoutICloudFallsBackToARelayCode(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		account transport.Account
+	}{
+		{ErrClassNoICloud, transport.AccountNoAccount},
+		{ErrClassICloudUnreachable, transport.AccountTemporarilyUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bubble(t, func(t *testing.T) {
+				r, ck, c := startPairDesk(t, transport.KindCloudKit)
+				ck.acct.Store(tc.account)
+				pairRelayCode(t, r, ck, c)
+			})
+		})
+	}
+}
+
+// A relay code that replaces a CloudKit code refuses the phone waiting
+// under it (expired_code) on the stream that showed its SAS only: the stream
+// asking for the relay code has no phone bound and must not end.
+func TestARelayCodeRefusesTheReplacedPhoneOnlyOnItsSASStream(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, ck, shown := startPairDesk(t, transport.KindCloudKit)
+		lp := pairCode(t, shown)
+		phone, err := hubtest.FromLink(lp, ck.Fake, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := phone.Hello(transport.SharedMailboxZone(lp.RelayDeviceID)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			a, err := shown.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.Event == link.EventSAS {
+				break
+			}
+		}
+		ck.acct.Store(transport.AccountNoAccount)
+		fresh := r.dial()
+		t.Cleanup(func() { _ = fresh.Close() })
+		if err := fresh.Send(ControlRequest{Op: OpPair}); err != nil {
+			t.Fatal(err)
+		}
+		for qr, answered := false, false; !qr || !answered; {
+			a, err := fresh.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case a.Event == link.EventRefused:
+				t.Fatalf("the new code's stream got %+v", a)
+			case a.Event == link.EventQR:
+				qr = true
+			case a.Event == "" && a.Op == OpPair:
+				if !a.OK {
+					t.Fatalf("answer %+v, want a relay code", a)
+				}
+				answered = true
+			}
+		}
+		for {
+			a, err := shown.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.Event != link.EventRefused {
+				continue
+			}
+			if !strings.EqualFold(a.DeviceID, phone.ID().String()) || a.Reason != wire.RefusedExpiredCode {
+				t.Fatalf("refusal %+v, want the waiting phone's expired_code", a)
+			}
+			break
+		}
+	})
+}
+
+// Two pairing streams at once: A asks for a code, then B. A is shown neither
+// B's qr nor the SAS of B's phone; B is shown its phone's SAS.
+func TestTwoPairStreamsSeeOnlyTheirOwnCodes(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, ck, a := startPairDesk(t, transport.KindCloudKit)
+		pairCode(t, a)
+		b := r.dial()
+		t.Cleanup(func() { _ = b.Close() })
+		lp := pairCode(t, b)
+		phone, err := hubtest.FromLink(lp, ck.Fake, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := phone.Hello(transport.SharedMailboxZone(lp.RelayDeviceID)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			ev, err := b.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ev.Event == link.EventSAS {
+				if !strings.EqualFold(ev.DeviceID, phone.ID().String()) {
+					t.Fatalf("B's SAS %+v, want its phone", ev)
+				}
+				break
+			}
+		}
+		// A has read its own code's lines; anything more before the deadline
+		// (on the bubble's clock) is another stream's.
+		_ = a.c.SetReadDeadline(time.Now().Add(time.Minute))
+		ev, err := a.Next()
+		var ne net.Error
+		if err == nil || !errors.As(err, &ne) || !ne.Timeout() {
+			t.Fatalf("A was shown %+v (err %v): another stream's event", ev, err)
+		}
+	})
+}
+
+// idleBridge is a bridge that never launches (its launches keep failing):
+// never running, no launch on record.
+type idleBridge struct{}
+
+func (idleBridge) Run(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+func (idleBridge) Running() bool                 { return false }
+func (idleBridge) Launches() uint64              { return 0 }
+func (idleBridge) LastLaunch() time.Time         { return time.Time{} }
+
+// An unreadable iCloud account, or the Mac's iCloud user not read, past the
+// bridge's startup grace is unusable: a Mac with a connected relay issues a
+// relay code — whether its bridge runs (the rig's, launched long ago) or
+// never launched at all.
+func TestPairWithAnUnreadableAccountPastTheBridgeGraceFallsBackToARelayCode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   string
+		edit []func(*Options)
+	}{
+		{"running", "account_status", nil},
+		{"never launched", "account_status", []func(*Options){func(o *Options) {
+			o.Desktop.supervise = func(cloudkit.Config) bridgeRunner { return idleBridge{} }
+		}}},
+		{"owner unread", "owner_user", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bubble(t, func(t *testing.T) {
+				r, ck, c := startPairDesk(t, transport.KindCloudKit, tc.edit...)
+				time.Sleep(bridgeStartGrace)
+				ck.failNext(tc.op, 1000)
+				pairRelayCode(t, r, ck, c)
+			})
+		})
+	}
+}
+
 // An iCloud account the bridge reports only for now unavailable refuses the
-// pair as retryable, with nothing issued.
+// pair as retryable, with nothing issued, on a Mac without a relay.
 func TestPairOnACloudKitDesktopWithICloudBriefyUnavailableIsRetryable(t *testing.T) {
 	bubble(t, func(t *testing.T) {
-		r, ck, c := startPairDesk(t, transport.KindCloudKit)
+		r, ck, c := startPairDesk(t, transport.KindCloudKit, noRelay)
 		ck.acct.Store(transport.AccountTemporarilyUnavailable)
 		if a := pairRefusal(t, c); a != ErrClassICloudUnreachable {
 			t.Fatalf("answer %s, want %s", a, ErrClassICloudUnreachable)
@@ -185,6 +405,149 @@ func TestPairOnACloudKitDesktopWithICloudBriefyUnavailableIsRetryable(t *testing
 			t.Fatalf("%d codes stored", n)
 		}
 	})
+}
+
+// iCloud that is only not read yet — the account unreadable inside the
+// bridge's startup grace (just after the hub started), or the Mac's user not
+// read — keeps the retryable refusal on a Mac with a relay: "try again in a
+// moment", not a move to Relay.
+func TestPairOnACloudKitDesktopWithICloudNotReadYetIsRetryable(t *testing.T) {
+	for _, op := range []string{"account_status", "owner_user"} {
+		t.Run(op, func(t *testing.T) {
+			bubble(t, func(t *testing.T) {
+				r, ck, c := startPairDesk(t, transport.KindCloudKit)
+				ck.failNext(op, 1000)
+				if a := pairRefusal(t, c); a != ErrClassICloudUnreachable {
+					t.Fatalf("answer %s, want %s", a, ErrClassICloudUnreachable)
+				}
+				if n := codesStored(t, r.dir); n != 0 {
+					t.Fatalf("%d codes stored", n)
+				}
+			})
+		})
+	}
+}
+
+// downRelay is a relay that never connects: the hub's relay stays down.
+type downRelay struct{ transport.Transport }
+
+func (downRelay) Connect(context.Context, []string) error { return transport.ErrUnavailable }
+
+// liveRelay connects, then reports its live connection state from up (the
+// hosted relay's connectedReporter).
+type liveRelay struct {
+	transport.Transport
+	up *atomic.Bool
+}
+
+func (liveRelay) Connect(context.Context, []string) error { return nil }
+func (l liveRelay) Connected() bool                       { return l.up.Load() }
+
+// A Mac whose relay is not connected keeps the iCloud refusal — never
+// connected, or connected once and dropped since: a relay code would send the
+// phone to a pairing slot nobody serves, and the Mac must still say iCloud
+// is the problem.
+func TestPairOnACloudKitDesktopWithoutICloudAndTheRelayDownIsRefused(t *testing.T) {
+	var up atomic.Bool
+	for _, tc := range []struct {
+		name string
+		wrap func(transport.Transport) transport.Transport
+	}{
+		{"never connected", func(rel transport.Transport) transport.Transport { return downRelay{rel} }},
+		{"dropped after a connect", func(rel transport.Transport) transport.Transport {
+			up.Store(true)
+			return liveRelay{rel, &up}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bubble(t, func(t *testing.T) {
+				r, ck, c := startPairDesk(t, transport.KindCloudKit, func(o *Options) {
+					next := o.newTransport
+					o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
+						rel, err := next(ctx, id, st, zones)
+						return tc.wrap(rel), err
+					}
+				})
+				up.Store(false)
+				ck.acct.Store(transport.AccountNoAccount)
+				if a := pairRefusal(t, c); a != ErrClassNoICloud {
+					t.Fatalf("answer %s, want %s", a, ErrClassNoICloud)
+				}
+				if n := codesStored(t, r.dir); n != 0 {
+					t.Fatalf("%d codes stored", n)
+				}
+			})
+		})
+	}
+}
+
+// clockBridge is a bridge whose state the test sets.
+type clockBridge struct {
+	running bool
+	last    time.Time
+}
+
+func (b clockBridge) Run(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+func (b clockBridge) Running() bool                 { return b.running }
+func (clockBridge) Launches() uint64                { return 0 }
+func (b clockBridge) LastLaunch() time.Time         { return b.last }
+
+// Only an iCloud refusal that is not transient moves a pair to a relay code,
+// and only with a relay that is connected now: icloud_changed, failed and
+// the not-read-yet causes keep their refusal; an unreadable account counts
+// as unusable once the bridge is past its startup grace.
+func TestRelayCodeFallbackOnlyForUnusableICloud(t *testing.T) {
+	start := time.Unix(1_800_000_000, 0)
+	past := start.Add(time.Hour)
+	relay := memfake.New(transport.KindRelay, nil)
+	var connected, dropped atomic.Bool
+	connected.Store(true)
+	acct := func(a transport.Account) error { return &link.AccountError{Account: a} }
+	unreadable := &link.AccountError{Account: link.AccountUnreadable, Err: transport.ErrUnavailable}
+	for _, tc := range []struct {
+		name    string
+		rel     transport.Transport
+		relDown bool
+		bridge  bridgeRunner
+		now     time.Time
+		err     error
+		want    bool
+	}{
+		{"no account", relay, false, nil, start, acct(transport.AccountNoAccount), true},
+		{"restricted", relay, false, nil, start, acct(transport.AccountRestricted), true},
+		{"no entitlement", relay, false, nil, start, acct(transport.AccountNoEntitlement), true},
+		{"temporarily unavailable", relay, false, nil, start, acct(transport.AccountTemporarilyUnavailable), true},
+		{"unreadable just after the start", relay, false, clockBridge{running: true}, start.Add(bridgeStartGrace - time.Second), unreadable, false},
+		{"unreadable, a process launched just now", relay, false,
+			clockBridge{running: true, last: past.Add(-time.Second)}, past, unreadable, false},
+		{"unreadable, the process past its grace", relay, false,
+			clockBridge{running: true, last: past.Add(-bridgeStartGrace)}, past, unreadable, true},
+		{"unreadable, waiting to restart", relay, false,
+			clockBridge{last: past.Add(-time.Second)}, past, unreadable, true},
+		{"unreadable, never launched", relay, false, clockBridge{}, past, unreadable, true},
+		{"unreadable, the clock stepped back behind the launch", relay, false,
+			clockBridge{running: true, last: past.Add(10 * time.Minute)}, past, unreadable, true},
+		{"unreadable, the clock stepped back behind the start", relay, false, nil,
+			start.Add(-time.Hour), unreadable, true},
+		{"unreadable, no bridge", relay, false, nil, past, unreadable, true},
+		{"owner unknown just after the start", relay, false, nil, start.Add(bridgeStartGrace - time.Second),
+			link.ErrOwnerUnknown, false},
+		{"owner unknown past the grace", relay, false, nil, past, link.ErrOwnerUnknown, true},
+		{"account changed", relay, false, nil, past, fmt.Errorf("w: %w", link.ErrAccountChanged), false},
+		{"failed", relay, false, nil, past, errors.New("link: storing the code: disk full"), false},
+		{"no relay", nil, false, nil, past, acct(transport.AccountNoAccount), false},
+		{"relay never connected", relay, true, nil, past, acct(transport.AccountNoAccount), false},
+		{"relay connected now", liveRelay{relay, &connected}, false, nil, past, acct(transport.AccountNoAccount), true},
+		{"relay dropped after a connect", liveRelay{relay, &dropped}, false, nil, past, acct(transport.AccountNoAccount), false},
+	} {
+		now := tc.now
+		h := &hubRuntime{rel: tc.rel, bridge: tc.bridge, startedAt: start,
+			sup: &supervisor{o: Options{Clock: func() time.Time { return now }}}}
+		h.relDown.Store(tc.relDown)
+		if got := h.relayCodeFallback(tc.err); got != tc.want {
+			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
 
 // pairRefusal asks for a code and returns the answer's error class, failing
@@ -280,4 +643,274 @@ func TestAnAbandonedPairStreamClosesItsCloudKitCode(t *testing.T) {
 			t.Fatal("the abandoned stream's code kept its link open")
 		}
 	})
+}
+
+// withICloudPhone links an iCloud-routed phone into the hub dir before the
+// start (a startPairDesk edit).
+func withICloudPhone(t *testing.T) func(*Options) {
+	return func(o *Options) { linkSharedPhone(t, o.Dir, sharedPhoneID, "_colleague-a") }
+}
+
+// runtimeInto hands the started runtime to *h (a startPairDesk edit).
+func runtimeInto(h **hubRuntime) func(*Options) {
+	return func(o *Options) { o.started = func(rt *hubRuntime) { *h = rt } }
+}
+
+// slotSAS issues a code, sends a phone's hello through a Relay pairing
+// slot and reads the sas line the pairing stream gets. Anything else on
+// the stream fails the test at once; a sas that never comes fails it a
+// minute later on the bubble's clock.
+func slotSAS(t *testing.T, r *deskRig, c *ControlClient) (ControlAnswer, *hubtest.Phone) {
+	t.Helper()
+	phone, err := hubtest.FromLink(pairCode(t, c), r.fake, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := phone.Hello(transport.PairZone("slot1")); err != nil {
+		t.Fatal(err)
+	}
+	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: "slot1"}})
+	_ = c.SetReadDeadline(time.Now().Add(time.Minute))
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
+	a, err := c.Next()
+	if err != nil || a.Error != "" || a.Event != link.EventSAS {
+		t.Fatalf("waiting for the sas: %+v, %v", a, err)
+	}
+	return a, phone
+}
+
+// confirmAnswer sends the owner's confirm and reads its answer, skipping
+// pairing events.
+func confirmAnswer(t *testing.T, c *ControlClient, req ControlRequest) ControlAnswer {
+	t.Helper()
+	if err := c.Send(req); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(time.Minute))
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
+	for {
+		a, err := c.Next()
+		if err != nil {
+			t.Fatalf("waiting for the confirm's answer: %v", err)
+		}
+		if a.Event == "" && a.Op == OpConfirm {
+			return a
+		}
+	}
+}
+
+// #2191 review: a confirm names the code the owner was shown; a yes for a
+// code the phone's request no longer has is refused code_changed and keeps
+// the request; a confirm without a code takes the stream's latest, as
+// before.
+func TestAConfirmForAStaleCodeIsRefused(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, _, c := startPairDesk(t, transport.KindRelay)
+		sas, phone := slotSAS(t, r, c)
+		stale := "0000"
+		if sas.Code == stale {
+			stale = "1111"
+		}
+		a := confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: stale})
+		if a.Error != ErrClassCodeChanged {
+			t.Fatalf("a yes for a stale code: %+v", a)
+		}
+		// The code still holds but the line answered said another
+		// moves_to_relay (a replacement that kept its code).
+		flipped := !sas.MovesToRelay
+		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code, MovesToRelay: &flipped})
+		if a.Error != ErrClassCodeChanged {
+			t.Fatalf("a yes for another moves_to_relay: %+v", a)
+		}
+		// The code holds but the request named is not the one waiting.
+		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code,
+			Request: "0000000000000000"})
+		if sas.Request == "" || a.Error != ErrClassCodeChanged {
+			t.Fatalf("a yes for another request (sas request %q): %+v", sas.Request, a)
+		}
+		shown := sas.MovesToRelay
+		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code,
+			MovesToRelay: &shown, Request: sas.Request})
+		if !a.OK {
+			t.Fatalf("a yes for the code shown: %+v", a)
+		}
+	})
+}
+
+// Without a code the confirm is today's: the stream's latest code.
+func TestAConfirmWithoutACodeTakesTheStreamsCode(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, _, c := startPairDesk(t, transport.KindRelay)
+		_, phone := slotSAS(t, r, c)
+		if a := confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); !a.OK {
+			t.Fatalf("a yes without a code: %+v", a)
+		}
+	})
+}
+
+// #2191 integration review: each stream answers only the request it was
+// shown. The phone pairs through stream A, then again through stream B's
+// code (same device keys): the waiting request is B's now. A's answers —
+// naming B's code or request, naming nothing, or naming A's own old
+// request — never refuse or link B's request: a caller view that is not
+// A's last sas is code_changed, and A's own request that moved to B's code
+// is no_request (A's stream ends). B, answering a request id it was not
+// shown, gets code_changed; B's answer to its own request links.
+func TestAStreamAnswersOnlyItsOwnRequest(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, _, a := startPairDesk(t, transport.KindRelay)
+		sasA, phone := slotSAS(t, r, a)
+		b := r.dial()
+		t.Cleanup(func() { _ = b.Close() })
+		// The phone pairs through B's code; a new B code each time B's
+		// four digits happen to equal A's (1 in 10 000), a bounded number
+		// of times.
+		var sasB ControlAnswer
+		for attempt := 1; ; attempt++ {
+			if attempt > 5 {
+				t.Fatal("B's code equalled A's five times")
+			}
+			if err := phone.UseLink(pairCode(t, b)); err != nil {
+				t.Fatal(err)
+			}
+			slot := fmt.Sprintf("slotB%d", attempt)
+			if err := phone.Hello(transport.PairZone(slot)); err != nil {
+				t.Fatal(err)
+			}
+			r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: slot}})
+			_ = b.SetReadDeadline(time.Now().Add(time.Minute))
+			var err error
+			sasB, err = b.Next()
+			_ = b.SetReadDeadline(time.Time{})
+			if err != nil || sasB.Event != link.EventSAS || !strings.EqualFold(sasB.DeviceID, sasA.DeviceID) {
+				t.Fatalf("B's sas: %+v, %v", sasB, err)
+			}
+			if sasB.Code != sasA.Code {
+				break
+			}
+		}
+		device := phone.ID().String()
+		for _, tc := range []struct {
+			name string
+			on   *ControlClient
+			req  ControlRequest
+			want string
+		}{
+			{"A's yes with B's code", a, ControlRequest{Confirm: true, Code: sasB.Code}, ErrClassCodeChanged},
+			{"A's no with B's code", a, ControlRequest{Code: sasB.Code}, ErrClassCodeChanged},
+			{"A's no with B's request", a, ControlRequest{Request: sasB.Request}, ErrClassCodeChanged},
+			{"A's bare no", a, ControlRequest{}, ErrClassNoRequest},
+			{"A's no with its old request", a, ControlRequest{Request: sasA.Request}, ErrClassNoRequest},
+			{"A's yes to its old request", a, ControlRequest{Confirm: true, Code: sasA.Code, Request: sasA.Request}, ErrClassNoRequest},
+			{"B's no with a stale request", b, ControlRequest{Request: "0000000000000000"}, ErrClassCodeChanged},
+		} {
+			tc.req.Op, tc.req.Device = OpConfirm, device
+			if got := confirmAnswer(t, tc.on, tc.req); got.Error != tc.want {
+				t.Fatalf("%s: %+v, want %s", tc.name, got, tc.want)
+			}
+		}
+		// B's request waits untouched: B's yes to it links.
+		if got := confirmAnswer(t, b, ControlRequest{Op: OpConfirm, Device: device, Confirm: true, Code: sasB.Code,
+			Request: sasB.Request}); !got.OK {
+			t.Fatalf("B's yes to its own request: %+v", got)
+		}
+		// The phone finished on B: A's answer finds no request of its own.
+		if got := confirmAnswer(t, a, ControlRequest{Op: OpConfirm, Device: device}); got.Error != ErrClassNoRequest {
+			t.Fatalf("A's no after the phone linked through B: %+v", got)
+		}
+	})
+}
+
+// waitsOnStream tells a request still on the stream (a newer request
+// under its own code: code_changed, the owner answers again) from one on
+// another stream's code or gone (no_request ends the stream); a pending
+// list it cannot read counts as the stream's.
+func TestWaitsOnStream(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		var h *hubRuntime
+		r, _, c := startPairDesk(t, transport.KindRelay, runtimeInto(&h))
+		_, phone := slotSAS(t, r, c)
+		device := phone.ID().String()
+		pending, err := h.center.PendingLinks()
+		if err != nil || len(pending) != 1 || pending[0].Nonce == "" {
+			t.Fatalf("pending %+v, %v", pending, err)
+		}
+		own := &pairListener{nonces: []string{pending[0].Nonce}}
+		if !h.waitsOnStream(own, device) {
+			t.Error("a request under the stream's own code is not the stream's")
+		}
+		if h.waitsOnStream(&pairListener{nonces: []string{"another-code"}}, device) {
+			t.Error("a request under another stream's code is the stream's")
+		}
+		if h.waitsOnStream(own, "AAAAAAAA-0000-4000-8000-000000000001") {
+			t.Error("no request waiting counts as the stream's")
+		}
+		broken, err := state.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = broken.Close()
+		if !(&hubRuntime{center: link.NewCenter(link.Config{Store: broken})}).waitsOnStream(&pairListener{}, device) {
+			t.Error("an unreadable pending list is not the stream's")
+		}
+	})
+}
+
+// #2191 (Q6): the sas line says the Link moves the Mac to Relay exactly when
+// the phone paired through a Relay pairing slot, the hub runs on iCloud and
+// another linked phone has an iCloud route.
+func TestTheSASLineSaysWhenTheLinkMovesTheMacToRelay(t *testing.T) {
+	t.Run("a slot hello on iCloud with an iCloud phone", func(t *testing.T) {
+		bubble(t, func(t *testing.T) {
+			var h *hubRuntime
+			r, _, c := startPairDesk(t, transport.KindCloudKit, withICloudPhone(t), runtimeInto(&h))
+			sas, phone := slotSAS(t, r, c)
+			if !sas.MovesToRelay || !strings.EqualFold(sas.DeviceID, phone.ID().String()) {
+				t.Fatalf("sas %+v: want moves_to_relay", sas)
+			}
+			// The OverRelay guard alone: the same event without it moves
+			// nothing (that a CloudKit hello's sas never sets it is
+			// TestASASOverAPairingSlotSaysOverRelay's, in internal/hub/link).
+			if h.movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sas.DeviceID}) {
+				t.Fatal("a sas without OverRelay moves the Mac to Relay")
+			}
+			// The iCloud-routed phone relinking is not "another" phone.
+			if h.movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sharedPhoneID, OverRelay: true}) {
+				t.Fatal("the iCloud phone itself counts as another iCloud phone")
+			}
+			// An unreadable route list warns rather than stays silent.
+			broken, err := state.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = broken.Close()
+			if !(&hubRuntime{sw: h.sw, st: broken}).movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sas.DeviceID, OverRelay: true}) {
+				t.Fatal("a failed route read answers false")
+			}
+		})
+	})
+	t.Run("no other iCloud phone", func(t *testing.T) {
+		bubble(t, func(t *testing.T) {
+			r, _, c := startPairDesk(t, transport.KindCloudKit)
+			if sas, _ := slotSAS(t, r, c); sas.MovesToRelay {
+				t.Fatalf("sas %+v: nobody is cut off", sas)
+			}
+		})
+	})
+	t.Run("the hub on Relay", func(t *testing.T) {
+		bubble(t, func(t *testing.T) {
+			r, _, c := startPairDesk(t, transport.KindRelay, withICloudPhone(t))
+			if sas, _ := slotSAS(t, r, c); sas.MovesToRelay {
+				t.Fatalf("sas %+v: the hub is on Relay already", sas)
+			}
+		})
+	})
+}
+
+// A host without a switcher (one transport) never moves.
+func TestMovesToRelayWithoutASwitcherIsFalse(t *testing.T) {
+	h := &hubRuntime{}
+	if h.movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sharedPhoneID, OverRelay: true}) {
+		t.Fatal("a host without a switcher moves to Relay")
+	}
 }

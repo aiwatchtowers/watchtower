@@ -21,6 +21,8 @@ import (
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/logcanary"
 )
@@ -1480,5 +1482,144 @@ func TestALinkedKeyboxReadBeforeARelinkIsSealedToTheLink(t *testing.T) {
 	}
 	if err := open(a); err != nil {
 		t.Fatalf("the link's key cannot open it: %v", err)
+	}
+}
+
+// sasEvent drains c's events up to the next sas.
+func sasEvent(t *testing.T, c *Center) PairEvent {
+	t.Helper()
+	for {
+		select {
+		case ev := <-c.Events():
+			if ev.Kind == EventSAS {
+				return ev
+			}
+		default:
+			t.Fatal("no sas event")
+		}
+	}
+}
+
+// #2191: the sas event says whether the hello came through a Relay pairing
+// slot (no iCloud user behind it). A CloudKit hello is never over Relay,
+// even one carrying the phone's relay device id (a paying phone's).
+func TestASASOverAPairingSlotSaysOverRelay(t *testing.T) {
+	t.Run("slot", func(t *testing.T) {
+		r := newRig(t)
+		f := memfake.New(transport.KindRelay, r.clock)
+		code := r.issue()
+		p := newPhone(t)
+		r.writeHello(f, "slot1", p, code.Nonce, withRelayID(relayID(t)))
+		if err := r.c.OnPairingOpened(context.Background(), f, "slot1"); err != nil {
+			t.Fatal(err)
+		}
+		if ev := sasEvent(t, r.c); !ev.OverRelay || ev.MovesToRelay || ev.DeviceID != p.id.String() {
+			t.Fatalf("a slot hello's sas: %+v", ev)
+		}
+	})
+	t.Run("slot without a relay id", func(t *testing.T) {
+		r := newRig(t)
+		f := memfake.New(transport.KindRelay, r.clock)
+		code := r.issue()
+		p := newPhone(t)
+		r.writeHello(f, "slot1", p, code.Nonce)
+		if err := r.c.OnPairingOpened(context.Background(), f, "slot1"); err != nil {
+			t.Fatal(err)
+		}
+		if ev := sasEvent(t, r.c); ev.OverRelay {
+			t.Fatalf("a slot hello without a relay id: %+v", ev)
+		}
+	})
+	for _, scope := range []string{wire.ScopePrivate, wire.ScopeShared} {
+		t.Run("cloudkit "+scope, func(t *testing.T) {
+			r := newCKRig(t)
+			code := r.issueCK()
+			p := newPhone(t)
+			edits := []func(*wire.DeviceHello){withRelayID(relayID(t))}
+			if scope == wire.ScopeShared {
+				r.s.join("_phone-acme")
+				edits = append(edits, sharedHello("_phone-acme"))
+			}
+			if got, err := r.ckHello(p, code.Nonce, edits...); err != nil || got.Code == "" {
+				t.Fatalf("hello not waiting: %+v %v", got, err)
+			}
+			if ev := sasEvent(t, r.c); ev.OverRelay || ev.MovesToRelay {
+				t.Fatalf("a CloudKit hello's sas: %+v", ev)
+			}
+		})
+	}
+}
+
+// #2191 review: a confirm names the request the owner was shown. A
+// replacement keeps its device id but draws a new confirm nonce, so the
+// old request id is refused code_changed even with the code the request
+// shows now (a replacement that drew the same code), and the current one
+// links.
+func TestAConfirmForAReplacedRequestIDIsCodeChanged(t *testing.T) {
+	r := newRig(t)
+	code := r.issue()
+	_, sig, _ := ed25519.GenerateKey(rand.Reader)
+	first, second := phoneWith(t, sig), phoneWith(t, sig)
+	old := r.handle(first, code.Nonce)
+	current := r.handle(second, code.Nonce)
+	if old.Request == "" || current.Request == "" || old.Request == current.Request {
+		t.Fatalf("request ids: %q then %q", old.Request, current.Request)
+	}
+	// The sas events in order: the first request's, then the replacement's.
+	for _, want := range []Pending{old, current} {
+		if ev := sasEvent(t, r.c); ev.Code != want.Code || ev.Request != want.Request {
+			t.Fatalf("sas (%q, %q), want (%q, %q)", ev.Code, ev.Request, want.Code, want.Request)
+		}
+	}
+	// The pending snapshot names the same request the sas carried.
+	pending, err := r.c.PendingLinks()
+	if err != nil || len(pending) != 1 || pending[0].Request != current.Request || pending[0].Code != current.Code {
+		t.Fatalf("pending links %+v, %v: want request %q", pending, err, current.Request)
+	}
+	device := second.id.String()
+	// A stale window's no names the old request: it refuses nothing newer.
+	if err := r.c.ConfirmRequest(device, "", old.Request, false); !errors.Is(err, ErrCodeChanged) {
+		t.Fatalf("a no for the replaced request: %v", err)
+	}
+	if pending, err := r.c.PendingLinks(); err != nil || len(pending) != 1 {
+		t.Fatalf("a stale no refused the waiting request: %+v, %v", pending, err)
+	}
+	if err := r.c.ConfirmRequest(device, current.Code, old.Request, true); !errors.Is(err, ErrCodeChanged) {
+		t.Fatalf("a yes for the replaced request: %v", err)
+	}
+	if r.linked(second) {
+		t.Fatal("linked a request the owner was not shown")
+	}
+	if err := r.c.ConfirmRequest(device, current.Code, current.Request, true); err != nil {
+		t.Fatal(err)
+	}
+	if !r.linked(second) {
+		t.Fatal("not linked on the current request")
+	}
+}
+
+// A no naming the waiting request refuses it; a no naming none refuses
+// whichever request waits, as before request ids.
+func TestANoRefusesTheRequestItNamesOrTheOneWaiting(t *testing.T) {
+	for name, named := range map[string]bool{"named": true, "without request": false} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			code := r.issue()
+			p := newPhone(t)
+			waiting := r.handle(p, code.Nonce)
+			request := ""
+			if named {
+				request = waiting.Request
+			}
+			if err := r.c.ConfirmRequest(p.id.String(), "", request, false); err != nil {
+				t.Fatal(err)
+			}
+			if pending, err := r.c.PendingLinks(); err != nil || len(pending) != 0 {
+				t.Fatalf("the no left %+v, %v", pending, err)
+			}
+			if r.linked(p) {
+				t.Fatal("a no linked the phone")
+			}
+		})
 	}
 }

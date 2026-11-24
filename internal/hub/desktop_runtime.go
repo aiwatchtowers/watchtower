@@ -58,7 +58,8 @@ func (h *hubRuntime) desktopTransports(ctx context.Context, o Options) error {
 			return err
 		}
 		h.rel = rel
-		_, h.relDown = rel.(relayConnector)
+		_, down := rel.(relayConnector)
+		h.relDown.Store(down)
 	}
 	c := cloudkit.Config{Dir: o.Dir, HubID: h.kr.HubIDText(), RelayID: h.relayID, Clock: o.Clock,
 		Launch: o.Desktop.launcher(o.Dir)}
@@ -230,12 +231,12 @@ func (h *hubRuntime) closeTransports() {
 // yet (worker only); a failure is logged once and retried by the next link
 // upkeep, and CloudKit runs meanwhile.
 func (h *hubRuntime) connectRelay(ctx context.Context) {
-	if !h.relDown {
+	if !h.relDown.Load() {
 		return
 	}
 	c, ok := h.rel.(relayConnector)
 	if !ok {
-		h.relDown = false
+		h.relDown.Store(false)
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, switcher.OldSideTimeout)
@@ -244,7 +245,7 @@ func (h *hubRuntime) connectRelay(ctx context.Context) {
 		log.Printf("hub: the relay is not connected (%s): retried", errClass(err))
 		return
 	}
-	h.relDown = false
+	h.relDown.Store(false)
 	if a, ok := h.rel.(relayAdmission); ok && h.acct != nil {
 		st := a.LastAccountState()
 		h.acct.seed(st)

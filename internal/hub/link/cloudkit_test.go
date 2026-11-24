@@ -415,6 +415,47 @@ func TestIssueOnCloudKitOpensThePublicLinkAndCarriesShares(t *testing.T) {
 	}
 }
 
+// A CloudKit code offers relay only when the hub has a relay: a Mac
+// without one never sends a paying phone to a relay that is not there. The
+// relay identity stays on the code either way (spec §1).
+func TestIssueCloudKitTransportsFollowTheHost(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		host []string
+		want []string
+	}{
+		{"with a relay", []string{wire.TransportCloudKit, wire.TransportRelay},
+			[]string{wire.TransportCloudKit, wire.TransportRelay}},
+		{"without a relay", []string{wire.TransportCloudKit}, []string{wire.TransportCloudKit}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newCKRig(t)
+			r.c = NewCenter(Config{
+				Store: r.st, Keys: r.kr, Opener: secure.NewOpener(r.kr, r.kr),
+				Host: HostInfo{Name: "acme-host", RelayDeviceID: testRelayID, RelayAuthPub: testRelayPub,
+					Transports: tc.host},
+				Clock: r.clock, Publish: func(...string) {}, Sweep: DefaultSweep,
+			})
+			p, url, err := r.c.IssueCloudKit(r.ctx, r.s)
+			if err != nil {
+				t.Fatalf("IssueCloudKit: %v", err)
+			}
+			parsed, err := wire.ParseLinkURL(url)
+			if err != nil {
+				t.Fatalf("ParseLinkURL: %v", err)
+			}
+			for _, lp := range []wire.LinkPayload{p, parsed} {
+				if lp.Transport != wire.TransportCloudKit || !slices.Equal(lp.Transports, tc.want) {
+					t.Errorf("transport %q transports %v, want cloudkit %v", lp.Transport, lp.Transports, tc.want)
+				}
+				if lp.RelayDeviceID != testRelayID || lp.RelayAuthPub != testRelayPub {
+					t.Errorf("relay identity %q %q", lp.RelayDeviceID, lp.RelayAuthPub)
+				}
+			}
+		})
+	}
+}
+
 // testNoAccountOrRestrictedRefusesTheCodeAndCreatesNoShare.
 func TestNoAccountRefusesToIssue(t *testing.T) {
 	r := newCKRig(t)
@@ -1513,6 +1554,392 @@ func TestAnAccountChangeClosesTheOpenCodeAndItsLink(t *testing.T) {
 	}
 	if next := r.issueCK(); next.OwnerUser != "_new-owner" {
 		t.Errorf("the next code names %q: the cached owner was kept", next.OwnerUser)
+	}
+}
+
+// An account change ends the old account's link, not a relay code's pairing
+// slot: a request waiting under a relay code (the no-iCloud fallback) is
+// kept for the owner to decide.
+func TestAnAccountChangeSparesARelayCodesRequest(t *testing.T) {
+	r := newCKRig(t)
+	r.issueCK()
+	relayCode := r.issue()
+	b := newPhone(t)
+	if got := r.handle(b, relayCode.Nonce); got.Code == "" {
+		t.Fatalf("relay request not waiting: %+v", got)
+	}
+	if err := r.c.AccountChanged(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, []string{b.id.String()}) {
+		t.Fatalf("pending %v, want the relay code's request", ids)
+	}
+}
+
+// A relay code that replaces a CloudKit code on screen closes it as an
+// answering close does: the public link at the next pass, the participants
+// after the answer grace — also when no pass ran for long (an iCloud hold
+// skips them) — and the stop closes the link of a code replaced just now.
+func TestARelayCodeClosesTheCloudKitCodeItReplaces(t *testing.T) {
+	t.Run("passes", func(t *testing.T) {
+		r := newCKRig(t)
+		r.issueCK()
+		r.s.join("_stranger")
+		r.issue()
+		if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+			t.Fatal(err)
+		}
+		if r.s.isOpen() {
+			t.Fatal("the replaced code's public link is still open")
+		}
+		if got := r.s.names(ckZones[1]); len(got) != 1 {
+			t.Fatalf("swept inside the grace: %v", got)
+		}
+		r.advance(DefaultSweep.AnswerGrace)
+		if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+			t.Fatal(err)
+		}
+		for _, z := range ckZones {
+			if got := r.s.names(z); len(got) != 0 {
+				t.Errorf("%s: %v not swept", z, got)
+			}
+		}
+		if r.sweepMark() != "0" {
+			t.Errorf("mark %q", r.sweepMark())
+		}
+	})
+	t.Run("held", func(t *testing.T) {
+		r := newCKRig(t)
+		r.issueCK()
+		r.s.join("_stranger")
+		r.issue()
+		r.advance(24 * time.Hour) // no pass while iCloud is held
+		if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+			t.Fatal(err)
+		}
+		if r.s.isOpen() || len(r.s.names(ckZones[0])) != 0 || len(r.s.names(ckZones[1])) != 0 {
+			t.Errorf("after the hold: open %v participants %v %v", r.s.isOpen(), r.s.names(ckZones[0]), r.s.names(ckZones[1]))
+		}
+	})
+	t.Run("stop", func(t *testing.T) {
+		r := newCKRig(t)
+		r.issueCK()
+		r.issue()
+		if err := r.c.CloseOnStop(r.ctx, r.s); err != nil {
+			t.Fatal(err)
+		}
+		if r.s.isOpen() {
+			t.Error("the replaced code's public link outlived the stop")
+		}
+	})
+}
+
+// A phone waiting under a CloudKit code a relay code replaced reads
+// expired_code before any sweep can take its participant away.
+func TestARelayCodeRefusesTheReplacedCodesWaitingPhone(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	r.s.join("_colleague-a")
+	a := newPhone(t)
+	if got, err := r.ckHello(a, code.Nonce, sharedHello("_colleague-a")); err != nil || got.Code == "" {
+		t.Fatalf("not waiting: %+v %v", got, err)
+	}
+	r.issue()
+	if ids := pendingIDs(t, r.c); len(ids) != 0 {
+		t.Fatalf("still waiting under the replaced code: %v", ids)
+	}
+	if kb, ok := r.keybox(a); !ok || refusal(kb) != wire.RefusedExpiredCode || kb.Keys != nil {
+		t.Fatalf("keybox %v %+v, want expired_code", ok, kb.Grant)
+	}
+}
+
+// Every pair event names its code: a code's qr and waiting carry its nonce
+// and the asking stream's token; the phone's SAS carries the nonce its hello
+// came under; the replaced code's refusal carries the replaced code's nonce,
+// never the new code's or its asking stream's token.
+func TestPairEventsCarryTheirCodeAndAskingStream(t *testing.T) {
+	r := newCKRig(t)
+	code, _, err := r.c.IssueCloudKitFor(r.ctx, r.s, "stream-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{EventQR, EventWaiting} {
+		if ev := <-r.c.Events(); ev.Kind != kind || ev.Nonce != code.Nonce || ev.Token != "stream-a" {
+			t.Fatalf("%s event %+v, want the code's nonce and stream-a", kind, ev)
+		}
+	}
+	a := newPhone(t)
+	if got, err := r.ckHello(a, code.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("not waiting: %+v %v", got, err)
+	}
+	if ev := <-r.c.Events(); ev.Kind != EventSAS || ev.Nonce != code.Nonce || ev.Token != "" {
+		t.Fatalf("sas %+v, want the hello's code nonce", ev)
+	}
+	next, _, err := r.c.IssueFor("stream-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev := <-r.c.Events(); ev.Kind != EventRefused || ev.DeviceID != a.id.String() ||
+		ev.Reason != wire.RefusedExpiredCode || ev.Nonce != code.Nonce || ev.Token != "" {
+		t.Fatalf("refusal %+v, want the replaced code's expired_code", ev)
+	}
+	if ev := <-r.c.Events(); ev.Kind != EventQR || ev.Nonce != next.Nonce || ev.Token != "stream-b" {
+		t.Fatalf("then %+v, want the relay code's qr for stream-b", ev)
+	}
+}
+
+// A close that lands while an open is wanted again (a newer CloudKit code's
+// open, timed out, and a relay code replacing that one meanwhile) leaves the
+// link open: the stop still closes it.
+func TestTheStopClosesAReplacedLinkReopenedBehindALandedClose(t *testing.T) {
+	r := newCKRig(t)
+	r.issueCK()
+	r.issue()
+	r.s.once("set_public_link", func() {
+		r.c.ck.mu.Lock()
+		r.c.ck.linkWanted, r.c.ck.closeAtStop = true, true // the newer open, then its replacement
+		r.c.ck.mu.Unlock()
+	})
+	_ = r.c.SweepShares(r.ctx, r.s) // the replaced link's close lands, then the open is written
+	if !r.s.isOpen() {
+		t.Fatal("the wanted open was not written behind the close")
+	}
+	if err := r.c.CloseOnStop(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() {
+		t.Error("the reopened link outlived the stop")
+	}
+}
+
+// An account change's sweep can clear the sweep mark while an issue reopens
+// the link behind it (the issue marks, the sweep snapshots, closes, the issue
+// opens, the sweep clears the unchanged epoch). The stop and the pass's
+// retry still close a replaced code's link: they follow the writer, not the
+// mark.
+func TestTheStopClosesAReplacedLinkWhoseSweepMarkWasCleared(t *testing.T) {
+	for _, stop := range []bool{true, false} {
+		r := newCKRig(t)
+		r.issueCK()
+		if err := r.st.SetMeta(MetaShareSweepPending, "0"); err != nil { // the race's outcome
+			t.Fatal(err)
+		}
+		r.issue()
+		var err error
+		if stop {
+			err = r.c.CloseOnStop(r.ctx, r.s)
+		} else {
+			err = r.c.SweepShares(r.ctx, r.s)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.s.isOpen() {
+			t.Errorf("stop %v: the replaced code's link stayed open", stop)
+		}
+	}
+}
+
+// A public link an earlier run left open (its start's close failed: the
+// sweep mark stays) is closed at the stop once a relay code replaced this
+// run's code, though this run never opened it (a private-only code).
+func TestTheStopClosesAnInheritedLinkBehindAReplacedCode(t *testing.T) {
+	r := newCKRig(t)
+	if err := r.st.SetMeta(MetaShareSweepPending, "1"); err != nil {
+		t.Fatal(err)
+	}
+	r.s.mu.Lock()
+	r.s.open = true // left open by the earlier run
+	r.s.mu.Unlock()
+	r.s.setFailing("ensure_shares")
+	r.issueCK() // private-only: no open tried
+	r.s.setFailing()
+	r.issue()
+	if err := r.c.CloseOnStop(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() {
+		t.Error("the inherited link outlived the stop")
+	}
+}
+
+// A close's sweep that clears the mark while an issue's open lands behind
+// it (the issue marked, the sweep snapshotted, closed and cleared) leaves
+// the mark set again: a participant who joined after the sweep looked is
+// still swept after the replaced code's grace.
+func TestAReopenBehindASweepKeepsTheSweepMark(t *testing.T) {
+	r := newCKRig(t)
+	r.s.once("set_public_link", func() {
+		// The concurrent sweep's clear, landing during the issue's open.
+		if err := r.st.SetMeta(MetaShareSweepPending, "0"); err != nil {
+			t.Error(err)
+		}
+	})
+	r.issueCK()
+	if m := r.sweepMark(); m != "1" {
+		t.Fatalf("mark %q after the reopen, want 1", m)
+	}
+	r.s.join("_late")
+	r.issue()
+	r.advance(DefaultSweep.AnswerGrace)
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	for _, z := range ckZones {
+		if got := r.s.names(z); len(got) != 0 {
+			t.Errorf("%s: %v not swept", z, got)
+		}
+	}
+}
+
+// An open that lands after its caller gave up (the caller's ctx ended, the
+// writer's did not) still sets the sweep mark: the writer marks every open
+// it lands.
+func TestALateOpenStillSetsTheSweepMark(t *testing.T) {
+	r := newCKRig(t)
+	if err := r.st.SetMeta(MetaShareSweepPending, "0"); err != nil {
+		t.Fatal(err)
+	}
+	entered, gate := make(chan struct{}), make(chan struct{})
+	r.s.once("set_public_link", func() { close(entered); <-gate })
+	ctx, cancel := context.WithCancel(r.ctx)
+	done := make(chan error, 1)
+	go func() { _, err := r.c.setLink(ctx, r.s, true, CloseRestart, closeScope{}); done <- err }()
+	<-entered
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the caller's wait: %v, want its ctx's end", err)
+	}
+	r.c.ck.mu.Lock()
+	writer := r.c.ck.writer
+	r.c.ck.mu.Unlock()
+	close(gate) // the open lands now, the caller long gone
+	if writer != nil {
+		<-writer
+	}
+	if !r.s.isOpen() || r.sweepMark() != "1" {
+		t.Fatalf("open %v mark %q, want the late open marked", r.s.isOpen(), r.sweepMark())
+	}
+}
+
+// A close's sweep whose clear comes after an open landed behind it (and
+// re-marked the sweep) does not clear the mark: the open's epoch bump stops
+// it, so the reopened link's participants are swept later.
+func TestASweepClearAfterAReopenIsStoppedByTheEpoch(t *testing.T) {
+	r := newCKRig(t)
+	r.issueCK()
+	r.s.join("_stranger")
+	r.s.once("participants", func() {
+		// The sweep closed the link and lists the participants: an issue's
+		// open lands now.
+		if _, err := r.c.setLink(r.ctx, r.s, true, CloseRestart, closeScope{}); err != nil {
+			t.Error(err)
+		}
+	})
+	_ = r.c.CloseLink(r.ctx, r.s, CloseAccountChanged)
+	if !r.s.isOpen() || r.sweepMark() != "1" {
+		t.Fatalf("open %v mark %q: the sweep cleared the mark behind the reopen", r.s.isOpen(), r.sweepMark())
+	}
+}
+
+// A replaced CloudKit code whose shares never opened (no sweep mark: the
+// open was never tried) makes the stop no share call.
+func TestTheStopMakesNoShareCallForAReplacedCodeThatNeverOpened(t *testing.T) {
+	r := newCKRig(t)
+	r.s.setFailing("ensure_shares")
+	r.issueCK()
+	r.issue()
+	if m := r.sweepMark(); m == "1" {
+		t.Fatalf("sweep mark %q: the open was tried", m)
+	}
+	r.s.takeCalls()
+	if err := r.c.CloseOnStop(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if calls := r.s.takeCalls(); r.s.count(calls, "set_public_link") != 0 {
+		t.Errorf("share calls at the stop: %v", calls)
+	}
+}
+
+// At one account change, a request under a relay code is spared and one
+// under the open CloudKit code is refused.
+func TestAnAccountChangeSparesTheRelayRequestAndRefusesTheCloudKitOne(t *testing.T) {
+	r := newCKRig(t)
+	relayCode := r.issue()
+	b := newPhone(t)
+	if got := r.handle(b, relayCode.Nonce); got.Code == "" {
+		t.Fatalf("relay request not waiting: %+v", got)
+	}
+	ckCode := r.issueCK()
+	a := newPhone(t)
+	if got, err := r.ckHello(a, ckCode.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("CloudKit request not waiting: %+v %v", got, err)
+	}
+	if err := r.c.AccountChanged(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, []string{b.id.String()}) {
+		t.Fatalf("pending %v, want the relay code's request alone", ids)
+	}
+	if kb := r.mustKeybox(a); refusal(kb) != wire.RefusedNotConfirmed {
+		t.Errorf("the CloudKit code's request %+v", kb.Grant)
+	}
+}
+
+// An unlink inside a replaced code's answer grace never sweeps early: a
+// phone that accepted the share and has not read its answer yet keeps its
+// participant until the grace ends.
+func TestAnUnlinkInsideAReplacedCodesGraceWaitsForIt(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	r.s.join("_colleague-a")
+	a := newPhone(t)
+	r.linkCK(a, code.Nonce, sharedHello("_colleague-a"))
+	r.s.join("_late")
+	r.issue()
+	if err := r.c.Unlink(a.id.String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.s.names(ckZones[1]); !slices.Contains(got, "_late") {
+		t.Fatalf("swept inside the grace: %v", got)
+	}
+	r.advance(DefaultSweep.AnswerGrace)
+	if err := r.c.SweepShares(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	for _, z := range ckZones {
+		if got := r.s.names(z); len(got) != 0 {
+			t.Errorf("%s: %v after the grace", z, got)
+		}
+	}
+}
+
+// A replaced code's public link whose close retries ran out is still closed
+// at the stop.
+func TestTheStopClosesAReplacedCodesLinkAfterItsRetriesRanOut(t *testing.T) {
+	r := newCKRig(t)
+	r.issueCK()
+	r.s.setFailing("set_public_link")
+	r.issue()
+	for range 20 {
+		r.advance(time.Hour)
+		_ = r.c.SweepShares(r.ctx, r.s)
+	}
+	r.c.ck.mu.Lock()
+	exhausted := r.c.ck.linkCloseAt.IsZero() && r.c.ck.sweepAt.IsZero()
+	r.c.ck.mu.Unlock()
+	if !exhausted || !r.s.isOpen() {
+		t.Fatalf("retries not run out (exhausted %v) or the link closed (open %v)", exhausted, r.s.isOpen())
+	}
+	r.s.setFailing()
+	if err := r.c.CloseOnStop(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() {
+		t.Error("the replaced code's public link outlived the stop")
 	}
 }
 
