@@ -263,8 +263,14 @@ func (r *liveReader) claudeAgents() {
 		if r.sidechain && a == nil {
 			continue
 		}
-		if a == nil && !m.Finished && r.staleMeta(sessionDir, m.agentID) {
-			continue
+		if a == nil && !m.Finished {
+			stale, err := r.staleMeta(sessionDir, m.agentID)
+			if err != nil {
+				r.live.AgentsState = "unknown"
+			}
+			if stale {
+				continue
+			}
 		}
 		if a == nil {
 			a = &LiveAgent{Ref: SubagentRef{ToolUseID: id, Type: m.AgentType, Description: clipSummary(firstLine(m.Description))}}
@@ -279,10 +285,18 @@ func (r *liveReader) claudeAgents() {
 	}
 }
 
-// staleMeta: the agent's own transcript is missing or silent past liveMetaStale.
-func (r *liveReader) staleMeta(sessionDir, agentID string) bool {
-	st, err := os.Lstat(filepath.Join(sessionDir, "subagents", "agent-"+agentID+".jsonl"))
-	return err != nil || r.live.ObservedAt.Sub(st.ModTime()) > liveMetaStale
+// staleMeta: the agent's own transcript, or its sidecar while no transcript is
+// written yet, has been silent past liveMetaStale. An unreadable file is an error.
+func (r *liveReader) staleMeta(sessionDir, agentID string) (bool, error) {
+	base := filepath.Join(sessionDir, "subagents", "agent-"+agentID)
+	st, err := os.Lstat(base + ".jsonl")
+	if errors.Is(err, os.ErrNotExist) {
+		st, err = os.Lstat(base + ".meta.json")
+	}
+	if err != nil {
+		return false, err
+	}
+	return r.live.ObservedAt.Sub(st.ModTime()) > liveMetaStale, nil
 }
 
 func (r *liveReader) codexLine(line []byte) {

@@ -41,6 +41,12 @@ func writeLongClaudeSessionWith(t *testing.T, finished, extra int) Conversation 
 	for i := range finished {
 		meta(fmt.Sprintf("done%03d", i), fmt.Sprintf(`{"toolUseId":"done-%d","requestShape":"background","finished":true}`, i))
 	}
+	// Every file is fresh at the poll's time, whatever the host clock says.
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.NoError(t, os.Chtimes(filepath.Join(dir, e.Name()), liveNow, liveNow))
+	}
 	return Conversation{Path: path, AgentSessionID: "main"}
 }
 
@@ -135,4 +141,25 @@ func TestLiveClaudeTooManyWorkingCandidatesIsUnknown(t *testing.T) {
 	live, err := LiveOf(writeLongClaudeSessionWith(t, 0, maxLiveAgentCandidates), false, liveNow)
 	require.NoError(t, err)
 	assert.Equal(t, "unknown", live.AgentsState)
+}
+
+// Launched this poll: the sidecar exists, the agent has written no transcript yet.
+func TestLiveClaudeJustLaunchedWithoutTranscriptIsWorking(t *testing.T) {
+	c := writeLongClaudeSession(t, 0)
+	require.NoError(t, os.Remove(filepath.Join(strings.TrimSuffix(c.Path, ".jsonl"), "subagents", "agent-early.jsonl")))
+	live, err := LiveOf(c, false, liveNow)
+	require.NoError(t, err)
+	assert.Equal(t, "known", live.AgentsState)
+	require.Len(t, runningAgents(live), 1)
+}
+
+func TestLiveClaudeSilentSidecarWithoutTranscriptIsNotWorking(t *testing.T) {
+	c := writeLongClaudeSession(t, 0)
+	dir := filepath.Join(strings.TrimSuffix(c.Path, ".jsonl"), "subagents")
+	require.NoError(t, os.Remove(filepath.Join(dir, "agent-early.jsonl")))
+	old := liveNow.Add(-liveMetaStale - time.Minute)
+	require.NoError(t, os.Chtimes(filepath.Join(dir, "agent-early.meta.json"), old, old))
+	live, err := LiveOf(c, false, liveNow)
+	require.NoError(t, err)
+	assert.Empty(t, runningAgents(live))
 }
