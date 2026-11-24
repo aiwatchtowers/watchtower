@@ -175,7 +175,7 @@ final class SessionChatViewTests: XCTestCase {
         func action(
             _ text: String, _ kind: AgentTextHighlights.Kind, message: Int64 = 1, root: CodeRoot? = root
         ) async -> WorkchatHighlights.Action {
-            await highlights.action(for: span(text, kind), messageID: message, root: root, indexFiles: [])
+            await highlights.action(for: span(text, kind), messageID: message, root: root, index: .none)
         }
         let got1 = await action("#2188", .ref(2188))
         XCTAssertEqual(got1, .showTarget(2188))
@@ -236,7 +236,7 @@ final class SessionChatViewTests: XCTestCase {
         await highlights.lookupsFinished()
         XCTAssertFalse(resolves("Transport.swift", epoch: 6, revision: 2, files: two), "ambiguous now: plain")
         let click = await highlights.action(for: span("Transport.swift", .path), messageID: 1, root: root,
-                                            indexFiles: two)
+                                            index: .init(files: { two }, revision: { 2 }))
         XCTAssertEqual(click, .nothing)
     }
 
@@ -258,25 +258,98 @@ final class SessionChatViewTests: XCTestCase {
                                           indexFiles: ["S/T.swift"]))
     }
 
-    /// The Workchat shows its root to the index while on screen: every show balanced by one hide, a root change
-    /// moves the hold.
-    func testWorkchatIndexLeaseIsBalanced() {
-        let lease = WorkchatIndexLease()
-        var shown: [String] = []
-        var hidden: [String] = []
-        lease.connect(show: { shown.append($0.folder.lastPathComponent) },
-                      hide: { hidden.append($0.folder.lastPathComponent) })
-        let rootA = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
-        let rootB = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-b"))
-        lease.hold(rootA)
-        lease.hold(rootA)
-        lease.hold(rootB)
-        lease.release()
-        lease.release()
-        lease.hold(nil)
-        XCTAssertEqual(shown, ["wt-a", "wt-b"])
-        XCTAssertEqual(hidden, ["wt-a", "wt-b"])
-        XCTAssertNil(lease.held)
+    /// A click's lookup reads a snapshot of the index: a duplicate that joins while it runs (the index revision
+    /// moves) makes it look again, so the stale hit never opens (review round 3).
+    func testAClickLooksAgainWhenTheIndexChangesUnderItsLookup() async {
+        let highlights = WorkchatHighlights()
+        let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
+        let one = ["Sources/A/Transport.swift"]
+        let two = one + ["Sources/B/Transport.swift"]
+        let state = LockedLog()
+        highlights.lookUp = { path, _, files in
+            // The duplicate joins the index while the first click lookup runs.
+            if files == one, state.contains("asked") { state.append("joined") }
+            state.append("asked")
+            return WorkchatHighlights.uniqueBaseName(path, in: files)
+        }
+        XCTAssertFalse(highlights.resolves("Transport.swift", messageID: 1, root: root, epoch: 0, revision: 1,
+                                           indexFiles: one))
+        await highlights.lookupsFinished()
+        XCTAssertTrue(highlights.resolves("Transport.swift", messageID: 1, root: root, epoch: 0, revision: 1,
+                                          indexFiles: one))
+        let index = WorkchatHighlights.IndexView(
+            files: { state.contains("joined") ? two : one },
+            revision: { state.contains("joined") ? 2 : 1 }
+        )
+        let click = await highlights.action(for: span("Transport.swift", .path), messageID: 1, root: root, index: index)
+        XCTAssertEqual(click, .nothing, "the stale unique hit does not open")
+        XCTAssertEqual(state.values.filter { $0 == "asked" }.count, 3, "the resolve, the stale click lookup, the retry")
+    }
+
+    /// A click's miss lands only over the answer it read: a newer hit that landed meanwhile stands.
+    func testALateClickMissLeavesANewerAnswer() async {
+        let highlights = WorkchatHighlights()
+        let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
+        let gate = DispatchSemaphore(value: 0)
+        let log = LockedLog()
+        highlights.lookUp = { path, _, files in
+            if files == ["GATE"] {
+                log.append("click")
+                gate.wait()
+                return nil
+            }
+            return WorkchatHighlights.uniqueBaseName(path, in: files)
+        }
+        XCTAssertFalse(highlights.resolves("T.swift", messageID: 1, root: root, epoch: 0, revision: 0,
+                                           indexFiles: ["S/T.swift"]))
+        await highlights.lookupsFinished()
+        let click = Task {
+            await highlights.action(for: span("T.swift", .path), messageID: 1, root: root,
+                                    index: .init(files: { ["GATE"] }, revision: { 0 }))
+        }
+        let started = await eventually { log.contains("click") }
+        XCTAssertTrue(started)
+        XCTAssertTrue(highlights.resolves("T.swift", messageID: 1, root: root, epoch: 1, revision: 0,
+                                          indexFiles: ["S/T.swift"]))
+        await highlights.lookupsFinished()
+        gate.signal()
+        let clicked = await click.value
+        XCTAssertEqual(clicked, .nothing)
+        XCTAssertTrue(highlights.resolves("T.swift", messageID: 1, root: root, epoch: 1, revision: 0,
+                                          indexFiles: ["S/T.swift"]), "the newer hit stands")
+    }
+
+    /// A click whose chat leaves (or whose root changes) while its lookup runs does nothing when it lands.
+    func testACancelledClickNeverActs() async {
+        let highlights = WorkchatHighlights()
+        let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
+        let gate = DispatchSemaphore(value: 0)
+        let log = LockedLog()
+        highlights.lookUp = { path, _, files in
+            if log.contains("resolved") {
+                log.append("click")
+                gate.wait()
+            }
+            return WorkchatHighlights.uniqueBaseName(path, in: files)
+        }
+        _ = highlights.resolves("T.swift", messageID: 1, root: root, epoch: 0, revision: 0, indexFiles: ["S/T.swift"])
+        await highlights.lookupsFinished()
+        log.append("resolved")
+        var performed: [WorkchatHighlights.Action] = []
+        highlights.click(span("T.swift", .path), messageID: 1, root: root,
+                         index: .init(files: { ["S/T.swift"] }, revision: { 0 })) { performed.append($0) }
+        let started = await eventually { log.contains("click") }
+        XCTAssertTrue(started)
+        highlights.cancelPendingClick()
+        gate.signal()
+        await highlights.clickFinished()
+        XCTAssertEqual(performed, [], "the chat left: nothing opens")
+
+        highlights.click(span("T.swift", .path), messageID: 1, root: root,
+                         index: .init(files: { ["S/T.swift"] }, revision: { 0 })) { performed.append($0) }
+        gate.signal()
+        await highlights.clickFinished()
+        XCTAssertEqual(performed, [.openFile("S/T.swift", root)], "a click left alone acts")
     }
 
     /// The live lookup: a relative or absolute in-root path by itself, a bare name only on a unique index hit.

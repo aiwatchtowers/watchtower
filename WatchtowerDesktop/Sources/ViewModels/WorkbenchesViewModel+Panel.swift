@@ -520,13 +520,17 @@ extension WorkbenchesViewModel {
     /// session's root. In a split the Files pane goes beside `pane`, the Workchat it was clicked in — so the page's
     /// session is that one, and a split with another session (or that session's report) never takes the chat's
     /// place. A single pane opens Files the way a FILES click does. Either way the Files pane works in `root`, not
-    /// a FILES root chosen before.
+    /// a FILES root chosen before. A `pane` no longer on screen opens nothing.
     func openSessionFile(_ relPath: String, root: CodeRoot, pane: WorkspacePane) async {
-        await codeFiles.pullPending(root)
-        codeFiles.open(relPath, root: root, preview: true)
         let projectID = root.workbenchID
+        guard layout(projectID: projectID).visiblePanes.contains(pane) else { return }
+        await codeFiles.pullPending(root)
+        // The click's chat left, or its pane is off screen, meanwhile: nothing
+        // opens, and another session's layout is never changed (review round 3).
         var updated = layout(projectID: projectID)
-        if updated.isSplit, updated.visiblePanes.contains(pane) {
+        guard !Task.isCancelled, updated.visiblePanes.contains(pane) else { return }
+        codeFiles.open(relPath, root: root, preview: true)
+        if updated.isSplit {
             beginSwitch(projectID: projectID)
             updated.openBeside(.files, keeping: pane)
             setLayout(updated, projectID: projectID)

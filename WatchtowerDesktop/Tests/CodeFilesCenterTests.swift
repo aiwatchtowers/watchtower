@@ -438,27 +438,81 @@ final class CodeFilesCenterTests: XCTestCase {
         XCTAssertTrue(tree.rows.contains { $0.entry.relPath == "new.txt" })
     }
 
-    /// The Workchat holds its session root the way FILES does (#2201 T2 review): while held, the root's folder
-    /// batches are handled (they reach the code index, so its file list follows the disk with FILES collapsed);
-    /// once released, a worktree root is no longer watched.
-    func testAWorkchatLeaseWatchesItsRootLikeFiles() throws {
+    /// The Workchat holds its session root (#2201 T2 reviews): while held, the root's folder batches are handled
+    /// (they reach the code index, so its file list follows the disk with FILES collapsed); once released, a worktree
+    /// root is no longer watched. A chat-only hold is no FILES consumer: it never runs `git status` (round 3).
+    func testAWorkchatHoldWatchesItsRootButRunsNoGit() async throws {
         let worktreeFolder = folder.appendingPathComponent("wt")
         try FileManager.default.createDirectory(at: worktreeFolder, withIntermediateDirectories: true)
         let worktree = CodeRoot(workbenchID: project.id, worktree: worktreeFolder)
-        let center = makeCenter()
+        let runs = Counter()
+        let center = makeCenter { _ in
+            await runs.increment()
+            return .snapshot(GitStatusSnapshot())
+        }
         let lease = WorkchatIndexLease()
-        lease.connect(show: { center.startWatching($0) }, hide: { center.stopShowing($0) })
         let tree = center.tree(for: worktree)
-        lease.hold(worktree)
+        lease.hold(worktree, in: center)
         tree.loadIfNeeded()
         try "x".write(to: worktreeFolder.appendingPathComponent("new.txt"), atomically: true, encoding: .utf8)
-        center.handle(FolderWatcher.Batch(paths: ["new.txt"]), root: worktree)
+        center.handle(FolderWatcher.Batch(paths: ["new.txt"], gitChanged: true), root: worktree)
         XCTAssertTrue(tree.rows.contains { $0.entry.relPath == "new.txt" }, "held: the batch is handled")
+        await center.gitSettled()
+        let chatOnly = await runs.value
+        XCTAssertEqual(chatOnly, 0, "a chat-only hold schedules no git status")
+
+        center.startWatching(worktree)
+        await center.gitSettled()
+        let withFiles = await runs.value
+        XCTAssertEqual(withFiles, 1, "FILES showing it reads git")
+        center.stopShowing(worktree)
+        XCTAssertTrue(center.isWatching(worktree), "FILES gone: the chat still holds it")
 
         lease.release()
+        XCTAssertFalse(center.isWatching(worktree), "released: no longer watched")
         try "y".write(to: worktreeFolder.appendingPathComponent("later.txt"), atomically: true, encoding: .utf8)
         center.handle(FolderWatcher.Batch(paths: ["later.txt"]), root: worktree)
-        XCTAssertFalse(tree.rows.contains { $0.entry.relPath == "later.txt" }, "released: no longer watched")
+        XCTAssertFalse(tree.rows.contains { $0.entry.relPath == "later.txt" })
+    }
+
+    /// A worktree gone before the chat held it is not counted, so the chat's release never takes FILES' count.
+    func testAnUncountedHoldNeverReleasesFilesCount() throws {
+        let worktreeFolder = folder.appendingPathComponent("wt-late")
+        let worktree = CodeRoot(workbenchID: project.id, worktree: worktreeFolder)
+        let center = makeCenter()
+        let lease = WorkchatIndexLease()
+        lease.hold(worktree, in: center)
+        XCTAssertNil(lease.held)
+        try FileManager.default.createDirectory(at: worktreeFolder, withIntermediateDirectories: true)
+        center.startWatching(worktree)
+        lease.release()
+        XCTAssertTrue(center.isWatching(worktree), "FILES still shows it")
+    }
+
+    /// A bench folder removed from its bench: its main root's stream (kept for life otherwise) and tree go
+    /// (round 3); the home folder and the folders still on the bench stay.
+    func testAFolderOffTheBenchStopsBeingWatched() throws {
+        let hubFolder = folder.appendingPathComponent("hub")
+        try FileManager.default.createDirectory(at: hubFolder, withIntermediateDirectories: true)
+        let hub = WorkbenchFolder(id: 5, workbenchID: project.id, folderPath: hubFolder.path, position: 1, name: "hub")
+        let home = WorkbenchFolder(id: 3, workbenchID: project.id, folderPath: folder.path, position: 0, name: "acme")
+        let hubRoot = CodeRoot(folder: hub, homeFolderID: 3)
+        let center = makeCenter()
+        center.startWatching(root)
+        center.startWatching(hubRoot)
+        center.stopShowing(hubRoot)
+        let hubTree = center.tree(for: hubRoot)
+        XCTAssertTrue(center.isWatching(hubRoot), "a main root's stream stays while hidden")
+
+        center.retireRootsOffTheBench([project.id: BenchFolders(folders: [home, hub], homeID: 3)])
+        XCTAssertTrue(center.isWatching(hubRoot), "still on the bench")
+
+        let removed = WorkbenchFolder(id: 5, workbenchID: project.id, folderPath: hubFolder.path, position: 1,
+                                      removedAt: "2026-11-24T00:00:00Z", name: "hub")
+        center.retireRootsOffTheBench([project.id: BenchFolders(folders: [home, removed], homeID: 3)])
+        XCTAssertFalse(center.isWatching(hubRoot), "off the bench: no longer watched")
+        XCTAssertFalse(center.tree(for: hubRoot) === hubTree, "its tree is gone")
+        XCTAssertTrue(center.isWatching(root), "the home root stays")
     }
 
     func testAMovedWorkbenchFolderDropsTheOldMainRootsWatchAndTree() throws {

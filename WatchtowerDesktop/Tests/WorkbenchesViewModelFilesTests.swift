@@ -86,6 +86,36 @@ final class WorkbenchesViewModelFilesTests: XCTestCase {
         XCTAssertEqual(vm.codeFiles.tabs(for: project.mainCodeRoot).paths, ["a.go"])
     }
 
+    /// A click whose Workchat is no longer on screen (another session took the page meanwhile) opens nothing and
+    /// leaves the layout alone (review round 3).
+    func testAWorkchatPathWhoseChatIsOffScreenOpensNothing() async throws {
+        let (vm, project) = try await vmWithProject()
+        var single = WorkspaceLayout.default
+        single.primary = .sessionChat(3)
+        vm.setLayout(single, projectID: project.id)
+        await vm.openSessionFile("a.go", root: project.mainCodeRoot, pane: .sessionChat(2))
+        XCTAssertEqual(vm.layout(projectID: project.id), single)
+        XCTAssertEqual(vm.codeFiles.tabs(for: project.mainCodeRoot).paths, [])
+    }
+
+    /// A bench folder removed from its bench stops being watched once the folders are read again (review round 3).
+    func testAFolderOffTheBenchIsRetiredByTheFoldersRead() async throws {
+        let (vm, project) = try await vmWithProject()
+        let hubFolder = folder.appendingPathComponent("hub")
+        try FileManager.default.createDirectory(at: hubFolder, withIntermediateDirectories: true)
+        let home = WorkbenchFolder(id: 3, workbenchID: project.id, folderPath: folder.path, position: 0, name: "acme")
+        let hub = WorkbenchFolder(id: 5, workbenchID: project.id, folderPath: hubFolder.path, position: 1, name: "hub")
+        let hubRoot = CodeRoot(folder: hub, homeFolderID: 3)
+        vm.codeFiles.startWatching(hubRoot)
+        vm.codeFiles.stopShowing(hubRoot)
+        vm.applyBenchFolders([project.id: BenchFolders(folders: [home, hub], homeID: 3)])
+        XCTAssertTrue(vm.codeFiles.isWatching(hubRoot))
+        let removed = WorkbenchFolder(id: 5, workbenchID: project.id, folderPath: hubFolder.path, position: 1,
+                                      removedAt: "2026-11-24T00:00:00Z", name: "hub")
+        vm.applyBenchFolders([project.id: BenchFolders(folders: [home, removed], homeID: 3)])
+        XCTAssertFalse(vm.codeFiles.isWatching(hubRoot))
+    }
+
     func testOpenPullsTheUnsentEditSoThePreviewTabIsKept() async {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
         let project = Workbench(row: Row(["id": 3, "name": "acme", "folder_path": folder.path]))

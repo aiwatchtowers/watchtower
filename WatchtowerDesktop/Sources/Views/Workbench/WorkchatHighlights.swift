@@ -98,7 +98,7 @@ final class WorkchatHighlights {
     }
 
     /// What a click on `span` of message `messageID` does, as a value the view performs (and tests read). A path is
-    /// looked up afresh (`indexFiles`: the root's index now): one gone or ambiguous since does nothing and loses its
+    /// looked up afresh (`index`: the root's index now): one gone or ambiguous since does nothing and loses its
     /// colour.
     enum Action: Equatable {
         case showTarget(Int64)
@@ -107,10 +107,24 @@ final class WorkchatHighlights {
         case nothing
     }
 
+    /// What the click looks a path up in: the root's index file list and its `filesRevision`, read on the main
+    /// actor when the click asks.
+    struct IndexView {
+        let files: @MainActor () -> [String]
+        let revision: @MainActor () -> Int
+
+        static let none = Self(files: { [] }, revision: { 0 })
+    }
+
+    /// How often a click looks again when the index changed under its lookup before it gives up.
+    static let clickLookupAttempts = 3
+
     /// Off the main actor for a path (the base-name scan reads the whole file list); the click's action runs when
-    /// it lands, still keyed by message, path and root.
+    /// it lands, still keyed by message, path and root. The lookup reads a snapshot of the index: if the index's
+    /// revision moved meanwhile (a duplicate may have joined), the answer is stale and the path is looked up again
+    /// (review round 3). A miss is written back only over the answer the click read, never over a newer one.
     func action(
-        for span: AgentTextHighlights.Span, messageID: Int64, root: CodeRoot?, indexFiles: @autoclosure () -> [String]
+        for span: AgentTextHighlights.Span, messageID: Int64, root: CodeRoot?, index: IndexView
     ) async -> Action {
         switch span.kind {
         case let .ref(number): return .showTarget(Int64(number))
@@ -119,14 +133,53 @@ final class WorkchatHighlights {
             guard let root else { return .nothing }
             let key = Key(messageID: messageID, path: span.text, root: root)
             guard let answer = answers[key], answer.file != nil else { return .nothing }
-            let (path, files, lookUp) = (span.text, span.text.contains("/") ? [] : indexFiles(), lookUp)
-            let file = await Task.detached(priority: .userInitiated) { lookUp(path, root, files) }.value
-            guard let file else {
-                answers[key] = Answer(file: nil, stamp: answer.stamp)
+            let (path, bare, lookUp) = (span.text, !span.text.contains("/"), lookUp)
+            for _ in 0 ..< Self.clickLookupAttempts {
+                let revision = index.revision()
+                let files = bare ? index.files() : []
+                let file = await Task.detached(priority: .userInitiated) { lookUp(path, root, files) }.value
+                if Task.isCancelled { return .nothing }
+                guard index.revision() == revision else { continue }
+                if let file { return .openFile(file, root) }
+                if answers[key]?.stamp == answer.stamp {
+                    answers[key] = Answer(file: nil, stamp: answer.stamp)
+                }
                 return .nothing
             }
-            return .openFile(file, root)
+            return .nothing
         }
+    }
+
+    /// The click whose lookup runs (`click`): a newer click, the chat leaving or its root changing cancels it, so
+    /// a late lookup never acts for a pane that is gone (review round 3).
+    @ObservationIgnored private var pendingClick: Task<Void, Never>?
+
+    /// Runs a click: its action is worked out (`action`) and handed to `perform` unless cancelled meanwhile.
+    func click(
+        _ span: AgentTextHighlights.Span,
+        messageID: Int64,
+        root: CodeRoot?,
+        index: IndexView,
+        perform: @escaping @MainActor (Action) async -> Void
+    ) {
+        pendingClick?.cancel()
+        pendingClick = Task { [weak self] in
+            guard let self else { return }
+            let action = await action(for: span, messageID: messageID, root: root, index: index)
+            guard !Task.isCancelled else { return }
+            await perform(action)
+        }
+    }
+
+    /// The chat left, or its pane's root changed: a click still looking up does nothing.
+    func cancelPendingClick() {
+        pendingClick?.cancel()
+        pendingClick = nil
+    }
+
+    /// Waits for the click in flight (tests).
+    func clickFinished() async {
+        await pendingClick?.value
     }
 
     /// The regular file `path` names in `root`, relative to it: a path with a `/` (absolute inside the root, or
@@ -159,31 +212,29 @@ struct WorkchatHighlightHandlers {
     let resolvesPath: (String, Int64) -> Bool
 }
 
-/// The Workchat holds its session root while it is on screen, the way FILES does (`CodeFilesCenter.startWatching`,
-/// reviews rounds 2–3): the root's code index runs and its folder watcher keeps the index's file list current, so a
-/// bare file name resolves — and a later duplicate turns it plain — with FILES never shown. Every `show` is balanced
-/// by one `hide`.
+/// The Workchat holds its session root while it is on screen (`CodeFilesCenter.startHolding`, reviews rounds 2–4): the
+/// root's code index runs and its folder watcher keeps the index's file list current, so a bare file name resolves —
+/// and a later duplicate turns it plain — with FILES never shown. The hold is no FILES consumer: it runs no
+/// `git status`. Every counted hold is balanced by one `stopHolding`.
 @MainActor
 final class WorkchatIndexLease {
     private(set) var held: CodeRoot?
-    private var show: ((CodeRoot) -> Void)?
-    private var hide: ((CodeRoot) -> Void)?
+    /// The centre the held root was held in, so it is let go by the same one.
+    private var files: CodeFilesCenter?
 
-    /// Where `hold` shows and hides a root (the app's `CodeIndexCenter`); the first connection stays, so a root
-    /// shown is always hidden by the same centre.
-    func connect(show: @escaping (CodeRoot) -> Void, hide: @escaping (CodeRoot) -> Void) {
-        guard self.show == nil else { return }
-        self.show = show
-        self.hide = hide
-    }
-
-    /// Holds `root` (nil: none), letting go of the one held before.
-    func hold(_ root: CodeRoot?) {
-        guard root != held else { return }
-        if let held { hide?(held) }
+    /// Holds `root` in `files` (nil: none), letting go of the one held before. A root the centre does not count
+    /// (a worktree gone before it showed) is not held, and a later call tries again.
+    func hold(_ root: CodeRoot?, in files: CodeFilesCenter) {
+        guard root != held || self.files !== files else { return }
+        release()
+        guard let root, files.startHolding(root) else { return }
         held = root
-        if let root { show?(root) }
+        self.files = files
     }
 
-    func release() { hold(nil) }
+    func release() {
+        if let held { files?.stopHolding(held) }
+        held = nil
+        files = nil
+    }
 }

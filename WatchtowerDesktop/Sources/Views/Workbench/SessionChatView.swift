@@ -200,9 +200,15 @@ struct SessionChatView: View {
         // The feed shows a sent line: its bubble leaves.
         .onChange(of: store.entries) { _, entries in workchat?.reconcile(with: entries) }
         // The session root's code index runs while the Workchat is on screen: a bare file name resolves in it.
-        .onAppear { holdIndex(sessionCodeRoot) }
-        .onChange(of: sessionCodeRoot) { _, root in holdIndex(root) }
-        .onDisappear { indexLease.release() }
+        .onAppear { indexLease.hold(sessionCodeRoot, in: vm.codeFiles) }
+        .onChange(of: sessionCodeRoot) { _, root in
+            highlights.cancelPendingClick()
+            indexLease.hold(root, in: vm.codeFiles)
+        }
+        .onDisappear {
+            highlights.cancelPendingClick()
+            indexLease.release()
+        }
         // The main feed is polled only while it is on screen: an open
         // subagent stops it, and back at the root it is read once.
         .task(id: MainFollowKey(state: stateKind, root: path.isRoot)) {
@@ -445,14 +451,6 @@ struct SessionChatView: View {
         vm.summaries.first { $0.id == projectID }.map { vm.codeRoot(sessionID: sessionID, project: $0.project) }
     }
 
-    /// The session root shown the way FILES shows it (`CodeFilesCenter.startWatching`): its code index runs and its
-    /// folder watcher keeps the index's file list current, balanced by `stopShowing`.
-    private func holdIndex(_ root: CodeRoot?) {
-        let files = vm.codeFiles
-        indexLease.connect(show: { files.startWatching($0) }, hide: { files.stopShowing($0) })
-        indexLease.hold(root)
-    }
-
     /// The span click and path lookup the feed and a subagent's run share. The session's code root is worked out
     /// once here, per feed build, never per span (review round 1). An answer is asked again once the dialog or the
     /// root's file list changes (`filesRevision`).
@@ -461,12 +459,14 @@ struct SessionChatView: View {
         let index = root.map { appState.codeIndexCenter.index(for: $0) }
         let epoch = dialogEntries.count
         let revision = index?.filesRevision ?? 0
+        let indexView = index.map { index in
+            WorkchatHighlights.IndexView(files: { index.files }, revision: { index.filesRevision })
+        } ?? .none
         let (highlights, vm, sessionID) = (highlights, vm, sessionID)
         return WorkchatHighlightHandlers(
             open: { span, messageID in
-                Task { @MainActor in
-                    let files = index?.files ?? []
-                    switch await highlights.action(for: span, messageID: messageID, root: root, indexFiles: files) {
+                highlights.click(span, messageID: messageID, root: root, index: indexView) { action in
+                    switch action {
                     case let .showTarget(targetID):
                         vm.showTargetOnBoard(targetID, projectID: projectID)
                     case let .copy(text):
