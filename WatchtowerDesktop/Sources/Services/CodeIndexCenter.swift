@@ -98,8 +98,10 @@ final class CodeIndexCenter {
     }
 
     /// A view shows the root: the first show (or one after a failure) starts
-    /// a full run. Balanced by `markHidden`.
-    func markShown(root: CodeRoot) {
+    /// a full run. `rescan`: the root's folder was not watched since it was
+    /// last shown, so an index kept within its idle time runs in full again
+    /// (a first show's run already covers it). Balanced by `markHidden`.
+    func markShown(root: CodeRoot, rescan: Bool = false) {
         watchRulesFile()
         // The workbench (or one of its bench folders) moved to another
         // folder: nothing of that folder's old main index holds. Another
@@ -117,11 +119,16 @@ final class CodeIndexCenter {
             guard session.run == nil else { return }
             session.fullPending = true
         case .indexing, .ready:
-            break
+            if rescan { session.fullPending = true }
         }
         // A first show, one after a failure, or one after the rules file
         // changed while the root was hidden.
         if session.fullPending { startNextRun(session) }
+    }
+
+    /// Whether another full run waits behind the root's current one (tests).
+    func fullRunPending(root: CodeRoot) -> Bool {
+        sessions[root]?.fullPending == true
     }
 
     func markHidden(root: CodeRoot) {

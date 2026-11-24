@@ -130,7 +130,7 @@ final class CodeFilesCenter {
     @ObservationIgnored private var holds: [CodeRoot: Set<ObjectIdentifier>] = [:]
     /// Roots retired with their bench folder or workbench: shown or held
     /// again, their buffers and index read the disk afresh (round 4).
-    @ObservationIgnored private var retiredRoots: Set<CodeRoot> = []
+    @ObservationIgnored private(set) var retiredRoots: Set<CodeRoot> = []
     @ObservationIgnored private var gitRunning: Set<CodeRoot> = []
     @ObservationIgnored private var gitPending: Set<CodeRoot> = []
     @ObservationIgnored private var gitLastRun: [CodeRoot: ContinuousClock.Instant] = [:]
@@ -246,14 +246,15 @@ final class CodeFilesCenter {
         sweepRemovedWorktrees(workbenchID: root.workbenchID)
         guard root.isMain || CodeRootPolicy.directoryExists(root.folder) else { return false }
         if removedRoots.contains(root) { removedRoots.remove(root) }
-        codeIndex?.markShown(root: root)
         let isNew = watched.insert(root).inserted
-        // A worktree root is not watched while hidden: what changed
-        // meanwhile is read again now.
-        if isNew, !root.isMain || retiredRoots.contains(root) { rescanRoot(root) }
-        // A folder back on the bench: its index may still be within its idle
-        // time and would keep the old file list.
-        if retiredRoots.remove(root) != nil { codeIndex?.applyWatcherBatch(FolderWatcher.Batch(mustRescan: true), root: root) }
+        // A worktree root is not watched while hidden, nor a folder off the
+        // bench: what changed meanwhile is read again now — the tree, the
+        // buffers and an index kept within its idle time (#2386: a duplicate
+        // base name added meanwhile is seen).
+        let retired = retiredRoots.remove(root) != nil
+        let unwatchedMeanwhile = isNew && (!root.isMain || retired)
+        codeIndex?.markShown(root: root, rescan: unwatchedMeanwhile)
+        if unwatchedMeanwhile { rescanRoot(root) }
         if watchesFolders, isNew || watchers[root] == nil {
             let watcher = FolderWatcher(root: root.folder, hidden: CodeFileTree.hiddenNames) { [weak self] batch in
                 self?.receive(batch, root: root)
@@ -304,14 +305,22 @@ final class CodeFilesCenter {
             if let folder = bench.folder(folderID), !folder.isRemoved { continue }
             retire(root)
         }
+        // A folder whose row is gone never comes back on the bench (#2386).
+        retiredRoots = retiredRoots.filter { root in
+            guard let folderID = root.folderID, let bench = all[root.workbenchID] else { return true }
+            return bench.folder(folderID) != nil
+        }
     }
 
     /// The workbench was deleted: every root of it stops being watched, its
-    /// main roots' streams too (review round 4).
+    /// main roots' streams too (review round 4). None comes back, so none is
+    /// kept as retired (#2386).
     func retireWorkbenchRoots(workbenchID: Int64) {
         for root in watched where root.workbenchID == workbenchID {
-            retire(root)
+            unwatchRoot(root)
+            dropRootViews(root)
         }
+        retiredRoots = retiredRoots.filter { $0.workbenchID != workbenchID }
     }
 
     private func retire(_ root: CodeRoot) {

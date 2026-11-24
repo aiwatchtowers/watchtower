@@ -582,6 +582,31 @@ final class CodeFilesCenterTests: XCTestCase {
         XCTAssertTrue(center.isWatching(other), "another workbench stays")
     }
 
+    /// #2386 (T2 minor): roots that can never come back are not remembered as retired — a deleted workbench's, and
+    /// a folder whose row is gone from its bench; a folder only marked removed is still remembered (it may return).
+    func testRetiredRootsAreForgottenWhenTheyCannotComeBack() throws {
+        let hubFolder = folder.appendingPathComponent("hub")
+        try FileManager.default.createDirectory(at: hubFolder, withIntermediateDirectories: true)
+        let hub = WorkbenchFolder(id: 5, workbenchID: project.id, folderPath: hubFolder.path, position: 1, name: "hub")
+        let home = WorkbenchFolder(id: 3, workbenchID: project.id, folderPath: folder.path, position: 0, name: "acme")
+        let removed = WorkbenchFolder(id: 5, workbenchID: project.id, folderPath: hubFolder.path, position: 1,
+                                      removedAt: "2026-11-24T00:00:00Z", name: "hub")
+        let hubRoot = CodeRoot(folder: hub, homeFolderID: 3)
+        let center = makeCenter()
+        center.startWatching(hubRoot)
+        center.retireRootsOffTheBench([project.id: BenchFolders(folders: [home, removed], homeID: 3)])
+        XCTAssertEqual(center.retiredRoots, [hubRoot], "a removed folder may come back")
+        center.retireRootsOffTheBench([project.id: BenchFolders(folders: [home], homeID: 3)])
+        XCTAssertEqual(center.retiredRoots, [], "its row is gone: it never comes back")
+
+        center.startWatching(hubRoot)
+        center.retireRootsOffTheBench([project.id: BenchFolders(folders: [home, removed], homeID: 3)])
+        center.startWatching(root)
+        center.retireWorkbenchRoots(workbenchID: project.id)
+        XCTAssertFalse(center.isWatching(root))
+        XCTAssertEqual(center.retiredRoots, [], "a deleted workbench's roots are not kept")
+    }
+
     func testAMovedWorkbenchFolderDropsTheOldMainRootsWatchAndTree() throws {
         let moved = FileManager.default.temporaryDirectory.appendingPathComponent("center-moved-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: moved, withIntermediateDirectories: true)

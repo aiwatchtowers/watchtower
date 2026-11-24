@@ -370,6 +370,60 @@ final class CodeIndexCenterTests: XCTestCase {
         XCTAssertTrue(again, "full runs: \(stub.fullRuns)")
     }
 
+    /// #2386 (codex #3): a worktree root shown again within its idle time was not watched meanwhile, so its kept
+    /// index runs in full — a duplicate base name added while it was hidden is seen.
+    func testAWorktreeShownAgainWithinItsIdleTimeRunsItsIndexAgain() async {
+        let center = makeCenter()
+        let files = CodeFilesCenter(
+            defaults: UserDefaults(suiteName: "CodeIndexCenterTests-\(UUID().uuidString)") ?? .standard,
+            gitRead: { _ in .noRepository }, watchesFolders: false
+        )
+        files.codeIndex = center
+        let worktree = CodeRoot(workbenchID: 7, worktree: folder)
+        files.startWatching(worktree)
+        let index = center.index(for: worktree)
+        let ready = await eventually { index.state == .ready }
+        XCTAssertTrue(ready)
+        files.stopShowing(worktree)
+        XCTAssertFalse(files.isWatching(worktree), "a hidden worktree is not watched")
+
+        files.startWatching(worktree)
+        XCTAssertTrue(center.index(for: worktree) === index, "kept within its idle time")
+        // Started now, or queued behind the first run's process that has not exited yet.
+        let started = if case .indexing = index.state { true } else { false }
+        guard started || center.fullRunPending(root: worktree) else {
+            return XCTFail("a full run starts (or waits) at the show, state: \(index.state)")
+        }
+        let again = await eventually { self.stub.fullRuns == 2 && index.state == .ready }
+        XCTAssertTrue(again, "full runs: \(stub.fullRuns)")
+    }
+
+    /// #2386 (codex #3): a restored folder whose index was released meanwhile gets one full run — the first show's
+    /// covers it; no second one is queued behind it.
+    func testARestoredFolderWithAReleasedIndexRunsOnce() async {
+        let center = makeCenter()
+        let files = CodeFilesCenter(
+            defaults: UserDefaults(suiteName: "CodeIndexCenterTests-\(UUID().uuidString)") ?? .standard,
+            gitRead: { _ in .noRepository }, watchesFolders: false
+        )
+        files.codeIndex = center
+        let removed = WorkbenchFolder(id: 5, workbenchID: 7, folderPath: folder.path, position: 1,
+                                      removedAt: "2026-11-24T00:00:00Z", name: "hub")
+        let hubRoot = CodeRoot(folder: WorkbenchFolder(id: 5, workbenchID: 7, folderPath: folder.path, position: 1,
+                                                       name: "hub"), homeFolderID: 3)
+        let lease = WorkchatIndexLease()
+        lease.hold(hubRoot, in: files)
+        defer { lease.release() }
+        let ready = await eventually { center.index(for: hubRoot).state == .ready }
+        XCTAssertTrue(ready)
+        files.retireRootsOffTheBench([7: BenchFolders(folders: [removed], homeID: 3)])
+        lease.release()
+        center.releaseIdleIndexes(now: clock.now + 300)
+
+        lease.hold(hubRoot, in: files)
+        XCTAssertFalse(center.fullRunPending(root: hubRoot), "the first show's full run covers the restore")
+    }
+
     // MARK: Rules file (spec §6.5)
 
     private func writeRules(_ text: String) throws {
