@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -229,12 +230,22 @@ type handback struct {
 // openSidecar opens a subagent transcript; a seam for tests that count opens.
 var openSidecar = os.Open
 
+// lstatSidecar stats a subagent transcript; a seam for tests that inject an error.
+var lstatSidecar = os.Lstat
+
 // scanHandbacks lists the SubagentHandback messages of a subagent transcript
 // in file order, decoding only the lines that name the tool. A missing or
-// non-regular file has none; a file that fails to open or read is an error.
+// non-regular file has none; a file that fails to stat, open or read is an
+// error.
 func scanHandbacks(path string) ([]handback, error) {
-	fi, err := os.Lstat(path)
-	if err != nil || !fi.Mode().IsRegular() {
+	fi, err := lstatSidecar(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
 		return nil, nil
 	}
 	f, err := openSidecar(path)
