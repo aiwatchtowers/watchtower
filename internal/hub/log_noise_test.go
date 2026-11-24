@@ -83,8 +83,9 @@ func (b *stateBridge) Run(ctx context.Context) error {
 	b.running.Store(false)
 	return ctx.Err()
 }
-func (b *stateBridge) Running() bool    { return b.running.Load() }
-func (b *stateBridge) Launches() uint64 { return b.launches.Load() }
+func (b *stateBridge) Running() bool       { return b.running.Load() }
+func (b *stateBridge) Launches() uint64    { return b.launches.Load() }
+func (*stateBridge) LastLaunch() time.Time { return time.Time{} }
 
 // errBridgeDown is the client finding no bridge listening on its socket.
 var errBridgeDown = fmt.Errorf("cloudkit: bridge not running: %w", cloudkit.ErrBridgeNotListening)
