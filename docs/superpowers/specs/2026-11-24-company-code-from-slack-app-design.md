@@ -42,6 +42,13 @@ A colleague who installs Watchtower at a company that already ran **Set up for m
 
 Slack refuses an authorize request with bot scopes to a non-web redirect: "Bot scopes are not allowed when redirecting to a non-web URI." Our sign-in is PKCE to `http://127.0.0.1:18551/callback`, and a PKCE app shows no **Install to Workspace** button, so a bot user cannot be installed without a web redirect and a `client_secret` exchange — a server. Next candidate: the workspace app directory (`<workspace>.slack.com/apps/manage` → the app's page shows `long_description`).
 
+## Workspace Marketplace page (third spike, from the admin's account)
+
+- `<workspace>.slack.com/apps/manage` → Installed apps lists the app; **App Details** opens `https://<workspace>.slack.com/marketplace/<APP_ID>-watchtower`.
+- That page shows the whole `long_description` (link, code, download line, disclosures) under "This app is just for your workspace — only people on <workspace> can view, install and use this app".
+- Still to confirm from an ordinary member's account: the page opens and the workspace Marketplace search finds the app.
+- So the hint points at the workspace's Slack Marketplace, not at ⌘K or an About tab; no manifest change is needed.
+
 The original bot plan, kept for the record:
 
 - Manifest: `features.bot_user` (`display_name` "Watchtower", `always_online` false) and one harmless bot scope, `team:read`; no message scopes, no Events, no Interactivity, Messages tab off.
