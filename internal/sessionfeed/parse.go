@@ -345,14 +345,15 @@ func blockEntries(uuid string, index []int, clean []string) []Entry {
 		switch {
 		case text == "":
 		case isNotice(text):
-			if !noticeComplete(text) {
+			kids, ok := noticeComplete(text)
+			if !ok {
 				return nil
 			}
 			id := uuid
 			if len(out) > 0 {
 				id = uuid + "#" + strconv.Itoa(index[i])
 			}
-			out = append(out, noticeEntry(id, text))
+			out = append(out, parsedNoticeEntry(id, text, kids, true))
 		case len(out) > 0:
 			return out[:1] // a notice beside other text: one entry
 		default:
@@ -371,14 +372,14 @@ func isNotice(text string) bool {
 	return strings.HasPrefix(text, taskOpen) || strings.HasPrefix(text, mateOpen)
 }
 
-// noticeComplete reports whether a notice is whole within text: a task
-// notification whose children parse, a teammate message with its close tag.
-func noticeComplete(text string) bool {
+// noticeComplete reports whether a notice (trimmed) is whole within text: a
+// task notification whose children parse (returned, so they are read once), a
+// teammate message ending in its close tag (one quoted inside it is text).
+func noticeComplete(text string) ([]taskChild, bool) {
 	if strings.HasPrefix(text, taskOpen) {
-		_, ok := parseTaskChildren(text)
-		return ok
+		return parseTaskChildren(text)
 	}
-	return strings.Contains(text, mateClose)
+	return nil, strings.HasSuffix(text, mateClose)
 }
 
 // userContent is a user message's content decoded once: its text blocks with
@@ -478,14 +479,24 @@ const maxEventTitleRunes = 200
 // noticeEntry turns a Claude Code notice wrapper (a task notification or a
 // teammate message) into an event entry.
 func noticeEntry(uuid, text string) Entry {
+	var kids []taskChild
+	ok := false
+	if strings.HasPrefix(text, taskOpen) {
+		kids, ok = parseTaskChildren(text)
+	}
+	return parsedNoticeEntry(uuid, text, kids, ok)
+}
+
+// parsedNoticeEntry is noticeEntry with a task notification's children already
+// read (ok: they parse); a teammate message ignores them.
+func parsedNoticeEntry(uuid, text string, kids []taskChild, ok bool) Entry {
 	e := Entry{ID: uuid, Kind: KindEvent}
-	if strings.HasPrefix(text, "<task-notification>") {
+	if strings.HasPrefix(text, taskOpen) {
 		e.EventType = EventTask
 		// The same element-name-matched children as the task: a child
 		// quoting a close tag keeps its whole text. One that does not parse
 		// keeps its own text, titled by a summary among its leading
 		// complete children.
-		kids, ok := parseTaskChildren(text)
 		if ok {
 			lines := make([]string, 0, len(kids))
 			for _, k := range kids {
@@ -608,8 +619,9 @@ func hasTaskField(kids map[string]string) bool {
 // closeEndsNotification reports whether a `</task-notification>` followed by
 // after ends the notification: nothing follows, or the text after has no
 // close of its own (a trailing "read the output file" line). A close followed
-// by a later close is one quoted inside a child. Sibling notifications come
-// as separate text blocks (userEntries), never inside one text.
+// by a later close is one quoted inside a child. It is used only on a text
+// holding one top-level notification (oneTopLevelNotice); sibling
+// notifications read as one text take the first close that parses.
 func closeEndsNotification(after string) bool {
 	after = strings.TrimSpace(after)
 	return after == "" || !strings.Contains(after, taskClose)
@@ -621,15 +633,58 @@ func closeEndsNotification(after string) bool {
 // with its own element name; a truncated or mismatched notification does not
 // parse. The strict reading (closeEndsNotification: a result quoting a whole
 // notification keeps the outer fields after it) is preferred, then the first
-// that parses; each try is bounded by maxTaskCloseAttempts.
+// that parses; each try is bounded by maxTaskCloseAttempts. A text holding
+// sibling notifications (two complete ones joined, as main read them) skips the
+// strict reading, so the first one's result does not run to the last close.
 func parseTaskChildren(text string) ([]taskChild, bool) {
-	for _, strict := range []bool{true, false} {
+	readings := []bool{true, false}
+	if !oneTopLevelNotice(text) {
+		readings = readings[1:]
+	}
+	for _, strict := range readings {
 		budget := maxTaskCloseAttempts
 		if kids, ok := taskChildren(text[len(taskOpen):], nil, &budget, strict); ok {
 			return kids, true
 		}
 	}
 	return nil, false
+}
+
+// oneTopLevelNotice reports whether text holds one top-level notification:
+// counting `<task-notification>` and `</task-notification>` as a nesting
+// depth, no open follows a point where the depth is back to zero. A result
+// quoting whole notifications nests them (the depth returns to zero only at
+// the end); a sibling after the first close opens at depth zero. One pass.
+func oneTopLevelNotice(text string) bool {
+	depth, tops := 0, 0
+	o := strings.Index(text, taskOpen)
+	c := strings.Index(text, taskClose)
+	for o >= 0 {
+		if c >= 0 && c < o {
+			depth--
+			next := strings.Index(text[c+len(taskClose):], taskClose)
+			if next < 0 {
+				c = -1
+			} else {
+				c += len(taskClose) + next
+			}
+			continue
+		}
+		if depth <= 0 {
+			if tops++; tops > 1 {
+				return false
+			}
+			depth = 0
+		}
+		depth++
+		next := strings.Index(text[o+len(taskOpen):], taskOpen)
+		if next < 0 {
+			o = -1
+		} else {
+			o += len(taskOpen) + next
+		}
+	}
+	return true
 }
 
 // leadingTaskChildren is the complete children at the start of a notification

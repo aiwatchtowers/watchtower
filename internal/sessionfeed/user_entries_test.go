@@ -194,3 +194,42 @@ func TestUserEntries_OrdinaryBlocksJoinedOnce(t *testing.T) {
 	joined := float64(2*len(part) + 1)
 	assert.Less(t, size(many)-size(one), 1.5*joined, "one join of %v bytes, not three", joined)
 }
+
+// Final review F1 (codex #2): two complete notifications read as one text —
+// a reminder crossing their blocks, or one plain string holding both — give
+// the first notification its own result, as main does; its result does not
+// run to the second one's close.
+func TestNoticeTask_TwoNoticesInOneTextKeepTheFirstResult(t *testing.T) {
+	for name, rec := range map[string]string{
+		"reminder crossing blocks": userBlocks("n1",
+			textBlock(siblingA+"\n<system-reminder>x"),
+			textBlock("</system-reminder>\n"+siblingB),
+		),
+		"plain string": userStr("n1", siblingA+"\n"+siblingB),
+	} {
+		res := parseStr(t, rec, 0)
+		require.NotEmpty(t, res.Entries, name)
+		e := res.Entries[0]
+		assert.Equal(t, "n1", e.ID, name)
+		require.NotNil(t, e.Task, name)
+		assert.Equal(t, "a1", e.Task.TaskID, name)
+		assert.Equal(t, "done A", e.Task.Result, name)
+		assert.Equal(t, "completed", e.Task.Status, name)
+		assert.NotContains(t, e.Text, "b2", name)
+	}
+}
+
+// Final review (codex #3): a teammate message quoting its own close tag ends
+// only at its terminal close; the prose continuing in the next block stays.
+func TestNoticeMate_QuotedCloseTagThenProseAcrossBlocks(t *testing.T) {
+	res := parseStr(t, userBlocks("n1",
+		textBlock(`<teammate-message teammate_id="rev" summary="Tags">`+"\nIt wraps with </teammate-message> tags"),
+		textBlock("and goes on here\n</teammate-message>"),
+	), 0)
+	require.Len(t, res.Entries, 1)
+	e := res.Entries[0]
+	assert.Equal(t, KindEvent, e.Kind)
+	assert.Equal(t, EventTeammate, e.EventType)
+	assert.Contains(t, e.Text, "It wraps with </teammate-message> tags")
+	assert.Contains(t, e.Text, "and goes on here")
+}

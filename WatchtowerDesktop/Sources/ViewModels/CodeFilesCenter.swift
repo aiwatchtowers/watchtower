@@ -143,6 +143,8 @@ final class CodeFilesCenter {
     @ObservationIgnored private var gitRunsStarted = 0
     /// Off in tests, which feed `handle` themselves.
     @ObservationIgnored private let watchesFolders: Bool
+    /// Starts a folder's FSEvents stream (a test seam: what runs when it starts).
+    @ObservationIgnored private let makeWatcher: (URL, @escaping @MainActor (FolderWatcher.Batch) -> Void) -> FolderWatcher?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     /// The symbol index (on `AppState`), told when a workbench shows and
     /// hides and fed this center's FSEvents batches — one stream per folder.
@@ -165,13 +167,17 @@ final class CodeFilesCenter {
         trash: @escaping (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
         gitRead: @escaping (URL) async -> GitStatusRead = { await GitStatusSnapshot.read(folder: $0) },
         gitMinInterval: Duration = .seconds(1),
-        watchesFolders: Bool = true
+        watchesFolders: Bool = true,
+        makeWatcher: @escaping (URL, @escaping @MainActor (FolderWatcher.Batch) -> Void) -> FolderWatcher? = {
+            FolderWatcher(root: $0, hidden: CodeFileTree.hiddenNames, onChange: $1)
+        }
     ) {
         self.defaults = defaults
         self.trash = trash
         self.gitRead = gitRead
         self.gitMinInterval = gitMinInterval
         self.watchesFolders = watchesFolders
+        self.makeWatcher = makeWatcher
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -247,16 +253,11 @@ final class CodeFilesCenter {
         guard root.isMain || CodeRootPolicy.directoryExists(root.folder) else { return false }
         if removedRoots.contains(root) { removedRoots.remove(root) }
         let isNew = watched.insert(root).inserted
-        // A worktree root is not watched while hidden, nor a folder off the
-        // bench: what changed meanwhile is read again now — the tree, the
-        // buffers and an index kept within its idle time (#2386: a duplicate
-        // base name added meanwhile is seen).
-        let retired = retiredRoots.remove(root) != nil
-        let unwatchedMeanwhile = isNew && (!root.isMain || retired)
-        codeIndex?.markShown(root: root, rescan: unwatchedMeanwhile)
-        if unwatchedMeanwhile { rescanRoot(root) }
+        // The stream starts first: it reports only what changes after it
+        // starts, so a file written before the reread below is in the reread
+        // and one written after it is in a batch (#2386 final review).
         if watchesFolders, isNew || watchers[root] == nil {
-            let watcher = FolderWatcher(root: root.folder, hidden: CodeFileTree.hiddenNames) { [weak self] batch in
+            let watcher = makeWatcher(root.folder) { [weak self] batch in
                 self?.receive(batch, root: root)
             }
             watchers[root] = watcher
@@ -267,6 +268,14 @@ final class CodeFilesCenter {
                 watchErrors[root] = nil
             }
         }
+        // A worktree root is not watched while hidden, nor a folder off the
+        // bench: what changed meanwhile is read again now — the tree, the
+        // buffers and an index kept within its idle time (#2386: a duplicate
+        // base name added meanwhile is seen).
+        let retired = retiredRoots.remove(root) != nil
+        let unwatchedMeanwhile = isNew && (!root.isMain || retired)
+        codeIndex?.markShown(root: root, rescan: unwatchedMeanwhile)
+        if unwatchedMeanwhile { rescanRoot(root) }
         return true
     }
 

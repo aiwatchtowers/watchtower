@@ -87,6 +87,20 @@ final class WorkchatOutgoingTests: XCTestCase {
                        "still bounded by its send")
     }
 
+    /// #2386 final review (codex #4): a line pasted mid-draft right before punctuation is still held as whole words.
+    func testALineSentTogetherMidDraftMatchesBeforePunctuation() {
+        var sent = line("run tests")
+        sent.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("Please run tests, then deploy"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("Please (run tests) then deploy"), line: sent))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Please rerun tests, then deploy"), line: sent), "inside a word")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Please run testsuite, then deploy"), line: sent), "inside a word")
+        var linter = line("Run the linter")
+        linter.sentTogetherAt = sentAt
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Run the linters"), line: linter), "not its whole words")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Run the linters, then go"), line: linter), "not its whole words")
+    }
+
     /// #2386 (T7 minors): a files-only line sent together — a path followed by punctuation matches; one pasted
     /// straight after the prompt's text (no space) matches; a bare path that is only the start of a longer quoted
     /// name, or the tail of a longer absolute path, does not.

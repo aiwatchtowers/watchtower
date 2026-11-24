@@ -133,7 +133,23 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
         guard let together = line.sentTogetherAt else { return recorded == sent }
         guard at >= together else { return false }
         guard !sent.isEmpty else { return holdsFile(of: line, in: entry.text) }
-        return recorded.hasSuffix(sent) || " \(recorded) ".contains(" \(sent) ")
+        return recorded.hasSuffix(sent) || holdsWords(recorded, sent)
+    }
+
+    /// `words` in `text` with a word boundary at each end of some occurrence (a letter, digit or `_` on neither
+    /// side across a boundary): pasted mid-draft, it may sit before punctuation ("run tests, then deploy").
+    private static func holdsWords(_ text: String, _ words: String) -> Bool {
+        guard let first = words.first, let last = words.last else { return false }
+        let isWord: (Character) -> Bool = { $0.isLetter || $0.isNumber || $0 == "_" }
+        var from = text.startIndex
+        while let found = text.range(of: words, range: from..<text.endIndex) {
+            from = text.index(after: found.lowerBound)
+            let startsWord = found.lowerBound == text.startIndex || !isWord(first)
+                || !isWord(text[text.index(before: found.lowerBound)])
+            let endsWord = found.upperBound == text.endIndex || !isWord(last) || !isWord(text[found.upperBound])
+            if startsWord, endsWord { return true }
+        }
+        return false
     }
 
     /// Whether `text` holds one of the line's paths as a whole token (quoted or not, bounded by whitespace, a
@@ -170,9 +186,17 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
 
     /// The text before `index`, back to whitespace or a quote, is a word with no `/` (the owner's text the path was
     /// pasted straight after) — not a path's own head (`pathHead`).
+    /// The scan back stops at the first `/` (no copy of a long prefix per occurrence).
     private static func gluedToWord(_ text: String, before index: String.Index) -> Bool {
-        let head = String(text[..<index].reversed().prefix { !$0.isWhitespace && $0 != "\"" && $0 != "'" }.reversed())
-        return !head.isEmpty && !head.contains("/") && !pathHead(head)
+        var start = index
+        while start > text.startIndex {
+            let previous = text.index(before: start)
+            let char = text[previous]
+            if char == "/" { return false }
+            if char.isWhitespace || char == "\"" || char == "'" { break }
+            start = previous
+        }
+        return start < index && !pathHead(String(text[start..<index]))
     }
 
     /// A head that makes the path after it another path, matched whole (#2386 fix rounds 1-3). Prose such as `...`,
