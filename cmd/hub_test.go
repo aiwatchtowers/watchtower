@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1020,7 +1021,7 @@ func TestHubPairStreamEvents(t *testing.T) {
 		dir := hubShortDir(t)
 		_, before := fakePairOpening(t, time.Now().Add(10*time.Minute), "acme phone")
 		before[len(before)-1].MovesToRelay = true
-		startFakePairHub(t, dir, before, []hub.ControlAnswer{{Event: link.EventLinked, DeviceID: fakePairDevice}})
+		f := startFakePairHub(t, dir, before, []hub.ControlAnswer{{Event: link.EventLinked, DeviceID: fakePairDevice}})
 		p := startPair(t)
 		p.next(t) // qr
 		p.next(t) // waiting
@@ -1029,9 +1030,102 @@ func TestHubPairStreamEvents(t *testing.T) {
 		assert.Equal(t, true, sas["moves_to_relay"])
 		_, err := io.WriteString(p.in, `{"confirm":true}`+"\n")
 		require.NoError(t, err)
+		assert.Equal(t, "4827", (<-f.confirms).Code, "the confirm names the code printed")
 		assert.Equal(t, "linked", p.next(t)["event"])
 		require.NoError(t, p.wait(t))
 	})
+}
+
+// scriptedPairHub serves one pairing stream on dir's control socket: the
+// test writes its lines (send) and reads the CLI's requests after the pair
+// request (got).
+type scriptedPairHub struct {
+	send chan hub.ControlAnswer
+	got  chan hub.ControlRequest
+}
+
+func startScriptedPairHub(t *testing.T, dir string) *scriptedPairHub {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	l, err := net.Listen("unix", filepath.Join(dir, hub.SocketName))
+	require.NoError(t, err)
+	f := &scriptedPairHub{send: make(chan hub.ControlAnswer), got: make(chan hub.ControlRequest, 4)}
+	stop, served := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(served)
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		dec, enc := json.NewDecoder(conn), json.NewEncoder(conn)
+		var req hub.ControlRequest
+		if dec.Decode(&req) != nil || req.Op != hub.OpPair {
+			return
+		}
+		go func() {
+			for {
+				var r hub.ControlRequest
+				if dec.Decode(&r) != nil {
+					return
+				}
+				f.got <- r
+			}
+		}()
+		for {
+			select {
+			case a := <-f.send:
+				_ = enc.Encode(a)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() { close(stop); _ = l.Close(); <-served })
+	return f
+}
+
+// #2191 review: the stream prints a sas line again when the phone's
+// request is replaced (a new code or moves_to_relay; an unchanged repeat is
+// not printed), the confirm names the code the owner answered, and a
+// code_changed answer asks the owner again; a confirm line without a code
+// takes the last code printed.
+func TestHubPairStreamReprintsAReplacedRequest(t *testing.T) {
+	dir := hubShortDir(t)
+	f := startScriptedPairHub(t, dir)
+	exp := time.Now().Add(10 * time.Minute)
+	p := startPair(t)
+	f.send <- hub.ControlAnswer{Event: link.EventQR, URL: testLinkURL(t), ExpiresAt: &exp}
+	f.send <- hub.ControlAnswer{Event: link.EventWaiting}
+	f.send <- hub.ControlAnswer{Event: link.EventSAS, DeviceID: fakePairDevice, Name: "acme phone", Code: "1111"}
+	p.next(t) // qr
+	p.next(t) // waiting
+	first := p.next(t)
+	assert.Equal(t, "1111", first["code"])
+	assert.Equal(t, false, first["moves_to_relay"])
+
+	replaced := hub.ControlAnswer{Event: link.EventSAS, DeviceID: fakePairDevice, Name: "acme phone", Code: "2222", MovesToRelay: true}
+	f.send <- replaced
+	f.send <- replaced // unchanged: not printed again
+	second := p.next(t)
+	assert.Equal(t, "2222", second["code"])
+	assert.Equal(t, true, second["moves_to_relay"])
+
+	// The owner answered the first line: the hub refuses it, the CLI asks again.
+	_, err := io.WriteString(p.in, `{"confirm":true,"code":"1111"}`+"\n")
+	require.NoError(t, err)
+	req := <-f.got
+	assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Confirm: true, Code: "1111"}, req)
+	f.send <- hub.ControlAnswer{Op: hub.OpConfirm, Error: hub.ErrClassCodeChanged}
+
+	_, err = io.WriteString(p.in, `{"confirm":true}`+"\n")
+	require.NoError(t, err)
+	req = <-f.got
+	assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Confirm: true, Code: "2222"}, req)
+	f.send <- hub.ControlAnswer{Op: hub.OpConfirm, OK: true, DeviceID: fakePairDevice}
+	f.send <- hub.ControlAnswer{Event: link.EventLinked, DeviceID: fakePairDevice}
+	assert.Equal(t, map[string]any{"event": "linked", "device_id": fakePairDevice}, p.next(t))
+	require.NoError(t, p.wait(t))
 }
 
 // countStateOpens counts direct sidecar opens for writing until the test ends.

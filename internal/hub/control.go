@@ -135,12 +135,16 @@ const (
 // its progress (recording_progress); Hidden (session ids) and DisplayOver
 // (shown-over counts) a desktop_view, each at most MaxViewIDs.
 type ControlRequest struct {
-	Op           string          `json:"op"`
-	Device       string          `json:"device,omitempty"`
-	Grant        string          `json:"grant,omitempty"`
-	Name         string          `json:"name,omitempty"`
-	On           bool            `json:"on,omitempty"`
-	Confirm      bool            `json:"confirm,omitempty"`
+	Op      string `json:"op"`
+	Device  string `json:"device,omitempty"`
+	Grant   string `json:"grant,omitempty"`
+	Name    string `json:"name,omitempty"`
+	On      bool   `json:"on,omitempty"`
+	Confirm bool   `json:"confirm,omitempty"`
+	// Code (confirm, optional) is the code the owner was shown: a yes is
+	// refused code_changed when the phone's request now has another one.
+	// Without it the stream's latest code stands in (#2191).
+	Code         string          `json:"code,omitempty"`
 	Upload       string          `json:"upload,omitempty"`
 	TranscriptID *int64          `json:"transcript_id,omitempty"`
 	ErrorClass   string          `json:"error_class,omitempty"`
@@ -836,6 +840,10 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		code, ok := pl.code(r.Device)
 		if !ok {
 			return ControlAnswer{Error: ErrClassNoCode}
+		}
+		if r.Confirm && r.Code != "" {
+			// The code the owner saw; a no refuses whichever request waits.
+			code = r.Code
 		}
 		if err := h.center.Confirm(r.Device, code, r.Confirm); err != nil {
 			return ControlAnswer{Error: LinkErrClass(err)}

@@ -314,7 +314,9 @@ func startSASDesk(t *testing.T, active transport.Kind, icloudPhone bool) (*deskR
 }
 
 // slotSAS issues a code, sends a phone's hello through a Relay pairing
-// slot and reads the sas line the pairing stream gets.
+// slot and reads the sas line the pairing stream gets. Anything else on
+// the stream fails the test at once; a sas that never comes fails it a
+// minute later on the bubble's clock.
 func slotSAS(t *testing.T, r *deskRig, c *ControlClient) (ControlAnswer, *hubtest.Phone) {
 	t.Helper()
 	phone, err := hubtest.FromLink(pairCode(t, c), r.fake, nil)
@@ -325,15 +327,67 @@ func slotSAS(t *testing.T, r *deskRig, c *ControlClient) (ControlAnswer, *hubtes
 		t.Fatal(err)
 	}
 	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: "slot1"}})
+	_ = c.SetReadDeadline(time.Now().Add(time.Minute))
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
+	a, err := c.Next()
+	if err != nil || a.Error != "" || a.Event != link.EventSAS {
+		t.Fatalf("waiting for the sas: %+v, %v", a, err)
+	}
+	return a, phone
+}
+
+// confirmAnswer sends the owner's confirm and reads its answer, skipping
+// pairing events.
+func confirmAnswer(t *testing.T, c *ControlClient, req ControlRequest) ControlAnswer {
+	t.Helper()
+	if err := c.Send(req); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(time.Minute))
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
 	for {
 		a, err := c.Next()
-		if err != nil || a.Error != "" {
-			t.Fatalf("waiting for the sas: %+v, %v", a, err)
+		if err != nil {
+			t.Fatalf("waiting for the confirm's answer: %v", err)
 		}
-		if a.Event == link.EventSAS {
-			return a, phone
+		if a.Event == "" && a.Op == OpConfirm {
+			return a
 		}
 	}
+}
+
+// #2191 review: a confirm names the code the owner was shown; a yes for a
+// code the phone's request no longer has is refused code_changed and keeps
+// the request; a confirm without a code takes the stream's latest, as
+// before.
+func TestAConfirmForAStaleCodeIsRefused(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, _, c := startSASDesk(t, transport.KindRelay, false)
+		sas, phone := slotSAS(t, r, c)
+		stale := "0000"
+		if sas.Code == stale {
+			stale = "1111"
+		}
+		a := confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: stale})
+		if a.Error != ErrClassCodeChanged {
+			t.Fatalf("a yes for a stale code: %+v", a)
+		}
+		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code})
+		if !a.OK {
+			t.Fatalf("a yes for the code shown: %+v", a)
+		}
+	})
+}
+
+// Without a code the confirm is today's: the stream's latest code.
+func TestAConfirmWithoutACodeTakesTheStreamsCode(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, _, c := startSASDesk(t, transport.KindRelay, false)
+		_, phone := slotSAS(t, r, c)
+		if a := confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); !a.OK {
+			t.Fatalf("a yes without a code: %+v", a)
+		}
+	})
 }
 
 // #2191 (Q6): the sas line says the Link moves the Mac to Relay exactly when
@@ -347,13 +401,24 @@ func TestTheSASLineSaysWhenTheLinkMovesTheMacToRelay(t *testing.T) {
 			if !sas.MovesToRelay || !strings.EqualFold(sas.DeviceID, phone.ID().String()) {
 				t.Fatalf("sas %+v: want moves_to_relay", sas)
 			}
-			// The same phone's hello read over iCloud moves nothing.
+			// The OverRelay guard alone: the same event without it moves
+			// nothing (that a CloudKit hello's sas never sets it is
+			// TestASASOverAPairingSlotSaysOverRelay's, in internal/hub/link).
 			if h.movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sas.DeviceID}) {
-				t.Fatal("a CloudKit hello moves the Mac to Relay")
+				t.Fatal("a sas without OverRelay moves the Mac to Relay")
 			}
 			// The iCloud-routed phone relinking is not "another" phone.
 			if h.movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sharedPhoneID, OverRelay: true}) {
 				t.Fatal("the iCloud phone itself counts as another iCloud phone")
+			}
+			// An unreadable route list warns rather than stays silent.
+			broken, err := state.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = broken.Close()
+			if !(&hubRuntime{sw: h.sw, st: broken}).movesToRelay(link.PairEvent{Kind: link.EventSAS, DeviceID: sas.DeviceID, OverRelay: true}) {
+				t.Fatal("a failed route read answers false")
 			}
 		})
 	})

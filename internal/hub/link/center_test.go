@@ -1517,6 +1517,19 @@ func TestASASOverAPairingSlotSaysOverRelay(t *testing.T) {
 			t.Fatalf("a slot hello's sas: %+v", ev)
 		}
 	})
+	t.Run("slot without a relay id", func(t *testing.T) {
+		r := newRig(t)
+		f := memfake.New(transport.KindRelay, r.clock)
+		code := r.issue()
+		p := newPhone(t)
+		r.writeHello(f, "slot1", p, code.Nonce)
+		if err := r.c.OnPairingOpened(context.Background(), f, "slot1"); err != nil {
+			t.Fatal(err)
+		}
+		if ev := sasEvent(t, r.c); ev.OverRelay {
+			t.Fatalf("a slot hello without a relay id: %+v", ev)
+		}
+	})
 	for _, scope := range []string{wire.ScopePrivate, wire.ScopeShared} {
 		t.Run("cloudkit "+scope, func(t *testing.T) {
 			r := newCKRig(t)
