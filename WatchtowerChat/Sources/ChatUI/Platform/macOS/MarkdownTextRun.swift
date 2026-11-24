@@ -11,14 +11,22 @@ import WatchtowerDesign
 /// when it completes. Same parse and link rules as `MarkdownView`.
 public struct NativeMarkdownView: View {
     let text: String
+    /// The agent's text in a feed that highlights it (Workchat).
+    var highlighting: AgentTextHighlighting?
     @Environment(\.markdownCodeLinks) private var codeLinks
 
     public init(text: String) {
         self.text = text
     }
 
+    init(text: String, highlighting: AgentTextHighlighting?) {
+        self.text = text
+        self.highlighting = highlighting
+    }
+
     public var body: some View {
-        MarkdownSegmentsView(blocks: MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text))
+        MarkdownSegmentsView(blocks: MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text),
+                             highlighting: highlighting)
     }
 }
 
@@ -28,6 +36,9 @@ public struct NativeMarkdownView: View {
 /// SwiftUI views. Same stack spacing as `MarkdownBlocksView`.
 struct MarkdownSegmentsView: View {
     let blocks: [MarkdownBlock]
+    /// Colours the runs' refs, hashes, paths and commands (`AgentTextHighlightRender`); code blocks and tables stay
+    /// as they are.
+    var highlighting: AgentTextHighlighting?
     @Environment(\.markdownCodeLinks) private var codeLinks
     @Environment(\.markdownNavScreens) private var navScreens
 
@@ -38,8 +49,8 @@ struct MarkdownSegmentsView: View {
             ForEach(segments.indices, id: \.self) { index in
                 switch segments[index] {
                 case let .textRun(run):
-                    MarkdownTextRun(text: MarkdownRunText.attributed(run, links: links), codeLinks: codeLinks,
-                                    navScreens: navScreens)
+                    MarkdownTextRun(text: runText(run, links: links), codeLinks: codeLinks, navScreens: navScreens,
+                                    onHighlight: highlighting?.open)
                 case let .block(.table(table)):
                     NativeMarkdownTableView(table: table)
                 case let .block(block):
@@ -47,6 +58,12 @@ struct MarkdownSegmentsView: View {
                 }
             }
         }
+    }
+
+    private func runText(_ run: MarkdownRun, links: InlineLinkContext) -> NSAttributedString {
+        let text = MarkdownRunText.attributed(run, links: links)
+        guard let highlighting else { return text }
+        return AgentTextHighlightRender.highlighted(text, resolvesPath: highlighting.resolvesPath)
     }
 }
 
@@ -140,6 +157,7 @@ enum MarkdownRunText {
             ]
             if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
             if let link = piece.link { attributes[.link] = link }
+            if intent.contains(.code) { attributes[.markdownInlineCode] = true }
             out.append(NSAttributedString(string: text, attributes: attributes))
         }
     }
@@ -295,6 +313,13 @@ class MarkdownRunTextView: NSTextView {
     private var measuring = false
     /// Whether the text has a block quote, whose bar `draw` adds.
     private var hasQuoteBars = false
+    /// A click on a highlighted span of the agent's text (`AgentTextHighlightRender`); nil = no span is clickable.
+    var onHighlight: ((AgentTextHighlights.Span) -> Void)? {
+        didSet { if (oldValue == nil) != (onHighlight == nil) { updateTrackingAreas() } }
+    }
+    /// The highlighted span under the pointer: underlined while hovered.
+    private var hoveredHighlight: NSRange?
+    private var highlightTracking: NSTrackingArea?
 
     static func make() -> MarkdownRunTextView {
         let view = MarkdownRunTextView(usingTextLayoutManager: true)
@@ -343,6 +368,7 @@ class MarkdownRunTextView: NSTextView {
         storage.setAttributedString(text)
         measured = []
         plainTextCache = nil
+        hoveredHighlight = nil
         hasQuoteBars = false
         text.enumerateAttribute(.markdownQuoteBars, in: NSRange(location: 0, length: text.length)) { value, _, stop in
             if value != nil { hasQuoteBars = true; stop.pointee = true }
@@ -475,6 +501,65 @@ class MarkdownRunTextView: NSTextView {
         return nil
     }
 
+    // MARK: - Highlighted spans
+
+    /// The highlighted span under the event, if any, and its range.
+    private func highlight(at event: NSEvent) -> (AgentTextHighlights.Span, NSRange)? {
+        guard onHighlight != nil, let window, let storage = textStorage else { return nil }
+        let screenPoint = window.convertPoint(toScreen: event.locationInWindow)
+        let index = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+        for candidate in [index, index - 1] where candidate >= 0 && candidate < storage.length {
+            var range = NSRange()
+            guard let box = storage.attribute(.agentHighlight, at: candidate, effectiveRange: &range)
+                as? AgentTextHighlightBox else { continue }
+            let rect = firstRect(forCharacterRange: NSRange(location: candidate, length: 1), actualRange: nil)
+            if rect.insetBy(dx: -1, dy: -1).contains(screenPoint) { return (box.span, range) }
+        }
+        return nil
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let highlightTracking { removeTrackingArea(highlightTracking) }
+        highlightTracking = nil
+        guard onHighlight != nil else { return }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow,
+                                                         .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        highlightTracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        let hovered = highlight(at: event)
+        setHoveredHighlight(hovered?.1)
+        if hovered != nil { NSCursor.pointingHand.set() }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        setHoveredHighlight(nil)
+    }
+
+    /// Underlines the hovered span only (D3: no underline at rest).
+    private func setHoveredHighlight(_ range: NSRange?) {
+        guard range != hoveredHighlight, let storage = textStorage else { return }
+        if let old = hoveredHighlight, NSMaxRange(old) <= storage.length {
+            storage.removeAttribute(.underlineStyle, range: old)
+        }
+        if let range { storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range) }
+        hoveredHighlight = range
+    }
+
+    /// A click on a highlighted span opens it instead of placing the cursor.
+    override func mouseDown(with event: NSEvent) {
+        if let (span, _) = highlight(at: event), let onHighlight {
+            onHighlight(span)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
     private static let appKitOpenLink = NSSelectorFromString("_openLinkFromMenu:")
 
     private static let editingActions: Set<Selector> = [
@@ -537,6 +622,8 @@ struct MarkdownTextRun: NSViewRepresentable {
     let text: NSAttributedString
     let codeLinks: Bool
     let navScreens: Set<String>
+    /// A click on a highlighted span of the agent's text; nil = none is clickable.
+    var onHighlight: ((AgentTextHighlights.Span) -> Void)?
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -559,6 +646,7 @@ struct MarkdownTextRun: NSViewRepresentable {
     func makeNSView(context: Context) -> MarkdownRunTextView {
         let view = MarkdownRunTextView.make()
         view.delegate = context.coordinator
+        view.onHighlight = onHighlight
         view.show(text)
         return view
     }
@@ -566,6 +654,7 @@ struct MarkdownTextRun: NSViewRepresentable {
     func updateNSView(_ view: MarkdownRunTextView, context: Context) {
         context.coordinator.openURL = context.environment.openURL
         context.coordinator.links = InlineLinkContext(codeLinks: codeLinks, navScreens: navScreens)
+        view.onHighlight = onHighlight
         view.show(text)
     }
 
@@ -589,13 +678,15 @@ struct ChatAnswerText: View {
     let text: String
     let isFinal: Bool
     let isOwner: Bool
+    /// The agent's text in a feed that highlights it (Workchat); nil keeps it plain.
+    var highlighting: AgentTextHighlighting?
     @Environment(\.chatAnswerRegions) private var answerRegions
 
     var body: some View {
         if isOwner {
             MarkdownView(text: text, lineBreaks: true)
         } else if isFinal {
-            NativeMarkdownView(text: text)
+            NativeMarkdownView(text: text, highlighting: highlighting)
                 .background {
                     if let answerRegions { ChatAnswerRegionMarker(tracker: answerRegions) }
                 }

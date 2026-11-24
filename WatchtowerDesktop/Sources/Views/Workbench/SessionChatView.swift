@@ -37,6 +37,10 @@ struct SessionChatView: View {
     @State private var pagingStalled = false
     /// An artifact card opened from the feed.
     @State private var artifact: ChatArtifactContent?
+    /// The agent's highlighted spans: their paths' lookups and what a click does.
+    @State private var highlights = WorkchatHighlights()
+    /// "Copied …" over the feed for a moment after a hash or command click.
+    @State private var copiedNotice: String?
     /// The messages this session sent to another session that still wait (`session_messages`, state `queued`).
     @State private var waitingMessages: [SessionMessage] = []
 
@@ -304,6 +308,8 @@ struct SessionChatView: View {
                 isActive: { isActive },
                 isOnScreen: { vm.isTabOnScreen() },
                 onOpenSubagent: { path.push($0) },
+                onHighlight: openHighlight,
+                resolvesPath: resolvesPath,
                 liveLine: { activity, entries in
                     let lastAgent = entries.last { $0.kind == "agent" }
                     return WorkchatActivityPresenter.subagentLine(
@@ -315,6 +321,7 @@ struct SessionChatView: View {
                 followKey: SubagentFollowKey(state: stateKind, onScreen: appState.uiVisibility.isOnScreen)
             )
             .id(path.stack.map(\.toolUseID))
+            .overlay(alignment: .top) { copiedLine }
             Divider()
             Text("Subagents are read-only. Write to the agent in the main Workchat.")
                 .font(.callout)
@@ -398,6 +405,8 @@ struct SessionChatView: View {
         workchatFeed.isWorking = working
         workchatFeed.answerPending = !(workchat?.outgoing.isEmpty ?? true)
         workchatFeed.onOpenArtifact = { artifact = $0 }
+        workchatFeed.onHighlight = openHighlight
+        workchatFeed.resolvesPath = resolvesPath
         var context = workchatFeed.context()
         context.hasEarlier = Self.hasEarlier(windowHasEarlier: window.hasEarlier(total: total),
                                              hasEarlierPage: store.hasEarlierPage,
@@ -420,7 +429,58 @@ struct SessionChatView: View {
             .onAppear { if !messages.isEmpty { store.openTrace?.mark(.paint) } }
             .onChange(of: messages.isEmpty) { _, empty in if !empty { store.openTrace?.mark(.paint) } }
             .embeddedArtifactSheet($artifact)
+            .overlay(alignment: .top) { copiedLine }
     }
+
+    // MARK: - Highlighted spans
+
+    /// The session's code root, where the agent's paths resolve and open.
+    private var sessionCodeRoot: CodeRoot? {
+        vm.summaries.first { $0.id == projectID }.map { vm.codeRoot(sessionID: sessionID, project: $0.project) }
+    }
+
+    private func resolvesPath(_ path: String) -> Bool {
+        guard let root = sessionCodeRoot else { return false }
+        return highlights.file(path, in: root) != nil
+    }
+
+    /// A click on a highlighted span (spec 2026-11-24-workchat-polish §2).
+    private func openHighlight(_ span: AgentTextHighlights.Span) {
+        switch highlights.action(for: span, root: sessionCodeRoot) {
+        case let .showTarget(targetID):
+            vm.showTargetOnBoard(targetID, projectID: projectID)
+        case let .copy(text):
+            WorkchatFeed.copy(text)
+            copiedNotice = WorkchatHighlights.copiedNotice(text)
+        case let .openFile(file, root):
+            Task { await vm.openFile(file, root: root, preview: true) }
+        case .nothing:
+            NSSound.beep()
+        }
+    }
+
+    /// "Copied …" for a moment after a hash or a command is copied: a quiet caption, no box.
+    @ViewBuilder private var copiedLine: some View {
+        if let copiedNotice {
+            Text(copiedNotice)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.horizontal, Spacing.regular)
+                .padding(.vertical, Spacing.small)
+                .background(.regularMaterial, in: Capsule())
+                .padding(.top, Spacing.regular)
+                .transition(.opacity)
+                .task(id: copiedNotice) {
+                    try? await Task.sleep(for: Self.copiedNoticeLifetime)
+                    guard !Task.isCancelled else { return }
+                    self.copiedNotice = nil
+                }
+        }
+    }
+
+    static let copiedNoticeLifetime: Duration = .milliseconds(1500)
 
     /// After the entries: the lines on their way, the permission card and this session's open asks.
     @ViewBuilder private var pending: some View {

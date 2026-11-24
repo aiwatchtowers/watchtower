@@ -25,6 +25,16 @@ struct WorkchatFeed {
     var answerPending = false
     /// An artifact card opens the viewer.
     var onOpenArtifact: (ChatArtifactContent) -> Void = { _ in }
+    /// A click on a highlighted span of the agent's text (`WorkchatHighlights`); nil = the spans are only coloured.
+    var onHighlight: ((AgentTextHighlights.Span) -> Void)?
+    /// Whether a path in the agent's text is a file of the session's folders: only such a path is coloured.
+    var resolvesPath: ((String) -> Bool)?
+
+    /// Puts `text` on the general pasteboard (a row's Copy, a highlighted hash or command).
+    static func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
 
     var messages: [ChatFeed.Message] { WorkchatFeedAdapter.messages(entries) }
 
@@ -36,10 +46,7 @@ struct WorkchatFeed {
     func context() -> ChatFeedContext {
         let byID = entriesByMessage
         var rowActions = ChatRowActions()
-        rowActions.copy = { text in
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-        }
+        rowActions.copy = Self.copy
         rowActions.allowsEdit = false
         rowActions.allowsRegenerate = false
         rowActions.allowsCopy = false
@@ -48,11 +55,15 @@ struct WorkchatFeed {
         partActions.copy = rowActions.copy
         partActions.showsSources = false
         partActions.offersContinue = false
+        partActions.openHighlight = onHighlight
+        partActions.resolvesPath = resolvesPath
         if let onAnswer { partActions.sendFixedText = onAnswer }
         var context = ChatFeedContext(isTurnRunning: onAnswer == nil || isWorking || answerPending,
                                       partActions: partActions,
                                       rowActions: rowActions)
         context.compact = true
+        // The agent's refs, hashes, paths and commands in IDE-style colours (spec 2026-11-24-workchat-polish §2).
+        context.highlightsAgentText = true
         context.margins = EdgeInsets(top: Spacing.medium, leading: Spacing.medium, bottom: Spacing.medium,
                                      trailing: Spacing.medium)
         context.captionView = { message in

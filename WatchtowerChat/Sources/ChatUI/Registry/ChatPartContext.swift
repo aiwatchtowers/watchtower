@@ -31,6 +31,12 @@ public struct ChatPartActions {
     public var offersContinue = true
     /// Whether a reply shows its sources pill; off for a chat with no sources list to open (embedded chats).
     public var showsSources = true
+    /// A highlighted span of the agent's text was clicked (`ChatFeedContext.highlightsAgentText`): a ref, a hash, a
+    /// path or a command.
+    public var openHighlight: ((AgentTextHighlights.Span) -> Void)?
+    /// Whether a path candidate in the agent's text is a file of the session's folders; only one that is gets its
+    /// colour. Nil colours no path.
+    public var resolvesPath: ((String) -> Bool)?
 
     public init(
         sendFixedText: @escaping (String) -> Void = { _ in },
@@ -70,6 +76,8 @@ public struct ChatPartContext {
     /// The turn running now: an approval card it waits on is outlined.
     public var runningTurnID: String?
     public var actions: ChatPartActions
+    /// The feed colours the agent's text (`ChatFeedContext.highlightsAgentText`).
+    public var highlightsAgentText: Bool
 
     public init(
         message: ChatFeed.Message,
@@ -78,7 +86,8 @@ public struct ChatPartContext {
         isAnswerable: Bool = false,
         answerText: String? = nil,
         runningTurnID: String? = nil,
-        actions: ChatPartActions = ChatPartActions()
+        actions: ChatPartActions = ChatPartActions(),
+        highlightsAgentText: Bool = false
     ) {
         self.message = message
         self.provider = provider
@@ -87,6 +96,7 @@ public struct ChatPartContext {
         self.answerText = answerText
         self.runningTurnID = runningTurnID
         self.actions = actions
+        self.highlightsAgentText = highlightsAgentText
     }
 
     /// The reply is written to the end (not `pending`): a half-written artifact or question is held back until then.

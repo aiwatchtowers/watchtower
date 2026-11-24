@@ -5,6 +5,7 @@ import ViewInspector
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerChatText
+import WatchtowerTestSupport
 @testable import ChatUI
 
 @MainActor
@@ -134,6 +135,60 @@ final class SessionChatViewTests: XCTestCase {
         let readOnly = try ChatFeedRows(messages: feed.messages, context: feed.context()).inspect()
         XCTAssertThrowsError(try readOnly.find(button: QuestionPartView.sendLabel))
         XCTAssertNoThrow(try readOnly.find(text: "Yes"), "the questions stay readable")
+    }
+
+    /// Spec 2026-11-24-workchat-polish §2 (C2): the Workchat colours the agent's text and hands its clicks and path
+    /// lookups to the screen; the AI chat's context leaves the flag off.
+    func testWorkchatFeedHighlightsTheAgentsTextAndTheAIChatDoesNot() throws {
+        var feed = WorkchatFeed(entries: [SessionFeedEntry(id: "a", kind: "agent", text: "#12")],
+                                markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
+        var opened: [AgentTextHighlights.Span] = []
+        feed.onHighlight = { opened.append($0) }
+        feed.resolvesPath = { $0 == "a/b.go" }
+        let context = feed.context()
+        XCTAssertTrue(context.highlightsAgentText)
+        let span = AgentTextHighlights.spans(inPlain: "#12")[0]
+        context.partActions.openHighlight?(span)
+        XCTAssertEqual(opened, [span])
+        XCTAssertEqual(context.partActions.resolvesPath?("a/b.go"), true)
+        XCTAssertEqual(context.partActions.resolvesPath?("c.go"), false)
+
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let chat = ChatViewModel(client: RecordingChatClient(), dbPool: pool, cliRunner: FakeCLIRunner())
+        XCTAssertFalse(chat.conversation.feedContext(composer: chat.composer, partActions: ChatPartActions())
+            .highlightsAgentText)
+    }
+
+    /// A ref shows the target, a hash or a command is copied, a path opens only when it is a file of the session's
+    /// root; each path is looked up once per root.
+    func testWorkchatHighlightActionsAndPathLookupCache() {
+        let highlights = WorkchatHighlights()
+        var lookups: [String] = []
+        highlights.lookUp = { path, _ in
+            lookups.append(path)
+            return path == "a/b.go" ? "a/b.go" : nil
+        }
+        let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
+        func span(_ text: String, _ kind: AgentTextHighlights.Kind) -> AgentTextHighlights.Span {
+            AgentTextHighlights.Span(range: text.startIndex..<text.endIndex, kind: kind, text: text)
+        }
+        XCTAssertEqual(highlights.action(for: span("#2188", .ref(2188)), root: root), .showTarget(2188))
+        XCTAssertEqual(highlights.action(for: span("67a59755a", .hash), root: root), .copy("67a59755a"))
+        XCTAssertEqual(highlights.action(for: span("make test", .command), root: root), .copy("make test"))
+        XCTAssertEqual(highlights.action(for: span("a/b.go", .path), root: root), .openFile("a/b.go", root))
+        XCTAssertEqual(highlights.action(for: span("c/d.go", .path), root: root), .nothing)
+        XCTAssertEqual(highlights.action(for: span("a/b.go", .path), root: nil), .nothing)
+        XCTAssertEqual(lookups, ["a/b.go", "c/d.go"])
+
+        XCTAssertEqual(highlights.file("a/b.go", in: root), "a/b.go")
+        XCTAssertNil(highlights.file("c/d.go", in: root))
+        XCTAssertEqual(lookups, ["a/b.go", "c/d.go"], "cached per root, a miss too")
+        let other = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-b"))
+        XCTAssertEqual(highlights.file("a/b.go", in: other), "a/b.go")
+        XCTAssertEqual(lookups, ["a/b.go", "c/d.go", "a/b.go"], "another root looks again")
+
+        XCTAssertEqual(WorkchatHighlights.copiedNotice("67a59755a"), "Copied 67a59755a")
     }
 
     /// "Load earlier" while reading older text keeps the top entry in view and pins the window; back at the newest

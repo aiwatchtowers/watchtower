@@ -1,0 +1,120 @@
+import Foundation
+
+/// The stretches of an agent's text the Workchat colours as an IDE colours code (spec 2026-11-24-workchat-polish §2,
+/// D3): a target ref `#N`, a commit hash, a file path and a command. Pure; the app colours and opens them. A `path` is
+/// a candidate only: the app keeps it when it resolves in a session folder.
+public enum AgentTextHighlights {
+    public enum Kind: Sendable, Equatable {
+        /// `#N`, a target number.
+        case ref(Int)
+        case hash
+        case path
+        case command
+    }
+
+    public struct Span: Equatable, Sendable {
+        public let range: Range<String.Index>
+        public let kind: Kind
+        public let text: String
+
+        public init(range: Range<String.Index>, kind: Kind, text: String) {
+            self.range = range
+            self.kind = kind
+            self.text = text
+        }
+    }
+
+    /// The first words of inline code that read as a command.
+    public static let commandWords: Set<String> = ["make", "go", "swift", "git", "gh", "xcodebuild", "npm"]
+    /// The project's own scripts read as commands too.
+    public static let scriptPrefix = "./scripts/"
+    /// A file name with one of these is a path even without a `/`.
+    public static let sourceExtensions: Set<String> = ["swift", "go", "md", "sql", "yml", "json", "ts", "py", "sh"]
+
+    /// The refs, hashes and path candidates in a plain-text stretch (never a code block, a link or inline code), in
+    /// order and never overlapping: a path takes precedence over a ref or hash inside it.
+    public static func spans(inPlain text: String) -> [Span] {
+        guard !text.isEmpty else { return [] }
+        let paths = matches(pathToken, in: text).compactMap { pathSpan($0, in: text) }
+        let others = matches(refPattern, in: text).compactMap { refSpan($0, in: text) }
+            + matches(hashPattern, in: text).compactMap { hashSpan($0, in: text) }
+        var kept = paths
+        for span in others.sorted(by: { $0.range.lowerBound < $1.range.lowerBound })
+            where !kept.contains(where: { $0.range.overlaps(span.range) }) {
+            kept.append(span)
+        }
+        return kept.sorted { $0.range.lowerBound < $1.range.lowerBound }
+    }
+
+    /// Inline code that is a command (its first word in `commandWords`, or a `./scripts/…` path): the code without
+    /// its surrounding space; nil for any other code.
+    public static func commandSpan(inCode code: String) -> Span? {
+        guard let first = code.firstIndex(where: { !$0.isWhitespace }),
+              let last = code.lastIndex(where: { !$0.isWhitespace }) else { return nil }
+        let range = first..<code.index(after: last)
+        let trimmed = code[range]
+        let word = trimmed.prefix { !$0.isWhitespace }
+        guard commandWords.contains(String(word)) || (word.hasPrefix(scriptPrefix) && word.count > scriptPrefix.count)
+        else { return nil }
+        return Span(range: range, kind: .command, text: String(trimmed))
+    }
+
+    // MARK: - Patterns
+
+    /// `#` and 1–6 digits at a word boundary, not inside a URL or a word (`issue#12`).
+    private static let refPattern = regex(#"(?<![\w/#&])#(\d{1,6})(?![\w])"#)
+    /// 7–40 lowercase hex characters standing alone (not part of a word, a path or a dotted version).
+    private static let hashPattern = regex(#"(?<![\w./:-])[0-9a-f]{7,40}(?![\w/-])"#)
+    /// A run of path characters not glued to a scheme's `:` or another path character.
+    private static let pathToken = regex(#"(?<![\w.+@~/:-])[\w.+@~/-]+"#)
+
+    private static func regex(_ pattern: String) -> NSRegularExpression {
+        // The patterns are literals: a failure is a programming error caught by the tests.
+        // swiftlint:disable:next force_try
+        try! NSRegularExpression(pattern: pattern)
+    }
+
+    private static func matches(_ regex: NSRegularExpression, in text: String) -> [NSTextCheckingResult] {
+        regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+    }
+
+    private static func refSpan(_ match: NSTextCheckingResult, in text: String) -> Span? {
+        guard let range = Range(match.range, in: text), let digits = Range(match.range(at: 1), in: text),
+              let number = Int(text[digits]), !insideURL(range, in: text) else { return nil }
+        return Span(range: range, kind: .ref(number), text: String(text[range]))
+    }
+
+    private static func hashSpan(_ match: NSTextCheckingResult, in text: String) -> Span? {
+        guard let range = Range(match.range, in: text) else { return nil }
+        let token = text[range]
+        guard token.contains(where: \.isNumber), token.contains(where: \.isLetter), !insideURL(range, in: text)
+        else { return nil }
+        return Span(range: range, kind: .hash, text: String(token))
+    }
+
+    private static func pathSpan(_ match: NSTextCheckingResult, in text: String) -> Span? {
+        guard let whole = Range(match.range, in: text) else { return nil }
+        // A sentence's full stop is not the path's.
+        var end = whole.upperBound
+        while end > whole.lowerBound, text[text.index(before: end)] == "." { end = text.index(before: end) }
+        let range = whole.lowerBound..<end
+        let token = text[range]
+        guard token.contains(where: \.isLetter), !token.hasPrefix("//"), !insideURL(range, in: text) else { return nil }
+        let isPath = token.contains("/") || hasSourceExtension(token)
+        return isPath ? Span(range: range, kind: .path, text: String(token)) : nil
+    }
+
+    private static func hasSourceExtension(_ token: Substring) -> Bool {
+        guard let dot = token.lastIndex(of: "."), dot > token.startIndex else { return false }
+        return sourceExtensions.contains(String(token[token.index(after: dot)...]))
+    }
+
+    /// Whether `range` sits in a whitespace-delimited word that is a web address.
+    private static func insideURL(_ range: Range<String.Index>, in text: String) -> Bool {
+        let start = text[..<range.lowerBound].lastIndex(where: \.isWhitespace).map { text.index(after: $0) }
+            ?? text.startIndex
+        let end = text[range.upperBound...].firstIndex(where: \.isWhitespace) ?? text.endIndex
+        let word = text[start..<end]
+        return word.contains("://") || word.hasPrefix("www.")
+    }
+}

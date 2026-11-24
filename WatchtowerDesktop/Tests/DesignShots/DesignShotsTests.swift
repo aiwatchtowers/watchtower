@@ -104,6 +104,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(WorkchatPolishMockShotFixtures.shots)
     }
 
+    /// The agent text's highlights on the built feed (#2201 T2), beside mockup 04.
+    func testWorkchatHighlightShotsRender() throws {
+        try renderShots(WorkchatHighlightShotFixtures.shots)
+    }
+
     /// The same states on the built views (#2065), `workchat-agents-real-NN-…` beside each mockup.
     func testWorkchatAgentsShotsRender() throws {
         try renderShots(WorkchatAgentsShotFixtures.shots)
