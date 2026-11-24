@@ -8,6 +8,6 @@ import (
 
 // flushTerminalInput drops what was typed into the terminal in but not
 // read yet (tcflush(TCIFLUSH): TIOCFLUSH with FREAD, which is 1 on darwin).
-func flushTerminalInput(in *os.File) {
-	_ = unix.IoctlSetPointerInt(int(in.Fd()), unix.TIOCFLUSH, 1)
+func flushTerminalInput(in *os.File) error {
+	return unix.IoctlSetPointerInt(int(in.Fd()), unix.TIOCFLUSH, 1)
 }

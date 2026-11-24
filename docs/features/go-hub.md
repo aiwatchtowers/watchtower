@@ -395,15 +395,20 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   `sanitizeForTerminal`. Copy reviewed in `docs/design/mockups/go-hub/hub-pair-terminal.html` (ask #883).
   The answer is bound to the request shown (#2384, the terminal side of #2191): a y, an n, Ctrl-D, Ctrl-C and the
   code's expiry each send the confirm `pairConfirmRequest` builds from the prompt's `sas` (code, `moves_to_relay`,
-  `request`), so the hub refuses it `code_changed` when the phone's request moved on. A replaced request (another code,
-  `moves_to_relay` or `request`; a new name alone is not one) prints `The phone sent a new code.` and the prompt again
-  while the prompt is open; the line read across that reprint may answer the earlier code, so it is not sent (`The code
-  changed while you answered, so your answer was not sent.`) and the prompt is printed again. A replacement after the
-  answer was sent waits for the hub's `code_changed`, which prints `The phone sent a new code before your answer
-  reached the hub. Nothing was linked.` and asks about the current code. Input typed before a prompt is dropped
-  (`flushTerminalInput`, TCIFLUSH), so a line read after a prompt answers that prompt. Ctrl-D is a no whichever code
-  was on screen, bound to the request shown last. `no_request` ends as an expired code; a yes on a hub that names no
-  request ends with `errPairHubTooOld`, nothing sent (a no still goes through).
+  `request`), so the hub refuses it `code_changed` when the phone's request moved on. A prompt whose `sas` has
+  `moves_to_relay` prints the Mac sheet's Relay-move warning over it (`hubPairRelayMove`). A replaced request (another
+  code, `moves_to_relay` or `request`; a new name alone is not one) prints `The phone sent a new code.` and the prompt
+  again while the prompt is open; the line read across that reprint may answer the earlier code, so it is not sent
+  (`The code changed, so that answer was not sent. Check the code on your phone and answer again.`) and the prompt is
+  printed again. A replacement after the answer was sent waits for the hub's `code_changed` (`The phone sent a new code
+  before your answer reached the hub. Nothing was linked.`), which asks about the newer request, or, when its `sas`
+  has not come yet, prints `Waiting for the phone's new code…` with no prompt open until it does (the code expiring
+  meanwhile ends the pairing expired). Each fresh read starts only after its prompt is printed and the terminal's
+  unread input (`flushTerminalInput`, TCIFLUSH) and the reader's buffer are dropped, so the line it returns was typed
+  after that prompt; a flush that fails prints `Could not clear what was typed before this question, so no answer can
+  be taken.` and the prompt is a no. Ctrl-D is a no whichever code was on screen, bound to the request shown last.
+  `no_request` ends as an expired code; a yes on a hub that names no request ends with `errPairHubTooOld`, nothing sent
+  (a no still goes through).
 - **Recording switch** (protocol §7.7, §9): see v1 limits; a Linux host never has `desktop_seen_at`, so it always
   publishes `capabilities.recordings: "off"` (`hub desktop heartbeat` is refused off darwin).
 - **Builds**: `.github/workflows/linux-build.yml` on native `ubuntu-22.04` / `ubuntu-22.04-arm` (glibc floor 2.35,

@@ -2,7 +2,13 @@
 
 package cmd
 
-import "os"
+import (
+	"errors"
+	"os"
+)
 
-// flushTerminalInput is a no-op where the hub does not run.
-func flushTerminalInput(*os.File) {}
+// flushTerminalInput cannot drop typed-ahead input where the hub does not
+// run: it fails, so `hub pair` takes no typed answer there.
+func flushTerminalInput(*os.File) error {
+	return errors.New("flushing terminal input is not supported on this platform")
+}

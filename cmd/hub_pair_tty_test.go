@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/term"
 
 	"watchtower/internal/hub"
 	"watchtower/internal/hub/hubtest"
@@ -92,10 +94,12 @@ func (b *syncBuffer) String() string {
 // stderr the pty's terminal end), with Ctrl-C injected through
 // hubPairInterrupts.
 type ttyPair struct {
-	pty  *os.File
-	out  *syncBuffer
-	sigs chan os.Signal
-	done chan error
+	pty     *os.File
+	tty     *os.File // the CLI's end
+	out     *syncBuffer
+	sigs    chan os.Signal
+	done    chan error
+	reading atomic.Bool // a read of the owner's line is open (past its flush)
 
 	finished bool // done was read into err
 	err      error
@@ -106,12 +110,14 @@ func startPairTTY(t *testing.T, cols uint16) *ttyPair {
 	ptm, tty, err := pty.Open()
 	require.NoError(t, err)
 	require.NoError(t, pty.Setsize(ptm, &pty.Winsize{Rows: 80, Cols: cols}))
-	r := &ttyPair{pty: ptm, out: &syncBuffer{}, sigs: make(chan os.Signal, 1), done: make(chan error, 1)}
+	r := &ttyPair{pty: ptm, tty: tty, out: &syncBuffer{}, sigs: make(chan os.Signal, 1), done: make(chan error, 1)}
 	copied := make(chan struct{})
 	go func() { _, _ = io.Copy(r.out, ptm); close(copied) }()
 
 	orig := hubPairInterrupts
 	hubPairInterrupts = func() (<-chan os.Signal, func()) { return r.sigs, func() {} }
+	origReading := hubPairReading
+	hubPairReading = r.reading.Store
 	rootCmd.SetIn(tty)
 	rootCmd.SetOut(tty)
 	rootCmd.SetErr(tty)
@@ -130,6 +136,7 @@ func startPairTTY(t *testing.T, cols uint16) *ttyPair {
 		_ = ptm.Close()
 		<-copied
 		hubPairInterrupts = orig
+		hubPairReading = origReading
 		rootCmd.SetIn(nil)
 		rootCmd.SetOut(nil)
 		rootCmd.SetErr(nil)
@@ -149,7 +156,24 @@ func (r *ttyPair) waitFor(t *testing.T, text string) {
 	waitFor(t, fmt.Sprintf("%q in the output", text), func() bool { return strings.Contains(r.out.String(), text) })
 }
 
+// typeLine types s once a read of the owner's line is open: the CLI drops
+// what was typed before a read starts.
 func (r *ttyPair) typeLine(t *testing.T, s string) {
+	t.Helper()
+	waitFor(t, "an open read", r.reading.Load)
+	r.typeAhead(t, s)
+}
+
+// raw puts the CLI's terminal in raw mode: a read returns whatever was
+// typed, several lines at once included.
+func (r *ttyPair) raw(t *testing.T) {
+	t.Helper()
+	_, err := term.MakeRaw(int(r.tty.Fd()))
+	require.NoError(t, err)
+}
+
+// typeAhead types s at once, whether or not a read is open.
+func (r *ttyPair) typeAhead(t *testing.T, s string) {
 	t.Helper()
 	_, err := io.WriteString(r.pty, s)
 	require.NoError(t, err)
@@ -379,6 +403,7 @@ func TestHubPairTTYAnythingButYesRefuses(t *testing.T) {
 			assert.Equal(t, hub.OpConfirm, req.Op)
 			assert.Equal(t, fakePairDevice, req.Device)
 			assert.False(t, req.Confirm)
+			assert.Equal(t, "r1", req.Request, "the no is bound to the request shown")
 			code, err := r.wait(t)
 			assert.Equal(t, 1, code)
 			assert.EqualError(t, err, "Not linked: the code was not confirmed.")
