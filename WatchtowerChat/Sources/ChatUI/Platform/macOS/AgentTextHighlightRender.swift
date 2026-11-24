@@ -48,11 +48,30 @@ enum AgentTextHighlightRender {
 
     static func highlighted(_ text: NSAttributedString, resolvesPath: (String) -> Bool) -> NSAttributedString {
         let found = scans.value(for: text, cost: { max($0.count, 1) }, build: { scan(text) })
-        let kept = found.filter { $0.span.kind != .path || resolvesPath($0.span.text) }
+        let kept = kept(found, resolvesPath: resolvesPath)
         guard !kept.isEmpty else { return text }
         let paths = Set(kept.filter { $0.span.kind == .path }.map(\.span.text))
         return memo.value(for: Key(text: text, resolvedPaths: paths), cost: { $0.length },
                           build: { apply(kept, to: text) })
+    }
+
+    /// The paths that resolve, and the refs and hashes outside them: a candidate that does not resolve leaves a ref
+    /// inside it coloured (`#2201/T2`).
+    static func kept(_ found: [Found], resolvesPath: (String) -> Bool) -> [Found] {
+        let paths = found.filter { $0.span.kind == .path && resolvesPath($0.span.text) }
+        let others = found.filter { item in
+            item.span.kind != .path && !paths.contains { NSIntersectionRange($0.range, item.range).length > 0 }
+        }
+        return (paths + others).sorted { $0.range.location < $1.range.location }
+    }
+
+    /// What VoiceOver offers for a span, as the Workchat acts on it.
+    static func accessibilityName(_ span: AgentTextHighlights.Span) -> String {
+        switch span.kind {
+        case .ref: "Show \(span.text) on the board"
+        case .hash, .command: "Copy \(span.text)"
+        case .path: "Open \(span.text)"
+        }
     }
 
     static func color(_ kind: AgentTextHighlights.Kind) -> NSColor {
@@ -102,6 +121,17 @@ enum AgentTextHighlightRender {
                               range: item.range)
         }
         return out
+    }
+}
+/// When a click on a highlighted span runs its action (review round 1): a plain single click — no modifier, no
+/// double or triple click, nothing selected — that went up on the span it went down on. Anything else is AppKit's:
+/// a drag selects, a double click selects the word, a control-click opens the menu.
+enum HighlightClick {
+    static func fires(
+        clickCount: Int, modifiers: NSEvent.ModifierFlags, selectionLength: Int, down: NSRange, up: NSRange?
+    ) -> Bool {
+        let held = modifiers.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
+        return clickCount == 1 && held.isEmpty && selectionLength == 0 && up == down
     }
 }
 #endif

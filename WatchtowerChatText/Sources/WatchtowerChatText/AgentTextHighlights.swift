@@ -32,18 +32,23 @@ public enum AgentTextHighlights {
     public static let sourceExtensions: Set<String> = ["swift", "go", "md", "sql", "yml", "json", "ts", "py", "sh"]
 
     /// The refs, hashes and path candidates in a plain-text stretch (never a code block, a link or inline code), in
-    /// order and never overlapping: a path takes precedence over a ref or hash inside it.
+    /// order of their start. A ref or hash may sit inside a path candidate (`#2201/T2`): the app keeps the path when
+    /// it resolves and the spans inside it otherwise. Refs and hashes never overlap one another.
     public static func spans(inPlain text: String) -> [Span] {
+        var steps = 0
+        return spans(inPlain: text, steps: &steps)
+    }
+
+    /// `spans(inPlain:)` counting its web-address work in `steps` (tests pin that it stays linear).
+    static func spans(inPlain text: String, steps: inout Int) -> [Span] {
         guard !text.isEmpty else { return [] }
-        let paths = matches(pathToken, in: text).compactMap { pathSpan($0, in: text) }
-        let others = matches(refPattern, in: text).compactMap { refSpan($0, in: text) }
-            + matches(hashPattern, in: text).compactMap { hashSpan($0, in: text) }
-        var kept = paths
-        for span in others.sorted(by: { $0.range.lowerBound < $1.range.lowerBound })
-            where !kept.contains(where: { $0.range.overlaps(span.range) }) {
-            kept.append(span)
+        let urls = webAddresses(in: text, steps: &steps)
+        let spans = matches(pathToken, in: text).compactMap { pathSpan($0, in: text, urls: urls, steps: &steps) }
+            + matches(refPattern, in: text).compactMap { refSpan($0, in: text, urls: urls, steps: &steps) }
+            + matches(hashPattern, in: text).compactMap { hashSpan($0, in: text, urls: urls, steps: &steps) }
+        return spans.sorted {
+            $0.range.lowerBound != $1.range.lowerBound ? $0.range.lowerBound < $1.range.lowerBound : $0.kind != .path
         }
-        return kept.sorted { $0.range.lowerBound < $1.range.lowerBound }
     }
 
     /// Inline code that is a command (its first word in `commandWords`, or a `./scripts/…` path): the code without
@@ -78,30 +83,36 @@ public enum AgentTextHighlights {
         regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
     }
 
-    private static func refSpan(_ match: NSTextCheckingResult, in text: String) -> Span? {
+    private static func refSpan(
+        _ match: NSTextCheckingResult, in text: String, urls: [Range<String.Index>], steps: inout Int
+    ) -> Span? {
         guard let range = Range(match.range, in: text), let digits = Range(match.range(at: 1), in: text),
-              let number = Int(text[digits]), !insideURL(range, in: text) else { return nil }
+              let number = Int(text[digits]), !inside(range, urls, steps: &steps) else { return nil }
         return Span(range: range, kind: .ref(number), text: String(text[range]))
     }
 
-    private static func hashSpan(_ match: NSTextCheckingResult, in text: String) -> Span? {
+    private static func hashSpan(
+        _ match: NSTextCheckingResult, in text: String, urls: [Range<String.Index>], steps: inout Int
+    ) -> Span? {
         guard let range = Range(match.range, in: text) else { return nil }
         let token = text[range]
-        guard token.contains(where: \.isNumber), token.contains(where: \.isLetter), !insideURL(range, in: text)
+        guard token.contains(where: \.isNumber), token.contains(where: \.isLetter), !inside(range, urls, steps: &steps)
         else { return nil }
         return Span(range: range, kind: .hash, text: String(token))
     }
 
-    private static func pathSpan(_ match: NSTextCheckingResult, in text: String) -> Span? {
+    private static func pathSpan(
+        _ match: NSTextCheckingResult, in text: String, urls: [Range<String.Index>], steps: inout Int
+    ) -> Span? {
         guard let whole = Range(match.range, in: text) else { return nil }
         // A sentence's full stop is not the path's.
         var end = whole.upperBound
         while end > whole.lowerBound, text[text.index(before: end)] == "." { end = text.index(before: end) }
         let range = whole.lowerBound..<end
         let token = text[range]
-        guard token.contains(where: \.isLetter), !token.hasPrefix("//"), !insideURL(range, in: text) else { return nil }
-        let isPath = token.contains("/") || hasSourceExtension(token)
-        return isPath ? Span(range: range, kind: .path, text: String(token)) : nil
+        guard token.contains(where: \.isLetter), !token.hasPrefix("//"),
+              token.contains("/") || hasSourceExtension(token), !inside(range, urls, steps: &steps) else { return nil }
+        return Span(range: range, kind: .path, text: String(token))
     }
 
     private static func hasSourceExtension(_ token: Substring) -> Bool {
@@ -109,12 +120,49 @@ public enum AgentTextHighlights {
         return sourceExtensions.contains(String(token[token.index(after: dot)...]))
     }
 
-    /// Whether `range` sits in a whitespace-delimited word that is a web address.
-    private static func insideURL(_ range: Range<String.Index>, in text: String) -> Bool {
-        let start = text[..<range.lowerBound].lastIndex(where: \.isWhitespace).map { text.index(after: $0) }
-            ?? text.startIndex
-        let end = text[range.upperBound...].firstIndex(where: \.isWhitespace) ?? text.endIndex
-        let word = text[start..<end]
-        return word.contains("://") || word.hasPrefix("www.")
+    /// The whitespace-delimited words that are web addresses (hold `://` or start with `www.`), in order: one pass.
+    private static func webAddresses(in text: String, steps: inout Int) -> [Range<String.Index>] {
+        var out: [Range<String.Index>] = []
+        var start: String.Index?
+        var isAddress = false
+        var colonSlashes = 0
+        var index = text.startIndex
+        func close(at end: String.Index) {
+            if let wordStart = start, isAddress || text[wordStart..<end].hasPrefix("www.") { out.append(wordStart..<end) }
+            start = nil
+            isAddress = false
+            colonSlashes = 0
+        }
+        while index < text.endIndex {
+            steps += 1
+            let char = text[index]
+            if char.isWhitespace {
+                close(at: index)
+            } else {
+                if start == nil { start = index }
+                // `://`: a colon, then two slashes.
+                colonSlashes = char == ":" ? 1 : (char == "/" && colonSlashes > 0 ? colonSlashes + 1 : 0)
+                if colonSlashes == 3 { isAddress = true }
+            }
+            index = text.index(after: index)
+        }
+        close(at: text.endIndex)
+        return out
+    }
+
+    /// Whether `range` overlaps one of the sorted web addresses (binary search).
+    private static func inside(_ range: Range<String.Index>, _ urls: [Range<String.Index>], steps: inout Int) -> Bool {
+        var low = 0
+        var high = urls.count
+        while low < high {
+            steps += 1
+            let mid = (low + high) / 2
+            if urls[mid].upperBound <= range.lowerBound {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return low < urls.count && urls[low].lowerBound < range.upperBound
     }
 }

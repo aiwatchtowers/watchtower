@@ -144,14 +144,14 @@ final class SessionChatViewTests: XCTestCase {
                                 markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
         var opened: [AgentTextHighlights.Span] = []
         feed.onHighlight = { opened.append($0) }
-        feed.resolvesPath = { $0 == "a/b.go" }
+        feed.resolvesPath = { path, _ in path == "a/b.go" }
         let context = feed.context()
         XCTAssertTrue(context.highlightsAgentText)
         let span = AgentTextHighlights.spans(inPlain: "#12")[0]
         context.partActions.openHighlight?(span)
         XCTAssertEqual(opened, [span])
-        XCTAssertEqual(context.partActions.resolvesPath?("a/b.go"), true)
-        XCTAssertEqual(context.partActions.resolvesPath?("c.go"), false)
+        XCTAssertEqual(context.partActions.resolvesPath?("a/b.go", 1), true)
+        XCTAssertEqual(context.partActions.resolvesPath?("c.go", 1), false)
 
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
@@ -160,35 +160,78 @@ final class SessionChatViewTests: XCTestCase {
             .highlightsAgentText)
     }
 
-    /// A ref shows the target, a hash or a command is copied, a path opens only when it is a file of the session's
-    /// root; each path is looked up once per root.
-    func testWorkchatHighlightActionsAndPathLookupCache() {
+    private func span(_ text: String, _ kind: AgentTextHighlights.Kind) -> AgentTextHighlights.Span {
+        AgentTextHighlights.Span(range: text.startIndex..<text.endIndex, kind: kind, text: text)
+    }
+
+    /// A ref shows the target, a hash or a command is copied, a path opens only once its lookup found it — and a
+    /// click checks the file again (review round 1).
+    func testWorkchatHighlightActionsAndTheClickRecheck() async {
         let highlights = WorkchatHighlights()
-        var lookups: [String] = []
-        highlights.lookUp = { path, _ in
-            lookups.append(path)
-            return path == "a/b.go" ? "a/b.go" : nil
-        }
+        highlights.lookUp = { path, _, _ in path == "a/b.go" ? "a/b.go" : nil }
+        var onDisk: Set<String> = ["a/b.go"]
+        highlights.recheck = { file, _ in onDisk.contains(file) ? file : nil }
         let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
-        func span(_ text: String, _ kind: AgentTextHighlights.Kind) -> AgentTextHighlights.Span {
-            AgentTextHighlights.Span(range: text.startIndex..<text.endIndex, kind: kind, text: text)
-        }
         XCTAssertEqual(highlights.action(for: span("#2188", .ref(2188)), root: root), .showTarget(2188))
         XCTAssertEqual(highlights.action(for: span("67a59755a", .hash), root: root), .copy("67a59755a"))
         XCTAssertEqual(highlights.action(for: span("make test", .command), root: root), .copy("make test"))
+        XCTAssertEqual(highlights.action(for: span("a/b.go", .path), root: root), .nothing, "not looked up yet")
+
+        XCTAssertFalse(highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, indexFiles: []))
+        await highlights.lookupsFinished()
+        XCTAssertTrue(highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, indexFiles: []))
         XCTAssertEqual(highlights.action(for: span("a/b.go", .path), root: root), .openFile("a/b.go", root))
-        XCTAssertEqual(highlights.action(for: span("c/d.go", .path), root: root), .nothing)
         XCTAssertEqual(highlights.action(for: span("a/b.go", .path), root: nil), .nothing)
-        XCTAssertEqual(lookups, ["a/b.go", "c/d.go"])
-
-        XCTAssertEqual(highlights.file("a/b.go", in: root), "a/b.go")
-        XCTAssertNil(highlights.file("c/d.go", in: root))
-        XCTAssertEqual(lookups, ["a/b.go", "c/d.go"], "cached per root, a miss too")
-        let other = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-b"))
-        XCTAssertEqual(highlights.file("a/b.go", in: other), "a/b.go")
-        XCTAssertEqual(lookups, ["a/b.go", "c/d.go", "a/b.go"], "another root looks again")
-
+        onDisk = []
+        XCTAssertEqual(highlights.action(for: span("a/b.go", .path), root: root), .nothing, "deleted since")
+        XCTAssertFalse(highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, indexFiles: []))
         XCTAssertEqual(WorkchatHighlights.copiedNotice("67a59755a"), "Copied 67a59755a")
+    }
+
+    /// Answers are kept per message; a miss only for its epoch, so a file created later colours on the next entry.
+    func testWorkchatPathLookupsArePerMessageAndMissesExpire() async {
+        let highlights = WorkchatHighlights()
+        let lookups = LockedLog()
+        let created = LockedLog()
+        highlights.lookUp = { path, _, _ in
+            lookups.append(path)
+            return created.contains(path) ? path : nil
+        }
+        let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
+        XCTAssertFalse(highlights.resolves("docs/x.md", messageID: 1, root: root, epoch: 5, indexFiles: []))
+        await highlights.lookupsFinished()
+        XCTAssertFalse(highlights.resolves("docs/x.md", messageID: 1, root: root, epoch: 5, indexFiles: []))
+        await highlights.lookupsFinished()
+        XCTAssertEqual(lookups.values, ["docs/x.md"], "a miss is kept for its epoch")
+
+        created.append("docs/x.md")
+        XCTAssertFalse(highlights.resolves("docs/x.md", messageID: 1, root: root, epoch: 6, indexFiles: []))
+        await highlights.lookupsFinished()
+        XCTAssertTrue(highlights.resolves("docs/x.md", messageID: 1, root: root, epoch: 6, indexFiles: []))
+        XCTAssertFalse(highlights.resolves("docs/x.md", messageID: 2, root: root, epoch: 6, indexFiles: []),
+                       "another message asks on its own")
+        await highlights.lookupsFinished()
+        XCTAssertEqual(lookups.values, ["docs/x.md", "docs/x.md", "docs/x.md"])
+    }
+
+    /// The live lookup: a relative or absolute in-root path by itself, a bare name only on a unique index hit.
+    func testWorkchatPathLookupOnDisk() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wc-hl-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for file in ["internal/a.go", "Sources/One/Transport.swift", "Sources/One/Dup.swift", "Sources/Two/Dup.swift"] {
+            let url = folder.appendingPathComponent(file)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "x".write(to: url, atomically: true, encoding: .utf8)
+        }
+        let root = CodeRoot(workbenchID: 1, worktree: folder)
+        let index = ["internal/a.go", "Sources/One/Transport.swift", "Sources/One/Dup.swift", "Sources/Two/Dup.swift"]
+        XCTAssertEqual(WorkchatHighlights.file("internal/a.go", in: root, indexFiles: []), "internal/a.go")
+        XCTAssertEqual(WorkchatHighlights.file(folder.path + "/internal/a.go", in: root, indexFiles: []), "internal/a.go")
+        XCTAssertNil(WorkchatHighlights.file("/elsewhere/internal/a.go", in: root, indexFiles: []))
+        XCTAssertNil(WorkchatHighlights.file("internal", in: root, indexFiles: index), "a folder is no file")
+        XCTAssertEqual(WorkchatHighlights.file("Transport.swift", in: root, indexFiles: index), "Sources/One/Transport.swift")
+        XCTAssertNil(WorkchatHighlights.file("Dup.swift", in: root, indexFiles: index), "ambiguous: plain")
+        XCTAssertNil(WorkchatHighlights.file("Missing.swift", in: root, indexFiles: index))
     }
 
     /// "Load earlier" while reading older text keeps the top entry in view and pins the window; back at the newest
@@ -467,4 +510,13 @@ final class SessionChatViewTests: XCTestCase {
                        "after the cap the feed draws ChatUI's button instead of the self-loading row")
         XCTAssertEqual(SystemRow.earlierLabel, "Load earlier messages")
     }
+}
+
+/// A thread-safe list a `@Sendable` stub appends to.
+private final class LockedLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String] = []
+    var values: [String] { lock.withLock { items } }
+    func append(_ item: String) { lock.withLock { items.append(item) } }
+    func contains(_ item: String) -> Bool { lock.withLock { items.contains(item) } }
 }

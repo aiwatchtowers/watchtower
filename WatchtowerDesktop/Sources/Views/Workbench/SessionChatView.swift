@@ -308,8 +308,7 @@ struct SessionChatView: View {
                 isActive: { isActive },
                 isOnScreen: { vm.isTabOnScreen() },
                 onOpenSubagent: { path.push($0) },
-                onHighlight: openHighlight,
-                resolvesPath: resolvesPath,
+                highlights: highlightHandlers(),
                 liveLine: { activity, entries in
                     let lastAgent = entries.last { $0.kind == "agent" }
                     return WorkchatActivityPresenter.subagentLine(
@@ -405,8 +404,9 @@ struct SessionChatView: View {
         workchatFeed.isWorking = working
         workchatFeed.answerPending = !(workchat?.outgoing.isEmpty ?? true)
         workchatFeed.onOpenArtifact = { artifact = $0 }
-        workchatFeed.onHighlight = openHighlight
-        workchatFeed.resolvesPath = resolvesPath
+        let handlers = highlightHandlers()
+        workchatFeed.onHighlight = handlers.open
+        workchatFeed.resolvesPath = handlers.resolvesPath
         var context = workchatFeed.context()
         context.hasEarlier = Self.hasEarlier(windowHasEarlier: window.hasEarlier(total: total),
                                              hasEarlierPage: store.hasEarlierPage,
@@ -434,32 +434,37 @@ struct SessionChatView: View {
 
     // MARK: - Highlighted spans
 
-    /// The session's code root, where the agent's paths resolve and open.
-    private var sessionCodeRoot: CodeRoot? {
-        vm.summaries.first { $0.id == projectID }.map { vm.codeRoot(sessionID: sessionID, project: $0.project) }
+    /// The span click and path lookup the feed and a subagent's run share. The session's code root is worked out
+    /// once here, per feed build, never per span (review round 1). A miss is asked again once the dialog or the
+    /// root's file index changes.
+    private func highlightHandlers() -> WorkchatHighlightHandlers {
+        let root = vm.summaries.first { $0.id == projectID }.map { vm.codeRoot(sessionID: sessionID, project: $0.project) }
+        let index = root.map { appState.codeIndexCenter.index(for: $0) }
+        let epoch = dialogEntries.count &* 1_000_003 &+ (index?.files.count ?? 0)
+        let (highlights, vm, sessionID, projectID) = (highlights, vm, sessionID, projectID)
+        return WorkchatHighlightHandlers(
+            open: { span in
+                switch highlights.action(for: span, root: root) {
+                case let .showTarget(targetID):
+                    vm.showTargetOnBoard(targetID, projectID: projectID)
+                case let .copy(text):
+                    WorkchatFeed.copy(text)
+                    copiedNotice = WorkchatHighlights.copiedNotice(text)
+                case let .openFile(file, root):
+                    Task { await vm.openSessionFile(file, root: root, sessionID: sessionID) }
+                case .nothing:
+                    NSSound.beep()
+                }
+            },
+            resolvesPath: { path, messageID in
+                guard let root else { return false }
+                return highlights.resolves(path, messageID: messageID, root: root, epoch: epoch,
+                                           indexFiles: index?.files ?? [])
+            }
+        )
     }
 
-    private func resolvesPath(_ path: String) -> Bool {
-        guard let root = sessionCodeRoot else { return false }
-        return highlights.file(path, in: root) != nil
-    }
-
-    /// A click on a highlighted span (spec 2026-11-24-workchat-polish §2).
-    private func openHighlight(_ span: AgentTextHighlights.Span) {
-        switch highlights.action(for: span, root: sessionCodeRoot) {
-        case let .showTarget(targetID):
-            vm.showTargetOnBoard(targetID, projectID: projectID)
-        case let .copy(text):
-            WorkchatFeed.copy(text)
-            copiedNotice = WorkchatHighlights.copiedNotice(text)
-        case let .openFile(file, root):
-            Task { await vm.openFile(file, root: root, preview: true) }
-        case .nothing:
-            NSSound.beep()
-        }
-    }
-
-    /// "Copied …" for a moment after a hash or a command is copied: a quiet caption, no box.
+    /// "Copied …" for a moment after a hash or a command is copied: quiet secondary text, no box (D3).
     @ViewBuilder private var copiedLine: some View {
         if let copiedNotice {
             Text(copiedNotice)
@@ -467,9 +472,6 @@ struct SessionChatView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .padding(.horizontal, Spacing.regular)
-                .padding(.vertical, Spacing.small)
-                .background(.regularMaterial, in: Capsule())
                 .padding(.top, Spacing.regular)
                 .transition(.opacity)
                 .task(id: copiedNotice) {

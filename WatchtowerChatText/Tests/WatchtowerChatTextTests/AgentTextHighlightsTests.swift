@@ -1,4 +1,4 @@
-import WatchtowerChatText
+@testable import WatchtowerChatText
 import XCTest
 
 /// Spec 2026-11-24-workchat-polish §2: the pure scanner behind the Workchat's IDE-style colouring of the agent's text.
@@ -42,6 +42,29 @@ final class AgentTextHighlightsTests: XCTestCase {
         for (text, expected, line) in cases {
             XCTAssertEqual(found(text), expected, text, line: line)
         }
+    }
+
+    /// A path candidate may not resolve in the app: a ref inside it is listed too, and the app keeps one or the
+    /// other (review round 1, `#2201/T2`).
+    func testARefInsideAPathCandidateIsListedToo() {
+        XCTAssertEqual(found("see #2201/T2 now"),
+                       [Found(text: "#2201", kind: .ref(2201)), Found(text: "2201/T2", kind: .path)])
+    }
+
+    /// Web-address detection is linear: one pass per stretch, not one per token (review round 1, a long compact JSON
+    /// line). Counted in scan steps, never in time.
+    func testScanStepsGrowLinearlyOnALongUnspacedLine() {
+        func steps(_ copies: Int) -> Int {
+            let line = String(repeating: #"{"path":"a/b.go","sha":"67a59755a","n":12},"#, count: copies)
+            var steps = 0
+            _ = AgentTextHighlights.spans(inPlain: line, steps: &steps)
+            XCTAssertLessThanOrEqual(steps, 4 * line.utf16.count, "steps stay linear in the text")
+            return steps
+        }
+        let small = steps(1_200) // ~50 KB
+        let large = steps(2_400)
+        XCTAssertGreaterThan(small, 0)
+        XCTAssertLessThanOrEqual(Double(large) / Double(small), 2.2)
     }
 
     func testAHashInsideAPathIsThePathOnly() {

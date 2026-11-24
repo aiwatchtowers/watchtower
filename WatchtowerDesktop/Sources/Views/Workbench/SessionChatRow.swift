@@ -27,8 +27,8 @@ struct WorkchatFeed {
     var onOpenArtifact: (ChatArtifactContent) -> Void = { _ in }
     /// A click on a highlighted span of the agent's text (`WorkchatHighlights`); nil = the spans are only coloured.
     var onHighlight: ((AgentTextHighlights.Span) -> Void)?
-    /// Whether a path in the agent's text is a file of the session's folders: only such a path is coloured.
-    var resolvesPath: ((String) -> Bool)?
+    /// Whether a path in an agent message (by id) is a file of the session's folders: only such a path is coloured.
+    var resolvesPath: ((String, Int64) -> Bool)?
 
     /// Puts `text` on the general pasteboard (a row's Copy, a highlighted hash or command).
     static func copy(_ text: String) {

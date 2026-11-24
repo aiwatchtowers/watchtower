@@ -365,10 +365,10 @@ class MarkdownRunTextView: NSTextView {
         guard text !== shown, let storage = textStorage else { return }
         shown = text
         guard !storage.isEqual(to: text) else { return }
+        setHoveredHighlight(nil)
         storage.setAttributedString(text)
         measured = []
         plainTextCache = nil
-        hoveredHighlight = nil
         hasQuoteBars = false
         text.enumerateAttribute(.markdownQuoteBars, in: NSRange(location: 0, length: text.length)) { value, _, stop in
             if value != nil { hasQuoteBars = true; stop.pointee = true }
@@ -503,11 +503,11 @@ class MarkdownRunTextView: NSTextView {
 
     // MARK: - Highlighted spans
 
-    /// The highlighted span under the event, if any, and its range.
-    private func highlight(at event: NSEvent) -> (AgentTextHighlights.Span, NSRange)? {
+    /// The highlighted span at a point in the window, if any, and its range.
+    private func highlight(atWindowPoint point: NSPoint) -> (AgentTextHighlights.Span, NSRange)? {
         guard onHighlight != nil, let window, let storage = textStorage else { return nil }
-        let screenPoint = window.convertPoint(toScreen: event.locationInWindow)
-        let index = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+        let screenPoint = window.convertPoint(toScreen: point)
+        let index = characterIndexForInsertion(at: convert(point, from: nil))
         for candidate in [index, index - 1] where candidate >= 0 && candidate < storage.length {
             var range = NSRange()
             guard let box = storage.attribute(.agentHighlight, at: candidate, effectiveRange: &range)
@@ -531,7 +531,7 @@ class MarkdownRunTextView: NSTextView {
 
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
-        let hovered = highlight(at: event)
+        let hovered = highlight(atWindowPoint: event.locationInWindow)
         setHoveredHighlight(hovered?.1)
         if hovered != nil { NSCursor.pointingHand.set() }
     }
@@ -541,23 +541,78 @@ class MarkdownRunTextView: NSTextView {
         setHoveredHighlight(nil)
     }
 
-    /// Underlines the hovered span only (D3: no underline at rest).
-    private func setHoveredHighlight(_ range: NSRange?) {
-        guard range != hoveredHighlight, let storage = textStorage else { return }
-        if let old = hoveredHighlight, NSMaxRange(old) <= storage.length {
-            storage.removeAttribute(.underlineStyle, range: old)
+    /// Underlines the hovered span only (D3: no underline at rest), as a rendering attribute: the text storage — and
+    /// so a copy — never carries it.
+    func setHoveredHighlight(_ range: NSRange?) {
+        guard range != hoveredHighlight else { return }
+        if let old = hoveredHighlight, let textRange = textRange(old) {
+            textLayoutManager?.removeRenderingAttribute(.underlineStyle, for: textRange)
         }
-        if let range { storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range) }
+        if let range, let textRange = textRange(range) {
+            textLayoutManager?.addRenderingAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue,
+                                                     for: textRange)
+        }
         hoveredHighlight = range
     }
 
-    /// A click on a highlighted span opens it instead of placing the cursor.
+    private func textRange(_ range: NSRange) -> NSTextRange? {
+        guard let content = textLayoutManager?.textContentManager, let storage = textStorage,
+              NSMaxRange(range) <= storage.length,
+              let start = content.location(content.documentRange.location, offsetBy: range.location),
+              let end = content.location(start, offsetBy: range.length) else { return nil }
+        return NSTextRange(location: start, end: end)
+    }
+
+    /// The span a click went down on; its action runs only once the click completes (`HighlightClick`).
+    private var pendingClick: DispatchWorkItem?
+    /// Runs a completed single click's action after the double-click interval, so a double or triple click (which
+    /// selects a word or a line) never runs it. Tests run the work item by hand.
+    var scheduleClick: (DispatchWorkItem) -> Void = { item in
+        DispatchQueue.main.asyncAfter(deadline: .now() + NSEvent.doubleClickInterval, execute: item)
+    }
+
+    /// Selection first: AppKit tracks the click or drag until the mouse goes up. A span's action runs only for a
+    /// completed plain single click that selected nothing and went up on the same span (`HighlightClick.fires`).
     override func mouseDown(with event: NSEvent) {
-        if let (span, _) = highlight(at: event), let onHighlight {
-            onHighlight(span)
-            return
-        }
+        clickBegan()
+        let down = highlight(atWindowPoint: event.locationInWindow)
         super.mouseDown(with: event)
+        guard let down, let window else { return }
+        let up = highlight(atWindowPoint: window.mouseLocationOutsideOfEventStream)
+        let fires = HighlightClick.fires(clickCount: event.clickCount, modifiers: event.modifierFlags,
+                                         selectionLength: selectedRange().length, down: down.1, up: up?.1)
+        if fires { clickEnded(down.0) }
+    }
+
+    /// A new click went down: a single click still waiting (the first of a double click) is dropped.
+    func clickBegan() {
+        pendingClick?.cancel()
+        pendingClick = nil
+    }
+
+    /// A completed single click on `span`: its action runs unless a second click follows.
+    func clickEnded(_ span: AgentTextHighlights.Span) {
+        guard onHighlight != nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            self?.pendingClick = nil
+            self?.onHighlight?(span)
+        }
+        pendingClick = item
+        scheduleClick(item)
+    }
+
+    /// VoiceOver: each highlighted span is an action ("Open internal/a.go", "Copy 67a59755a").
+    override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
+        guard onHighlight != nil, let storage = textStorage else { return super.accessibilityCustomActions() }
+        var actions: [NSAccessibilityCustomAction] = []
+        storage.enumerateAttribute(.agentHighlight, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+            guard let span = (value as? AgentTextHighlightBox)?.span else { return }
+            actions.append(NSAccessibilityCustomAction(name: AgentTextHighlightRender.accessibilityName(span)) { [weak self] in
+                self?.onHighlight?(span)
+                return self?.onHighlight != nil
+            })
+        }
+        return actions + (super.accessibilityCustomActions() ?? [])
     }
 
     private static let appKitOpenLink = NSSelectorFromString("_openLinkFromMenu:")

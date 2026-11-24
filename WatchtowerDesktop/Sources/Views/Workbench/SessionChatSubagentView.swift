@@ -1,7 +1,6 @@
 import ChatUI
 import ChatWire
 import SwiftUI
-import WatchtowerChatText
 import WatchtowerCore
 
 /// A subagent's run opened in place in the session chat pane: the task it
@@ -24,8 +23,7 @@ struct SessionChatSubagentView: View {
     let isOnScreen: () -> Bool
     let onOpenSubagent: (SessionFeedSubagent) -> Void
     /// The parent Workchat's highlighted-span click and path lookup (`WorkchatFeed`).
-    let onHighlight: (AgentTextHighlights.Span) -> Void
-    let resolvesPath: (String) -> Bool
+    let highlights: WorkchatHighlightHandlers
     /// The subagent's own live line from its activity and entries; nil = none.
     let liveLine: (SessionFeedActivity?, [SessionFeedEntry]) -> WorkchatActivityPresenter.Line?
     /// Restarts the follow: the session's state or the screen changed.
@@ -117,8 +115,8 @@ struct SessionChatSubagentView: View {
         var feed = WorkchatFeed(entries: entries, markdown: markdown, expandedEvents: expandedEvents,
                                 onToggle: toggleEvent)
         feed.onOpenArtifact = { artifact = $0 }
-        feed.onHighlight = onHighlight
-        feed.resolvesPath = resolvesPath
+        feed.onHighlight = highlights.open
+        feed.resolvesPath = highlights.resolvesPath
         let byID = feed.entriesByMessage
         var context = feed.context()
         context.follow = ChatFeedFollow(conversationID: nil)

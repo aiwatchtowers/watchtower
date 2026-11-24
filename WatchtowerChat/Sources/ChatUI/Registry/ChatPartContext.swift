@@ -34,9 +34,10 @@ public struct ChatPartActions {
     /// A highlighted span of the agent's text was clicked (`ChatFeedContext.highlightsAgentText`): a ref, a hash, a
     /// path or a command.
     public var openHighlight: ((AgentTextHighlights.Span) -> Void)?
-    /// Whether a path candidate in the agent's text is a file of the session's folders; only one that is gets its
-    /// colour. Nil colours no path.
-    public var resolvesPath: ((String) -> Bool)?
+    /// Whether a path candidate in the agent's message (by id) is a file of the session's folders; only one that is
+    /// gets its colour. It may answer later (an async lookup): the screen re-renders when it lands. Nil colours no
+    /// path.
+    public var resolvesPath: ((_ path: String, _ messageID: Int64) -> Bool)?
 
     public init(
         sendFixedText: @escaping (String) -> Void = { _ in },

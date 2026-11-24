@@ -33,6 +33,38 @@ final class WorkbenchesViewModelFilesTests: XCTestCase {
         try? FileManager.default.removeItem(at: folder)
     }
 
+    /// A path clicked in Workchat B of a split with Workchat A on another worktree (#2201 T2 review): the file opens in
+    /// B's root and the Files pane takes A's place beside B, so the page's root is B's.
+    func testAWorkchatPathOpensBesideItsOwnSessionInASplit() async {
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        let project = Workbench(row: Row(["id": 3, "name": "acme", "folder_path": folder.path]))
+        let rootB = CodeRoot(workbenchID: project.id, worktree: folder.appendingPathComponent("wt-b"))
+        var split = WorkspaceLayout.default
+        split.primary = .sessionChat(1)
+        split.secondary = .sessionChat(2)
+        vm.setLayout(split, projectID: project.id)
+
+        await vm.openSessionFile("a.go", root: rootB, sessionID: 2)
+
+        let layout = vm.layout(projectID: project.id)
+        XCTAssertEqual(Set(layout.visiblePanes), [.files, .sessionChat(2)], "B stays, Files takes A's place")
+        XCTAssertEqual(vm.pageSessionID(projectID: project.id), 2, "the Files pane works in B's root")
+        XCTAssertEqual(vm.codeFiles.tabs(for: rootB).paths, ["a.go"])
+        XCTAssertEqual(vm.codeFiles.tabs(for: project.mainCodeRoot).paths, [])
+    }
+
+    /// A single Workchat opens Files the way a FILES click does.
+    func testAWorkchatPathInASinglePaneShowsFiles() async {
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        let project = Workbench(row: Row(["id": 3, "name": "acme", "folder_path": folder.path]))
+        var single = WorkspaceLayout.default
+        single.primary = .sessionChat(2)
+        vm.setLayout(single, projectID: project.id)
+        await vm.openSessionFile("a.go", root: project.mainCodeRoot, sessionID: 2)
+        XCTAssertTrue(vm.layout(projectID: project.id).isShowing(.files))
+        XCTAssertEqual(vm.codeFiles.tabs(for: project.mainCodeRoot).paths, ["a.go"])
+    }
+
     func testOpenPullsTheUnsentEditSoThePreviewTabIsKept() async {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
         let project = Workbench(row: Row(["id": 3, "name": "acme", "folder_path": folder.path]))
