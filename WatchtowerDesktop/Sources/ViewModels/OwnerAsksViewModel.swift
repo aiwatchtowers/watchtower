@@ -240,11 +240,12 @@ final class OwnerAsksViewModel {
     /// (spec 2026-11-24 "The chat view"): per ask, in memory only; closing
     /// the drawer forgets it, the chat itself is kept (D5).
     private(set) var explainOpen: Set<Int64> = []
-    /// Each opened explain chat's surface by ask id, once its conversation is
-    /// known: the engine lives in `chats` by its key.
+    /// Each open explain chat's surface by ask id, once its conversation is
+    /// known: the engine lives in `chats` by its key. Dropped on close.
     private var explainSpecs: [Int64: ChatSurfaceSpec] = [:]
     /// Why an explain chat could not be opened (its conversation or the
-    /// workbench could not be read), by ask id; cleared on the next open.
+    /// workbench could not be read), by ask id; cleared on close and on the
+    /// next open.
     private(set) var explainErrors: [Int64: String] = [:]
     /// The workbench of each ask in `explainOpen`, so a drawer's close
     /// forgets its asks' mode only.
@@ -732,28 +733,38 @@ final class OwnerAsksViewModel {
         explainErrors[ask.id] = nil
         guard explainStarting.insert(ask.id).inserted else { return }
         defer { explainStarting.remove(ask.id) }
+        let spec: ChatSurfaceSpec
         do {
-            explainSpecs[ask.id] = try await explainSpec(ask)
+            spec = try await explainSpec(ask)
         } catch {
             NSLog("OwnerAsksViewModel: opening the explain chat of ask %lld: %@", ask.id, error.localizedDescription)
+            // Back pressed meanwhile: closing already forgot this ask.
+            guard explainOpen.contains(ask.id) else { return }
             explainErrors[ask.id] = error.localizedDescription
             // A gone workbench took its chat along: never served or made again.
             if error is ExplainWorkbenchGone { explainSpecs[ask.id] = nil }
             return
         }
-        guard let engine = ensureExplainEngine(ask) else { return }
-        // Back pressed while the conversation was found: no turn on its own.
+        // Back pressed while the conversation was found: the result is
+        // dropped, no engine is made and no turn starts on its own.
         guard explainOpen.contains(ask.id) else { return }
+        explainSpecs[ask.id] = spec
+        guard let engine = ensureExplainEngine(ask) else { return }
         if !engine.startFirstTurnIfEmpty(hidden: AskExplainPrompt.firstTurn) {
             // The history may have been read only now (its first read failed).
             engine.offerRetryOfStoredReply(hiddenPrompt: AskExplainPrompt.firstTurn)
         }
     }
 
-    /// Back to the question: the chat (and a running turn) stays in `chats`.
+    /// Back to the question: the chat (and a running turn) stays in `chats`
+    /// by its key (D5); the per-ask surface, error and rebuild count are
+    /// forgotten — the next open reads them again.
     func closeExplain(_ askID: Int64) {
         explainOpen.remove(askID)
         explainProjects[askID] = nil
+        explainSpecs[askID] = nil
+        explainErrors[askID] = nil
+        explainBuilds[askID] = nil
     }
 
     /// The ask's explain chat as the center holds it; nil until its
@@ -785,16 +796,18 @@ final class OwnerAsksViewModel {
     }
 
     /// The ask's surface: its workbench (gone: no conversation is made), the
-    /// conversation, the folder and the ask's target.
+    /// conversation, the ask's folder (`AskExplainSurface.readFolder`) and the
+    /// ask's target.
     private func explainSpec(_ ask: OwnerAsk) async throws -> ChatSurfaceSpec {
-        let (workbench, target) = try await dbPool.read { db -> (Workbench?, Target?) in
-            let workbench = try WorkbenchQueries.fetch(db, id: ask.projectID)
+        let (folder, target) = try await dbPool.read { db -> (String?, Target?) in
+            guard let workbench = try WorkbenchQueries.fetch(db, id: ask.projectID) else { return (nil, nil) }
+            let folder = try AskExplainSurface.readFolder(db, ask: ask, homeFolder: workbench.folderPath)
             let target = try ask.targetID.flatMap { try TargetQueries.fetchByID(db, id: Int($0)) }
-            return (workbench, target)
+            return (folder, target)
         }
-        guard let workbench else { throw ExplainWorkbenchGone() }
+        guard let folder else { throw ExplainWorkbenchGone() }
         let conversationID = try await AskExplainSurface.conversationID(ask: ask, dbPool: dbPool, writes: chatWrites)
-        return AskExplainSurface.spec(ask: ask, conversationID: conversationID, folder: workbench.folderPath,
+        return AskExplainSurface.spec(ask: ask, conversationID: conversationID, folder: folder,
                                       target: target.map { (title: $0.text, intent: $0.intent) },
                                       configProvider: explainConfigProvider, catalog: explainCatalog)
     }

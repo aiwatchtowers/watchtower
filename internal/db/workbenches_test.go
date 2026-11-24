@@ -449,6 +449,14 @@ func TestDeleteWorkbenchDropsAskExplainChats(t *testing.T) {
 	}
 	mine := insert(fmt.Sprintf("%d:5", pid))
 	longer := insert(fmt.Sprintf("%d1:5", pid))
+	// Queued follow-ups, keyed by the Desktop's surface key.
+	mineDraft := fmt.Sprintf("owner_ask_explain.%d:5.%d", pid, mine)
+	longerDraft := fmt.Sprintf("owner_ask_explain.%d1:5.%d", pid, longer)
+	otherKind := fmt.Sprintf("code_question.%d:a.go:3.9", pid)
+	for _, key := range []string{mineDraft, longerDraft, otherKind} {
+		_, err := d.Exec(`INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES (?, 'and B?', 1)`, key)
+		require.NoError(t, err)
+	}
 
 	require.NoError(t, d.DeleteWorkbench(pid))
 
@@ -457,6 +465,18 @@ func TestDeleteWorkbenchDropsAskExplainChats(t *testing.T) {
 	assert.Equal(t, 0, n, "the workbench's explain chat is gone")
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE id = ?`, longer).Scan(&n))
 	assert.Equal(t, 1, n, "the id with the same leading digits survives")
+	var keys []string
+	rows, err := d.Query(`SELECT surface_key FROM chat_queued_drafts ORDER BY surface_key`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var k string
+		require.NoError(t, rows.Scan(&k))
+		keys = append(keys, k)
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, []string{otherKind, longerDraft}, keys,
+		"the workbench's explain drafts are gone; another bench's and another kind's stay")
 }
 
 // insertCodeQuestion plants a code question conversation with one owner
