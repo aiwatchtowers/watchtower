@@ -81,7 +81,8 @@ public struct LinkPayload: Codable, Equatable, Sendable {
     // Go hub wrote).
     // swiftlint:disable discouraged_optional_boolean
     /// v4, optional `relay_switch`: true when the hub moves itself to Relay after a phone links over a pairing slot
-    /// (#2191). Older Macs never send it; nil (absent, or not a boolean) reads as false.
+    /// (#2191). Older Macs never send it; nil (absent, or not a boolean) reads as false. A non-boolean value is
+    /// dropped: the code written back carries no `relay_switch`.
     public let relaySwitch: Bool?
     // swiftlint:enable discouraged_optional_boolean
 

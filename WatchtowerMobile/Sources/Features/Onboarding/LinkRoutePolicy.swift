@@ -16,8 +16,10 @@ enum LinkRoute: Equatable {
 /// The paying check's answer: paying, and the Macs in this account's slots.
 typealias RelayAccountAnswer = (paying: Bool, macs: [String])
 
-/// The link route rule (R4; #2191), pure. A code *offers Relay* when its relay identity is coherent and its
-/// `transports` lists `relay` (a code without `transports` goes by the identity alone). In order:
+/// The link route rule (R4; #2191), pure. A code whose hub is on iCloud *offers Relay* when its relay identity is
+/// coherent, its `transports` lists `relay` (a code without `transports` goes by the identity alone), and it carries
+/// `relay_switch: true` (ask #1827: only a Mac that moves itself to Relay after the pairing sends it). A hub on Relay
+/// needs only the coherent identity. In order:
 ///
 /// | Code | Relay on this phone | Paying answer | Route |
 /// |---|---|---|---|
@@ -26,6 +28,7 @@ typealias RelayAccountAnswer = (paying: Bool, macs: [String])
 /// | offers Relay | available | none (unreachable, backoff), device entitled | `.refuse(.relayUnreachable)` |
 /// | hub on iCloud | available | none, device not entitled | `.cloudKit` |
 /// | offers Relay | available | `.updateRequired` | `.refuse(.updateApp)` |
+/// | hub on iCloud, no `relay_switch` (an older Mac) | any | not asked | `.cloudKit` |
 /// | hub on iCloud | off, or not paying | — | `.cloudKit` |
 /// | hub on Relay | off, or not paying | — | `.macOnRelay` / `.needsRelay` |
 /// | neither route | — | — | `.refuse(.refused)` |

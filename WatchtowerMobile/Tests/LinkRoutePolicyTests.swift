@@ -226,7 +226,15 @@ final class LinkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(shared.readsStarted, 1, "a read younger than its limit is shared")
 
         clock.advance(by: 31)
-        let late = Task { await shared { await never.wait() } }
+        // The late caller's timeout runs only after its join returned: a waiter on the new read.
+        let lateJoined = Gate()
+        let late = Task {
+            await shared {
+                lateJoined.open()
+                await never.wait()
+            }
+        }
+        await lateJoined.wait()
         await newEntered.wait()
         XCTAssertEqual(shared.readsStarted, 2, "the late caller started a new read")
         oldGate.open()
@@ -301,6 +309,12 @@ final class LinkRoutePolicyTests: XCTestCase {
         let onRelay = mac.code(hubID: hub, macName: "Work Mac", owner: "_owner-acme", now: now, transport: .relay, relaySwitch: false)
         let (relayRoute, _, _) = await decide(onRelay, relay: available, entitled: false, paying: .success(true))
         XCTAssertEqual(relayRoute, .relay(mac: mac.deviceID, authPub: mac.authPub), "a hub on Relay needs no relay_switch")
+        // A headless host's code (no iCloud fields, no `transport`) without the key: still over Relay, never refused.
+        let headless = mac.code(
+            hubID: hub, macName: "build-box", owner: "_owner-acme", now: now, transport: nil, cloudKit: false, relaySwitch: false)
+        let (headlessRoute, headlessAsked, _) = await decide(headless, relay: available, entitled: false, paying: .success(true))
+        XCTAssertEqual(headlessRoute, .relay(mac: mac.deviceID, authPub: mac.authPub), "a headless host needs no relay_switch")
+        XCTAssertEqual(headlessAsked, 1)
     }
 
     func testUpdateRequiredOnACloudKitCodeIsUpdateApp() async {
