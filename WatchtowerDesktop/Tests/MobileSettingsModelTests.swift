@@ -232,9 +232,9 @@ final class MobileSettingsModelTests: XCTestCase {
         await withRelay.load()
         XCTAssertTrue(withRelay.canLink, "a relay links without iCloud")
         // One line replaces the pause line and the account line (ask #1829).
-        XCTAssertEqual(Model.noICloudRelayLine,
-                       "iCloud is off on this Mac. A phone with Relay can still link; linking moves this Mac to Relay.")
-        XCTAssertEqual(withRelay.hubLine, Model.HubLine(text: Model.noICloudRelayLine, tone: .warning))
+        let offLine = "iCloud is off on this Mac. A phone with Relay can still link; linking moves this Mac to Relay."
+        XCTAssertEqual(Model.noICloudRelayLine("no_account"), offLine)
+        XCTAssertEqual(withRelay.hubLine, Model.HubLine(text: offLine, tone: .warning))
         XCTAssertNil(withRelay.accountLine)
         withRelay.linkPhone()
         XCTAssertNotNil(withRelay.pairing)
@@ -254,6 +254,41 @@ final class MobileSettingsModelTests: XCTestCase {
         let otherPause = makeModel()
         await otherPause.load()
         XCTAssertFalse(otherPause.canLink, "only the iCloud pause keeps Link")
+    }
+
+    /// The relay line opens with why iCloud can't be used, in the account
+    /// line's own words; without a relay each state keeps its old two lines.
+    func testTheRelayLineSaysWhyICloudCannotBeUsed() async {
+        let cases = [
+            ("no_account", "iCloud is off on this Mac.", "Mobile isn't available on this Mac: iCloud is off."),
+            ("restricted", "Mobile isn't available on this Mac: iCloud is restricted by your organization.",
+             "Mobile isn't available on this Mac: iCloud is restricted by your organization."),
+            ("temporarily_unavailable", "Mobile isn't available on this Mac: iCloud account temporarily unavailable.",
+             "Mobile isn't available on this Mac: iCloud account temporarily unavailable")
+        ]
+        let pause = Model.HubLine(text: "Paused until iCloud is available on this Mac. It goes on by itself.", tone: .warning)
+        for (account, opening, oldAccountLine) in cases {
+            let cloud = #""cloudkit":{"account":"\#(account)","throttled_since":"","signed":true}"#
+            let paused = #"{"state":"paused","reason":"no_icloud","transport":"cloudkit","#
+
+            cli.status(paused + cloud + #","relay":{"state":"connected"}}"#)
+            cli.phones("[]")
+            let withRelay = makeModel()
+            await withRelay.load()
+            let line = opening + " A phone with Relay can still link; linking moves this Mac to Relay."
+            XCTAssertEqual(Model.noICloudRelayLine(account), line, account)
+            XCTAssertEqual(withRelay.hubLine, Model.HubLine(text: line, tone: .warning), account)
+            XCTAssertNil(withRelay.accountLine, account)
+            XCTAssertTrue(withRelay.canLink, account)
+
+            cli.status(paused + cloud + "}")
+            cli.phones("[]")
+            let withoutRelay = makeModel()
+            await withoutRelay.load()
+            XCTAssertEqual(withoutRelay.hubLine, pause, account)
+            XCTAssertEqual(withoutRelay.accountLine, oldAccountLine, account)
+            XCTAssertFalse(withoutRelay.canLink, account)
+        }
     }
 
     /// The pairing sheet names the Mac in the Relay warning (#2191).

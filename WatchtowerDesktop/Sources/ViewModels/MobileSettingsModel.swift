@@ -271,7 +271,7 @@ final class MobileSettingsModel {
         hubLine = if status.state == "off" {
             nil
         } else if relayLinksWithoutICloud {
-            HubLine(text: Self.noICloudRelayLine, tone: .warning)
+            HubLine(text: Self.noICloudRelayLine(status.cloudKit?.account ?? ""), tone: .warning)
         } else {
             Self.hubLine(state: status.state, reason: status.reason)
         }

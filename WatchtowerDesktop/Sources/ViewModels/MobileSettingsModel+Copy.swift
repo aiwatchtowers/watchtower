@@ -141,9 +141,20 @@ extension MobileSettingsModel {
 
     /// `no_icloud` on a hub that has a relay (#2191, ask #1829): Link stays
     /// on, the hub issues a Relay code, and the link moves the Mac to Relay.
-    /// It replaces both `noICloudLine` and the account's line.
-    nonisolated static let noICloudRelayLine =
-        "iCloud is off on this Mac. A phone with Relay can still link; linking moves this Mac to Relay."
+    /// It replaces both `noICloudLine` and the account's line, so it opens
+    /// with why iCloud can't be used: the approved sentence for no account
+    /// (and an account not read), else that account's own line.
+    nonisolated static func noICloudRelayLine(_ account: String) -> String {
+        switch account {
+        case "restricted", "temporarily_unavailable":
+            let why = accountLine(account) ?? ""
+            return (why.hasSuffix(".") ? why : why + ".") + " " + relayStillLinks
+        default:
+            return "iCloud is off on this Mac. " + relayStillLinks
+        }
+    }
+
+    nonisolated static let relayStillLinks = "A phone with Relay can still link; linking moves this Mac to Relay."
 
     nonisolated static let unknownReason = "Mobile reports a problem this version can't name. It tries again by itself."
 
