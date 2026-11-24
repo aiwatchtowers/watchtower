@@ -33,6 +33,9 @@ public struct ChatComposerFieldConfig {
     /// The kind of each token number that has a payload (`inlinePastes`): one Backspace removes such a token of that
     /// kind whole.
     public var livePastes: [Int: PasteKind] = [:]
+    /// The Mac's paperclip opens a menu — "Paste …", titled by what the clipboard holds, and "Attach files…" —
+    /// instead of the open panel (the Workchat, #2201 §4).
+    public var pasteMenu = false
 
     public init(
         placeholder: String,
@@ -46,7 +49,8 @@ public struct ChatComposerFieldConfig {
         sendBlocked: Bool = false,
         sendWhileStreaming: Bool = false,
         inlinePastes: Bool = false,
-        livePastes: [Int: PasteKind] = [:]
+        livePastes: [Int: PasteKind] = [:],
+        pasteMenu: Bool = false
     ) {
         self.placeholder = placeholder
         self.maxHeight = maxHeight
@@ -60,6 +64,7 @@ public struct ChatComposerFieldConfig {
         self.sendWhileStreaming = sendWhileStreaming
         self.inlinePastes = inlinePastes
         self.livePastes = livePastes
+        self.pasteMenu = pasteMenu
     }
 }
 
@@ -102,6 +107,8 @@ public struct ChatComposerField: View {
     @State private var longPaste: LongPaste?
     /// The U1 reason after a refused drop or paste; cleared on the next accepted one.
     @State private var refusedNotice: String?
+    /// Set by the paperclip's "Paste …" item: the field pastes the clipboard.
+    @State private var pasteRequest: UUID?
 
     public init(
         text: Binding<String>,
@@ -193,8 +200,15 @@ public struct ChatComposerField: View {
         HStack(alignment: .bottom, spacing: ComposerMetrics.rowSpacing) {
             if let onAttachFiles {
                 ComposerAttachButton(help: attachHelp) {
-                    ComposerFilePanel.pick(attach: config.attachUnavailableReason, pdf: config.pdfUnavailableReason,
-                                           onAttachFiles)
+                    let pick = {
+                        ComposerFilePanel.pick(attach: config.attachUnavailableReason,
+                                               pdf: config.pdfUnavailableReason, onAttachFiles)
+                    }
+                    if config.pasteMenu {
+                        ComposerAttachMenu.show(paste: { pasteRequest = UUID() }, attach: pick)
+                    } else {
+                        pick()
+                    }
                 }
             } else if let onAttachMenu {
                 ComposerAttachButton(help: attachHelp, action: onAttachMenu)
@@ -230,6 +244,7 @@ public struct ChatComposerField: View {
             onOptionArrowDown: onOptionArrowDown,
             autoFocus: config.autoFocus,
             focusRequest: config.focusRequest,
+            pasteRequest: pasteRequest,
             onSubmit: submit
         )
     }

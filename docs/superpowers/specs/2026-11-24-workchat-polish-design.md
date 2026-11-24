@@ -140,15 +140,32 @@ pasteboard holds one of the view's `readablePasteboardTypes`, which for a plain-
 lists no image type. A screenshot-only pasteboard therefore never reaches
 `PastingTextView.paste(_:)`; the unit tests call `paste(nil)` directly and miss it.
 The Finder-file failure is not explained by the code read (`NSFilenamesPboardType` is
-readable and `PasteClassifier` returns `.attachFiles`); Task 4 starts by reproducing it
-through the menu path and records the cause in this section.
+readable and `PasteClassifier` returns `.attachFiles`); Task 5 reproduced it through the
+menu path and found no failure in the field itself:
+
+- A Finder-shaped pasteboard (`public.file-url` holding a file reference URL
+  `file:///.file/id=…`, plus the file name as text) shows `public.file-url`,
+  `NSFilenamesPboardType`, `Apple URL pasteboard type` and `NSStringPboardType`; the stock
+  rule finds `NSStringPboardType` readable, so Paste is enabled. `readObjects(NSURL)` returns
+  the reference URL, and bridging it to `URL` resolves it to the file's path, so
+  `onAttachFiles` gets the real path and the chip is right. `testFinderFilePasteAttaches`
+  covers it through validation and the paste action.
+- The stock validation reads `NSPasteboard.general`, never the view's `pasteboard`, so the
+  old tests' private pasteboards could not see the menu rule at all: in the red run the image
+  test passed and the no-`onPasteData` test failed purely on whatever the general clipboard
+  held. The tests cannot put Finder's real pasteboard in place (the general pasteboard is out
+  of bounds), so a Finder variant that writes other types than these is not ruled out; the
+  field now reads `public.file-url` itself and validates against its own pasteboard, which
+  enables Paste for a bare file URL too (`testFileURLOnlyPasteIsEnabled`).
 
 - `PastingTextView` overrides `readablePasteboardTypes` (adds `public.png`,
   `public.tiff`, `public.jpeg`, `public.heic`, `public.file-url`, `com.adobe.pdf` when
   `onPasteData` is set) and `validateUserInterfaceItem` for `paste(_:)` so the item is
   enabled for those types. Its own `paste(_:)` still decides what happens.
 - Tests go through `NSApp.sendAction(#selector(NSText.paste(_:)), …)` and
-  `validateUserInterfaceItem` with a private pasteboard, not `paste(nil)`.
+  `validateUserInterfaceItem` with a private pasteboard, not `paste(nil)`. xctest's app is
+  never active, so its window never becomes key and `to: nil` finds no responder: the
+  action goes to the window's first responder.
 - Paperclip menu: "Paste screenshot" / "Paste N files" / "Paste text" from
   `PasteClassifier` on the menu's open (a user action — no TCC concern), disabled when
   the classifier says nothing usable.

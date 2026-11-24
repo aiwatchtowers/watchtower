@@ -48,6 +48,12 @@ struct ComposerAttachButton: View {
     }
 }
 
+/// The phone's paperclip opens the shell's own menu (`onAttachMenu`); no paste item.
+enum ComposerAttachMenu {
+    @MainActor
+    static func show(paste: @escaping () -> Void, attach: @escaping () -> Void) { attach() }
+}
+
 /// The phone picks files in its own menu (`onAttach`); there is no open panel.
 enum ComposerFilePanel {
     @MainActor

@@ -2,6 +2,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import WatchtowerChatText
 import WatchtowerDesign
 
 /// The Mac's layout of the shared composer (the look it had before the composer moved into ChatUI).
@@ -56,6 +57,74 @@ struct ComposerAttachButton: View {
         .accessibilityLabel("Attach files")
         .help(help)
         .padding(.bottom, Spacing.compact)
+    }
+}
+
+/// The paperclip menu's paste item (#2201 §4): titled by what ⌘V would do with the clipboard now.
+enum ComposerPasteMenu {
+    /// The item while the clipboard holds nothing the field takes (disabled).
+    static let unavailableTitle = "Paste from clipboard"
+    static let attachTitle = "Attach files…"
+
+    /// nil → nothing usable: the item is disabled. `fileCount` is the number of Finder files.
+    static func title(for action: PasteAction?, fileCount: Int) -> String? {
+        switch action {
+        case nil: nil
+        case .attachImage: "Paste screenshot"
+        case .attachFiles: fileCount == 1 ? "Paste 1 file" : "Paste \(fileCount) files"
+        case .attachPDF: "Paste PDF"
+        case .insertText: "Paste text"
+        }
+    }
+
+    /// What ⌘V would do with `pasteboard`, nil when it holds nothing usable. Read only when the menu opens (a
+    /// click), never polled.
+    static func action(in pasteboard: NSPasteboard) -> PasteAction? {
+        let action = PastedContent.action(from: pasteboard)
+        if case .insertText = action, pasteboard.string(forType: .string)?.isEmpty != false { return nil }
+        return action
+    }
+}
+
+/// The Workchat's paperclip (`ChatComposerFieldConfig.pasteMenu`): "Paste …" and "Attach files…" at the click.
+@MainActor
+enum ComposerAttachMenu {
+    static func show(paste: @escaping () -> Void, attach: @escaping () -> Void) {
+        let action = ComposerPasteMenu.action(in: .general)
+        var fileCount = 0
+        if case .attachFiles(let urls) = action { fileCount = urls.count }
+        let title = ComposerPasteMenu.title(for: action, fileCount: fileCount)
+        let picker = Picker()
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let pasteItem = NSMenuItem(title: title ?? ComposerPasteMenu.unavailableTitle,
+                                   action: #selector(Picker.pick(_:)), keyEquivalent: "v")
+        pasteItem.target = picker
+        pasteItem.isEnabled = title != nil
+        pasteItem.tag = Picker.pasteTag
+        menu.addItem(pasteItem)
+        let attachItem = NSMenuItem(title: ComposerPasteMenu.attachTitle, action: #selector(Picker.pick(_:)),
+                                    keyEquivalent: "")
+        attachItem.target = picker
+        attachItem.tag = Picker.attachTag
+        menu.addItem(attachItem)
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        switch picker.picked {
+        case Picker.pasteTag: paste()
+        case Picker.attachTag: attach()
+        default: break
+        }
+    }
+
+    /// The chosen item's tag, read once the menu closes (`popUp` returns after it).
+    private final class Picker: NSObject {
+        static let pasteTag = 1
+        static let attachTag = 2
+        var picked: Int?
+
+        @objc func pick(_ sender: NSMenuItem) {
+            picked = sender.tag
+        }
     }
 }
 

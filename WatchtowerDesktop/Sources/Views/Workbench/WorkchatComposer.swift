@@ -46,7 +46,8 @@ struct WorkchatComposer: View {
                     focusRequest: focusRequest,
                     sendWhileStreaming: true,
                     inlinePastes: true,
-                    livePastes: model.pastes.mapValues(\.kind)
+                    livePastes: model.pastes.mapValues(\.kind),
+                    pasteMenu: true
                 ),
                 onSend: send,
                 onStop: stop,

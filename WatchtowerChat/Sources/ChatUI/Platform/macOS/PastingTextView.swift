@@ -40,6 +40,29 @@ public final class PastingTextView: NSTextView {
         return event.keyCode == 125 && modifiers == .option
     }
 
+    /// What a ⌘V here takes beyond the plain-text view's own types (#2201 §4): images, Finder files and PDF data.
+    /// AppKit enables Edit ▸ Paste — hence ⌘V — only for a pasteboard holding a readable type, and a plain-text
+    /// view lists no image: without these a screenshot never reached `paste(_:)`.
+    static let attachableTypes: [NSPasteboard.PasteboardType] = [
+        .png, .tiff, NSPasteboard.PasteboardType("public.jpeg"), NSPasteboard.PasteboardType("public.heic"),
+        .fileURL, .pdf
+    ]
+
+    override public var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        let stock = super.readablePasteboardTypes
+        guard onPasteData != nil else { return stock }
+        return stock + Self.attachableTypes.filter { !stock.contains($0) }
+    }
+
+    /// Paste is enabled for an editable field whose `pasteboard` holds a readable type — the stock rule, read
+    /// from the field's own pasteboard (a test's private one) and with `attachableTypes` when it takes them.
+    override public func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        guard item.action == #selector(paste(_:)), onPasteData != nil || pasteboard !== NSPasteboard.general else {
+            return super.validateUserInterfaceItem(item)
+        }
+        return isEditable && pasteboard.availableType(from: readablePasteboardTypes) != nil
+    }
+
     override public func paste(_ sender: Any?) {
         guard let onPasteData else {
             insertFromPasteboard(sender)
