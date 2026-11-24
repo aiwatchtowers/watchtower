@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Workchat polish — mockups</title>
+<style>
+  :root {
+    --bg: #161616; --pane: #1c1c1e; --card: #232325; --card2: #2a2a2d;
+    --line: rgba(255,255,255,.07); --t1: #ececec; --t2: #a1a1a6; --t3: #6e6e73;
+    --accent: #3b82f6; --accentFill: rgba(59,130,246,.14); --green: #34c759; --greenFill: rgba(52,199,89,.13);
+    --orange: #ff9f0a; --orangeFill: rgba(255,159,10,.13); --red: #ff453a; --redFill: rgba(255,69,58,.13);
+    --purple: #bf5af2; --mono: "SF Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0d0d0e; color: var(--t1); font: 14px/1.45 -apple-system, "SF Pro Text", system-ui, sans-serif; }
+  .page { max-width: 1180px; margin: 0 auto; padding: 32px 24px 80px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .lead { color: var(--t2); margin: 0 0 28px; }
+  section { margin: 0 0 48px; }
+  section > h2 { font-size: 16px; margin: 0 0 4px; }
+  section > p.why { color: var(--t2); margin: 0 0 14px; max-width: 880px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .single { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  .shot { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .shot .cap { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--t3); padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: center; }
+  .cap .tag { padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+  .tag.before { background: var(--redFill); color: var(--red); }
+  .tag.after { background: var(--greenFill); color: var(--green); }
+  .body { padding: 14px 16px; }
+  .msg { margin: 0 0 12px; }
+  .msg .time { color: var(--t3); font-size: 11px; margin-top: 2px; }
+  code, .mono { font-family: var(--mono); font-size: 12.5px; }
+  code { background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 4px; }
+  .muted { color: var(--t2); } .faint { color: var(--t3); }
+  svg { display: inline-block; vertical-align: -2px; }
+  .ico { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* --- 1. steps --- */
+  .steps-old { background: var(--card); border-radius: 8px; padding: 6px 12px; margin: 0 0 6px; font-size: 12.5px; }
+  .steps-old .r { display: flex; gap: 8px; align-items: center; height: 26px; color: var(--t1); }
+  .steps-old .r .t { margin-left: auto; color: var(--t2); font-variant-numeric: tabular-nums; }
+  .turnbar { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--t2); height: 28px; padding: 0 4px; }
+  .turnbar .right { margin-left: auto; display: flex; gap: 14px; font-variant-numeric: tabular-nums; }
+  .turnbar .now { color: var(--t1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 330px; }
+  .turnbar .sep { color: var(--t3); }
+  .spinner { width: 10px; height: 10px; border: 1.5px solid var(--t3); border-top-color: var(--accent); border-radius: 50%; display: inline-block; }
+  .steps-new { margin: 2px 0 6px 11px; padding-left: 13px; border-left: 1px solid var(--line); font-size: 12.5px; }
+  .steps-new .r { display: flex; gap: 8px; align-items: center; height: 24px; color: var(--t3); }
+  .steps-new .r .t { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .steps-new .r.run { color: var(--t1); }
+  .steps-new .r.run .t { color: var(--t2); }
+  .steps-new .more { color: var(--t3); font-size: 12px; height: 22px; }
+  .hairline { border-top: 1px solid var(--line); margin: 6px 0 0; }
+
+  /* --- 2. highlights --- */
+  .ref { color: #8ab4f8; cursor: pointer; }
+  .hash { font-family: var(--mono); font-size: 12.5px; color: #b9a6d9; }
+  .path { font-family: var(--mono); font-size: 12.5px; color: #d7ba7d; }
+  .cmd { font-family: var(--mono); font-size: 12.5px; color: #a8c48a; }
+  .dur { color: inherit; font-variant-numeric: tabular-nums; }
+  .ok { color: inherit; }
+  .warn { color: inherit; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--t2); margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+
+  /* --- 3. agent event --- */
+  .event-old { text-align: center; color: var(--t2); font-size: 12.5px; }
+  .event-old .raw { text-align: left; max-width: 520px; margin: 6px auto 0; color: var(--t2); font-size: 12px; }
+  .agent-card { max-width: 560px; margin: 4px auto; border-radius: 8px; }
+  .agent-card .head { display: flex; align-items: center; gap: 10px; padding: 6px 10px; cursor: pointer; }
+  .agent-card .badge { width: 16px; display: grid; place-items: center; flex: none; }
+  .badge.ok { color: #7fbf8e; }
+  .badge.fail { color: #d98880; }
+  .badge.run { color: var(--t2); }
+  .agent-card .title { font-size: 13px; color: var(--t2); }
+  .agent-card .meta { color: var(--t3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .agent-card .chev { margin-left: auto; color: var(--t3); }
+  .pill { font-size: 11px; padding: 1px 7px; border-radius: 10px; font-weight: 600; }
+  .pill.ok { color: var(--t3); font-weight: 400; }
+  .pill.fail { color: #d98880; font-weight: 400; }
+  .pill.kind { background: rgba(255,255,255,.06); color: var(--t2); font-weight: 500; }
+  .agent-card .exp { margin-left: 17px; border-left: 1px solid var(--line); padding: 2px 12px 6px 18px; font-size: 13px; }
+  .agent-card .exp .k { color: var(--t3); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin: 8px 0 3px; }
+  .agent-card .exp .k:first-child { margin-top: 0; }
+  .agent-card .actions { display: flex; gap: 8px; margin-top: 10px; }
+  .btn { font-size: 12px; padding: 0; margin-right: 10px; background: none; color: var(--t2); border: 0; }
+  .btn.primary { color: var(--t1); }
+  .btn.link { color: var(--t3); }
+  .details { margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--t3); }
+
+  /* --- composer --- */
+  .composer { display: flex; align-items: flex-end; gap: 10px; padding: 12px 14px; border-top: 1px solid var(--line); background: var(--pane); }
+  .field { flex: 1; background: #262628; border-radius: 18px; padding: 8px 14px; color: var(--t3); min-height: 36px; }
+  .field .chips { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .chip { display: flex; align-items: center; gap: 8px; background: var(--card2); border-radius: 8px; padding: 4px 8px 4px 4px; font-size: 12px; color: var(--t1); }
+  .thumb { width: 34px; height: 34px; border-radius: 5px; background: #34343a; display: grid; place-items: center; color: var(--t3); font-size: 9px; }
+  .chip .x { color: var(--t3); margin-left: 2px; }
+  .field .typed { color: var(--t1); }
+  .tok { color: var(--t2); font-family: var(--mono); font-size: 12px; }
+  .send { width: 32px; height: 32px; border-radius: 50%; background: var(--accent); display: grid; place-items: center; flex: none; color: white; }
+  .clip { color: var(--t2); padding-bottom: 8px; }
+  .menu { position: absolute; bottom: 52px; left: 10px; background: #2c2c2e; border: 1px solid var(--line); border-radius: 8px; padding: 4px; width: 250px; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  .menu .it { display: flex; justify-content: space-between; padding: 5px 10px; border-radius: 5px; }
+  .menu .it.hl { background: rgba(255,255,255,.08); }
+  .menu .it .k { color: var(--t3); } .menu .it.hl .k { color: rgba(255,255,255,.75); }
+
+  /* --- 6. pending --- */
+  .outgoing { display: flex; flex-direction: column; align-items: flex-end; margin: 6px 0; }
+  .bubble { background: var(--accentFill); border-radius: 14px; padding: 7px 12px; max-width: 70%; }
+  .bubble.dim { opacity: .65; }
+  .ocap { font-size: 11px; color: var(--t3); margin-top: 3px; }
+  .hold { margin-top: 4px; max-width: 460px; font-size: 12px; text-align: right; color: var(--t3); }
+  .hold .h { color: var(--t2); }
+  .hold .prev { font-family: var(--mono); font-size: 12px; margin: 3px 0 4px; color: var(--t2); }
+  .hold .actions { display: flex; gap: 0; justify-content: flex-end; }
+  .note { background: var(--card); border-radius: 10px; padding: 12px 14px; font-size: 13px; color: var(--t2); }
+  .note b { color: var(--t1); }
+  .note ol, .note ul { margin: 6px 0 0 18px; padding: 0; }
+  .note li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<div class="page">
+<h1>Workchat — доработки (макеты)</h1>
+<p class="lead">v2: без заливок и пилюль, цвет только на тексте, приглушённый. Пять пунктов из твоего сообщения: шаги, подсветка текста, карточка агента, вставка из буфера, зависшая отправка. Слева как сейчас, справа предложение. Цвета дальше идут через Tone дизайн-кита.</p>
+
+<!-- ============ 1 ============ -->
+<section>
+  <h2>1. Шаги хода: по умолчанию свёрнуты, развёрнутые — тихие</h2>
+  <p class="why">Сейчас блок из шести строк всегда открыт, на заливке карточки, и каждая строка яркая. Предлагаю: одна строка «This turn» показывает текущий шаг и его время. По клику список раскрывается без заливки, с тонкой линией слева. Готовые шаги серые, яркий только текущий. Выбор «раскрыто/свёрнуто» запоминается для панели.</p>
+  <div class="pair">
+    <div class="shot"><div class="cap"><span class="tag before">сейчас</span>steps slot</div><div class="body">
+      <div class="steps-old">
+        <div class="r"><svg class="ico" viewBox="0 0 16 16"><circle cx="6" cy="5" r="2.5"/><path d="M2 13c0-2 2-3.5 4-3.5s4 1.5 4 3.5M11 7.5a2 2 0 1 0 0-4M14 13c0-1.5-1-2.8-2.5-3.2"/></svg><span class="faint">Codex verify round 3 #2188</span><span class="t faint">0:00</span></div>
+        <div class="r"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7l2 1.5L5 10"/></svg>List CI workflow jobs and their run commands<span class="t">0:00</span></div>
+        <div class="r"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7l2 1.5L5 10"/></svg>List remaining CI jobs (Swift side)<span class="t">0:00</span></div>
+        <div class="r"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7l2 1.5L5 10"/></svg>Read CI gate path filters<span class="t">0:00</span></div>
+        <div class="r"><svg class="ico" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><path d="M8 2v2M8 12v2M2 8h2M12 8h2"/></svg>SendMessage<span class="t">0:00</span></div>
+        <div class="r"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7l2 1.5L5 10"/></svg>Run full Go test suite for #2188 gate<span class="t">3:34</span></div>
+      </div>
+      <div class="turnbar"><span>⌄</span><span>☰</span>This turn · 41 steps<span class="right"><span>👥 1</span><span>36:34</span></span></div>
+    </div></div>
+
+    <div class="shot"><div class="cap"><span class="tag after">предложение</span>свёрнуто (по умолчанию)</div><div class="body">
+      <div class="turnbar">
+        <span class="faint">›</span>
+        <span>This turn · 41 steps</span><span class="sep">·</span>
+        <span class="spinner"></span>
+        <span class="now">Run full Go test suite for #2188 gate</span>
+        <span class="right"><span class="faint">3:34</span><span>👥 1</span><span>36:34</span></span>
+      </div>
+      <div class="cap" style="border-top:1px solid var(--line);margin:12px -16px 10px;"><span class="tag after">предложение</span>раскрыто</div>
+      <div class="turnbar">
+        <span class="faint">⌄</span>
+        <span>This turn · 41 steps</span>
+        <span class="right"><span>👥 1</span><span>36:34</span></span>
+      </div>
+      <div class="steps-new">
+        <div class="more">35 earlier steps — scroll up</div>
+        <div class="r"><svg class="ico" viewBox="0 0 16 16"><circle cx="6" cy="5" r="2.5"/><path d="M2 13c0-2 2-3.5 4-3.5s4 1.5 4 3.5"/></svg>Codex verify round 3 #2188<span class="t">0:41</span></div>
+        <div class="r"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7l2 1.5L5 10"/></svg>List CI workflow jobs and their run commands<span class="t">&lt;1s</span></div>
+        <div class="r"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7l2 1.5L5 10"/></svg>List remaining CI jobs (Swift side)<span class="t">&lt;1s</span></div>
+        <div class="r"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7l2 1.5L5 10"/></svg>Read CI gate path filters<span class="t">&lt;1s</span></div>
+        <div class="r"><svg class="ico" viewBox="0 0 16 16"><path d="M2 8l12-5-4 11-2-4.5z"/></svg>Message to Codex verify round 3<span class="t">&lt;1s</span></div>
+        <div class="r run"><span class="spinner" style="margin:0 2px"></span>Run full Go test suite for #2188 gate<span class="t">3:34</span></div>
+      </div>
+    </div></div>
+  </div>
+  <p class="why" style="margin-top:10px">Попутно: «0:00» у быстрых шагов заменяю на «&lt;1s», а голое имя инструмента «SendMessage» — на человеческую подпись.</p>
+</section>
+
+<!-- ============ 2 ============ -->
+<section>
+  <h2>2. Подсветка в тексте агента (v2, спокойнее)</h2>
+  <p class="why">Как подсветка синтаксиса в IDE: только цвет текста, приглушённый, без фонов и плашек. Правила детерминированные, код и ссылки не трогаем. Ссылки <span class="ref">#2188</span> кликабельны и открывают таргет или PR. Хэш коммита копируется по клику, путь к файлу открывается в code viewer.</p>
+  <div class="pair">
+    <div class="shot"><div class="cap"><span class="tag before">сейчас</span></div><div class="body">
+      <div class="msg">Третий раунд #2188 готов (67a59755a). Последний дифф небольшой, поэтому смотрю его сам, а codex запускаю параллельно.<div class="time">00:37</div></div>
+      <div class="msg">Codex по третьему раунду #2188 ещё работает. Пока выяснил, что нужно прогнать перед merge… Значит, для #2188 гоняем весь гейт: <code>make test</code>, <code>make test-swift</code>, <code>make lint-all</code>, leak-check и проверку гайда. Это примерно 30–40 минут.<div class="time">00:38</div></div>
+      <div class="msg">#2189 исполнитель ещё дорабатывает. Ошибка SourceKit в новом файле <code>CloudKitTransport+LinkDirect.swift</code> — снова шум индексатора, не ошибка сборки.<div class="time">00:35</div></div>
+      <div class="msg">Codex блокеров не нашёл. Остался один пробел: тест не проверяет переход «перекрытое окно скрылось» → «код закрыт».<div class="time">00:40</div></div>
+    </div></div>
+    <div class="shot"><div class="cap"><span class="tag after">предложение</span></div><div class="body">
+      <div class="msg">Третий раунд <span class="ref">#2188</span> готов (<span class="hash">67a59755a</span>). Последний дифф небольшой, поэтому смотрю его сам, а codex запускаю параллельно.<div class="time">00:37</div></div>
+      <div class="msg">Codex по третьему раунду <span class="ref">#2188</span> ещё работает. Пока выяснил, что нужно прогнать перед merge… Значит, для <span class="ref">#2188</span> гоняем весь гейт: <span class="cmd">make test</span>, <span class="cmd">make test-swift</span>, <span class="cmd">make lint-all</span>, leak-check и проверку гайда. Это примерно <span class="dur">30–40 минут</span>.<div class="time">00:38</div></div>
+      <div class="msg"><span class="ref">#2189</span> исполнитель ещё дорабатывает. Ошибка SourceKit в новом файле <span class="path">CloudKitTransport+LinkDirect.swift</span> — снова шум индексатора, не ошибка сборки.<div class="time">00:35</div></div>
+      <div class="msg">Codex <span class="ok">блокеров не нашёл</span>. Остался <span class="warn">один пробел</span>: тест не проверяет переход «перекрытое окно скрылось» → «код закрыт».<div class="time">00:40</div></div>
+      <div class="legend">
+        <span><span class="ref">#N</span> таргет / PR, клик открывает</span>
+        <span><span class="hash">a1b2c3d</span> коммит, клик копирует</span>
+        <span><span class="path">File.swift</span> файл, клик открывает</span>
+        <span><span class="cmd">make x</span> команда</span>
+                      </div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============ 3 ============ -->
+<section>
+  <h2>3. Событие «агент закончил»: карточка вместо сырого текста</h2>
+  <p class="why">Сейчас по клику вываливается сырой <code>&lt;task-notification&gt;</code> со всеми id, путями и служебной заметкой. Предлагаю карточку: статус, имя агента, тип и метрики в одну строку. Раскрытие показывает только итог агента. Ссылки «Open output» и «Details» (task-id, tool-use-id) спрятаны. Служебная фраза «A task-notification fires each time…» не показывается совсем.</p>
+  <div class="pair">
+    <div class="shot"><div class="cap"><span class="tag before">сейчас</span>развёрнуто</div><div class="body">
+      <div class="event-old">⚙ Agent "Claude verify review #2188" finished ⌄
+        <div class="raw">task-id: aaeafa2349f1f7203 tool-use-id: toolu_01GcGT97SJF2HJFZDvX9uxjP output-file: /private/tmp/claude-501/…/tasks/aaeafa2349f1f7203.output status: completed summary: Agent “Claude verify review #2188” finished note: A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once. result: This agent’s report was delivered to you as a message from “aaeafa2349f1f7203” (its SubagentHandback call). Read it there; it is not repeated here. usage: &lt;subagent_tokens&gt;43545 tool_uses: 9 duration_ms: 88925</div>
+      </div>
+    </div></div>
+    <div class="shot"><div class="cap"><span class="tag after">предложение</span>свёрнуто · развёрнуто · ошибка</div><div class="body">
+      <div class="agent-card"><div class="head">
+        <div class="badge ok"><svg class="ico" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7"/></svg></div>
+        <div><div class="title">Claude verify review <span class="ref">#2188</span></div><div class="meta">finished · 9 tools · 43.5k tokens · 1m 29s</div></div>
+        <span class="chev">›</span>
+      </div></div>
+
+      <div class="agent-card" style="margin-top:10px"><div class="head">
+        <div class="badge ok"><svg class="ico" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7"/></svg></div>
+        <div><div class="title">Claude verify review <span class="ref">#2188</span></div><div class="meta">finished · 9 tools · 43.5k tokens · 1m 29s</div></div>
+        <span class="chev">⌄</span>
+      </div>
+      <div class="exp">
+        <div class="k">Result</div>
+        <div>Блокеров нет. Один пробел в тестах: переход «перекрытое окно скрылось» → <span class="cmd">.gone</span> не покрыт.</div>
+        <div class="faint" style="font-size:12px;margin-top:6px">Отчёт пришёл агенту отдельным сообщением.</div>
+        <div class="actions"><button class="btn">Open output</button><button class="btn link">Details</button></div>
+        <div class="details">task aaeafa2349f1f7203 · toolu_01GcGT97…</div>
+      </div></div>
+
+      <div class="agent-card" style="margin-top:10px"><div class="head">
+        <div class="badge fail"><svg class="ico" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></div>
+        <div><div class="title">Codex verify round 3 <span class="ref">#2188</span> <span class="pill fail">· failed</span></div><div class="meta">2 tools · 0:12 · codex unavailable (timeout)</div></div>
+        <span class="chev">›</span>
+      </div></div>
+
+      <div class="agent-card" style="margin-top:10px;max-width:420px"><div class="head" style="padding:7px 12px">
+        <div class="badge ok" style="color:var(--t3)"><svg class="ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7l2 1.5L5 10"/></svg></div>
+        <div style="font-size:12.5px">Background command <span class="muted">Run full Go test suite</span> <span class="faint">· exit 0</span></div>
+        <span class="chev">›</span>
+      </div></div>
+      <p class="faint" style="font-size:12px;margin:8px 0 0;text-align:center">фоновые команды — та же карточка, меньше и тише</p>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============ 4 ============ -->
+<section>
+  <h2>4. Вставка из буфера обмена</h2>
+  <p class="why">⌘V в поле принимает всё, что лежит в буфере: картинку (скриншот) — она становится карточкой с превью; файлы, скопированные в Finder, — карточками файлов; длинный текст — свёрнутым токеном. В меню скрепки появляется пункт «Paste from clipboard». Он неактивен, когда в буфере ничего нет, и подписан тем, что там лежит.</p>
+  <div class="pair">
+    <div class="shot" style="position:relative"><div class="cap"><span class="tag after">предложение</span>меню скрепки</div><div class="body" style="height:200px"></div>
+      <div class="menu">
+        <div class="it hl"><span>Paste screenshot from clipboard</span><span class="k">⌘V</span></div>
+        <div class="it"><span>Attach files…</span><span class="k">⇧⌘A</span></div>
+      </div>
+      <div class="composer"><span class="clip">📎</span><div class="field">Message the agent… (/ for commands)</div><div class="send">↑</div></div>
+    </div>
+    <div class="shot"><div class="cap"><span class="tag after">предложение</span>после ⌘V: скриншот + файл + длинный текст</div><div class="body" style="height:110px"></div>
+      <div class="composer"><span class="clip">📎</span>
+        <div class="field">
+          <div class="chips">
+            <div class="chip"><div class="thumb">PNG</div><div><div>Screenshot 00.45.png</div><div class="faint" style="font-size:11px">2434×1512 · 1.1 MB</div></div><span class="x">✕</span></div>
+            <div class="chip"><div class="thumb" style="background:#2f2f33;color:var(--t2)">LOG</div><div><div>gate.log</div><div class="faint" style="font-size:11px">84 KB</div></div><span class="x">✕</span></div>
+          </div>
+          <span class="typed">вот что падает, глянь <span class="tok">[Pasted text · 212 lines]</span></span>
+        </div>
+        <div class="send">↑</div></div>
+    </div>
+  </div>
+  <p class="why" style="margin-top:10px">Вопрос: что именно не вставлялось — скриншот, файл из Finder или текст? Код уже принимает картинки и длинный текст через ⌘V. Файлы из Finder, похоже, не принимает. Проверю всё три, но твой случай чиню первым.</p>
+</section>
+
+<!-- ============ 6 ============ -->
+<section>
+  <h2>6. Сообщение висит в «pending», когда в терминале был текст</h2>
+  <p class="why">Нашёл причину. Чат не шлёт строку, пока в поле терминала есть твой текст: иначе склеил бы их в одну. Но «текст есть» хранится флажком, а не читается с экрана. Любая клавиша, кроме Return, ставит флажок, Backspace тоже. Снимается он только отправкой через Return в терминале. Поэтому после стирания текста флажок остаётся, и строка висит навсегда (<code>TerminalCenter.ownerInput</code> → <code>promptDrafts</code>).</p>
+  <div class="pair">
+    <div class="shot"><div class="cap"><span class="tag before">сейчас</span></div><div class="body">
+      <div class="outgoing"><div class="bubble dim">запусти гейт</div><div class="ocap">Queued · sends in a moment · Cancel</div></div>
+      <p class="faint" style="font-size:12px;margin:14px 0 0">…и так навсегда. Не видно, чего строка ждёт и что с этим делать.</p>
+    </div></div>
+    <div class="shot"><div class="cap"><span class="tag after">предложение</span>текст в терминале реально есть</div><div class="body">
+      <div class="outgoing"><div class="bubble dim">запусти гейт</div>
+        <div class="hold">
+          <div class="h">Ждёт: в строке терминала есть текст</div>
+          <div class="prev">&gt; посмотри ещё раз на тест окна</div>
+          <div class="actions"><button class="btn primary">Очистить и отправить</button><button class="btn">Отправить вместе</button><button class="btn link">Cancel</button></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+  <div class="single" style="margin-top:12px"><div class="note">
+    <b>Что меняется в поведении</b>
+    <ol>
+      <li><b>Читать строку ввода с экрана терминала</b> вместо флажка. Когда строка пустая — флажок снимается, и сообщение уходит само. Это закрывает твой случай: стёр текст — сообщение улетело.</li>
+      <li>Если текст правда есть, под сообщением видно, <b>чего ждём и что там лежит</b>. Две кнопки: «Очистить и отправить» (Ctrl+U в терминал, потом строка) и «Отправить вместе» (наша строка дописывается к твоему тексту).</li>
+      <li>Подпись «sends in a moment» говорит правду и для других причин ожидания: открыт запрос прав, агент только что получил строку.</li>
+      <li>Отказы: сессия закрылась во время ожидания → «Not sent», текст возвращается в поле. Экран не прочитался → поведение как сейчас, плюс кнопка «Очистить и отправить». Тесты на каждый случай.</li>
+    </ol>
+  </div></div>
+</section>
+
+</div>
+</body>
+</html>

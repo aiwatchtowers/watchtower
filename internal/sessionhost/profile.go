@@ -23,16 +23,22 @@ type Profile struct {
 	PasteSettle time.Duration
 	// SubmitSettle is the same pause for an ask's answer.
 	SubmitSettle time.Duration
+	// ExactDraft: the owner's Backspace is known to erase one typed rune,
+	// so an erased draft frees the prompt (draftModel). Only Claude Code's;
+	// a shell's, an unknown agent's and Codex's draft stays inexact after
+	// any key until a submit.
+	ExactDraft bool
 }
 
 // ProfileFor returns the agent's profile: Return submits, the pauses are
-// the same for every agent, and the newline key is the agent's own
-// (sessionagent.Adapter.ComposerNewline). A shell or an unknown agent is
+// the same for every agent, and the newline key and exact Backspace are the
+// agent's own (sessionagent.Adapter.ComposerNewline, ComposerExactBackspace). A shell or an unknown agent is
 // typed into as Claude Code's, as TerminalCenter.inputProfile does.
 func ProfileFor(agent string) Profile {
 	p := Profile{Submit: []byte{0x0D}, PasteSettle: 150 * time.Millisecond, SubmitSettle: 500 * time.Millisecond}
 	if a, ok := sessionagent.Of(agent); ok {
 		p.Newline = a.ComposerNewline()
+		p.ExactDraft = a.ComposerExactBackspace()
 	}
 	return p
 }
@@ -46,7 +52,10 @@ func ProfileFor(agent string) Profile {
 // Shift+Tab (IsShiftTab), which leaves the prompt as it was. When
 // unsure the input counts as a draft, which costs the owner a Return of
 // their own, never a line submitted with theirs. Twin of
-// TerminalCenter.isSubmit.
+// TerminalCenter.isSubmit. The prompt state reads keys through the draft
+// model (draft.go), byte by byte; this whole-chunk reading is kept as the
+// rule the PROJ-12 guards pin (TestIsSubmitPerProfile,
+// TestProj12_ShiftTabKeepsTheDraftState) and the model must agree with.
 func IsSubmit(b []byte, backslashBefore bool, p Profile) bool {
 	if len(p.Newline) > 0 && bytes.HasSuffix(b, p.Newline) {
 		return false

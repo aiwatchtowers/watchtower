@@ -25,6 +25,8 @@ struct ChatComposerTextInput: View {
     var onOptionArrowDown: (() -> Bool)?
     var autoFocus: Bool
     var focusRequest: UUID?
+    /// Each new value pastes the clipboard into the field (the paperclip's "Paste …" item, #2201 §4).
+    var pasteRequest: UUID?
     let onSubmit: () -> Void
 
     /// The placeholder sits over the text view's first glyph (its line padding plus a point).
@@ -56,6 +58,7 @@ struct ChatComposerTextInput: View {
                 onOptionArrowDown: onOptionArrowDown,
                 autoFocus: autoFocus,
                 focusRequest: focusRequest,
+                pasteRequest: pasteRequest,
                 onSubmit: onSubmit
             )
             .frame(height: height)
@@ -96,6 +99,8 @@ public struct ExpandingTextInput: NSViewRepresentable {
     var autoFocus = false
     /// Each new value makes the text view first responder, caret at the end.
     var focusRequest: UUID?
+    /// Each new value makes the text view first responder and pastes into it, as ⌘V would.
+    var pasteRequest: UUID?
     var onSubmit: () -> Void
 
     private let minHeight: CGFloat = 20
@@ -117,6 +122,7 @@ public struct ExpandingTextInput: NSViewRepresentable {
         onOptionArrowDown: (() -> Bool)? = nil,
         autoFocus: Bool = false,
         focusRequest: UUID? = nil,
+        pasteRequest: UUID? = nil,
         onSubmit: @escaping () -> Void
     ) {
         _text = text
@@ -135,6 +141,7 @@ public struct ExpandingTextInput: NSViewRepresentable {
         self.onOptionArrowDown = onOptionArrowDown
         self.autoFocus = autoFocus
         self.focusRequest = focusRequest
+        self.pasteRequest = pasteRequest
         self.onSubmit = onSubmit
     }
 
@@ -215,6 +222,26 @@ public struct ExpandingTextInput: NSViewRepresentable {
             context.coordinator.focusRequest = focusRequest
             if focusRequest != nil { Self.focus(textView) }
         }
+        Self.takePasteRequest(pasteRequest, seen: &context.coordinator.pasteRequest, into: textView)
+    }
+
+    /// A `pasteRequest` other than the last one `seen` pastes into `textView` on the next turn; true when it does.
+    @discardableResult
+    static func takePasteRequest(_ request: UUID?, seen: inout UUID?, into textView: NSTextView) -> Bool {
+        guard request != seen else { return false }
+        seen = request
+        guard request != nil else { return false }
+        paste(into: textView)
+        return true
+    }
+
+    /// Next run-loop turn (out of the view update the request came in): first responder, then the paste.
+    private static func paste(into textView: NSTextView) {
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView else { return }
+            textView.window?.makeFirstResponder(textView)
+            textView.paste(nil)
+        }
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -226,10 +253,13 @@ public struct ExpandingTextInput: NSViewRepresentable {
         /// The last `focusRequest` seen: only one made after the field
         /// appeared moves the keyboard.
         var focusRequest: UUID?
+        /// The last `pasteRequest` seen: only a new one pastes.
+        var pasteRequest: UUID?
 
         init(_ parent: ExpandingTextInput) {
             self.parent = parent
             focusRequest = parent.focusRequest
+            pasteRequest = parent.pasteRequest
         }
 
         deinit {

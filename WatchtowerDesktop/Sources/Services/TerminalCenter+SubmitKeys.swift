@@ -78,3 +78,15 @@ extension TerminalCenter {
         }
     }
 }
+
+extension TerminalCenter {
+    /// Whether the text the session host pastes for `line` ends in `\`: the
+    /// character then before the cursor (`DraftModel.hostLeftTyped`).
+    static func lineEndsInBackslash(_ line: SessionDeliverLine) -> Bool {
+        guard case let .paste(bytes) = WorkbenchCommentPrompt.terminalPayload(
+            line.text, bracketedPaste: true, keepingLineBreaks: line.keepLineBreaks,
+            keepingFormatCharacters: line.keepFormat
+        ) else { return false }
+        return DraftModel.pasteEndsInBackslash(bytes)
+    }
+}

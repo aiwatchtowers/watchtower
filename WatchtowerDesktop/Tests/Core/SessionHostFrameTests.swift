@@ -87,7 +87,11 @@ final class SessionHostFrameTests: XCTestCase {
                        DeliverCheckReply(id: "d1", fresh: true, canSubmit: true), "answers_dialog is omitempty")
         let event = #"{"row":1,"run":"r","kind":"left_typed","beside_text":true}"#
         XCTAssertEqual(try JSONDecoder().decode(SessionHostDeliveryEvent.self, from: Data(event.utf8)),
-                       SessionHostDeliveryEvent(row: 1, run: "r", kind: .leftTyped, besideText: true))
+                       SessionHostDeliveryEvent(row: 1, run: "r", kind: .leftTyped, besideText: true),
+                       "a host before the id and the flag: both unknown")
+        let named = #"{"row":1,"run":"r","kind":"left_typed","id":"m-1","ends_in_backslash":false}"#
+        XCTAssertEqual(try JSONDecoder().decode(SessionHostDeliveryEvent.self, from: Data(named.utf8)),
+                       SessionHostDeliveryEvent(row: 1, run: "r", kind: .leftTyped, id: "m-1", endsInBackslash: false))
         XCTAssertEqual(try JSONDecoder().decode(SessionHostExit.self, from: Data(#"{"code":0,"requested":true}"#.utf8)),
                        SessionHostExit(code: 0, requested: true))
         XCTAssertEqual(try JSONDecoder().decode(SessionHostExit.self, from: Data(#"{"code":null}"#.utf8)),

@@ -22,10 +22,10 @@ package final class WorkchatPaneMemory {
         doneOpenByPane[pane] = open
     }
 
-    /// Whether the live steps list is open in `pane`: open until the owner
-    /// closes it (#2065 spec §3, C1).
+    /// Whether the live steps list is open in `pane`: closed until the owner
+    /// opens it (#2201 spec §1, reversing #2065 C1).
     package func stepsOpen(_ pane: String) -> Bool {
-        stepsOpenByPane[pane] ?? true
+        stepsOpenByPane[pane] ?? false
     }
 
     package func toggleSteps(_ pane: String) {

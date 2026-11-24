@@ -101,9 +101,11 @@ final class CodeIndexCenter {
     /// a full run. Balanced by `markHidden`.
     func markShown(root: CodeRoot) {
         watchRulesFile()
-        // The workbench moved to another folder: nothing of its old main
-        // index holds.
-        for stale in sessions.keys where stale.isMain && root.isMain && stale.workbenchID == root.workbenchID && stale != root {
+        // The workbench (or one of its bench folders) moved to another
+        // folder: nothing of that folder's old main index holds. Another
+        // bench folder's main root is no stale one (#2201 T2 review).
+        for stale in sessions.keys where stale.isMain && root.isMain && stale.workbenchID == root.workbenchID
+            && stale.folderID == root.folderID && stale != root {
             releaseIndex(stale)
         }
         let session = sessions[root] ?? CodeIndexSession(folder: root.folder, index: index(for: root))

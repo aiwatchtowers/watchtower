@@ -31,7 +31,7 @@ final class ChatSelectionQuoteScanTests: XCTestCase {
         // Only a finished answer draws native text; the streaming one stays SwiftUI (ChatUI's answer text, which
         // every row draws its text parts through).
         let row = try source("../../WatchtowerChat/Sources/ChatUI/Platform/macOS/MarkdownTextRun.swift")
-        XCTAssertTrue(row.contains("} else if isFinal {\n            NativeMarkdownView(text: text)"))
+        XCTAssertTrue(row.contains("} else if isFinal {\n            NativeMarkdownView(text: text, highlighting: highlighting)"))
         XCTAssertTrue(row.contains("} else {\n            MarkdownView(text: text)\n        }"))
     }
 

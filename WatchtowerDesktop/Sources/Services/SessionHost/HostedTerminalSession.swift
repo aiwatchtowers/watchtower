@@ -280,7 +280,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
     func deliver(_ line: SessionDeliverLine, check: @escaping @MainActor () async -> DeliverCheckReply) async -> DeliverOutcome {
         guard let key, bound, !exited, launch > 0 else { return .noSession }
         let request = DeliverRequest(
-            row: key.row, run: key.run, launch: launch, text: line.text,
+            id: line.id, row: key.row, run: key.run, launch: launch, text: line.text,
             keepLineBreaks: line.keepLineBreaks, keepFormat: line.keepFormat,
             settleMs: line.settle.map(Self.milliseconds) ?? 0,
             submitIf: line.submitIf, holdIfPromptText: line.holdIfPromptText

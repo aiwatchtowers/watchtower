@@ -15,6 +15,9 @@ struct ReviewAgentChat {
     var openKey: String { "review.chatPanel.\(projectID)" }
     var widthKey: String { "review.chatPanel.\(projectID).width" }
     var sideKey: String { "review.chatPanel.\(projectID).side" }
+    /// The workspace pane the panel's Author chat lives in: the session's Branch review, where a path clicked in
+    /// it opens Files beside (#2201 T2 review round 4).
+    var pane: WorkspacePane { .changes(sessionID) }
 
     /// The session's Workchat; nil without session control or once the session is gone.
     var workchat: WorkchatModel? {
@@ -114,7 +117,7 @@ struct ReviewAgentChatPanel: View {
     @ViewBuilder private var author: some View {
         switch Self.content(chat) {
         case .workchat:
-            SessionChatView(vm: chat.vm, sessionID: chat.sessionID, projectID: chat.projectID,
+            SessionChatView(vm: chat.vm, sessionID: chat.sessionID, projectID: chat.projectID, hostPane: chat.pane,
                             composerFocus: composerFocus, composerAutoFocus: focusOnOpen)
                 .id(chat.sessionID)
         case .notRunning:

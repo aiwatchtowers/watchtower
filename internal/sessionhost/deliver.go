@@ -54,6 +54,7 @@ const LostAfterPaste = "lost_after_paste"
 const (
 	TypedBesideText        = "beside_text"         // the prompt held text before the paste
 	TypedNoSubmit          = "submit_if_false"     // the caller's pre-check said no Return
+	TypedEndsInBackslash   = "ends_in_backslash"   // a Return after the line's `\` would be a line break
 	TypedCheckFailed       = "check_failed"        // the re-check failed, timed out or its connection dropped
 	TypedDialog            = "dialog"              // a permission dialog after the pause
 	TypedCannotSubmit      = "cannot_submit"       // the caller's re-check said no Return
@@ -121,11 +122,20 @@ type DeliveredMsg struct {
 // so its pane keeps showing its hints. BesideText (with EventLeftTyped): the
 // line shares the prompt with other text not submitted, so the owner's
 // Return sends them together (Desktop's sharedPrompts).
+//
+// With EventLeftTyped, ID is the delivery's DeliverReq.ID (the requester's
+// own id, so only a requester whose ids are unique can tell its own line from
+// another client's) and EndsInBackslash whether the line left typed ends in
+// `\`, so the pane's mirror of the prompt applies the line's `\` where the
+// host did, whichever of this event and the requester's Delivered comes
+// first. Both are absent from a host before them: the line's `\` is unknown.
 type DeliveryEventMsg struct {
-	Row        int64  `json:"row"`
-	Run        string `json:"run"`
-	Kind       string `json:"kind"`
-	BesideText bool   `json:"beside_text,omitempty"`
+	Row             int64  `json:"row"`
+	Run             string `json:"run"`
+	Kind            string `json:"kind"`
+	BesideText      bool   `json:"beside_text,omitempty"`
+	ID              string `json:"id,omitempty"`
+	EndsInBackslash *bool  `json:"ends_in_backslash,omitempty"`
 }
 
 // deliver starts a delivery for c. It runs on its own goroutine: its pause
@@ -197,12 +207,7 @@ func (s *Server) runDelivery(c *conn, req DeliverReq, replies <-chan DeliverChec
 		sess.wmu.Unlock()
 		return DeliveredMsg{Outcome: OutcomeHeld, Reason: HeldPromptHasText}
 	}
-	pause := !besideText && req.SubmitIf
-	if pause {
-		sess.prompt.beginPause()
-	} else {
-		sess.prompt.leaveTyped()
-	}
+	pause := sess.prompt.pasteLine(payload, req.SubmitIf)
 	sess.mu.Unlock()
 	_, err := sess.ptmx.Write(payload)
 	sess.wmu.Unlock()
@@ -215,10 +220,13 @@ func (s *Server) runDelivery(c *conn, req DeliverReq, replies <-chan DeliverChec
 	}
 	sess.event(EventPasted, false)
 	if !pause {
-		sess.event(EventLeftTyped, besideText)
+		sess.leftTyped(req.ID, besideText, pasteEndsInBackslash(payload))
 		reason := TypedNoSubmit
-		if besideText {
+		switch {
+		case besideText:
 			reason = TypedBesideText
+		case req.SubmitIf:
+			reason = TypedEndsInBackslash
 		}
 		return DeliveredMsg{Outcome: OutcomeTyped, Reason: reason}
 	}
@@ -284,18 +292,19 @@ func (s *Server) afterPause(sess *session, req DeliverReq, reply DeliverCheckRep
 		return DeliveredMsg{Outcome: OutcomeSubmitted}
 	case !reply.CanSubmit:
 		reason = TypedCannotSubmit
-	case sess.prompt.draft:
+	case sess.prompt.draft.holdsText():
 		reason = TypedTextDuringPause
 	case dialog:
 		reason = TypedDialog
 	}
 	if reason != "" {
-		besideText := sess.prompt.draft
+		besideText := sess.prompt.draft.holdsText()
 		sess.prompt.leaveTyped()
 		sess.mu.Unlock()
-		sess.event(EventLeftTyped, besideText)
+		sess.leftTyped(req.ID, besideText, false) // a line with its pause ends in no `\`
 		return DeliveredMsg{Outcome: OutcomeTyped, Reason: reason}
 	}
+	sess.prompt.appSubmitted()
 	sess.mu.Unlock()
 	if _, err := sess.ptmx.Write(sess.profile.Submit); err != nil {
 		return DeliveredMsg{Outcome: OutcomeNoSession}
@@ -313,12 +322,23 @@ func (s *session) endPauseLocked() {
 
 // event sends a DeliveryEvent to the session's attached client, if any.
 func (s *session) event(kind string, besideText bool) {
+	s.sendEvent(DeliveryEventMsg{Kind: kind, BesideText: besideText})
+}
+
+// leftTyped sends the EventLeftTyped of delivery id, whose line ends in `\`
+// or not.
+func (s *session) leftTyped(id string, besideText, endsInBackslash bool) {
+	s.sendEvent(DeliveryEventMsg{
+		Kind: EventLeftTyped, BesideText: besideText, ID: id, EndsInBackslash: &endsInBackslash,
+	})
+}
+
+func (s *session) sendEvent(m DeliveryEventMsg) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.conn != nil {
-		s.conn.send(DeliveryEvent, encode(DeliveryEventMsg{
-			Row: s.key.row, Run: s.key.run, Kind: kind, BesideText: besideText,
-		}))
+		m.Row, m.Run = s.key.row, s.key.run
+		s.conn.send(DeliveryEvent, encode(m))
 	}
 }
 

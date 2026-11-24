@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -666,11 +667,55 @@ func TestDeliveryEventsReachAttachedClients(t *testing.T) {
 		t.Fatalf("events = %+v, want pasted then submitted", evs)
 	}
 	two := st.req("two")
+	two.ID = "mine-2"
 	two.SubmitIf = false
 	wantOutcome(t, st.deliver(cl, two, noCheck(t)), OutcomeTyped, TypedNoSubmit)
 	evs = st.desktop.events(2)
-	if evs[0].Kind != EventPasted || evs[1] != (DeliveryEventMsg{Row: 1, Run: "r1", Kind: EventLeftTyped}) {
-		t.Fatalf("events = %+v, want pasted then left_typed (not beside text)", evs)
+	no := false
+	if evs[0].Kind != EventPasted || !reflect.DeepEqual(evs[1], DeliveryEventMsg{
+		Row: 1, Run: "r1", Kind: EventLeftTyped, ID: "mine-2", EndsInBackslash: &no,
+	}) {
+		t.Fatalf("events = %+v, want pasted then left_typed (not beside text) naming the delivery", evs)
+	}
+}
+
+// T6 carried item 0a': a left_typed event names its delivery (the
+// requester's id) and whether the line left typed ends in `\`, so the
+// pane's mirror applies the line's `\` at the event, whoever sent the line;
+// the left_typed of a line whose re-check said no Return (it had a pause, so
+// no `\`) says false.
+func TestLeftTypedEventCarriesTheDeliveryAndTheLinesBackslash(t *testing.T) {
+	for _, tc := range []struct {
+		id, text string
+		submitIf bool
+		check    func(context.Context) DeliverCheckReplyMsg
+		reason   string
+		want     bool
+	}{
+		{"a", `x\`, true, noCheck(t), TypedEndsInBackslash, true},
+		{"b", "y", false, noCheck(t), TypedNoSubmit, false},
+		{"c", "z", true, func(context.Context) DeliverCheckReplyMsg {
+			return DeliverCheckReplyMsg{Fresh: true, CanSubmit: false}
+		}, TypedCannotSubmit, false},
+	} {
+		st := newStub(t, Options{}, "claude", rawEchoAgent)
+		cl := st.hub()
+		r := st.req(tc.text)
+		r.ID, r.SubmitIf = tc.id, tc.submitIf
+		out := st.deliver(cl, r, tc.check)
+		if out.Outcome != OutcomeTyped || out.Reason != tc.reason {
+			t.Fatalf("%s: outcome %+v, want typed (%s)", tc.id, out, tc.reason)
+		}
+		evs := st.desktop.events(2)
+		ev := evs[1]
+		if ev.Kind != EventLeftTyped || ev.ID != tc.id || ev.EndsInBackslash == nil || *ev.EndsInBackslash != tc.want {
+			t.Fatalf("%s: left_typed = %+v, want id %q ends_in_backslash %v", tc.id, ev, tc.id, tc.want)
+		}
+	}
+	// On the wire: both fields only with left_typed.
+	raw, err := json.Marshal(DeliveryEventMsg{Row: 1, Run: "r", Kind: EventPasted})
+	if err != nil || string(raw) != `{"row":1,"run":"r","kind":"pasted"}` {
+		t.Fatalf("pasted event = %s (%v)", raw, err)
 	}
 }
 
