@@ -14,8 +14,11 @@ Board: #2201. Approved design: [`docs/design/mockups/workchat-polish/`](../../de
 | D6 | A line held because the terminal prompt "has text" must go once the owner erased it; when text really is there, say so and offer a way out | owner, conversation 2026-11-24; ask #1747 |
 | C1 | Highlighting covers `#N` refs, commit hashes, file paths, commands; verdict words and durations are not coloured | author's call, from D3 (v2 dropped them) |
 | C2 | Highlighting is Workchat-only (a `ChatFeedContext` flag); the AI chat and the phone are unchanged in v1 | author's call |
-| C3 | The prompt-empty fix is a per-agent "draft length" model in both twins (Mac `TerminalCenter`, Go `sessionhost.promptState`, test fake `FakeHostDelivery`), not screen scraping. **Narrower than the v2 mockup's "read the line off the screen":** an erase releases the line when it was a Backspace or Ctrl+U erase of a draft typed straight (no cursor keys); after cursor or word-edit keys the line stays held as today, and the hold caption's actions are the way out | author's call, §6.1 — the owner confirms it by approving this spec |
-| C9 | The app's clear is a host delivery flag (`clear_first`), not a Mac-side keystroke: the host owns the prompt state | author's call, plan review ask #1761 |
+| C3 | The prompt-empty fix is a per-agent "draft length" model in both twins (Mac `TerminalCenter`, Go `sessionhost.promptState`, test fake `FakeHostDelivery`), not screen scraping. **Narrower than the v2 mockup's "read the line off the screen":** an erase releases the line when it was a Ctrl+C (D7), or a Backspace or Ctrl+U erase of a draft typed straight (no cursor keys); after cursor or word-edit keys the line stays held as today, and the hold caption's actions are the way out | author's call, §6.1 — the owner confirms it by approving this spec |
+| C9 | The app's clear is a host delivery flag (`clear_first`), not a Mac-side keystroke: the host owns the prompt state | author's call (raised by the plan's independent review); approved with this spec |
+| C10 | Clear and send exists only in Claude Code sessions (another agent's Ctrl+C can mean quit); other agents' held lines offer Send together and Cancel; the host answers `clear_unsupported` | author's call; approved with this spec |
+| C11 | If T6's hand check finds that Claude Code's Ctrl+C does not just clear the input (idle or working), D7 falls back to `exact = false` for the owner's Ctrl+C and Clear and send is not shipped (Send together and Cancel only); T6 stops and the owner is told through an ask | author's call; approved with this spec |
+| D7 | A draft erased with the owner's own Ctrl+C releases the held line | owner, ask #1763 ("когда текст в терминале стёрт, сообщение должно уйти") |
 | C4 | "Clear and send" is one Ctrl+C (the v2 mockup said Ctrl+U: in Claude Code Ctrl+U only clears the current line before the cursor, Ctrl+C clears the whole input), offered only while the agent is idle; while it works only "Send together" and Cancel | author's call, §6.3 (in Claude Code Esc interrupts and Ctrl+C clears the input, but a Ctrl+C on an empty prompt arms "press again to exit" — idle-only keeps the app's clear to the plain case) |
 | C5 | The expanded steps list stays above the live line (as today), not below it as the HTML drew | author's call, mock shots |
 | C6 | A pasted screenshot is an inline `Image #N` token (the #2065 paste tokens), not the HTML's thumbnail chip; only Finder files are chips | owner's earlier D7 of `2026-11-19-workchat-agents-and-progress-design.md` ("pastes go inline as tokens, as in Claude Code"); the v2 chip contradicted it |
@@ -53,7 +56,8 @@ forever after the owner typed into the terminal prompt and erased it.
    paperclip menu gains "Paste from clipboard", titled by what the clipboard holds
    (screenshot / N files / text) and disabled when it holds nothing usable.
 5. **No stuck line** (D6, C3, C4). Erasing the prompt text in the terminal with
-   Backspace or Ctrl+U (no cursor keys before it) releases a held line; after cursor or
+   Ctrl+C (D7), or with Backspace or Ctrl+U (no cursor keys before it) releases a held
+   line; after cursor or
    word-edit keys the line stays held as today and its caption offers the way out. A line held by real prompt text shows why and the text itself, with
    "Clear and send" (idle only), "Send together" and Cancel.
 
@@ -234,14 +238,22 @@ the pane's presentation, with tests.
   Ctrl+C:** the host does not know the agent's state (hooks report to the Mac, not to
   the host), so the idle check is the Mac's, right before it sends `clear_first`. The
   remaining window is the request's flight (milliseconds). Its worst case is bounded:
-  the prompt holds text (that is why the line was held), and Ctrl+C on a non-empty
-  Claude Code prompt only clears it — it never interrupts (Esc does) and never exits.
+  the prompt usually holds text (that is why the line was held), and Ctrl+C on a
+  non-empty Claude Code prompt only clears it — it never interrupts (Esc does) and never
+  exits. With an inexact draft the prompt may in fact be empty; then, only if the agent
+  also started a turn inside that millisecond window, the Ctrl+C may cancel that
+  just-started turn. Worst case: one turn cancelled right at its start, the owner's line
+  then sent — no text lost, no session closed (one Ctrl+C never exits). Accepted.
   Test: the Mac refuses when the fake `SessionControl` says Working (no request sent).
 - **Clear and send, the Mac's connection to the host ends after the request:** the Mac
   client reports its existing `.interrupted` outcome (`TerminalCenter`, "the delivery's
   connection ended before the host answered" — a client-side outcome, not a new host
   reply) → the existing "may be typed" path; the Mac never re-sends a `clear_first`
-  for that line. Swift test with `FakeHostDelivery` dropping the connection.
+  for that line. The mirror does not guess: every `Deliver` reply and the re-attach
+  snapshot carry the host's `prompt_holds_text` (additive, PROJ-12), and the mirror
+  adopts it, so after the reconnect a host that did clear releases the Mac's held lines.
+  Swift test with `FakeHostDelivery` dropping the connection, then reconnecting with
+  `prompt_holds_text: false`.
 - **`held(clear_too_soon)`:** the line stays held; the caption adds "Cleared a moment
   ago · try again in a few seconds" and the Clear button comes back after the host's
   3 s window (the once-per-line rule counts only clears the host actually performed).
@@ -305,8 +317,9 @@ compared against these after the build.
 - PROJ-16 / PROJ-23 (workbench): the "prompt holds text" input is now the draft model;
   no guard relaxed — an unknown state still holds; the new guard covers the erased draft.
 - PROJ-12 (workbench, the session host's delivery protocol): `Deliver` gains the optional
-  request flag `clear_first` and the hold reasons `clear_too_soon` and
-  `clear_unsupported` (additive; existing outcomes `submitted`, `typed`, `held`,
+  request flag `clear_first`, the hold reasons `clear_too_soon` and
+  `clear_unsupported`, and a `prompt_holds_text` field on every reply and on the
+  re-attach snapshot (additive; existing outcomes `submitted`, `typed`, `held`,
   `no_paste_mode`, `no_session` unchanged). The inventory text and the protocol doc
   gain them with a change-log line naming this spec's ask.
 - §1 (steps closed by default) touches no inventory contract; it reverses C1 of the

@@ -180,7 +180,7 @@ Depends on: none
 - Produces Swift: `package struct DraftModel: Equatable, Sendable { var count = 0; var exact = true; mutating func feed(_ bytes: [UInt8], profile: AgentInputProfile, dialog: Bool); var holdsText: Bool; mutating func clearedByApp() }`; `TerminalCenter.draftChanged: AsyncStream<Int64>` (session id) or an `@Observable` counter the line delivery observes.
 - Fixture rows: `{"name","profile","keys":[base64 or escaped bytes…],"dialog":false,"expect":{"count":N,"exact":B,"holds":B}}`.
 
-- [ ] **Step 0: Check Claude Code by hand.** In a scratch Claude Code session (not a test): type text, press Ctrl+C once while idle and once while it works — both must clear the input without interrupting or exiting. Record the Claude Code version in the fixture's top-level `"claude_code_checked"` field. If either does not hold, stop and report to the controller (the owner decides).
+- [ ] **Step 0: Check Claude Code by hand.** In a scratch Claude Code session (not a test): type text, press Ctrl+C once while idle and once while it works — both must clear the input without interrupting or exiting. Record the Claude Code version in the fixture's top-level `"claude_code_checked"` field. If either does not hold, apply spec C11: `ctrl-c-owner` expects `exact=false` for every profile, Task 7 drops Clear and send (`canClearAndSend` always false, no `clear_first`), and the controller tells the owner through an ask.
 - [ ] **Step 1: Write `draft_cases.json`** with at least: `type-abc` (3,exact,holds); `type-then-backspace-all` (0,exact,free); `backspace-on-empty` (0,exact,free); `ctrl-u-single-line` (0,exact,free); `ctrl-u-multi-line` (exact=false,holds); `left-then-backspace-all` (exact=false,holds); `option-backspace` (exact=false,holds); `esc` (exact=false,holds); `submit-return` (0,exact,free); `shift-tab` (unchanged); `bracketed-paste-5-runes` (5); `utf8-cyrillic-3-runes` (3); `ctrl-c-owner` (Claude Code: 0,exact,free; Codex: exact=false,holds); `dialog-y` with dialog=true (unchanged); `codex-profile-any-key` (exact=false).
 - [ ] **Step 2:** Go `TestDraftFixture` and Swift `DraftModelFixtureTests` read the file (Swift path as in `TerminalPasteFixtureTests`) → FAIL.
 - [ ] **Step 3:** Implement both from the table (spec §6.1). A delivery's own paste and `left_typed` set `exact = false` (as the old flag's set). Fake `FakeHostDelivery` uses `DraftModel`.
@@ -221,7 +221,8 @@ Depends on: Task 6
   - `testClearAndSendOncePerLine`: second call for the same line → no-op.
   - `testClearAndSendHiddenForCodex`: a session whose `AgentInputProfile` is not Claude Code → `canClearAndSend == false` (only Send together and Cancel).
   - `testClearTooSoonKeepsHeld`: the fake host answers `held(clear_too_soon)` → line stays held, caption gains `"Cleared a moment ago · try again in a few seconds"`, `canClearAndSend` true again after 3 s on the fake clock.
-  - `testInterruptedClearNotResent`: `FakeHostDelivery` drops the connection after `clear_first` → `.interrupted` path, no second `clear_first` for that line.
+  - `testInterruptedClearNotResent`: `FakeHostDelivery` drops the connection after `clear_first` → `.interrupted` path, no second `clear_first` for that line; on reconnect the fake reports `prompt_holds_text: false` → the mirror adopts it and the next held line goes.
+- Go: `TestDeliver_ReplyCarriesPromptHoldsText` and `TestReattach_SnapshotCarriesPromptHoldsText`.
   - `testHoldPreviewInCaption`: injected `promptPreview` returns `"> look at the window test again"` → `holdPreview(for:)` returns it; nil preview → nil (caption only).
   - `testSendTogether`: uses the beside-text delivery (`sharedPrompts`), one Return.
   - `testHeldThenSessionGone`: → `.notSent`, text back in the field.
