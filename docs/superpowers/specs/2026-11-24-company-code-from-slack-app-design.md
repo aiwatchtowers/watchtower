@@ -1,6 +1,6 @@
 # Company code from the Slack app — design (short)
 
-Target: workbench #1155. Status: draft, waiting on spike S1.2 (ask #888).
+Target: workbench #1155. Status: draft. Spike S1.2 (ask #888): an ordinary member does NOT find the bot-less app. Second spike (bare bot user) pending.
 
 ## Intent
 
@@ -37,6 +37,13 @@ A colleague who installs Watchtower at a company that already ran **Set up for m
 | App found by search / Apps list, About opens, link clickable | Hint only |
 | Link not clickable | Also `aboutLeadsWithCode = true` (+ update `about_test.go` and the feature note's S1.2 line) |
 | App not found by an ordinary member | Also add a bare bot user to the manifest (`features.bot_user`, no message scopes) so the app gets its own page; `MergeManifest` must add it on adopt, which means the admin re-approves the app — state that in the guide |
+
+## Bot user (spike #888 outcome: the app is not found)
+
+- Manifest: `features.bot_user` (`display_name` "Watchtower", `always_online` false) and one harmless bot scope, `team:read`; no message scopes, no Events, no Interactivity, Messages tab off.
+- `slackconnect.AuthorizeURL` adds `scope=team:read`: a bot user is created only by an install that requests a bot scope. The bot token in the exchange answer is discarded, never stored or logged.
+- `slackapp.MergeManifest` (adopt) adds the bot user and the scope; `ManifestChanges` reports `add_bot_user` so the dry run and the confirm screen name it. An installed app needs one re-approval by a workspace admin before the bot appears — the guide says so.
+- Open until the second spike: whether Slack creates a bot user with zero bot scopes (then no scope at all), and whether the bot makes the app findable and opens on About.
 
 ## Design
 
