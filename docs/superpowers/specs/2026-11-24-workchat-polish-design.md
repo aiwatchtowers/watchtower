@@ -251,7 +251,8 @@ the pane's presentation, with tests.
   reply) → the existing "may be typed" path; the Mac never re-sends a `clear_first`
   for that line. The mirror does not guess: every `Deliver` reply and the re-attach
   snapshot carry the host's `prompt_holds_text` (additive, PROJ-12), and the mirror
-  adopts it, so after the reconnect a host that did clear releases the Mac's held lines.
+  adopts it: `false` → `{0, true}`; `true` → `{max(count, 1), false}` (held, unknown
+  length, until a submit, a clear or the next `false` from the host), so after the reconnect a host that did clear releases the Mac's held lines.
   Swift test with `FakeHostDelivery` dropping the connection, then reconnecting with
   `prompt_holds_text: false`.
 - **`held(clear_too_soon)`:** the line stays held; the caption adds "Cleared a moment
