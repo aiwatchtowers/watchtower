@@ -34,7 +34,26 @@ const (
 	relayIDBadKey       = "bad_key"
 	relayIDKeyMismatch  = "key_mismatch"
 	relayIDBadSignature = "bad_signature"
+	// relayIDNotTheHellos: a slot hello's device data proves an id other than
+	// the one the hello names.
+	relayIDNotTheHellos = "not_the_hellos_id"
 )
+
+// slotRelayIDProof is whether a hello read from a relay pairing slot proves
+// the relay id it names (#2387): its device data carries the relay_auth
+// proof (checkRelayIDProof for this hub and device) and the proven id is the
+// hello's relay_device_id. "" is proven, otherwise the class of the refusal.
+// Asked only of a hello that names a relay id.
+func slotRelayIDProof(hubID, deviceID secure.ID, h wire.DeviceHello) string {
+	id, class := checkRelayIDProof(hubID, deviceID, h.Device)
+	switch {
+	case class != "":
+		return class
+	case id != h.RelayDeviceID:
+		return relayIDNotTheHellos
+	}
+	return ""
+}
 
 // VerifyRelayIDProof checks the relay identity a phone's device record
 // names: all three fields present, a well-formed relay id that is the

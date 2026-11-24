@@ -796,6 +796,7 @@
     {
       "name": "with_relay_id",
       "relay_auth_seed": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+      "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
       "json": {
         "device": {
           "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
@@ -815,8 +816,71 @@
       },
       "relay_coder": "{\"agreement_key\":\"YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A\",\"device\":{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"link_nonce\":\"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\"},\"relay_device_id\":\"zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa\",\"signing_key\":\"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A\"}",
       "hub_accepts_relay_id": true,
+      "slot_relay_link": false,
       "kit": {
         "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa"
+      }
+    },
+    {
+      "name": "with_proven_relay_id",
+      "relay_auth_seed": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+      "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+      "json": {
+        "device": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "name": "Test Phone",
+          "model": "iPhone",
+          "app_version": "1.0",
+          "scope": "private",
+          "user_record_name": "_owner0000",
+          "link_nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+          "typing_requested": false,
+          "start_sessions": true,
+          "updated_at": 1730000000,
+          "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa",
+          "relay_auth_pub": "5_FioQvsVZr-oZXk3OhLaVaNXSywlj60RsBoXisX8vA",
+          "relay_id_sig": "-Tg8tg3zgpQ4nMHHpSeo948iODWK6twd6RxjqkwlP9348Jm3XBe1kqowpnXVH7Rgm4TgOb4TyoPV1D4eif8rCA"
+        },
+        "signing_key": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+        "agreement_key": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A",
+        "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa"
+      },
+      "relay_coder": "{\"agreement_key\":\"YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A\",\"device\":{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"link_nonce\":\"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"relay_auth_pub\":\"5_FioQvsVZr-oZXk3OhLaVaNXSywlj60RsBoXisX8vA\",\"relay_device_id\":\"zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa\",\"relay_id_sig\":\"-Tg8tg3zgpQ4nMHHpSeo948iODWK6twd6RxjqkwlP9348Jm3XBe1kqowpnXVH7Rgm4TgOb4TyoPV1D4eif8rCA\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\"},\"relay_device_id\":\"zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa\",\"signing_key\":\"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A\"}",
+      "hub_accepts_relay_id": true,
+      "slot_relay_link": true,
+      "kit": {
+        "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa"
+      }
+    },
+    {
+      "name": "proof_of_another_id",
+      "relay_auth_seed": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+      "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+      "json": {
+        "device": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "name": "Test Phone",
+          "model": "iPhone",
+          "app_version": "1.0",
+          "scope": "private",
+          "user_record_name": "_owner0000",
+          "link_nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+          "typing_requested": false,
+          "start_sessions": true,
+          "updated_at": 1730000000,
+          "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa",
+          "relay_auth_pub": "5_FioQvsVZr-oZXk3OhLaVaNXSywlj60RsBoXisX8vA",
+          "relay_id_sig": "-Tg8tg3zgpQ4nMHHpSeo948iODWK6twd6RxjqkwlP9348Jm3XBe1kqowpnXVH7Rgm4TgOb4TyoPV1D4eif8rCA"
+        },
+        "signing_key": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+        "agreement_key": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A",
+        "relay_device_id": "ijpnjzfdnmyouinzbyq4oewgjhucctbjw7vpnaej2ebzy3svhbga"
+      },
+      "relay_coder": "{\"agreement_key\":\"YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A\",\"device\":{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"link_nonce\":\"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"relay_auth_pub\":\"5_FioQvsVZr-oZXk3OhLaVaNXSywlj60RsBoXisX8vA\",\"relay_device_id\":\"zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa\",\"relay_id_sig\":\"-Tg8tg3zgpQ4nMHHpSeo948iODWK6twd6RxjqkwlP9348Jm3XBe1kqowpnXVH7Rgm4TgOb4TyoPV1D4eif8rCA\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\"},\"relay_device_id\":\"ijpnjzfdnmyouinzbyq4oewgjhucctbjw7vpnaej2ebzy3svhbga\",\"signing_key\":\"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A\"}",
+      "hub_accepts_relay_id": true,
+      "slot_relay_link": false,
+      "kit": {
+        "relay_device_id": "ijpnjzfdnmyouinzbyq4oewgjhucctbjw7vpnaej2ebzy3svhbga"
       }
     },
     {

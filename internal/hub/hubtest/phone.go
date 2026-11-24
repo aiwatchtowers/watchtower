@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -920,13 +921,16 @@ func (p *Phone) HelloName() string { return "hello-" + p.id.String() }
 
 // Hello writes the phone's hello into zone (a pairing slot's pair/<slot>):
 // its device payload and keys sealed to hub_kx under the link nonce, signed,
-// naming its own relay device id.
+// naming its own relay device id with its proof in the device data (#2387:
+// the relay_auth key's signature for this hub and device).
 func (p *Phone) Hello(zone string) error {
 	b64 := base64.RawURLEncoding
 	h := wire.DeviceHello{
 		Device: wire.DevicePayload{
 			DeviceID: p.id.String(), Name: "Test Phone", Model: "iPhone18,1", AppVersion: "0.0.0-test",
 			Scope: wire.ScopePrivate, StartSessions: true, UpdatedAt: wire.Time{Time: p.cfg.Clock()},
+			RelayDeviceID: p.relayID, RelayAuthPub: b64.EncodeToString(p.sig.Public().(ed25519.PublicKey)),
+			RelayIDSig: b64.EncodeToString(ed25519.Sign(p.sig, link.RelayIDProofMessage(p.cfg.Hub, p.id, p.relayID))),
 		},
 		SigningKey:    b64.EncodeToString(p.sig.Public().(ed25519.PublicKey)),
 		AgreementKey:  b64.EncodeToString(p.kx.PublicKey().Bytes()),

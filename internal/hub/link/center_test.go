@@ -1509,7 +1509,7 @@ func TestASASOverAPairingSlotSaysOverRelay(t *testing.T) {
 		f := memfake.New(transport.KindRelay, r.clock)
 		code := r.issue()
 		p := newPhone(t)
-		r.writeHello(f, "slot1", p, code.Nonce, withRelayID(relayID(t)))
+		r.writeHello(f, "slot1", p, code.Nonce, withRelayProof(newRelayKey(t), r.kr.HubID(), p))
 		if err := r.c.OnPairingOpened(context.Background(), f, "slot1"); err != nil {
 			t.Fatal(err)
 		}

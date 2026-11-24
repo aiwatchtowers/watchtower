@@ -34,9 +34,12 @@ import (
 // switcher logs it and sees no candidate); a writer replaces it, as empty
 // plus its own change: losing entries only takes candidates away.
 //
-// A slot hello proves where it arrived, not who owns the relay id it names
-// (the hello carries no relay_auth proof; the device record's later proof,
-// VerifyRelayIDProof, is what moves an id between rows).
+// A slot hello is marked only when it names no relay id or proves the one it
+// names (#2387: the relay_auth proof in its device data, link's
+// slotRelayIDProof); an older phone's unproven claim links unmarked, so it
+// never moves the hub to Relay. The mark is not what stores an id: the
+// hello's id is kept only when no other row holds it, and the device
+// record's proof (VerifyRelayIDProof) is what moves an id between rows.
 const MetaRelaySlotLinks = "relay_slot_links"
 
 // ErrRelaySlotLinksUndecodable is the relay_slot_links row being there but

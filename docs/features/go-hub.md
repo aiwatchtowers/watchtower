@@ -538,7 +538,7 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   its link closes, its waiting phones read `not_confirmed`); a relay code is not retired when its stream closes and
   stays valid until it expires or another code replaces it.
 - **`moves_to_relay` on the `sas` line** (#2191, Q6; local CLI contract, not the phone wire). `link.PairEvent.OverRelay`:
-  the hello came through a Relay pairing slot and names the phone's relay id. The runtime sets `MovesToRelay`
+  the hello came through a Relay pairing slot and proves the relay id it names (#2387). The runtime sets `MovesToRelay`
   (`hubRuntime.movesToRelay`, on the event goroutine, outside the supervisor's `pairMu`) when the phone paired over
   Relay, the active transport is CloudKit and another linked phone has an iCloud route (`state.Store.ICloudRoutes`); a
   failed route read answers true (warn when unsure). The value is fixed at the `sas`: a switch between the `sas` and
@@ -561,6 +561,16 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
     write prunes entries whose `devices`/`pending_devices` row is gone or names another nonce; an undecodable row reads
     as an error (no candidate) and a writer replaces it with an empty one plus its change. Only phones in `linked` can
     move the Mac. No migration.
+  - **A slot hello proves its relay id (#2387).** A slot hello that names a `relay_device_id` is marked only when its
+    `device` part proves that id (`relay_device_id`, `relay_auth_pub`, `relay_id_sig`, the device record's
+    `RelayIDProof` for this hub and device; `link.slotRelayIDProof` = `checkRelayIDProof` plus the proven id equal to
+    the hello's). Anything less (an older phone's hello without a proof, a proof of another id, of another hub or
+    device, a bad signature) is logged by class only (`not marked as a Relay link`) and treated as a CloudKit hello:
+    it waits, links and keeps its id as an unproven claim (stored only when no other row holds it, so a Relay hub can
+    still serve the phone), but it is never a candidate and its `sas` event's `OverRelay` (so `moves_to_relay`) stays
+    false. A hello naming no relay id is marked as before (its row can only gain an id through a proven device
+    record). Pinned by `link/slot_relay_proof_test.go` and the `device_hello` cases' `slot_relay_link` in
+    `hub_contract_cases.json` (Go `TestHelloFixtureRelayIDRule`, Kit `testHelloCasesRoundTrip`).
   - **The candidate** (`relayLinkCandidates`, in `devices` order): `relay_slot_links.linked[id]` equals the row's
     `link_nonce`, the row has a relay id and no iCloud route, and `linked_at > max(stored relay_link_since,
     relayLinkSince(switched_at))`. `relayLinkSince(t)` is the second before `t`'s whole second, and the stored

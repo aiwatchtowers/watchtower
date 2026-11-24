@@ -61,6 +61,9 @@ type openedHello struct {
 	sigPub    ed25519.PublicKey
 	kxPub     *ecdh.PublicKey
 	relayID   string
+	// relayProof is slotRelayIDProof's verdict on relayID ("" proven or no
+	// relay id named, else the class of the refusal).
+	relayProof string
 }
 
 // HandleHello decides one phone hello (spec §2.3, F4): it opens it under each
@@ -90,10 +93,20 @@ func (c *Center) HandleHello(zone, wireName string, env []byte) (Pending, error)
 // is marked so in hub_meta relay_slot_links (state.MarkRelaySlotRequestTx),
 // one from CloudKit clears that mark; its sas event's OverRelay is slot
 // with a relay device id in the hello (a CloudKit hello never is, even a
-// private one whose owner read came back empty). A code an answering
+// private one whose owner read came back empty). A slot hello that names a
+// relay id it does not prove (#2387: no relay_auth proof in its device data,
+// an older phone's, or a proof of another id) is treated as a CloudKit one
+// on both counts: it waits and links, keeping its relay id as an unproven
+// claim (linkPending), but it never makes the phone a relay-link candidate
+// or the sas line a move to Relay. A code an answering
 // CloudKit close retired reads that close's refusal (retired), not
 // expired_code.
 func (c *Center) decideHello(opened openedHello, user string, slot bool) (Pending, error) {
+	if slot && opened.relayID != "" && opened.relayProof != "" {
+		log.Printf("hub link: hello from phone %s names a relay id it does not prove (%s): not marked as a Relay link",
+			opened.device, opened.relayProof)
+		slot = false
+	}
 	c.mu.Lock()
 	defer c.unlock()
 	payload := opened.hello.Device
@@ -255,8 +268,12 @@ func (c *Center) checkHello(wireName string, env []byte, h secure.Header, f secu
 	if hello.RelayDeviceID != "" && !validRelayDeviceID(hello.RelayDeviceID) {
 		return drop("has an unusable relay device id")
 	}
-	return openedHello{hello: hello, device: id.String(), code: code, linkNonce: nonce, sigPub: sigPub, kxPub: kxPub,
-		relayID: hello.RelayDeviceID}, nil
+	out := openedHello{hello: hello, device: id.String(), code: code, linkNonce: nonce, sigPub: sigPub, kxPub: kxPub,
+		relayID: hello.RelayDeviceID}
+	if out.relayID != "" {
+		out.relayProof = slotRelayIDProof(c.keys.HubID(), id, hello)
+	}
+	return out, nil
 }
 
 // relayDeviceIDLength is the length of a hosted-relay device id: unpadded

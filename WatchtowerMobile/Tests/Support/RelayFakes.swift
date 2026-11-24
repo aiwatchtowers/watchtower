@@ -139,8 +139,8 @@ final class RelaySpies: @unchecked Sendable {
 /// slots opened, the vouches; every op logged by name. A queued error answers the next call of its op instead.
 /// `promote` puts the slot's Mac in the slots (a lost answer still applies it: `promoteAppliesThenThrows`).
 final class FakeRelayOps: RelayLinkOps, @unchecked Sendable {
-    /// A relay device id from a fixed seed: 52 characters a–z2–7.
-    static let phoneID = String(repeating: "p", count: 52)
+    /// The relay device id of `relayKey`, the one `relayIDProof` proves, as on a phone (#2387).
+    static let phoneID = RelayIDs.deviceID(publicKey: relayKey.publicKey.rawRepresentation)
 
     private let lock = NSLock()
     private let clock: any LinkClock
