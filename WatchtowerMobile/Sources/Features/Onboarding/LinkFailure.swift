@@ -25,6 +25,8 @@ enum LinkFailure: Equatable {
     case macOnRelay(macName: String)
     /// `NOT_FOUND` at `open_pairing`: the Mac has not registered on the relay yet (ask #914, proposed default).
     case macNotOnRelay(macName: String)
+    /// An expired code of a Mac this iPhone holds a live link to (ask #1804): said at once, the link untouched.
+    case expiredButLinked(macName: String)
 
     /// What went wrong, as the failure screen's title (design pass O3).
     var title: String {
@@ -43,6 +45,7 @@ enum LinkFailure: Equatable {
         case .relayUnreachable: "Couldn't reach Relay"
         case let .macOnRelay(macName): "\(macName) runs over Relay"
         case let .macNotOnRelay(macName): "\(macName) isn't on Relay yet"
+        case .expiredButLinked: "This code has expired"
         }
     }
 
@@ -58,6 +61,7 @@ enum LinkFailure: Equatable {
         case .relayUnreachable: "Check your connection and scan again"
         case .macOnRelay: Self.macOnRelayHint
         case .macNotOnRelay: "Open Watchtower on the tower and try again"
+        case let .expiredButLinked(macName): "This iPhone is already linked to \(macName)."
         case let .iCloud(reason), let .local(reason): reason.isEmpty ? nil : reason
         }
     }
@@ -68,6 +72,7 @@ enum LinkFailure: Equatable {
         switch self {
         case .signIn: "Sign in to iCloud on this iPhone to use Watchtower"
         case .updateApp, .updateMac: title
+        case .expiredButLinked: "\(title). \(hint ?? "")"
         default: hint.map { "\(title) — \($0)" } ?? title
         }
     }
