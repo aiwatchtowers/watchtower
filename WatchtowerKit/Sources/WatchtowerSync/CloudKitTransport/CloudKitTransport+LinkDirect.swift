@@ -31,7 +31,7 @@ extension CloudKitTransport {
         do {
             server = try await conditionalDatabase().fetchRecord(id)
         } catch let error as CKError {
-            applyDirectCallFailure(error)
+            applyDirectCallFailure(error, recordID: id)
             throw error
         }
         clearThrottle(ifStill: throttleAtStart)
@@ -58,7 +58,7 @@ extension CloudKitTransport {
                 _ = try saves[ck.recordID]?.get()
             }
         } catch let error as CKError {
-            applyDirectCallFailure(error)
+            applyDirectCallFailure(error, recordID: CKRecord.ID(recordName: record.recordName, zoneID: zones.zoneID(for: record.zone)))
             throw error
         }
         clearThrottle(ifStill: throttleAtStart)
@@ -67,12 +67,5 @@ extension CloudKitTransport {
     private func checkDirectCallAllowed() throws {
         if isUnlinked { throw DirectCallRefusal.unlinked }
         if let throttledUntil, now() < throttledUntil { throw DirectCallRefusal.throttled }
-    }
-
-    /// A direct call succeeded: the throttling stretch ends, unless another request (the engine's fetch or send)
-    /// installed a newer throttle while this one ran.
-    private func clearThrottle(ifStill throttleAtStart: Date?) {
-        guard throttledUntil == throttleAtStart else { return }
-        clearThrottle()
     }
 }

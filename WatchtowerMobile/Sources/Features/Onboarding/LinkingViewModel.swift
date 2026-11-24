@@ -456,6 +456,11 @@ final class LinkingViewModel {
             Self.logger.notice("the hello was not saved directly: queued for the sync engine")
             try await transport.save([hello])
         }
+        return markHelloSent(pending)
+    }
+
+    /// `pending` with `helloSent`, stored while it is still the pending link.
+    private func markHelloSent(_ pending: PendingLink) -> PendingLink {
         var sent = pending
         sent.helloSent = true
         if store.pending == pending { store.pending = sent }
@@ -611,27 +616,31 @@ final class LinkingViewModel {
             return
         }
         phase = .checking
-        guard let resumed = await prepareResumed(pending, keys: deviceKeys) else { return }
-        await waitForGrant(resumed, code: PairingCode(hubKeys: hubKeys, deviceKeys: deviceKeys))
+        guard let transport = await prepareResumed(pending) else { return }
+        // A link killed before its hello was marked sent: the hello may have landed, and been answered, meanwhile.
+        // The wait decides from what it reads (`settleUnsentHello`), never by a resend first.
+        let resend: HelloResend? = pending.helloSent ? nil : { [weak self] current in
+            await self?.resendHello(current, keys: deviceKeys, via: transport)
+        }
+        await waitForGrant(pending, code: PairingCode(hubKeys: hubKeys, deviceKeys: deviceKeys), resend: resend)
     }
 
-    /// The resumed link's session in its scope (or its pairing slot), and its hello again when the kill came before
-    /// it was saved. nil when either failed (the link failed) or the host is gone.
-    private func prepareResumed(_ pending: PendingLink, keys deviceKeys: DeviceIdentityKeys) async -> PendingLink? {
-        let transport: any CloudSyncTransport
+    /// Sends a pending link's hello again; nil when it could not be (the link failed, or the app was killed).
+    private typealias HelloResend = (PendingLink) async -> PendingLink?
+
+    /// The resumed link's session in its scope (or its pairing slot). nil when it failed (the link failed) or the
+    /// host is gone.
+    private func prepareResumed(_ pending: PendingLink) async -> (any CloudSyncTransport)? {
         do {
             guard let host else { return nil }
             if let slot = pending.relaySlot, let mac = pending.link.relayMacDeviceID {
-                transport = try await host.preparePairing(macDeviceID: mac, slot: slot, hubID: pending.link.hubID)
-            } else {
-                transport = try await host.prepare(route: pending.link.route, hubID: pending.link.hubID, fresh: false)
+                return try await host.preparePairing(macDeviceID: mac, slot: slot, hubID: pending.link.hubID)
             }
+            return try await host.prepare(route: pending.link.route, hubID: pending.link.hubID, fresh: false)
         } catch {
             await fail(.local(error.localizedDescription), hubID: pending.link.hubID)
             return nil
         }
-        guard !pending.helloSent else { return pending }
-        return await resendHello(pending, keys: deviceKeys, via: transport)
     }
 
     /// A captured link killed before its hello was saved (#2189): the hello again, under the same baseline. The Mac
@@ -669,8 +678,12 @@ final class LinkingViewModel {
     /// another link code by its `link_code_tag`, shows none);
     /// `linked` with keys stores them and links, always from the replica's
     /// copy (`answer`). A cancelled wait (the app killed) leaves the pending
-    /// link to resume.
-    private func waitForGrant(_ pending: PendingLink, code: PairingCode) async {
+    /// link to resume. `resend`: the hello may not have landed (a resume
+    /// with `helloSent` false); each read settles it first
+    /// (`settleUnsentHello`) until it is known sent.
+    private func waitForGrant(_ waiting: PendingLink, code: PairingCode, resend: HelloResend? = nil) async {
+        var pending = waiting
+        var resend = resend
         let hubID = pending.link.hubID
         let source = pending.baselineSource ?? .replica
         var unavailableLogged = false
@@ -680,10 +693,17 @@ final class LinkingViewModel {
         while true {
             if let deviceID = identity.deviceID {
                 switch await readKeybox(hubID: hubID, deviceID: deviceID, from: source) {
-                case .read(let keybox?) where keybox.grant.hubID == hubID:
-                    if await answer(keybox, from: source, pending: pending, code: code, deviceID: deviceID) { return }
-                case .read:
-                    break
+                case .read(let read):
+                    let keybox = read.flatMap { $0.grant.hubID == hubID ? $0 : nil }
+                    if let unsent = resend {
+                        guard let settled = await settleUnsentHello(keybox, pending: pending, code: code, resend: unsent)
+                        else { return }
+                        pending = settled
+                        if pending.helloSent { resend = nil }
+                    }
+                    if let keybox, await answer(keybox, from: source, pending: pending, code: code, deviceID: deviceID) {
+                        return
+                    }
                 case .unavailable(let reason) where !Task.isCancelled:
                     // This poll is skipped, never answered by a fetch instead (#2189): the next one reads again.
                     if unavailableLogged {
@@ -710,6 +730,23 @@ final class LinkingViewModel {
             return
         }
         await fail(.noAnswer, hubID: hubID)
+    }
+
+    /// A read of a wait whose hello may not have landed (codex review, #2189), before it is answered. A waiting
+    /// keybox naming this scan's code proves the hello landed: marked sent, nothing resent. An answer that differs
+    /// from the baseline (a refusal, a link) is the Mac's to this scan: nothing resent, so a refusal given while the
+    /// phone was off is honoured, not replaced by a new request and code. No keybox, or the baseline unchanged (or a
+    /// waiting keybox of another code), proves no answer: the hello is sent again. An unavailable read never gets
+    /// here, so it never resends. nil when the resend failed (the link failed, or the app was killed).
+    private func settleUnsentHello(
+        _ keybox: Keybox?, pending: PendingLink, code: PairingCode, resend: HelloResend
+    ) async -> PendingLink? {
+        if let grant = keybox?.grant {
+            let waiting = grant.awaitingConfirmation == true && grant.linkRefused == nil
+            if waiting, grant.linkCodeTag == code.linkCodeTag { return markHelloSent(pending) }
+            if grant != pending.baseline, !waiting { return pending }
+        }
+        return await resend(pending)
     }
 
     /// One poll's keybox of this hub; true when the wait ended. A refusal or a link answers this scan only when it

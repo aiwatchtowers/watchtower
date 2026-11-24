@@ -64,10 +64,14 @@ extension CloudKitTransport {
         return true
     }
 
-    /// A call outside the engine failed (the link flow's direct read or save, #2189): the throttle codes throttle as
-    /// `applyThrottle` does, a `.serviceUnavailable` naming a retry-after waits it out too, and a zone gone unlinks
-    /// the phone role as a fetch does.
-    func applyDirectCallFailure(_ error: CKError) {
+    /// A call outside the engine about `recordID` failed (the link flow's direct read or save, #2189): the throttle
+    /// codes throttle as `applyThrottle` does, a `.serviceUnavailable` naming a retry-after waits it out too, and a
+    /// zone gone unlinks the phone role as a fetch does. A `.partialFailure` is judged by the record's own error, as
+    /// the conditional writes' path reads it.
+    func applyDirectCallFailure(_ thrown: CKError, recordID: CKRecord.ID) {
+        let error = thrown.code == .partialFailure
+            ? (thrown.partialErrorsByItemID?[recordID] as? CKError) ?? thrown
+            : thrown
         if !managesZones, Self.zoneGoneCodes.contains(error.code) {
             emitUnlinked(reason: "zone not found on a direct call")
             return
@@ -116,6 +120,13 @@ extension CloudKitTransport {
             return
         }
         await resend()
+    }
+
+    /// A request that began when `throttledUntil` was `throttleAtStart` succeeded: the throttling stretch ends, unless
+    /// another request (the engine's, a direct call's) installed a newer throttle while this one ran.
+    func clearThrottle(ifStill throttleAtStart: Date?) {
+        guard throttledUntil == throttleAtStart else { return }
+        clearThrottle()
     }
 
     /// A request succeeded: the throttling stretch and its backoff end.

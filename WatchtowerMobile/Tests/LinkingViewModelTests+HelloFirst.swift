@@ -303,6 +303,101 @@ extension LinkingViewModelTests {
         XCTAssertEqual(relaunched.phase, .linked(macName: "Acme Mac"))
     }
 
+    /// Killed after CloudKit accepted the hello but before it was marked sent; the owner refused while the phone was
+    /// off. The resume reads first: the refusal is this scan's answer, and no new request or code is made.
+    func testAResumeHonoursARefusalOfAnUnmarkedHello() async throws {
+        let payload = try await killedAfterTheHelloLandedUnmarked()
+        let refused = refusal(.notConfirmed, decidedAt: start.addingTimeInterval(1))
+        host.mac = { writes in writes.contains { $0.linkNonce == payload.nonce } ? refused : nil }
+        let relaunched = makeModel()
+
+        await relaunched.resumePendingLink()
+
+        XCTAssertEqual(relaunched.phase, .failed(.refused))
+        XCTAssertEqual(host.directSaveAttempts, 1, "no resend")
+        let writes = try await host.deviceWrites()
+        XCTAssertEqual(writes.count, 1)
+    }
+
+    /// The same, the Mac linking this scan meanwhile: that answer completes the link, and nothing is resent.
+    func testAResumeOfAnUnmarkedHelloTheMacReadSendsNothing() async throws {
+        let payload = try await killedAfterTheHelloLandedUnmarked()
+        macLinks(payload)
+        let relaunched = makeModel()
+
+        await relaunched.resumePendingLink()
+
+        XCTAssertEqual(relaunched.phase, .linked(macName: "Acme Mac"))
+        XCTAssertEqual(host.directSaveAttempts, 1, "no resend")
+    }
+
+    /// The same, the Mac waiting on this scan's code: the hello landed, so it is marked sent, nothing is resent, and
+    /// the code shows.
+    func testAResumeOfAnUnmarkedHelloTheMacWaitsOnIsMarkedSent() async throws {
+        let payload = try await killedAfterTheHelloLandedUnmarked()
+        let tag = try TestPhone.linkCodeTag(payload)
+        let decided = start
+        host.mac = { writes in
+            guard writes.contains(where: { $0.linkNonce == payload.nonce }) else { return nil }
+            return DeviceGrant(
+                deviceID: TestE2E.deviceID.uuidString, hubID: helloAcme, name: "iPhone", scope: .private, linked: false,
+                typingAllowed: false, startSessionsAllowed: true, decidedAt: decided, awaitingConfirmation: true,
+                confirmNonce: TestPhone.confirmNonceText, linkCodeTag: tag)
+        }
+        clock.parked = true
+        let relaunched = makeModel()
+        let flow = Task { await relaunched.resumePendingLink() }
+        try await poll({ relaunched.linkCode != nil }, "the code shows")
+
+        XCTAssertEqual(LinkStore(defaults: defaults).pending?.helloSent, true)
+        XCTAssertEqual(host.directSaveAttempts, 1, "no resend")
+        flow.cancel()
+        await flow.value
+    }
+
+    /// A first read that is unavailable never resends; a later read that proves no answer does.
+    func testAnUnavailableReadNeverResends() async throws {
+        let payload = code()
+        let stale = staleRefusal
+        host.mac = { [grant = grantMaker] writes in
+            writes.contains { $0.linkNonce == payload.nonce } ? grant(helloAcme, true, nil) : stale
+        }
+        host.parksDirectSave = true
+        let first = makeModel()
+        let flow = Task { await first.open(payload.url()) }
+        try await poll({ self.host.directSaveAttempts == 1 }, "the hello's save in flight")
+        flow.cancel()
+        await flow.value
+        host.parksDirectSave = false
+        host.failingServerReads = 1
+        let relaunched = makeModel()
+
+        await relaunched.resumePendingLink()
+
+        XCTAssertEqual(relaunched.phase, .linked(macName: "Acme Mac"))
+        XCTAssertEqual(host.directSaveAttempts, 2, "one resend, after the read that proved no answer")
+        XCTAssertGreaterThanOrEqual(clock.slept, LinkingViewModel.grantPollInterval, "not on the unavailable read")
+    }
+
+    /// The hello reached the server, then the app was killed before the flow marked it sent.
+    private func killedAfterTheHelloLandedUnmarked() async throws -> LinkPayload {
+        let payload = code()
+        let stale = staleRefusal
+        host.mac = { _ in stale }
+        host.parksAfterDirectSave = true
+        let first = makeModel()
+        let flow = Task { await first.open(payload.url()) }
+        try await poll({ self.host.directSaves.count == 1 }, "the hello landed")
+        flow.cancel()
+        await flow.value
+        host.parksAfterDirectSave = false
+        let pending = try XCTUnwrap(LinkStore(defaults: defaults).pending)
+        XCTAssertFalse(pending.helloSent)
+        let writes = try await host.deviceWrites()
+        XCTAssertEqual(writes.count, 1, "on the server")
+        return payload
+    }
+
     /// A linked keybox without keys on the direct read never starts a replica fetch: it keeps waiting.
     func testALinkedServerReadWithoutKeysFetchesNothing() async throws {
         host.keyboxKeys = nil
@@ -374,10 +469,15 @@ extension LinkingViewModelTests {
     /// The fetch fallback counts only when the data zone was polled to its end during it (a throttled or cut pull
     /// returns normally).
     func testALinkFetchCountsOnlyWhenItReadTheDataZone() {
-        XCTAssertFalse(HubSession.linkFetchCompleted(refreshed: false, pollsBefore: 1, pollsAfter: 2))
-        XCTAssertFalse(HubSession.linkFetchCompleted(refreshed: true, pollsBefore: 3, pollsAfter: 3), "a skipped pull")
-        XCTAssertTrue(HubSession.linkFetchCompleted(refreshed: true, pollsBefore: 3, pollsAfter: 4))
-        XCTAssertTrue(HubSession.linkFetchCompleted(refreshed: true, pollsBefore: nil, pollsAfter: nil), "off CloudKit")
+        XCTAssertFalse(HubSession.linkFetchCompleted(refreshed: false, pollsBefore: 1, pollsAfter: 2, unlinked: false))
+        XCTAssertFalse(
+            HubSession.linkFetchCompleted(refreshed: true, pollsBefore: 3, pollsAfter: 3, unlinked: false), "a skipped pull")
+        XCTAssertTrue(HubSession.linkFetchCompleted(refreshed: true, pollsBefore: 3, pollsAfter: 4, unlinked: false))
+        XCTAssertFalse(
+            HubSession.linkFetchCompleted(refreshed: true, pollsBefore: 3, pollsAfter: 4, unlinked: true),
+            "the data zone polled, then the relay zone's zoneNotFound unlinked the transport")
+        XCTAssertTrue(
+            HubSession.linkFetchCompleted(refreshed: true, pollsBefore: nil, pollsAfter: nil, unlinked: false), "off CloudKit")
     }
 
     // MARK: The session's mapping of a read

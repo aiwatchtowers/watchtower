@@ -165,6 +165,24 @@ final class CloudKitLinkDirectTests: XCTestCase {
         XCTAssertEqual(database.calls.count, calls, "no save went out: \(what)", file: file, line: line)
     }
 
+    /// A partial failure is judged by the requested record's own error: a rate limit inside it throttles, a zone gone
+    /// inside it unlinks.
+    func testAPartialFailureIsJudgedByTheRecordsOwnError() async throws {
+        let id = CKRecord.ID(recordName: "keybox-DEVICE", zoneID: zones.zoneID(for: .data))
+        let (throttling, throttlingDatabase, _) = try make()
+        throttlingDatabase.fetchFailures = [CKError(.partialFailure, userInfo: [
+            CKPartialErrorsByItemIDKey: [id: CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0])]
+        ])]
+        _ = try? await throttling.serverRecord(named: "keybox-DEVICE", in: .data)
+        await assertThrottled(throttling, throttlingDatabase, "partialFailure(requestRateLimited)")
+
+        let (unlinking, unlinkingDatabase, _) = try make()
+        unlinkingDatabase.fetchFailures = [CKError(.partialFailure, userInfo: [CKPartialErrorsByItemIDKey: [id: CKError(.zoneNotFound)]])]
+        _ = try? await unlinking.serverRecord(named: "keybox-DEVICE", in: .data)
+        let unlinked = await unlinking.isUnlinked
+        XCTAssertTrue(unlinked)
+    }
+
     func testAServiceOutageWithoutRetryAfterDoesNotThrottle() async throws {
         let (transport, database, _) = try make()
         database.fetchFailures = [CKError(.serviceUnavailable)]

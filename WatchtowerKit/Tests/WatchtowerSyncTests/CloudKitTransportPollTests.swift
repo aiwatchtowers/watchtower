@@ -245,4 +245,37 @@ final class CloudKitTransportPollTests: XCTestCase {
         let completed = await transport.dataZonePollsCompleted
         XCTAssertEqual(completed, 0)
     }
+
+    /// A throttle a direct call (#2189) installs while the engine's fetch runs outlives that fetch's success.
+    func testAnEngineFetchKeepsAThrottleSetDuringIt() async throws {
+        let engine = FakeSyncEngine()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine) { _ in
+            try? await Task.sleep(for: .seconds(3_600))
+        }
+        let keybox = CKRecord.ID(recordName: "keybox-DEVICE", zoneID: sharedZones.zoneID(for: .data))
+        engine.onNextFetch {
+            await transport.applyDirectCallFailure(
+                CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0]), recordID: keybox)
+        }
+
+        try await transport.pull()
+
+        let throttled = await transport.throttledUntil
+        XCTAssertNotNil(throttled, "the engine's success did not clear it")
+    }
+
+    /// The data zone polled to its end, then the relay zone's `zoneNotFound` unlinked the phone: the pull returns
+    /// normally with the poll counted, so the link flow also checks `isUnlinked` (`HubSession.refreshForLink`).
+    func testARelayZoneGoneAfterTheDataZoneCountsTheDataPollAndUnlinks() async throws {
+        let engine = FakeSyncEngine()
+        engine.enqueueZonePage(.failure(CKError(.zoneNotFound)), zoneName: HubZones.testRelayZoneName)
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+
+        try await transport.pull()
+
+        let completed = await transport.dataZonePollsCompleted
+        let unlinked = await transport.isUnlinked
+        XCTAssertEqual(completed, 1)
+        XCTAssertTrue(unlinked)
+    }
 }

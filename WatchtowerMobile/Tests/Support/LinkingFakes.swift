@@ -341,6 +341,8 @@ final class FakeLinkHost: LinkHost {
     private var fetchedHubs: Set<String> = []
     /// When true, every server read fails (`.unavailable`).
     var serverReadFails = false
+    /// The next server reads that fail (`.unavailable`), one per read.
+    var failingServerReads = 0
     /// When true, every fetch fails (`.unavailable`: `HubSession.refresh` false).
     var refreshFails = false
     /// When true, every direct save fails: the flow queues the hello on the engine instead.
@@ -369,6 +371,10 @@ final class FakeLinkHost: LinkHost {
         keyboxReads.append(ReadCall(kind: .server, writesBefore: writes.count))
         await park { self.parksFetchGrant || (self.parksReadsAfterWrite && !writes.isEmpty) }
         if serverReadFails || Task.isCancelled { return .unavailable(reason: "read failed") }
+        if failingServerReads > 0 {
+            failingServerReads -= 1
+            return .unavailable(reason: "read failed")
+        }
         return .read(keybox(mac(writes)))
     }
 
@@ -382,6 +388,11 @@ final class FakeLinkHost: LinkHost {
     var parksDirectSave = false {
         didSet { unpark() }
     }
+    /// When true, a direct save lands on the server and then waits as `parksDirectSave` does (the app killed after
+    /// CloudKit accepted the hello, before the flow marked it sent).
+    var parksAfterDirectSave = false {
+        didSet { unpark() }
+    }
 
     func sendDirectly(_ record: CloudRecord, hubID: String) async -> Bool {
         guard cloudKitHubs.contains(hubID), let index = preparedHubIDs.lastIndex(of: hubID) else { return false }
@@ -391,10 +402,11 @@ final class FakeLinkHost: LinkHost {
         directSaves.append(hubID)
         do {
             try await transport(for: prepared[index]).saveDirectly([record])
-            return true
         } catch {
             return false
         }
+        await park { self.parksAfterDirectSave }
+        return !Task.isCancelled
     }
 
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox? {

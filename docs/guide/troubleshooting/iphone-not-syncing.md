@@ -6,7 +6,7 @@ The phone shows "<tower> · offline", never finds the Mac, an answered ask stays
 
 - On **Now**: "<tower> · online", "<tower> · offline" or "No tower linked".
 - A change that stays at **Waiting for your tower**.
-- While linking: "This code expired", "This code can't be used", or "Sign in to iCloud on this iPhone to use Watchtower".
+- While linking: "This code expired", "This code can't be used", "Couldn't reach iCloud — Check the connection and scan again.", or "Sign in to iCloud on this iPhone to use Watchtower".
 - In the Mac's link sheet instead of a code: "… not available on this Mac: sign in to iCloud in System Settings to link an iPhone." or "… could not be reached from this Mac: try again in a moment."
 - On the Mac, **Settings → Mobile** shows why Mobile is off, **Needs a signed build**, "iCloud is slowing sync down", "Paused until iCloud is available on this Mac." or "Mobile is run by a newer Watchtower".
 - "<tower> hasn't synced for a day" or "<tower> removed this phone".
@@ -23,7 +23,7 @@ The Mac is the hub. It publishes your data into your iCloud and applies the phon
 2. **Needs a signed build:** the Mac build has no iCloud signing, so it cannot use iCloud. Use the downloaded Developer ID app.
 3. Check iCloud: both devices must be signed in to iCloud. A Mac with iCloud off says "Mobile isn't available on this Mac: iCloud is off." A Mac whose iCloud account can't be used for now says "Paused until iCloud is available on this Mac. It goes on by itself.": sign in to iCloud on the Mac, or wait. The link sheet says iCloud is not available when the Mac has no usable iCloud account (sign in in System Settings), or could not be reached when iCloud did not answer just then (press **Try again** in a moment).
 4. The phone never sees the Mac: check the build pairing. The downloaded Mac app pairs with a TestFlight or App Store phone. A phone run from Xcode pairs only with a Mac built for the Development environment; mixed pairs fail silently.
-5. **Code expired or can't be used:** press **New code** on the Mac and scan again. A code lasts 10 minutes and works for one phone. A phone you reinstalled, or one where you tapped **Forget**, links again with a new code while the Mac still lists it: check the four-digit code and click **Link**. **Refuse**, or a code that expires, leaves the Mac's old link to it as it was.
+5. **Code expired or can't be used:** press **New code** on the Mac and scan again. A code lasts 10 minutes and works for one phone. A phone you reinstalled, or one where you tapped **Forget**, links again with a new code while the Mac still lists it: check the four-digit code and click **Link**. **Refuse**, or a code that expires, leaves the Mac's old link to it as it was. **Couldn't reach iCloud:** the phone could not read iCloud before sending its request; check its connection and scan again.
 6. **Waiting for your tower:** wake it. Pending changes apply when it wakes; a Mac checks for them every 30 seconds.
 7. **Hasn't synced for a day:** if the Mac changed its iCloud account, link again.
 8. **Removed this phone:** that hub is frozen. Tap **Forget** on the phone and link again with **Add tower**.

@@ -42,18 +42,22 @@ extension HubSession {
 
     /// One fetch for the link flow's replica read (`LinkHost.fetchKeybox`): true only when it brought the data zone in.
     /// On CloudKit a pull skipped by a throttle or the unlink, or cut short, returns normally and `refresh` counts it
-    /// as no data, so the data zone's completed polls are compared around it (`linkFetchCompleted`).
+    /// as no data, and a later zone's `zoneNotFound` unlinks the transport and returns normally too; so the data
+    /// zone's completed polls are compared around it, and the transport must not be unlinked after it
+    /// (`linkFetchCompleted`).
     func refreshForLink() async -> Bool {
         let cloud = directCloud?.cloud
         let before = await cloud?.dataZonePollsCompleted
         let refreshed = await refresh(.link)
         let after = await cloud?.dataZonePollsCompleted
-        return Self.linkFetchCompleted(refreshed: refreshed, pollsBefore: before, pollsAfter: after)
+        let unlinked = await cloud?.isUnlinked ?? false
+        return Self.linkFetchCompleted(refreshed: refreshed, pollsBefore: before, pollsAfter: after, unlinked: unlinked)
     }
 
-    /// A fetch that succeeded and, on CloudKit (the poll counts given), polled the data zone to its end during it.
-    static func linkFetchCompleted(refreshed: Bool, pollsBefore: Int?, pollsAfter: Int?) -> Bool {
-        guard refreshed else { return false }
+    /// A fetch that succeeded, left the transport linked and, on CloudKit (the poll counts given), polled the data zone
+    /// to its end during it.
+    static func linkFetchCompleted(refreshed: Bool, pollsBefore: Int?, pollsAfter: Int?, unlinked: Bool) -> Bool {
+        guard refreshed, !unlinked else { return false }
         guard let pollsBefore, let pollsAfter else { return true }
         return pollsAfter > pollsBefore
     }

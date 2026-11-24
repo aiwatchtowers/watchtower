@@ -139,6 +139,7 @@ extension CloudKitTransport {
     }
 
     private func fetchAndHandle(engine: any SyncEngineDriving, poll: Bool) async throws {
+        let throttleAtStart = throttledUntil
         var thrown: CKError?
         energy?.record(.engineFetch)
         do {
@@ -164,7 +165,8 @@ extension CloudKitTransport {
             let items = parked.flatMap { Self.flatten($0.error, zoneID: $0.zoneID) }
             try await handleFetchItems(items, original: parked[0].error, engine: engine)
         } else {
-            clearThrottle()
+            // A throttle a direct call (#2189) installed while this fetch ran stays.
+            clearThrottle(ifStill: throttleAtStart)
         }
         if poll {
             try await pollZones(engine: engine)

@@ -358,6 +358,36 @@ final class RelayLinkingTests: XCTestCase {
         )
     }
 
+    // MARK: - A hello not marked sent (#2189)
+
+    /// A relay link killed before its hello was marked sent, the Mac not answering: the resume sends the hello again
+    /// into the pairing slot through the engine (no direct save), with this phone's relay id.
+    func testAResumedRelayLinkSendsItsHelloAgainIntoTheSlot() async throws {
+        let payload = relayCode()
+        host.mac = { _ in nil }
+        host.parksReadsAfterWrite = true
+        let first = makeModel()
+        let flow = Task { await first.open(payload.url()) }
+        try await poll({ self.host.keyboxReads.contains { $0.writesBefore > 0 } }, "the first read after the hello")
+        flow.cancel()
+        await flow.value
+        host.parksReadsAfterWrite = false
+        var unsent = try XCTUnwrap(store.pending)
+        XCTAssertNotNil(unsent.relaySlot)
+        unsent.helloSent = false
+        store.pending = unsent
+        let before = try await host.pairHellos()
+        XCTAssertEqual(before.count, 1)
+
+        await makeModel().resumePendingLink()
+
+        let after = try await host.pairHellos()
+        XCTAssertEqual(after.count, 2, "sent again into the slot")
+        XCTAssertEqual(after.last?.relayDeviceID, try relay.phoneDeviceID())
+        XCTAssertEqual(after.last?.device.linkNonce, payload.nonce)
+        XCTAssertEqual(host.directSaveAttempts, 0, "never a direct save on the relay")
+    }
+
     // MARK: - A confirmed link left in pending (review round 1, finding 1)
 
     /// (a) Killed between the promoted write and the pending clear, relaunched past the deadline: the pending
