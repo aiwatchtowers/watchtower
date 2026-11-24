@@ -38,7 +38,11 @@ A colleague who installs Watchtower at a company that already ran **Set up for m
 | Link not clickable | Also `aboutLeadsWithCode = true` (+ update `about_test.go` and the feature note's S1.2 line) |
 | App not found by an ordinary member | Also add a bare bot user to the manifest (`features.bot_user`, no message scopes) so the app gets its own page; `MergeManifest` must add it on adopt, which means the admin re-approves the app — state that in the guide |
 
-## Bot user (spike #888 outcome: the app is not found)
+## Bot user — REJECTED (second spike)
+
+Slack refuses an authorize request with bot scopes to a non-web redirect: "Bot scopes are not allowed when redirecting to a non-web URI." Our sign-in is PKCE to `http://127.0.0.1:18551/callback`, and a PKCE app shows no **Install to Workspace** button, so a bot user cannot be installed without a web redirect and a `client_secret` exchange — a server. Next candidate: the workspace app directory (`<workspace>.slack.com/apps/manage` → the app's page shows `long_description`).
+
+The original bot plan, kept for the record:
 
 - Manifest: `features.bot_user` (`display_name` "Watchtower", `always_online` false) and one harmless bot scope, `team:read`; no message scopes, no Events, no Interactivity, Messages tab off.
 - `slackconnect.AuthorizeURL` adds `scope=team:read`: a bot user is created only by an install that requests a bot scope. The bot token in the exchange answer is discarded, never stored or logged.
