@@ -77,6 +77,16 @@ Open asks wait, oldest first, in **Waiting for you (N)** at the top of the sessi
 **Later** (or ×) closes the drawer and keeps everything you entered. It stays closed until the agent files another Full ask, and a banner over the terminal says **Agent asks: #N …** with **Open**.
 
 ### Ask the assistant what a question means
+<!-- learn
+id: asks-not-clear
+title: Have a question explained
+text: Click **Not clear?** under an ask's question and the assistant explains it in plain words.
+area: development
+level: next
+kind: feature
+since: next
+action: nav:projects
+-->
 
 Click **Not clear?** under a question or a check, open or closed, and the drawer becomes a chat whose first message explains the ask in plain words: what is being decided and what each option changes for you. Ask more there, then **Back to question** (or Esc, unless the composer holds text) brings back your picks and notes as you left them.
 

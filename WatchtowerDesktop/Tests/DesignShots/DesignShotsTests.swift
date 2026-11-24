@@ -291,7 +291,8 @@ final class DesignShotsTests: XCTestCase {
         let outputDir = try shotsDir()
         for (suffix, name) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             let shot = try AskExplainBuiltShotFixtures.backScrolled(try XCTUnwrap(NSAppearance(named: name)))
-            XCTAssertEqual(shot.offset, shot.bottom, accuracy: 1, "the question is back at the top after the chat (\(suffix))")
+            XCTAssertEqual(shot.offset, shot.bottom, accuracy: 1,
+                           "the question view lost its bottom scroll across the chat (\(suffix))")
             try shot.png.write(to: outputDir.appendingPathComponent("ask-explain-built-back-scrolled-\(suffix).png"))
         }
     }

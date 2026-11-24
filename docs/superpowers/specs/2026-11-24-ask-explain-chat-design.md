@@ -32,7 +32,7 @@ One quiet control on the ask, **Not clear?**. It turns the whole ask panel into 
 | D8 | Mac only in v1 | decided by the agent: the phone has no embedded chat engine (spec review threads are Mac-only too) |
 | D9 | No session transcript in the context | decided by the agent: the ask's summary is the agent's own statement of the question; the transcript is large, may hold other sources' text, and `ai query` has no reader for it today. A follow-up can add it |
 | D10 | One indicator per state: Loading shows the feed's own live row and Queued the composer's own queued status; no "Explaining…" or "Waiting — other chats are answering." text of this feature (the `explaining` and `queued` copy keys are gone) | decided by the agent during implementation (T4 review): the mockup's extra line sat next to the built-in indicator, so each state showed two |
-| D11 | A turn that fails once its reply row exists shows the shared ChatUI error card with its Retry; "Couldn't explain: <reason>" with **Retry** is only for a failed open (`explainErrors`, e.g. "This workbench no longer exists.") and for a hidden first turn that failed before it started (no row carries it) | decided by the agent during implementation (T4): the feed already draws a failed reply and its Retry; a second error line would repeat it |
+| D11 | A turn that fails once its reply row exists shows the shared ChatUI error card with its Retry; "Couldn't explain: <reason>" with **Retry** is only for a failed open (`explainErrors`, e.g. "This workbench no longer exists."); a hidden first turn that failed before it started (no row carries it) shows the engine's banner ("Couldn't send: …") with **Retry**, without the prefix | decided by the agent during implementation (T4): the feed already draws a failed reply and its Retry; a second error line would repeat it |
 | D12 | Retry after a restart is offered for a quit-partial first turn or a retryable error, never for a non-retryable code such as quota. Stop and quit persist the same `partial` row, so after a restart a stopped explanation offers Retry too | decided by the agent during implementation (T3): Retry is owner-initiated and harmless; a `stopped` marker would change every embedded chat's persistence. Known limit, see the feature note |
 | D13 | Before the engine exists the chat view shows the strip over a centred spinner ("finding the chat") while the conversation is found or created | decided by the agent during implementation (T4): the pane was blank for the length of `chat.new` |
 
@@ -61,7 +61,7 @@ Opening the chat of an ask with no chat yet finds-or-creates its conversation, t
 
 > Explain this question to the owner in plain words: what is being decided, what each option changes for them, and what the agent recommends and why. Short; no jargon the question does not explain.
 
-Opening a chat that already has messages starts nothing. A chat whose first turn ended in an error or partially shows that row with **Retry** (the engine's existing Retry), never a second hidden turn on its own; after a restart Retry follows D12. A hidden first turn that failed before it started (no row) shows "Couldn't explain: <reason>" with **Retry**, which opens the chat again (D11).
+Opening a chat that already has messages starts nothing. A chat whose first turn ended in an error or partially shows that row with **Retry** (the engine's existing Retry), never a second hidden turn on its own; after a restart Retry follows D12. A hidden first turn that failed before it started (no row) shows the engine's banner ("Couldn't send: <reason>") with **Retry**, which opens the chat again (D11).
 
 ### The assistant
 
@@ -70,7 +70,7 @@ A `ChatSurfaceSpec` (`AskExplainSurface`, `Sources/Services/ChatSurfaces/`), lik
 - persistence `.database`, the conversation found or created with `DatabaseEmbeddedChatStore.conversationID(…)` (Go's `chat.new` with `reuse: true`), title "Ask #<id>";
 - `toolAccess: .draftOnly`;
 - `runOptions`: the config's provider at its strong tier, `readFolder` = the workbench's folder only for a provider that can read files (claude, codex; never ollama, whose `ai query` refuses `--read-folder`), `purpose` = `ask.explain` (the usage ledger shows these turns as "Ask explanations" under Workbench; `ai query --purpose` accepts only listed values, so Go's `queryPurposes` gains it);
-- the system prompt (first turn only) carries, fenced as untrusted data (a fence longer than any backtick run inside, as `CodeQuestionContext` does, with a line telling the model it is data, not instructions): the ask's title, summary, changes since the previous round, the "Look at" (focus) items, questions with their options and descriptions (or the checklist), the recommended labels (asks store no reason, so none is sent), and the target's title and intent when the ask has a target. It says: answer in the language the ask is written in; you explain, you never decide for the owner; the folder is for reading only.
+- the system prompt (rebuilt from the ask and sent with every turn; only the hidden first-turn request is sent once) carries, fenced as untrusted data (a fence longer than any backtick run inside, as `CodeQuestionContext` does, with a line telling the model it is data, not instructions): the ask's title, summary, changes since the previous round, the "Look at" (focus) items, questions with their options and descriptions (or the checklist), the recommended labels (asks store no reason, so none is sent), and the target's title and intent when the ask has a target. It says: answer in the language the ask is written in; you explain, you never decide for the owner; the folder is for reading only.
 
 The prompt text lives in one Swift constant (`AskExplainPrompt`), covered by a test that pins its parts (fence, language rule, the "never decide" line). Both providers run it unchanged (it is plain text, no provider-specific syntax).
 
@@ -97,7 +97,7 @@ The prompt text lives in one Swift constant (`AskExplainPrompt`), covered by a t
 | Explained | `ask-explain-explained` | The explanation, the composer |
 | Long | `ask-explain-long` | Several turns, scrolled to the latest |
 | Busy | `ask-explain-busy` | A follow-up sent, its reply streaming, composer shows Stop |
-| Error | `ask-explain-error` | A failed turn: the shared ChatUI error card with **Retry** (D11); a failed open or a hidden first turn that never started: "Couldn't explain: <reason>" with **Retry** (built shots `-error-open`, `-error-start`) |
+| Error | `ask-explain-error` | A failed turn: the shared ChatUI error card with **Retry** (D11); a failed open: "Couldn't explain: <reason>" with **Retry**; a hidden first turn that never started: the engine's "Couldn't send: <reason>" with **Retry** (built shots `-error-open`, `-error-start`) |
 | Narrow | `ask-explain-narrow` | The chat in a drawer at its least width (320) |
 | Back, scrolled | `ask-explain-built-back-scrolled` | A long question scrolled to its bottom, the chat opened and closed: still at its bottom (built only) |
 

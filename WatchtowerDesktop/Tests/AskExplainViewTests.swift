@@ -63,6 +63,10 @@ final class AskExplainViewTests: XCTestCase {
         XCTAssertNil(fx.vm.explainErrors[ask.id])
         let failure = try XCTUnwrap(AskExplainChatView.startFailure(engine))
         XCTAssertTrue(failure.contains("the CLI exited"), failure)
+        XCTAssertEqual(AskExplainChatView.failureLine(openError: nil, engine: engine), failure,
+                       "the engine's banner already says what failed: no \"Couldn't explain:\" in front")
+        XCTAssertEqual(AskExplainChatView.failureLine(openError: "This workbench no longer exists.", engine: engine),
+                       "Couldn't explain: This workbench no longer exists.", "a failed open keeps the prefix")
         engine.draft = "What does park mean?"
         XCTAssertEqual(AskExplainChatView.startFailure(engine), failure, "typing keeps the Retry row")
         engine.draft = ""

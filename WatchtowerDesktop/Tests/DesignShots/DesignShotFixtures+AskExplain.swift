@@ -52,7 +52,7 @@ enum AskExplainBuiltShotFixtures {
         case .entry:
             break
         case .finding:
-            Task { await asks.openExplain(ask) }
+            scene.openTask = Task { await asks.openExplain(ask) }
             await waitForCondition { asks.isExplaining(ask.id) }
         case .queued:
             // The gate's only place is taken by another chat's turn.
@@ -71,14 +71,16 @@ enum AskExplainBuiltShotFixtures {
             try await scene.store(ask, turns: Sample.followUps.count)
             await asks.openExplain(ask)
             let engine = try XCTUnwrap(asks.explainEngine(for: ask))
-            XCTAssertTrue(engine.send(Sample.busyQuestion))
+            guard engine.send(Sample.busyQuestion) else { throw NoTurn(what: "the follow-up was refused") }
             await engine.started()
+            try scene.requireCall(1)
             scene.ai.emit(.text(Sample.streamingReply))
             await waitForCondition { engine.liveTurn?.text.isEmpty == false }
         case .error:
             await asks.openExplain(ask)
             let engine = try XCTUnwrap(asks.explainEngine(for: ask))
             await engine.started()
+            try scene.requireCall(1)
             scene.ai.emit(.error(Sample.turnError), .done)
             scene.ai.finish()
             await waitForCondition { !engine.isBusy }
@@ -102,7 +104,7 @@ enum AskExplainBuiltShotFixtures {
         let scene = try Scene(gateLimit: 3, holdChatNew: false, long: true)
         scenes.append(scene)
         var opened: OwnerAsk?
-        try run { opened = try? await scene.open() }
+        run("the asks did not load") { opened = try? await scene.open() }
         let ask = try XCTUnwrap(opened)
         let size = NSSize(width: 440, height: height)
         let root = scene.drawer(ask)
@@ -122,7 +124,7 @@ enum AskExplainBuiltShotFixtures {
         XCTAssertGreaterThan(bottom, 0, "the long question must overflow the drawer")
         settle(host)
 
-        try run { await scene.vm.asks.openExplain(ask) }
+        run("the open did not finish") { await scene.vm.asks.openExplain(ask) }
         settle(host)
         XCTAssertTrue(scene.vm.asks.isExplaining(ask.id))
         scene.vm.asks.closeExplain(ask.id)
@@ -152,7 +154,7 @@ enum AskExplainBuiltShotFixtures {
 
     /// Runs `work` to its end on the main run loop (a test method is not on
     /// the main actor's executor), as `DesignShotsTests.prepared` does.
-    private static func run(_ work: @escaping @MainActor () async -> Void) throws {
+    fileprivate static func run(_ failure: String, _ work: @escaping @MainActor () async -> Void) {
         final class Box { var done = false }
         let box = Box()
         Task { @MainActor in
@@ -164,7 +166,7 @@ enum AskExplainBuiltShotFixtures {
             RunLoop.main.run(mode: .default, before: .distantPast)
             left -= 1
         }
-        XCTAssertTrue(box.done, "the open did not finish")
+        XCTAssertTrue(box.done, failure)
     }
 
     /// The tallest scrolling view in the drawer: the question view's.
@@ -194,6 +196,11 @@ enum AskExplainBuiltShotFixtures {
     private static func offset(_ scroll: NSScrollView) -> CGFloat {
         let y = scroll.contentView.bounds.origin.y
         return scroll.documentView?.isFlipped == false ? overflow(scroll) - y : y
+    }
+
+    struct NoTurn: LocalizedError {
+        let what: String
+        var errorDescription: String? { what }
     }
 
     private struct EarlyExit: LocalizedError {
@@ -263,6 +270,8 @@ private final class Scene {
     let projectID: Int64
     private let askID: Int64
     private let release: AsyncStream<Void>.Continuation
+    /// The finding shot's open, held at `chat.new` until `cleanUp`.
+    var openTask: Task<Void, Never>?
 
     init(gateLimit: Int, holdChatNew: Bool, long: Bool = false) throws {
         (pool, path) = try TestDatabase.createPool()
@@ -362,9 +371,25 @@ private final class Scene {
         }
     }
 
+    /// Throws unless the AI was asked for at least `count` turns, so an emit
+    /// never reaches a turn that was refused.
+    func requireCall(_ count: Int) throws {
+        guard ai.calls.count >= count else {
+            throw AskExplainBuiltShotFixtures.NoTurn(what: "no AI turn started (\(ai.calls.count) of \(count))")
+        }
+    }
+
+    /// Lets the held open finish (Back was pressed, so it starts no turn),
+    /// ends every turn as at quit and waits for its writes, then removes the
+    /// database: nothing outlives the file.
     func cleanUp() {
         vm.asks.closeExplain(askID)
         release.finish()
+        let (openTask, center) = (openTask, center)
+        AskExplainBuiltShotFixtures.run("the scene's open and turns did not end") {
+            await openTask?.value
+            await center.finishAllAsPartialForQuit()
+        }
         TestDatabase.cleanup(path: path)
     }
 }
