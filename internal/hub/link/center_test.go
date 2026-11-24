@@ -207,27 +207,35 @@ func (r *rig) keybox(p phone) (wire.Keybox, bool) {
 		if !strings.EqualFold(kb.Grant.DeviceID, p.id.String()) {
 			continue
 		}
-		payload, err := wire.Marshal(kb)
-		if err != nil {
-			r.t.Fatal(err)
-		}
-		rec, err := secure.NewSealer(r.kr).Keybox("data", p.id, payload)
-		if err != nil {
-			r.t.Fatalf("seal keybox: %v", err)
-		}
-		hub := r.kr.HubID()
-		_, f, err := secure.OpenHPKE(rec.Envelope(), secure.ClassKeybox, p.kx, secure.KeyboxInfo(hub, p.id),
-			secure.Context{Zone: secure.ZoneData, WireName: rec.WireName()}, r.kr.Signer().Public().(ed25519.PublicKey))
-		if err != nil {
-			r.t.Fatalf("the phone cannot open its keybox: %v", err)
-		}
-		var out wire.Keybox
-		if err := json.Unmarshal(f.Payload, &out); err != nil {
-			r.t.Fatal(err)
-		}
-		return out, true
+		return r.openAsPhone(p, kb, nil), true
 	}
 	return wire.Keybox{}, false
+}
+
+// openAsPhone seals kb as the hub's Sealer does (to: the recipient, nil
+// looks it up now) and opens it with p's key, the hub's signature checked;
+// the test fails when p cannot open it.
+func (r *rig) openAsPhone(p phone, kb wire.Keybox, to *ecdh.PublicKey) wire.Keybox {
+	r.t.Helper()
+	payload, err := wire.Marshal(kb)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	rec, err := secure.NewSealer(r.kr).KeyboxTo("data", p.id, payload, to)
+	if err != nil {
+		r.t.Fatalf("seal keybox: %v", err)
+	}
+	hub := r.kr.HubID()
+	_, f, err := secure.OpenHPKE(rec.Envelope(), secure.ClassKeybox, p.kx, secure.KeyboxInfo(hub, p.id),
+		secure.Context{Zone: secure.ZoneData, WireName: rec.WireName()}, r.kr.Signer().Public().(ed25519.PublicKey))
+	if err != nil {
+		r.t.Fatalf("the phone cannot open its keybox: %v", err)
+	}
+	var out wire.Keybox
+	if err := json.Unmarshal(f.Payload, &out); err != nil {
+		r.t.Fatal(err)
+	}
+	return out
 }
 
 func (r *rig) mustKeybox(p phone) wire.Keybox {
