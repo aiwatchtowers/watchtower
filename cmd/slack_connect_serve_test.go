@@ -436,39 +436,6 @@ func TestSlackConnectServe_StartUnknownAccountFails(t *testing.T) {
 	assert.Empty(t, h.browserURLs())
 }
 
-// acceptSignal wraps a listener and reports each accepted connection once the
-// server has read bytes from it (its request is in the server's hands).
-// Reporting at Accept would be too early: a connection the server has not
-// read yet is still http.StateNew, which a shutdown closes (after 5 s) or
-// abandons at the drain bound, and a loaded machine can starve the client
-// that long, giving the browser an EOF instead of a page (#2367).
-type acceptSignal struct {
-	net.Listener
-	accepted chan struct{}
-}
-
-func (a acceptSignal) Accept() (net.Conn, error) {
-	c, err := a.Listener.Accept()
-	if err != nil {
-		return c, err
-	}
-	return &readSignalConn{Conn: c, read: a.accepted}, nil
-}
-
-type readSignalConn struct {
-	net.Conn
-	read chan<- struct{}
-	once sync.Once
-}
-
-func (c *readSignalConn) Read(b []byte) (int, error) {
-	n, err := c.Conn.Read(b)
-	if n > 0 {
-		c.once.Do(func() { c.read <- struct{}{} })
-	}
-	return n, err
-}
-
 // Stdin closes while the loop is storing a grant (the callback waits for
 // the answer) and a link's handler is blocked handing its event over: both
 // browsers get a page and serve exits 0.
@@ -480,14 +447,21 @@ func TestSlackConnectServe_EOFWhileRequestsWait(t *testing.T) {
 		close(inAuth)
 		<-release
 	}
-	accepted := make(chan struct{}, 4)
-	h := startConnectServeOn(t, env, fixedGrant(connGrant(connNewID)), func(port int) (net.Listener, error) {
-		ln, err := slackconnect.Listen(port)
-		if err != nil {
-			return nil, err
-		}
-		return acceptSignal{Listener: ln, accepted: accepted}, nil
-	})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	// A connection is reported once net/http has it http.StateActive: a
+	// shutdown waits for those, but closes a StateNew one that a loaded
+	// machine has not let the client finish (#2367).
+	active := make(chan struct{}, 8)
+	h := startConnectServeLogged(t, env, fixedGrant(connGrant(connNewID)), slackconnect.Listen, io.Discard,
+		func(d *slackConnectDeps) {
+			d.connState = func(_ net.Conn, st http.ConnState) {
+				if st == http.StateActive {
+					active <- struct{}{}
+				}
+			}
+		})
 	h.send(t, `{"cmd":"start","team_id":"`+connTeam+`","client_id":"`+connNewID+`"}`)
 	h.expect(t, "browser")
 
@@ -510,12 +484,21 @@ func TestSlackConnectServe_EOFWhileRequestsWait(t *testing.T) {
 		return ch
 	}
 	callbackPage := fetch(h.redirectPath(t, "code=code-1"))
-	<-accepted
-	<-inAuth // the loop is inside the account write
+	<-active
+	select { // the loop is inside the account write
+	case <-inAuth:
+	case cb := <-callbackPage:
+		t.Fatalf("the callback ended before the account write: %+v", cb)
+	}
 	linkPage := fetch("/slack/connect?team=" + connTeam + "&client=" + connNewID)
-	<-accepted
+	select {
+	case <-active:
+	case lp := <-linkPage:
+		unblock()
+		t.Fatalf("the link request ended before it became active: %+v", lp)
+	}
 	require.NoError(t, h.stdin.Close())
-	close(release)
+	unblock()
 
 	cb := <-callbackPage
 	require.NoError(t, cb.err)
