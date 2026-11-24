@@ -68,8 +68,20 @@ func newCode(t *testing.T, c *ControlClient) wire.LinkPayload {
 // confirm. It returns the bubble's time just before the answer was sent.
 func answerOverSlot(t *testing.T, r *deskRig, c *ControlClient, phone *hubtest.Phone, slot string, confirm bool) time.Time {
 	t.Helper()
-	pair := transport.PairZone(slot)
-	if err := phone.Hello(pair); err != nil {
+	helloOverSlot(t, r, c, phone, slot)
+	if !confirm {
+		at := time.Now()
+		pairStep(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String()})
+		return at
+	}
+	return linkShown(t, c, phone, slot)
+}
+
+// helloOverSlot writes phone's hello into pair/<slot>, sends PAIRING_OPENED
+// and waits for the SAS on c's stream.
+func helloOverSlot(t *testing.T, r *deskRig, c *ControlClient, phone *hubtest.Phone, slot string) {
+	t.Helper()
+	if err := phone.Hello(transport.PairZone(slot)); err != nil {
 		t.Fatal(err)
 	}
 	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: slot}})
@@ -82,15 +94,18 @@ func answerOverSlot(t *testing.T, r *deskRig, c *ControlClient, phone *hubtest.P
 			t.Fatalf("waiting for the SAS: %+v", a)
 		}
 		if a.Event == link.EventSAS {
-			break
+			return
 		}
 	}
-	req := ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: confirm}
-	if !confirm {
-		at := time.Now()
-		pairStep(t, c, req)
-		return at
-	}
+}
+
+// linkShown is the phone comparing the SAS of its waiting request in
+// pair/<slot> and the owner's Link on c. It returns the bubble's time just
+// before the Link was sent.
+func linkShown(t *testing.T, c *ControlClient, phone *hubtest.Phone, slot string) time.Time {
+	t.Helper()
+	pair := transport.PairZone(slot)
+	req := ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}
 	var awaiting wire.Keybox
 	eventually(t, "the awaiting keybox in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
@@ -196,7 +211,7 @@ func TestRelayPairingDeclinedRelinkDoesNotKick(t *testing.T) {
 		pairOverSlot(t, r, c, phone)
 		r.cycles(1) // the confirm's check read it not paying
 		r.fake.SetAccountState(account(phone, true))
-		if err := phone.Rescan(newCode(t, c)); err != nil {
+		if err := phone.UseLink(newCode(t, c)); err != nil {
 			t.Fatal(err)
 		}
 		answerOverSlot(t, r, c, phone, "slot2", false)
@@ -204,6 +219,44 @@ func TestRelayPairingDeclinedRelinkDoesNotKick(t *testing.T) {
 		if s := r.rec.last(); s.Transport != string(transport.KindCloudKit) {
 			t.Fatalf("a declined re-link moved the hub: %s/%s on %s", s.State, s.Reason, s.Transport)
 		}
+	})
+}
+
+// The request-bound confirm (hubRuntime.confirm) kicks only when it links:
+// a no_request answer (the phone already linked, nothing waits) and a
+// code_changed answer (the owner answered another code than the one shown)
+// leave the hub on CloudKit although the account now lists the phone
+// paying; the Link of the request shown then moves it at once.
+func TestRelayPairingRequestBoundConfirmKicksOnlyOnALink(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, _, c := startPairDesk(t, transport.KindCloudKit, holdUpkeep)
+		_, phone := slotCode(t, r, c)
+		r.fake.SetAccountState(account(phone, false))
+		pairOverSlot(t, r, c, phone)
+		r.cycles(1) // the confirm's check read it not paying
+		r.fake.SetAccountState(account(phone, true))
+		stays := func(what string) {
+			t.Helper()
+			time.Sleep(10 * kicked)
+			if s := r.rec.last(); s.Transport != string(transport.KindCloudKit) {
+				t.Fatalf("%s moved the hub: %s/%s on %s", what, s.State, s.Reason, s.Transport)
+			}
+		}
+		device := phone.ID().String()
+		if a := confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: device, Confirm: true}); a.Error != ErrClassNoRequest {
+			t.Fatalf("a confirm with nothing waiting answered %+v, want %s", a, ErrClassNoRequest)
+		}
+		stays(ErrClassNoRequest)
+		if err := phone.UseLink(newCode(t, c)); err != nil {
+			t.Fatal(err)
+		}
+		helloOverSlot(t, r, c, phone, "slot2")
+		a := confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: device, Confirm: true, Code: "not the code shown"})
+		if a.Error != ErrClassCodeChanged {
+			t.Fatalf("a confirm of another code answered %+v, want %s", a, ErrClassCodeChanged)
+		}
+		stays(ErrClassCodeChanged)
+		onRelayBy(t, r, phone, linkShown(t, c, phone, "slot2"), kicked)
 	})
 }
 

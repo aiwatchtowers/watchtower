@@ -19,15 +19,24 @@ const eventBuffer = 64
 
 // PairEvent is one step of a pairing. URL and ExpiresAt are the QR's (qr);
 // DeviceID and Name the phone's (sas, linked, refused); Code the four-digit
-// code (sas); Reason a wire.Refused* value (refused).
+// code (sas); Reason a wire.Refused* value (refused). OverRelay (sas): the
+// hello came through a Relay pairing slot and names the phone's relay
+// device id, with no iCloud user behind it (a slot hello without a relay
+// id, and every CloudKit hello, is false).
+// MovesToRelay (sas) is the runtime's, never the center's: confirming this
+// phone moves the hub from iCloud to Relay and cuts off iCloud phones
+// (hubRuntime.movesToRelay).
 type PairEvent struct {
-	Kind      string
-	URL       string
-	ExpiresAt time.Time
-	DeviceID  string
-	Name      string
-	Code      string
-	Reason    string
+	Kind         string
+	URL          string
+	ExpiresAt    time.Time
+	DeviceID     string
+	Name         string
+	Code         string
+	Reason       string
+	Request      string // sas: the waiting request's RequestID
+	OverRelay    bool
+	MovesToRelay bool
 	// Nonce is the link code the event is about: the code issued (qr,
 	// waiting) or the one the phone's hello came in under (sas, linked,
 	// refused). Token is the pairing stream that asked for that code (qr and

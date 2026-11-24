@@ -55,13 +55,25 @@ struct MobilePairingSheet: View {
         case let .sas(code, phone):
             header(Copy.linkQuestion(phone))
             Text(Copy.checkCodeText).foregroundStyle(.secondary)
+            if let warning = model.relayMoveWarning {
+                // Q6 (#2191): Link moves this Mac from iCloud to Relay.
+                Text(warning)
+                    .font(.caption)
+                    .foregroundStyle(Tone.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text(code)
                 .font(.largeTitle.weight(.semibold))
                 .monospacedDigit()
                 .kerning(Spacing.small)
+            // The buttons answer the question drawn here, not whatever is on
+            // screen when the click lands (a newer line may have replaced it).
+            let shown = model.question
             buttons {
-                Button(Copy.refuseTitle) { Task { await model.confirm(false) } }.buttonStyle(.kitSecondary)
-                Button(Copy.linkTitle) { Task { await model.confirm(true) } }.buttonStyle(.kitPrimary)
+                Button(Copy.refuseTitle) { if let shown { model.confirm(false, answering: shown) } }
+                    .buttonStyle(.kitSecondary)
+                Button(Copy.linkTitle) { if let shown { model.confirm(true, answering: shown) } }
+                    .buttonStyle(.kitPrimary)
             }
         case .linked(let phone):
             header(Copy.linkedTitle(phone), tone: Tone.success)

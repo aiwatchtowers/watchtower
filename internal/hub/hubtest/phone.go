@@ -202,17 +202,6 @@ func (p *Phone) Relink() error {
 	return nil
 }
 
-// Rescan is the phone scanning l, a new code of the same hub (a re-link with
-// the same device keys): its next hello carries l's nonce.
-func (p *Phone) Rescan(l wire.LinkPayload) error {
-	nonce, err := base64.RawURLEncoding.DecodeString(l.Nonce)
-	if err != nil {
-		return fmt.Errorf("hubtest: link nonce: %w", err)
-	}
-	p.nonce = nonce
-	return nil
-}
-
 // ID is the phone's device id.
 func (p *Phone) ID() secure.ID { return p.id }
 
@@ -889,6 +878,17 @@ func FromLink(l wire.LinkPayload, f Records, clock func() time.Time) (*Phone, er
 	}
 	p.nonce = nonce
 	return p, nil
+}
+
+// UseLink points the phone's next Hello at link code l of the same hub (the
+// phone scanning another code with the same device keys).
+func (p *Phone) UseLink(l wire.LinkPayload) error {
+	nonce, err := base64.RawURLEncoding.DecodeString(l.Nonce)
+	if err != nil {
+		return fmt.Errorf("hubtest: link nonce: %w", err)
+	}
+	p.nonce = nonce
+	return nil
 }
 
 // voucher is a phone record store that can vouch for a hub on the relay

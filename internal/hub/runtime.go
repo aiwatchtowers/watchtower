@@ -1376,16 +1376,48 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 }
 
 // forwardPairEvents hands the link center's pairing narration to the
-// control socket's pairing streams.
+// control socket's pairing streams; a sas event gains MovesToRelay here,
+// read on this goroutine, outside the supervisor's pairMu.
 func (h *hubRuntime) forwardPairEvents(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case ev := <-h.center.Events():
+			if ev.Kind == link.EventSAS {
+				ev.MovesToRelay = h.movesToRelay(ev)
+			}
 			h.sup.broadcast(ev)
 		}
 	}
+}
+
+// movesToRelay is the sas line's moves_to_relay (#2191, Q6): the phone
+// paired through a Relay pairing slot, the hub runs on iCloud, and another
+// linked phone has an iCloud route, which the move to Relay cuts off. A
+// host without a switcher never moves. A failed route read answers true,
+// past the plan's "false on any read error" (#2191 review): the Mac then
+// warns when unsure, never stays silent before a move that cuts phones
+// off. The answer is fixed at the sas: a transport switch between the sas
+// and the owner's confirm can leave the line stale (a known limit). A
+// replacement request that keeps its 4-digit code but flips the value is
+// refused only when the confirm names the moves_to_relay it answered
+// (ControlRequest.MovesToRelay); a confirm without it is not checked.
+func (h *hubRuntime) movesToRelay(ev link.PairEvent) bool {
+	if !ev.OverRelay || h.sw == nil || !h.sw.IsActive(transport.KindCloudKit) {
+		return false
+	}
+	routes, err := h.st.ICloudRoutes()
+	if err != nil {
+		return true
+	}
+	self := strings.ToLower(ev.DeviceID)
+	for id, icloud := range routes {
+		if icloud && id != self {
+			return true
+		}
+	}
+	return false
 }
 
 // stop ends the goroutines; with keep set it then deletes from the data
