@@ -107,6 +107,9 @@ final class WorkchatComposerTests: XCTestCase {
     }
 
     func testAttachMenuItemsAndActions() {
+        // `performActionForItem` sends through `NSApp`, which is nil until something makes the shared application:
+        // in the app it always exists; alone in xctest it must be made here, or the items' actions go nowhere.
+        _ = NSApplication.shared
         var pastes = 0
         var attaches = 0
         let spy = AdvertSpy(["public.file-url", "public.utf8-plain-text"], files: 2)
