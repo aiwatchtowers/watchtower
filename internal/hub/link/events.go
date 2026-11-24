@@ -28,6 +28,10 @@ type PairEvent struct {
 	Name      string
 	Code      string
 	Reason    string
+	// ShownOnly: only for the streams that were shown DeviceID's SAS (a
+	// refusal no other stream asked about: one with no phone bound yet would
+	// end at it).
+	ShownOnly bool
 }
 
 // Events is the pairing narration; one reader at a time.

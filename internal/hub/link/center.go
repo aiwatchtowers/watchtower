@@ -344,7 +344,9 @@ func (c *Center) unlink(device string, stands func(*sql.Tx) error) error {
 	}
 	if removed {
 		if shared {
-			c.sweepSoon() // its participant goes at the next pass, as in Swift
+			// Its participant goes at the next pass, as in Swift — after an
+			// answer grace still running (up to Sweep.AnswerGrace): sweepSoon.
+			c.sweepSoon()
 		}
 		log.Printf("hub link: phone %s unlinked, epoch rotated", strings.ToUpper(device))
 		c.changed()

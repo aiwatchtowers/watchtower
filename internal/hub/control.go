@@ -333,7 +333,13 @@ func (s *supervisor) broadcast(ev link.PairEvent) {
 			p.mu.Unlock()
 		}
 	}
-	sendAll(s.pairs, a, "pairing")
+	var shown func(*pairListener) bool
+	if ev.ShownOnly {
+		// Only the streams that showed this phone's SAS: another stream (one
+		// with no phone bound yet, say) would end at the refusal.
+		shown = func(p *pairListener) bool { _, ok := p.code(ev.DeviceID); return ok }
+	}
+	sendIf(s.pairs, a, "pairing", shown)
 	// Desktop's watch hears of the step, never its URL or code.
 	sendAll(s.watches, ControlAnswer{Event: EventPair, OK: true, Pair: ev.Kind, DeviceID: ev.DeviceID}, "desktop watch")
 }
@@ -348,8 +354,14 @@ func (s *supervisor) notifyDesktop(a ControlAnswer) {
 
 // sendAll queues a on every stream of set (pairMu held); a stream whose
 // queue is full is dropped, the others get every event.
-func sendAll(set map[*pairListener]bool, a ControlAnswer, what string) {
+func sendAll(set map[*pairListener]bool, a ControlAnswer, what string) { sendIf(set, a, what, nil) }
+
+// sendIf is sendAll for the streams to reports (nil: every stream).
+func sendIf(set map[*pairListener]bool, a ControlAnswer, what string, to func(*pairListener) bool) {
 	for p := range set {
+		if to != nil && !to(p) {
+			continue
+		}
 		select {
 		case p.queue <- a:
 		default:

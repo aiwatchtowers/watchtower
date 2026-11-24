@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/state"
@@ -252,6 +254,68 @@ func TestPairOnACloudKitDesktopWithoutICloudFallsBackToARelayCode(t *testing.T) 
 	}
 }
 
+// A relay code that replaces a CloudKit code refuses the phone waiting
+// under it (expired_code) on the stream that showed its SAS only: the stream
+// asking for the relay code has no phone bound and must not end.
+func TestARelayCodeRefusesTheReplacedPhoneOnlyOnItsSASStream(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, ck, shown := startPairDesk(t, transport.KindCloudKit)
+		lp := pairCode(t, shown)
+		phone, err := hubtest.FromLink(lp, ck.Fake, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := phone.Hello(transport.SharedMailboxZone(lp.RelayDeviceID)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			a, err := shown.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.Event == link.EventSAS {
+				break
+			}
+		}
+		ck.acct.Store(transport.AccountNoAccount)
+		fresh := r.dial()
+		t.Cleanup(func() { _ = fresh.Close() })
+		if err := fresh.Send(ControlRequest{Op: OpPair}); err != nil {
+			t.Fatal(err)
+		}
+		for qr, answered := false, false; !qr || !answered; {
+			a, err := fresh.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case a.Event == link.EventRefused:
+				t.Fatalf("the new code's stream got %+v", a)
+			case a.Event == link.EventQR:
+				qr = true
+			case a.Event == "" && a.Op == OpPair:
+				if !a.OK {
+					t.Fatalf("answer %+v, want a relay code", a)
+				}
+				answered = true
+			}
+		}
+		for {
+			a, err := shown.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.Event != link.EventRefused {
+				continue
+			}
+			if !strings.EqualFold(a.DeviceID, phone.ID().String()) || a.Reason != wire.RefusedExpiredCode {
+				t.Fatalf("refusal %+v, want the waiting phone's expired_code", a)
+			}
+			break
+		}
+	})
+}
+
 // idleBridge is a bridge that never launches (its launches keep failing):
 // never running, no launch on record.
 type idleBridge struct{}
@@ -421,6 +485,10 @@ func TestRelayCodeFallbackOnlyForUnusableICloud(t *testing.T) {
 		{"unreadable, waiting to restart", relay, false,
 			clockBridge{last: past.Add(-time.Second)}, past, unreadable, true},
 		{"unreadable, never launched", relay, false, clockBridge{}, past, unreadable, true},
+		{"unreadable, the clock stepped back behind the launch", relay, false,
+			clockBridge{running: true, last: past.Add(10 * time.Minute)}, past, unreadable, true},
+		{"unreadable, the clock stepped back behind the start", relay, false, nil,
+			start.Add(-time.Hour), unreadable, true},
 		{"unreadable, no bridge", relay, false, nil, past, unreadable, true},
 		{"owner unknown just after the start", relay, false, nil, start.Add(bridgeStartGrace - time.Second),
 			link.ErrOwnerUnknown, false},

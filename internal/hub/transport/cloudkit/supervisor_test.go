@@ -105,6 +105,26 @@ func TestSupervisorLastLaunchIsTheLastTry(t *testing.T) {
 	}
 }
 
+// LastLaunch keeps the clock's monotonic reading (time.Now by default), so
+// the hub's startup grace measured from it ignores wall-clock steps.
+func TestSupervisorLastLaunchKeepsTheMonotonicReading(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := cloudkit.NewSupervisor(cloudkit.Config{Launch: func(context.Context) (*os.Process, error) {
+		return nil, os.ErrNotExist
+	}})
+	cloudkit.SetSleep(s, func(context.Context, time.Duration) error {
+		cancel()
+		return context.Canceled
+	})
+	if err := s.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if got := s.LastLaunch().String(); !strings.Contains(got, " m=") {
+		t.Fatalf("last launch %s has no monotonic reading", got)
+	}
+}
+
 func TestSupervisorRestartsWithBackoff(t *testing.T) {
 	st := newStubs(t)
 	clock := &fakeClock{now: time.Unix(1_800_000_000, 0)}

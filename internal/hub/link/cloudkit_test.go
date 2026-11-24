@@ -1653,6 +1653,100 @@ func TestARelayCodeRefusesTheReplacedCodesWaitingPhone(t *testing.T) {
 	}
 }
 
+// The replaced code's refusal goes out as a pair event only for the streams
+// shown that phone's SAS (ShownOnly).
+func TestARelayCodesRefusalOfTheReplacedCodesPhoneIsShownOnly(t *testing.T) {
+	r := newCKRig(t)
+	code := r.issueCK()
+	a := newPhone(t)
+	if got, err := r.ckHello(a, code.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("not waiting: %+v %v", got, err)
+	}
+	for drained := false; !drained; {
+		select {
+		case <-r.c.Events():
+		default:
+			drained = true
+		}
+	}
+	r.issue()
+	ev := <-r.c.Events()
+	if ev.Kind != EventRefused || ev.DeviceID != a.id.String() || ev.Reason != wire.RefusedExpiredCode || !ev.ShownOnly {
+		t.Fatalf("first event %+v, want a shown-only expired_code refusal of the waiting phone", ev)
+	}
+	if ev := <-r.c.Events(); ev.Kind != EventQR || ev.ShownOnly {
+		t.Fatalf("then %+v, want the relay code's qr for every stream", ev)
+	}
+}
+
+// A close that lands while an open is wanted again (a newer CloudKit code's
+// open, timed out, and a relay code replacing that one meanwhile) leaves the
+// link open: the stop still closes it.
+func TestTheStopClosesAReplacedLinkReopenedBehindALandedClose(t *testing.T) {
+	r := newCKRig(t)
+	r.issueCK()
+	r.issue()
+	r.s.once("set_public_link", func() {
+		r.c.ck.mu.Lock()
+		r.c.ck.linkWanted, r.c.ck.closeAtStop = true, true // the newer open, then its replacement
+		r.c.ck.mu.Unlock()
+	})
+	_ = r.c.SweepShares(r.ctx, r.s) // the replaced link's close lands, then the open is written
+	if !r.s.isOpen() {
+		t.Fatal("the wanted open was not written behind the close")
+	}
+	if err := r.c.CloseOnStop(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if r.s.isOpen() {
+		t.Error("the reopened link outlived the stop")
+	}
+}
+
+// A replaced CloudKit code whose shares never opened (no sweep mark: the
+// open was never tried) makes the stop no share call.
+func TestTheStopMakesNoShareCallForAReplacedCodeThatNeverOpened(t *testing.T) {
+	r := newCKRig(t)
+	r.s.setFailing("ensure_shares")
+	r.issueCK()
+	r.issue()
+	if m := r.sweepMark(); m == "1" {
+		t.Fatalf("sweep mark %q: the open was tried", m)
+	}
+	r.s.takeCalls()
+	if err := r.c.CloseOnStop(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if calls := r.s.takeCalls(); r.s.count(calls, "set_public_link") != 0 {
+		t.Errorf("share calls at the stop: %v", calls)
+	}
+}
+
+// At one account change, a request under a relay code is spared and one
+// under the open CloudKit code is refused.
+func TestAnAccountChangeSparesTheRelayRequestAndRefusesTheCloudKitOne(t *testing.T) {
+	r := newCKRig(t)
+	relayCode := r.issue()
+	b := newPhone(t)
+	if got := r.handle(b, relayCode.Nonce); got.Code == "" {
+		t.Fatalf("relay request not waiting: %+v", got)
+	}
+	ckCode := r.issueCK()
+	a := newPhone(t)
+	if got, err := r.ckHello(a, ckCode.Nonce); err != nil || got.Code == "" {
+		t.Fatalf("CloudKit request not waiting: %+v %v", got, err)
+	}
+	if err := r.c.AccountChanged(r.ctx, r.s); err != nil {
+		t.Fatal(err)
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, []string{b.id.String()}) {
+		t.Fatalf("pending %v, want the relay code's request alone", ids)
+	}
+	if kb := r.mustKeybox(a); refusal(kb) != wire.RefusedNotConfirmed {
+		t.Errorf("the CloudKit code's request %+v", kb.Grant)
+	}
+}
+
 // An unlink inside a replaced code's answer grace never sweeps early: a
 // phone that accepted the share and has not read its answer yet keeps its
 // participant until the grace ends.

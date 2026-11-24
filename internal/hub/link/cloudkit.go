@@ -539,6 +539,12 @@ func (c *Center) writeLink(ctx context.Context, s transport.Shares, done chan st
 	for {
 		target := c.ck.linkWanted
 		if c.ck.linkWritten == writtenAs(target) {
+			if !target {
+				// Settled on closed with no open wanted: a replaced code's
+				// link no longer needs the stop's close. A close that lands
+				// while an open is wanted again does not count.
+				c.ck.closeAtStop = false
+			}
 			break
 		}
 		c.ck.linkWritten = linkUnknown
@@ -547,9 +553,6 @@ func (c *Center) writeLink(ctx context.Context, s transport.Shares, done chan st
 		c.ck.mu.Lock()
 		if err == nil {
 			c.ck.linkWritten = writtenAs(target)
-			if !target {
-				c.ck.closeAtStop = false
-			}
 			continue
 		}
 		c.ck.linkWriteErr = err
@@ -671,8 +674,9 @@ func (c *Center) SkipStartClose() {
 // public URLs do not outlive the hub; the participants' sweep is left to the
 // next start's close (the sweep mark stays). A CloudKit code a relay code
 // replaced counts as on screen until a close of its link lands
-// (closeAtStop), its retries spent or not. Nothing, and no share call,
-// otherwise: a failed close of a used code is left to the next start.
+// (closeAtStop), its retries spent or not — when an open was tried for it
+// (the sweep mark). Nothing, and no share call, otherwise: a failed close of
+// a used code is left to the next start.
 func (c *Center) CloseOnStop(ctx context.Context, s transport.Shares) error {
 	c.ck.mu.Lock()
 	open, replaced := c.ck.open != nil, c.ck.closeAtStop
@@ -681,6 +685,14 @@ func (c *Center) CloseOnStop(ctx context.Context, s transport.Shares) error {
 	case open:
 		return c.CloseLink(ctx, s, CloseSheetClosed)
 	case replaced:
+		// Only a link an open was tried for: the sweep mark is set before any
+		// open (openPublicLink), and cleared only once the link was closed.
+		if pending, err := c.sweepPending(); err == nil && !pending {
+			c.ck.mu.Lock()
+			c.ck.closeAtStop = false
+			c.ck.mu.Unlock()
+			return nil
+		}
 		if _, err := c.setLink(ctx, s, false, CloseSheetClosed, closeScope{}); err != nil {
 			return fmt.Errorf("link: closing a replaced code's public link: %w", err)
 		}
@@ -1217,7 +1229,9 @@ func (c *Center) acceptedBothShares(ctx context.Context, s transport.Shares, use
 // shared-scope phone, its iCloud user leaves both shares at once unless
 // another linked shared phone is on it. A failed removal is returned with
 // the phone already unlinked (the gate refuses it at once); Unlink marked
-// the sweep pending and due, so the next pass removes it.
+// the sweep pending and due, so the next pass removes it — or, inside an
+// answer grace (up to Sweep.AnswerGrace), the first pass after it
+// (sweepSoon).
 func (c *Center) RemoveCloudKit(ctx context.Context, s transport.Shares, device string) error {
 	user, err := c.unlinkForRemoval(ctx, device, nil)
 	if err != nil {

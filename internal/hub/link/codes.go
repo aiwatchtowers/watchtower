@@ -89,16 +89,16 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 		replaced = c.ck.open
 		c.ck.mu.Unlock()
 	}
-	refused := 0
+	var refused []pendingDevice
 	err = c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		refused = nil
 		if _, err := tx.Exec(`UPDATE link_codes SET exp = ? WHERE used_by_device IS NULL AND exp >= ?`,
 			secs(now)-1, secs(now)); err != nil {
 			return err
 		}
 		if replaced != nil {
 			// Its waiting phones read expired_code before the replaced code's
-			// sweep can take their participants away. No pair event: a stream
-			// with no phone bound yet ends at any refused event.
+			// sweep can take their participants away.
 			all, err := pendingDevicesTx(tx)
 			if err != nil {
 				return err
@@ -110,7 +110,7 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 				if err := refusePending(tx, pd, wire.RefusedExpiredCode, now); err != nil {
 					return err
 				}
-				refused++
+				refused = append(refused, pd)
 			}
 		}
 		if _, err := tx.Exec(`INSERT INTO link_codes (nonce, issued_at, exp) VALUES (?, ?, ?)`,
@@ -124,9 +124,15 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 	if err != nil {
 		return wire.LinkPayload{}, "", fmt.Errorf("link: storing the code: %w", err)
 	}
-	if refused > 0 {
-		c.changed() // their keyboxes are republished
-		log.Printf("hub link: a relay code replaced the CloudKit code: %d waiting requests refused", refused)
+	for _, pd := range refused {
+		// Only to the streams shown its SAS (ShownOnly): the stream asking for
+		// this code has no phone bound yet and would end at a refusal.
+		c.emit(PairEvent{Kind: EventRefused, DeviceID: pd.deviceID, Name: pd.name,
+			Reason: wire.RefusedExpiredCode, ShownOnly: true})
+		c.changed() // its keybox is republished
+	}
+	if len(refused) > 0 {
+		log.Printf("hub link: a relay code replaced the CloudKit code: %d waiting requests refused", len(refused))
 	}
 	c.ck.mu.Lock()
 	c.ck.codeGen++
