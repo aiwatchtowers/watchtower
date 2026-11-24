@@ -6,7 +6,9 @@ import Foundation
 /// event cannot tell, so a probe turn asks the browser MCP server for its
 /// connected browsers: a non-empty list is `connected`, `[]` is `missing`
 /// (the panel offers to connect the browser), no answer is `unknown`
-/// (words, as before). Mid-run, a browser tool whose result says the
+/// (words, as before). A probe with no answer within `answerTimeout` is
+/// `unknown` too (#2352): its turn is cancelled, which ends its process, and
+/// a later answer is never read. Mid-run, a browser tool whose result says the
 /// extension is gone moves the run to words (`browserLost`).
 ///
 /// Unverified (no connected extension on the test Mac): the non-empty
@@ -21,8 +23,8 @@ package struct ConnectBrowserProbe: Sendable {
         /// The list tool answered, with no browser (or an error): the
         /// extension is installed in no Chrome, or not signed in.
         case missing
-        /// No answer: the probe failed, was cancelled or called no list
-        /// tool. The run goes on in words; its first turn reports a harness
+        /// No answer: the probe failed, was cancelled, called no list tool
+        /// or did not answer within `answerTimeout`. The run goes on in words; its first turn reports a harness
         /// failure itself.
         case unknown
     }
@@ -52,23 +54,50 @@ package struct ConnectBrowserProbe: Sendable {
         ["--tools", "connect", "--connect-service", service, "--connect-mode", "probe"]
     }
 
+    /// How long the probe may take before it counts as no answer (#2352).
+    /// A healthy probe is one Claude start, one model step to call the list
+    /// tool and the tool's own answer — and it is read as soon as that tool's
+    /// step ends, without waiting for the model's reply: about 10–20 s, a
+    /// cold first launch somewhat more. 60 s leaves three times that, still
+    /// well under `slack live probe`'s 150 s (several provider turns), since
+    /// the customer waits on "Working on it…" with only Cancel meanwhile. A
+    /// browser MCP server that never answers would otherwise hold the panel
+    /// there for good.
+    package static let answerTimeout: Duration = .seconds(60)
+
     private let aiService: any AIServiceProtocol
     private let dbPath: String?
+    private let timeout: Duration
+    private let sleep: @Sendable (Duration) async throws -> Void
 
-    package init(aiService: any AIServiceProtocol, dbPath: String? = nil) {
+    /// `clock` and `timeout` are for tests: they never wait on real time.
+    package init(
+        aiService: any AIServiceProtocol,
+        dbPath: String? = nil,
+        clock: some Clock<Duration> = ContinuousClock(),
+        timeout: Duration = Self.answerTimeout
+    ) {
         self.aiService = aiService
         self.dbPath = dbPath
+        self.timeout = timeout
+        sleep = { try await clock.sleep(for: $0) }
     }
 
     /// What the probe finds on `harness`: `unknown` for a harness that
     /// cannot drive a browser (no probe turn: nothing is known of a browser),
-    /// else the probe's answer.
+    /// else the probe's answer — `unknown` once `timeout` passes without one.
+    /// The first of the answer and the timeout wins; the other is dropped.
     package func answer(for harness: ConnectHarness, service: String) async -> Answer {
         guard harness.capability == .browser else { return .unknown }
         let connectArgs = Self.connectArgs(service: service)
         let (answers, answer) = AsyncStream<Answer>.makeStream()
-        let (aiService, dbPath, provider) = (aiService, dbPath, harness.id)
+        let (aiService, dbPath, provider, timeout, sleep) = (aiService, dbPath, harness.id, timeout, sleep)
         return await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                do { try await sleep(timeout) } catch { return }  // answered, ended or cancelled first
+                print("[connect-probe] no answer within \(timeout): the browser check is unknown")
+                answer.yield(.unknown)
+            }
             group.addTask {
                 let events = aiService.stream(prompt: Self.prompt, systemPrompt: Self.systemPrompt, dbPath: dbPath,
                                               model: nil, provider: provider, connectArgs: connectArgs,
@@ -81,8 +110,9 @@ package struct ConnectBrowserProbe: Sendable {
                 found = first
                 break
             }
-            // Answered, ended or cancelled: the reader is cancelled while it
-            // waits on the stream, which ends the probe's process.
+            // Answered, timed out, ended or cancelled: the reader is cancelled
+            // while it waits on the stream, which ends the probe's process
+            // (and with it any answer still to come); the timer is cancelled.
             group.cancelAll()
             return found
         }

@@ -163,14 +163,22 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
                     extraEnvironment: extraEnvironment))
     }
 
-    package func emit(_ events: StreamEvent..., call: Int? = nil) {
+    /// Sends `events` on call `call`'s stream (the last call's by default).
+    /// Returns whether every event reached the stream's buffer: false once
+    /// its consumer tore it down, so nothing can read them. Always true on a
+    /// persisted call, whose events go out later on the persist queue.
+    @discardableResult
+    package func emit(_ events: StreamEvent..., call: Int? = nil) -> Bool {
         let (continuation, persist) = lock.withLock { () -> (AsyncThrowingStream<StreamEvent, Error>.Continuation, FakeEmbeddedPersist?) in
             let index = call ?? _continuations.count - 1
             return (_continuations[index], _persists[index])
         }
         guard let persist else {
-            for event in events { continuation.yield(event) }
-            return
+            var delivered = true
+            for event in events {
+                if case .terminated = continuation.yield(event) { delivered = false }
+            }
+            return delivered
         }
         persist.queue.async {
             for event in events {
@@ -178,6 +186,7 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
                 continuation.yield(event)
             }
         }
+        return true
     }
 
     package func finish(call: Int? = nil, throwing error: Error? = nil) {
