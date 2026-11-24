@@ -195,30 +195,46 @@ final class LinkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(shared.readsStarted, 1)
     }
 
-    /// A read older than its age limit is abandoned: the next caller starts a new one and gets its answer (review
-    /// round 3).
-    func testAHungReadPastItsAgeIsReplaced() async {
+    /// A read older than its age limit is abandoned when the next caller joins: a new read starts for it, and the old
+    /// read's answer, arriving while that caller waits, is dropped (review rounds 3, 4).
+    func testAHungReadPastItsAgeIsReplaced() async throws {
         let clock = FakeLinkClock(now: now)
         let reads = ReadCount()
+        let oldEntered = Gate()
         let oldGate = Gate()
+        let newEntered = Gate()
+        let newGate = Gate()
+        let never = Gate()
         let shared = SharedEntitlementRead(maxAge: 60, clock: clock) {
-            guard reads.add() == 1 else { return true }
-            await oldGate.wait()
-            return false
+            if reads.add() == 1 {
+                oldEntered.open()
+                await oldGate.wait()
+                return false
+            }
+            newEntered.open()
+            await newGate.wait()
+            return true
         }
-        let early = await shared {}
+        // The first caller leaves only once the read has entered its closure.
+        let early = await shared { await oldEntered.wait() }
         XCTAssertFalse(early)
+        let oldRead = try XCTUnwrap(shared.inFlight)
         clock.advance(by: 30)
         _ = await shared {}
         XCTAssertEqual(shared.readsStarted, 1, "a read younger than its limit is shared")
 
         clock.advance(by: 31)
-        let timeoutGate = Gate()
-        let fresh = await shared { await timeoutGate.wait() }
-
-        XCTAssertTrue(fresh, "the new read's answer")
-        XCTAssertEqual(shared.readsStarted, 2)
+        let late = Task { await shared { await never.wait() } }
+        await newEntered.wait()
+        XCTAssertEqual(shared.readsStarted, 2, "the late caller started a new read")
         oldGate.open()
+        await oldRead.value
+        XCTAssertEqual(shared.waiting, 1, "the old read's answer reached no one")
+
+        newGate.open()
+        let fresh = await late.value
+        XCTAssertTrue(fresh, "the new read's answer")
+        XCTAssertEqual(shared.waiting, 0)
     }
 
     func testAnUnknownPayingAnswerWithAnEntitlementIsRelayUnreachable() async {

@@ -121,9 +121,10 @@ enum LinkRoutePolicy {
 }
 
 /// The device's Relay entitlement read (StoreKit), shared by every scan while it runs. Each caller waits under its
-/// own bound and leaves when it times out or is cancelled; the read itself is never cancelled by a caller. A read
-/// older than `maxAge` (on `clock`'s uptime) is abandoned: the next caller starts a new one, and the old one's answer is
-/// dropped. So a hung StoreKit read neither piles up waiters nor makes the phone "not entitled" for the session.
+/// own bound and leaves when it times out or is cancelled; a caller never cancels the read. A read older than
+/// `maxAge` (on `clock`'s uptime) is abandoned when the next caller joins: its task is cancelled (StoreKit may ignore
+/// that), its answer is dropped, and the caller waits on a new read. So at most one abandoned read is left per
+/// `maxAge`, and a hung StoreKit read neither piles up waiters nor makes the phone "not entitled" for the session.
 final class SharedEntitlementRead: @unchecked Sendable {
     /// How long one caller waits for the read before it counts as "not entitled".
     static let bound = Duration.seconds(5)
@@ -135,16 +136,19 @@ final class SharedEntitlementRead: @unchecked Sendable {
         var timeout: Task<Void, Never>?
     }
 
+    private struct Running {
+        let id: UInt64
+        let startedAt: TimeInterval
+        let task: Task<Void, Never>
+    }
+
     private let read: @Sendable () async -> Bool
     private let clock: any LinkClock
     private let maxAge: TimeInterval
     private let lock = NSLock()
-    private var running: (id: UInt64, startedAt: TimeInterval)?
+    private var running: Running?
     private var reads: UInt64 = 0
     private var waiters: [UInt64: Waiter] = [:]
-    /// Callers that have an id and have not registered yet, and those of them already cancelled.
-    private var unregistered: Set<UInt64> = []
-    private var cancelledEarly: Set<UInt64> = []
     private var lastWaiter: UInt64 = 0
 
     init(
@@ -161,23 +165,22 @@ final class SharedEntitlementRead: @unchecked Sendable {
     var readsStarted: Int { lock.withLock { Int(reads) } }
     /// Callers waiting now.
     var waiting: Int { lock.withLock { waiters.count } }
+    /// The read in flight (its task ends after its answer was handed out or dropped).
+    var inFlight: Task<Void, Never>? { lock.withLock { running?.task } }
 
     /// The read's answer; false once `timeout` returns first or the caller is cancelled. A caller already cancelled
     /// starts nothing.
     func callAsFunction(timeout: @escaping @Sendable () async -> Void = { try? await Task.sleep(for: bound) }) async -> Bool {
-        guard !Task.isCancelled else { return false }
         let id = lock.withLock {
             lastWaiter += 1
-            unregistered.insert(lastWaiter)
             return lastWaiter
         }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                guard register(id, continuation) else {
+                guard join(id, continuation) else {
                     continuation.resume(returning: false)
                     return
                 }
-                startIfNeeded()
                 attach(Task {
                     await timeout()
                     self.leave(id)
@@ -188,13 +191,26 @@ final class SharedEntitlementRead: @unchecked Sendable {
         }
     }
 
-    private func register(_ id: UInt64, _ continuation: CheckedContinuation<Bool, Never>) -> Bool {
-        lock.withLock {
-            unregistered.remove(id)
-            guard cancelledEarly.remove(id) == nil else { return false }
+    /// One locked step: the caller becomes a waiter and joins the read in flight, or a new read starts for it when
+    /// none runs or the one running is past `maxAge` (that one is cancelled and its answer dropped). A cancelled
+    /// caller joins nothing: checked under the lock, so a cancel after the check finds the waiter in `leave`.
+    private func join(_ id: UInt64, _ continuation: CheckedContinuation<Bool, Never>) -> Bool {
+        let (joined, superseded): (Bool, Task<Void, Never>?) = lock.withLock {
+            guard !Task.isCancelled else { return (false, nil) }
             waiters[id] = Waiter(continuation: continuation)
-            return true
+            let now = clock.uptime()
+            if let running, now - running.startedAt < maxAge { return (true, nil) }
+            let old = running?.task
+            reads += 1
+            let readID = reads
+            running = Running(id: readID, startedAt: now, task: Task { [read] in
+                let value = await read()
+                self.finish(readID, value)
+            })
+            return (true, old)
         }
+        superseded?.cancel()
+        return joined
     }
 
     private func attach(_ timeout: Task<Void, Never>, to id: UInt64) {
@@ -206,31 +222,11 @@ final class SharedEntitlementRead: @unchecked Sendable {
         if answered { timeout.cancel() }
     }
 
-    /// The caller `id` stops waiting: "not entitled". A cancel that lands before the caller registered is kept, so
-    /// its registration answers at once.
+    /// The caller `id` stops waiting: "not entitled".
     private func leave(_ id: UInt64) {
-        let waiter: Waiter? = lock.withLock {
-            if let waiter = waiters.removeValue(forKey: id) { return waiter }
-            if unregistered.contains(id) { cancelledEarly.insert(id) }
-            return nil
-        }
+        let waiter = lock.withLock { waiters.removeValue(forKey: id) }
         waiter?.timeout?.cancel()
         waiter?.continuation.resume(returning: false)
-    }
-
-    private func startIfNeeded() {
-        let id: UInt64? = lock.withLock {
-            let now = clock.uptime()
-            if let running, now - running.startedAt < maxAge { return nil }
-            reads += 1
-            running = (reads, now)
-            return reads
-        }
-        guard let id else { return }
-        Task { [read] in
-            let value = await read()
-            self.finish(id, value)
-        }
     }
 
     /// The read `id` answered: every caller waiting gets `value`, unless a newer read replaced it.

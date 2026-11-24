@@ -441,6 +441,32 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertTrue(container.accepted.isEmpty, "no share accepted")
     }
 
+    /// A rescan of a saved link to this Mac (a re-pair) over a pairing slot ends that link once the slot is open, and
+    /// before the new keys are written: the new link keeps its keys (review round 4).
+    func testARescanEndsTheSavedLinkOnlyOnceTheSlotOpens() async throws {
+        let payload = iCloudCode()
+        host.seed(LinkRecord(
+            hubID: hub, macName: "Work Mac", scope: .private, ownerName: owner, userRecordName: owner, nonce: "n",
+            dataShareURL: nil, relayShareURL: nil, deviceID: identity.deviceID, linkedAt: start
+        ))
+        try keyStore.saveHubLink(try ScannedHubKeys(payload).unconfirmedLink.adding(TestPhone.keyboxKeys()))
+        macLinks(payload)
+        relay.park("open")
+        let model = makeModel()
+
+        let linking = Task { await model.open(payload.url()) }
+        try await poll({ self.relay.isParked("open") }, "the slot was never asked for")
+        XCTAssertTrue(host.removedHubIDs.isEmpty, "the saved link stays while the slot is not open")
+        relay.release("open")
+        await linking.value
+
+        XCTAssertEqual(model.phase, .linked(macName: "Work Mac"))
+        XCTAssertEqual(host.removedHubIDs, [hub], "the saved link ended once")
+        XCTAssertEqual(relay.ops.first { $0.hasPrefix("open") }, "open \(mac.deviceID)")
+        XCTAssertEqual(host.linkedCalls.last?.record.route, .hostedRelay(macDeviceID: mac.deviceID))
+        XCTAssertTrue(try keysHeld(), "the new keys were written after the old link ended")
+    }
+
     /// A rescan of a saved link to this Mac (no grant to read, so a re-pair) that stops at the slots screen leaves
     /// that link as it was when the screen closes: it ends only once a pairing slot opens (review round 3).
     func testARescanStoppedAtTheSlotsScreenKeepsTheSavedLink() async throws {

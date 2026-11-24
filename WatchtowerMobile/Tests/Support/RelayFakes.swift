@@ -262,6 +262,7 @@ final class FakeRelayOps: RelayLinkOps, @unchecked Sendable {
     }
 
     func open(mac: String) async throws -> (slot: String, expiresAt: Date) {
+        await waitIfParked("open")
         try call("open", mac)
         let now = clock.now()
         return try lock.withLock {

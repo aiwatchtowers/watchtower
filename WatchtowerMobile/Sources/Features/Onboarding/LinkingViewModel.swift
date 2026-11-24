@@ -253,10 +253,16 @@ final class LinkingViewModel {
         }
         // The route (R4, #2191): the paying check for any code that offers Relay while the relay is available; the
         // device's entitlement only when that check gets no answer on an iCloud Mac's code.
+        // The iCloud check the full-slot decision made, kept so the iCloud path reads the account only once.
+        var iCloudCheck: ICloudLinkCheck?
         let route = await LinkRoutePolicy.route(
             payload, relay: relay.availability,
             entitled: { [relay] in await relay.holdsRelayEntitlement() },
-            iCloudUsable: { await self.canLinkOverICloud(payload) },
+            iCloudUsable: {
+                let check = await self.checkICloudLink(payload)
+                iCloudCheck = check
+                return check.canLink(payload)
+            },
             account: { [relay] in await LinkRoutePolicy.account { try await relay.accountState() } }
         )
         switch route {
@@ -267,31 +273,34 @@ final class LinkingViewModel {
             // the slots screen closed without a removal, leaves it as it was.
             await connectRelay(RelayCode(payload: payload, mac: mac, authPub: authPub, hubKeys: hubKeys))
         case .cloudKit:
-            await connectICloud(payload, hubKeys: hubKeys)
+            await connectICloud(payload, hubKeys: hubKeys, check: iCloudCheck)
         }
     }
 
-    /// Steps 2–5 over iCloud: the owner's iCloud account, the re-pair of a saved link, then the share and the wait.
-    private func connectICloud(_ payload: LinkPayload, hubKeys: ScannedHubKeys) async {
-        // The route rule sends only a code that offers iCloud here, and such a code names its owner.
-        guard let ownerUser = payload.ownerUser else {
-            phase = .failed(.refused)
-            return
-        }
-        // Step 2.
-        guard await access.availability() == .available else {
-            phase = .failed(.signIn)
-            return
-        }
-        let userRecordName: String
-        do {
-            userRecordName = try await access.identity()
-        } catch {
-            phase = .failed(.iCloud(error.localizedDescription))
+    /// Steps 2–5 over iCloud: the owner's iCloud account (`check` when this attempt already read it), the re-pair of
+    /// a saved link, then the share and the wait.
+    private func connectICloud(_ payload: LinkPayload, hubKeys: ScannedHubKeys, check: ICloudLinkCheck? = nil) async {
+        let resolved: ICloudLinkCheck
+        if let check { resolved = check } else { resolved = await checkICloudLink(payload) }
+        guard case let .ready(linker) = resolved else {
+            if case let .cannot(failure) = resolved { phase = .failed(failure) }
             return
         }
         await endRepairedLink(payload.hubID)
-        await connect(payload, ownerUser: ownerUser, hubKeys: hubKeys, userRecordName: userRecordName)
+        await connect(payload, linker: linker, hubKeys: hubKeys)
+    }
+
+    /// Step 2, read once per attempt: the code's owner, an iCloud account and its identity, or the failure that
+    /// stops an iCloud link. Step 3's share precondition is `ICloudLinkCheck.canLink`.
+    private func checkICloudLink(_ payload: LinkPayload) async -> ICloudLinkCheck {
+        // The route rule sends only a code that offers iCloud here, and such a code names its owner.
+        guard let ownerUser = payload.ownerUser else { return .cannot(.refused) }
+        guard await access.availability() == .available else { return .cannot(.signIn) }
+        do {
+            return .ready(ICloudLinker(ownerUser: ownerUser, userRecordName: try await access.identity()))
+        } catch {
+            return .cannot(.iCloud(error.localizedDescription))
+        }
     }
 
     /// A saved link to this Mac whose keybox does not say "linked" (a
@@ -302,15 +311,6 @@ final class LinkingViewModel {
     private func endRepairedLink(_ hubID: String) async {
         guard let row = row(hubID), !ending.contains(row.hubID) else { return }
         report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
-    }
-
-    /// Whether `payload` can link over iCloud now, by `connectICloud`'s and `connect`'s own preconditions: an iCloud
-    /// account, then the Mac's owner (the private database) or, for another Apple ID, both share URLs.
-    private func canLinkOverICloud(_ payload: LinkPayload) async -> Bool {
-        guard let ownerUser = payload.ownerUser, await access.availability() == .available,
-              let userRecordName = try? await access.identity() else { return false }
-        return userRecordName == ownerUser
-            || (payload.dataShare.flatMap(URL.init(string:)) != nil && payload.relayShare.flatMap(URL.init(string:)) != nil)
     }
 
     /// The scanned code and its hub keys; nil with the failure shown when the code cannot be used.
@@ -354,17 +354,17 @@ final class LinkingViewModel {
     }
 
     /// Steps 3–5 for a valid code.
-    private func connect(_ payload: LinkPayload, ownerUser: String, hubKeys: ScannedHubKeys, userRecordName: String) async {
+    private func connect(_ payload: LinkPayload, linker: ICloudLinker, hubKeys: ScannedHubKeys) async {
+        let ownerUser = linker.ownerUser
+        let userRecordName = linker.userRecordName
         // Step 3: same Apple ID → the private database, share URLs ignored
         // (an owner cannot accept their own share). Another Apple ID → both
         // shares, then the shared database.
         let route: HubRoute
-        if userRecordName == ownerUser {
+        if linker.isOwner {
             route = .cloudKit(.private)
         } else {
-            guard payload.dataShare.flatMap(URL.init(string:)) != nil,
-                  payload.relayShare.flatMap(URL.init(string:)) != nil
-            else {
+            guard linker.canLink(payload) else {
                 phase = .failed(.cannotShare)
                 return
             }
@@ -1571,6 +1571,31 @@ final class LinkingViewModel {
 
 // MARK: - Linking over the relay (relay client Phase 3 Task 10)
 
+/// Who links an iCloud code: the Mac's owner (from the code) and this phone's Apple ID.
+struct ICloudLinker {
+    let ownerUser: String
+    let userRecordName: String
+
+    /// The owner links through the private database.
+    var isOwner: Bool { userRecordName == ownerUser }
+
+    /// Step 3's precondition: the owner, or another Apple ID with both share URLs in the code.
+    func canLink(_ payload: LinkPayload) -> Bool {
+        isOwner || (payload.dataShare.flatMap(URL.init(string:)) != nil && payload.relayShare.flatMap(URL.init(string:)) != nil)
+    }
+}
+
+/// Step 2's answer for one attempt: who links, or why iCloud cannot.
+enum ICloudLinkCheck {
+    case ready(ICloudLinker)
+    case cannot(LinkFailure)
+
+    func canLink(_ payload: LinkPayload) -> Bool {
+        guard case let .ready(linker) = self else { return false }
+        return linker.canLink(payload)
+    }
+}
+
 /// A scanned code that links over a relay pairing slot: the code, the Mac's relay id and `relay_auth` key, and the
 /// hub's keys from it.
 struct RelayCode {
@@ -1684,9 +1709,12 @@ extension LinkingViewModel {
         let iCloudHub = payload.offersCloudKit && !LinkRoutePolicy.hubOnRelay(payload)
         switch error as? HostedRelayPairing.Refusal {
         case let .slotsFull(macs):
-            if iCloudHub, await canLinkOverICloud(payload) {
-                await connectICloud(payload, hubKeys: code.hubKeys)
-                return
+            if iCloudHub {
+                let check = await checkICloudLink(payload)
+                if check.canLink(payload) {
+                    await connectICloud(payload, hubKeys: code.hubKeys, check: check)
+                    return
+                }
             }
             slotsCode = code
             relaySlots = RelaySlotsState(macs: macs)
