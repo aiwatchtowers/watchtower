@@ -326,6 +326,8 @@ struct SessionChatView: View {
                 store: store,
                 subagent: subagent,
                 parentToolUseID: path.stack.dropLast().last?.toolUseID,
+                parentConversation: store.subagents.first { $0.subagent?.toolUseID == path.stack.first?.toolUseID }?
+                    .conversation,
                 paneKey: "session-\(sessionID)/\(subagent.toolUseID)",
                 memory: vm.paneMemory,
                 status: { currentSubagentStatus(subagent) },
@@ -428,6 +430,7 @@ struct SessionChatView: View {
         workchatFeed.isWorking = working
         workchatFeed.answerPending = !(workchat?.outgoing.isEmpty ?? true)
         workchatFeed.onOpenArtifact = { artifact = $0 }
+        workchatFeed.transcriptDirs = store.transcriptDirs
         let handlers = highlightHandlers()
         workchatFeed.onHighlight = handlers.open
         workchatFeed.resolvesPath = handlers.resolvesPath

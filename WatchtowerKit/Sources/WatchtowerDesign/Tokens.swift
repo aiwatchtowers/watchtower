@@ -81,6 +81,8 @@ public enum PaneWidth {
     public static let narrowPage: CGFloat = 420
     /// The least width of a card in an adaptive grid (the Connections overview).
     public static let gridCardMin: CGFloat = 240
+    /// A quiet notice column centred in a feed (the Workchat's agent-finished row).
+    public static let noticeColumn: CGFloat = 480
 }
 
 /// A column list's layout (the Clean Up screen's): its rows' and inline

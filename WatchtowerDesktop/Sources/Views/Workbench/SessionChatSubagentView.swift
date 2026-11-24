@@ -13,6 +13,9 @@ struct SessionChatSubagentView: View {
     let store: SessionFeedStore
     let subagent: SessionFeedSubagent
     let parentToolUseID: String?
+    /// The main feed's conversation this run belongs to (its top subagent's marker): its rows carry none, and their
+    /// Open output reads from that session.
+    var parentConversation: String?
     /// This screen's key in `memory` (`"session-<id>/<toolUseID>"`).
     let paneKey: String
     let memory: WorkchatPaneMemory
@@ -115,6 +118,8 @@ struct SessionChatSubagentView: View {
         var feed = WorkchatFeed(entries: entries, markdown: markdown, expandedEvents: expandedEvents,
                                 onToggle: toggleEvent)
         feed.onOpenArtifact = { artifact = $0 }
+        feed.transcriptDirs = store.transcriptDirs
+        feed.parentConversation = parentConversation
         feed.onHighlight = highlights.open
         feed.resolvesPath = highlights.resolvesPath
         let byID = feed.entriesByMessage

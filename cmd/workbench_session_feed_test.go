@@ -15,6 +15,7 @@ import (
 
 	"watchtower/internal/agentlog"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionfeed"
 )
 
 type sessionFeedFx struct {
@@ -111,7 +112,8 @@ func TestSessionFeedJSON_PinnedKeys(t *testing.T) {
 		feedUser("u3", "<task-notification>\n<task-id>t1</task-id>\n<tool-use-id>toolu_9</tool-use-id>\n<status>completed</status>\n<summary>Background command \"CI\" completed (exit code 2)</summary>\n</task-notification>"),
 	)
 	got := fx.feedJSON(t)
-	assert.Equal(t, []string{"activity", "cursor", "entries", "live", "live_ok", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(got))
+	assert.Equal(t, []string{"activity", "cursor", "entries", "live", "live_ok", "session_id", "skipped", "subagents", "transcript_dirs", "unknown_records"}, feedKeys(got))
+	assert.Equal(t, map[string]any{"conv-1": fx.dir}, got["transcript_dirs"])
 	entries := got["entries"].([]any)
 	require.Len(t, entries, 5)
 	assert.Equal(t, []string{"at", "conversation", "id", "kind", "text"}, feedKeys(entries[0].(map[string]any)))
@@ -147,12 +149,25 @@ func TestSessionFeed_TabAcrossClear(t *testing.T) {
 		kinds = append(kinds, e.(map[string]any)["kind"].(string))
 	}
 	assert.Equal(t, []string{"owner", "separator", "owner"}, kinds)
+	assert.Equal(t, map[string]any{"conv-1": fx.dir, "conv-2": fx.dir}, got["transcript_dirs"])
 	cur := got["cursor"].(string)
 	assert.True(t, strings.HasPrefix(cur, "conv-2:"), cur)
 
 	again := fx.feedJSON(t, "--after", cur)
 	assert.Empty(t, again["entries"])
 	assert.Equal(t, cur, again["cursor"])
+}
+
+// Each conversation maps to the project its transcript was read from (the
+// folder's or a worktree's), Codex rollouts to none.
+func TestSessionFeed_TranscriptDirsPerConversation(t *testing.T) {
+	got := transcriptDirs([]sessionfeed.Conversation{
+		{AgentSessionID: "c1", Path: "/p/-repo/c1.jsonl"},
+		{AgentSessionID: "c2", Path: "/p/-repo-wt/c2.jsonl"},
+		{AgentSessionID: "x1", Path: "/codex/rollout-x1.jsonl", Codex: true},
+	})
+	assert.Equal(t, map[string]string{"c1": "/p/-repo", "c2": "/p/-repo-wt"}, got)
+	assert.Nil(t, transcriptDirs(nil))
 }
 
 func TestSessionFeed_AskFromOwnWorkbenchOnly(t *testing.T) {
@@ -288,6 +303,7 @@ func TestSessionFeed_CodexSessionReturnsEntries(t *testing.T) {
 	assert.Equal(t, "hello codex", entries[0].(map[string]any)["text"])
 	assert.Equal(t, "agent", entries[1].(map[string]any)["kind"])
 	assert.NotEmpty(t, got["cursor"])
+	assert.NotContains(t, got, "transcript_dirs", "a Codex rollout has no Claude Code project")
 }
 
 func feedToolUse(uuid, id, name string, input map[string]any) string {

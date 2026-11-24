@@ -75,6 +75,12 @@ type sessionFeedJSON struct {
 	Subagents      []sessionFeedSubagentItemJSON `json:"subagents"`
 	Skipped        int                           `json:"skipped"`
 	UnknownRecords map[string]int                `json:"unknown_records"`
+	// TranscriptDirs maps a Claude Code conversation to the directory of the
+	// transcript read for it (the folder's or a worktree's project): Open
+	// output reads an agent's output only from that project. Codex
+	// conversations are absent; omitted when there are none and on a
+	// --subagent read.
+	TranscriptDirs map[string]string `json:"transcript_dirs,omitempty"`
 }
 
 type sessionFeedEntryJSON struct {
@@ -261,6 +267,7 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 	if err != nil {
 		return out, err
 	}
+	out.TranscriptDirs = transcriptDirs(convs)
 	if feed.Cursor.Conv != "" {
 		out.Cursor = feed.Cursor.String()
 	}
@@ -280,6 +287,22 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 	out.Skipped = feed.Skipped
 	maps.Copy(out.UnknownRecords, feed.Unknown)
 	return out, nil
+}
+
+// transcriptDirs is the directory of each Claude Code conversation's
+// transcript; nil when there is none.
+func transcriptDirs(convs []sessionfeed.Conversation) map[string]string {
+	var dirs map[string]string
+	for _, c := range convs {
+		if c.Codex || c.AgentSessionID == "" || c.Path == "" {
+			continue
+		}
+		if dirs == nil {
+			dirs = map[string]string{}
+		}
+		dirs[c.AgentSessionID] = filepath.Dir(c.Path)
+	}
+	return dirs
 }
 
 // The live hint has its own failure envelope: exit-0 feed reads must not

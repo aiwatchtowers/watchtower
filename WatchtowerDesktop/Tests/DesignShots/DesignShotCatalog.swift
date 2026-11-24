@@ -674,6 +674,7 @@ enum DesignShotCatalog {
             + WorkchatPolishMockShotFixtures.shots // Workchat polish spec (#2201), design only.
             + WorkchatHighlightShotFixtures.shots // The agent text's highlights on the built feed (#2201 T2).
             + WorkchatHeldLineShotFixtures.shots // The held line's caption and actions on the built bubble (#2201 T7).
+            + WorkchatAgentFinishedShotFixtures.shots // The agent-finished row as built (#2201 T4), beside mockup 05.
             + ConnectAssistantShotFixtures.shots // Connect with an agent spec (#2133), the panel's states and the overview.
             + SignInWaitShotFixtures.shots // Cancel for a waiting browser sign-in (#2132), design only.
             + SignInWaitBuiltShots.shots // the same, as built (#2132 T8).

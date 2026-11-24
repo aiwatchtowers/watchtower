@@ -114,6 +114,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(WorkchatHeldLineShotFixtures.shots)
     }
 
+    /// The agent-finished row as built (#2201 T4), beside mockup 05.
+    func testWorkchatAgentFinishedShotsRender() throws {
+        try renderShots(WorkchatAgentFinishedShotFixtures.shots)
+    }
+
     /// The same states on the built views (#2065), `workchat-agents-real-NN-…` beside each mockup.
     func testWorkchatAgentsShotsRender() throws {
         try renderShots(WorkchatAgentsShotFixtures.shots)
