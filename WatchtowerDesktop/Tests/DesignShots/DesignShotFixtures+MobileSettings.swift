@@ -95,8 +95,7 @@ enum MobileSettingsShotFixtures {
         case unknownReason = "mobilePairingRefused-unknownReason"
         case failed = "mobilePairingFailed"
         // #2191 Task 6 (Q6): the Link confirmation that moves the Mac to Relay.
-        // The two warning shots render `MobilePairingWarningMockup` until the
-        // sheet draws the line (Step 6); `sas` above is the line-absent state.
+        // `sas` above is the line-absent state.
         case relayWarning = "mobilePairingSAS-relayWarning"
         case relayWarningLongName = "mobilePairingSAS-relayWarningLongName"
         case reprintAfterLink = "mobilePairingSAS-reprintAfterLink"
@@ -183,17 +182,14 @@ enum MobileSettingsShotFixtures {
         switch shot {
         case .relayWarning:
             model.receive(warnedSAS)
-            return mockup(model)
         case .relayWarningLongName:
             model.receive(#"{"event":"sas","device_id":"AAAA0001","name":"Studio iPhone 17 Pro Max","code":"4827","moves_to_relay":true}"#)
-            return mockup(model)
         case .reprintAfterLink:
             // Link was pressed on 4827, then the phone's request changed: the
             // newer line asks again with its own code.
             model.receive(sas)
             model.markConfirmed()
             model.receive(#"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"1093","moves_to_relay":true}"#)
-            return mockup(model)
         case .confirming:
             model.receive(warnedSAS)
             model.markConfirmed()
@@ -220,12 +216,6 @@ enum MobileSettingsShotFixtures {
             model.receive(#"{"event":"refused","reason":"\#(shot.refusal ?? "")"}"#)
         }
         return AnyView(MobilePairingSheet(model: model) {}
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Surface.window))
-    }
-
-    private static func mockup(_ model: MobilePairingModel) -> AnyView {
-        AnyView(MobilePairingWarningMockup(model: model)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Surface.window))
     }

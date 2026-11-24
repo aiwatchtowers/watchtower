@@ -55,6 +55,13 @@ struct MobilePairingSheet: View {
         case let .sas(code, phone):
             header(Copy.linkQuestion(phone))
             Text(Copy.checkCodeText).foregroundStyle(.secondary)
+            if let warning = model.relayMoveWarning {
+                // Q6 (#2191): Link moves this Mac from iCloud to Relay.
+                Text(warning)
+                    .font(.caption)
+                    .foregroundStyle(Tone.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text(code)
                 .font(.largeTitle.weight(.semibold))
                 .monospacedDigit()

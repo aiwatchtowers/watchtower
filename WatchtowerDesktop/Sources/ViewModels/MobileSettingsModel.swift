@@ -265,17 +265,23 @@ final class MobileSettingsModel {
         // issues a Relay code (#2191, ask #1813). The app bundles its own hub,
         // and that fallback ships in the same release as this rule.
         let hasRelay = status.relay != nil
-        let linkable = status.state == "running"
-            || (status.state == "paused" && status.reason == "no_icloud" && hasRelay)
-        canLink = linkable
+        let relayLinksWithoutICloud = status.state == "paused" && status.reason == "no_icloud" && hasRelay
+        canLink = (status.state == "running" || relayLinksWithoutICloud)
             && Self.accountAllowsLinking(transport: status.transport, account: status.cloudKit?.account, hasRelay: hasRelay)
-        hubLine = status.state == "off" ? nil : Self.hubLine(state: status.state, reason: status.reason)
+        hubLine = if status.state == "off" {
+            nil
+        } else if relayLinksWithoutICloud {
+            HubLine(text: Self.noICloudRelayLine, tone: .warning)
+        } else {
+            Self.hubLine(state: status.state, reason: status.reason)
+        }
         offDeleteLine = status.state == "off" ? Self.offDeleteLine(status.offDelete) : nil
         // Only on a known fact: a hub with no status file says neither.
         showsNeedsSignedBuild = status.bridge == "unavailable" || status.cloudKit?.account == "no_entitlement"
         recordingsAvailable = status.transcriber
         let running = status.state != "off"
-        accountLine = running ? status.cloudKit.flatMap { Self.accountLine($0.account) } : nil
+        // The relay line above already says iCloud is off.
+        accountLine = running && !relayLinksWithoutICloud ? status.cloudKit.flatMap { Self.accountLine($0.account) } : nil
         throttledSince = running ? status.cloudKit?.throttledSince : nil
         hubTransport = status.transport
         let relay = running ? status.relay : nil

@@ -231,6 +231,11 @@ final class MobileSettingsModelTests: XCTestCase {
         let withRelay = makeModel()
         await withRelay.load()
         XCTAssertTrue(withRelay.canLink, "a relay links without iCloud")
+        // One line replaces the pause line and the account line (ask #1829).
+        XCTAssertEqual(Model.noICloudRelayLine,
+                       "iCloud is off on this Mac. A phone with Relay can still link; linking moves this Mac to Relay.")
+        XCTAssertEqual(withRelay.hubLine, Model.HubLine(text: Model.noICloudRelayLine, tone: .warning))
+        XCTAssertNil(withRelay.accountLine)
         withRelay.linkPhone()
         XCTAssertNotNil(withRelay.pairing)
 
@@ -239,6 +244,10 @@ final class MobileSettingsModelTests: XCTestCase {
         let withoutRelay = makeModel()
         await withoutRelay.load()
         XCTAssertFalse(withoutRelay.canLink, "no relay, no iCloud: no code")
+        XCTAssertEqual(withoutRelay.hubLine, Model.HubLine(
+            text: "Paused until iCloud is available on this Mac. It goes on by itself.", tone: .warning
+        ), "without a relay the old lines stay")
+        XCTAssertEqual(withoutRelay.accountLine, "Mobile isn't available on this Mac: iCloud is off.")
 
         cli.status(#"{"state":"paused","reason":"stopping","transport":"cloudkit","relay":{"state":"connected"}}"#)
         cli.phones("[]")
