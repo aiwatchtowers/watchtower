@@ -25,6 +25,11 @@ const maxLiveAgentCandidates = 128
 // the bound is well above maxLiveAgentCandidates.
 const maxLiveMetas = 1024
 
+// liveMetaStale: an unfinished sidecar whose launch is outside the window and
+// whose own transcript has been silent this long belongs to an agent killed
+// with its process (its sidecar never gets "finished"), not a working one.
+const liveMetaStale = time.Hour
+
 // maxLiveSteps caps the current turn's step list; steps_more counts the cut.
 const maxLiveSteps = 40
 
@@ -70,6 +75,7 @@ type liveReader struct {
 	sidechain  bool
 	path       string
 	recognized bool
+	cut        bool
 }
 
 // LiveOf reads a bounded tail independently of the dialog cursor. A truncated
@@ -94,6 +100,7 @@ func LiveOf(c Conversation, sidechain bool, now time.Time) (*Live, error) {
 	if cut && (c.Codex || sidechain) {
 		live.AgentsState = "unknown"
 	}
+	r.cut = cut
 	// Only newline-terminated records are committed to a rollout.
 	if last := bytes.LastIndexByte(tail, '\n'); last >= 0 {
 		tail = tail[:last]
@@ -247,12 +254,16 @@ func (r *liveReader) claudeLine(line []byte) {
 func (r *liveReader) claudeAgents() {
 	sessionDir := r.claudeSessionDir()
 	metas, err := readLiveMetas(sessionDir)
-	if err != nil {
+	if err != nil || (r.cut && len(metas) == 0) {
+		// No sidecars behind a cut window: launches before it are not seen.
 		r.live.AgentsState = "unknown"
 	}
 	for id, m := range metas {
 		a := r.agents[id]
 		if r.sidechain && a == nil {
+			continue
+		}
+		if a == nil && !m.Finished && r.staleMeta(sessionDir, m.agentID) {
 			continue
 		}
 		if a == nil {
@@ -266,6 +277,12 @@ func (r *liveReader) claudeAgents() {
 			a.Ref.Status = StatusRunning
 		}
 	}
+}
+
+// staleMeta: the agent's own transcript is missing or silent past liveMetaStale.
+func (r *liveReader) staleMeta(sessionDir, agentID string) bool {
+	st, err := os.Lstat(filepath.Join(sessionDir, "subagents", "agent-"+agentID+".jsonl"))
+	return err != nil || r.live.ObservedAt.Sub(st.ModTime()) > liveMetaStale
 }
 
 func (r *liveReader) codexLine(line []byte) {
@@ -673,9 +690,10 @@ func (r *liveReader) reconcileAgents() {
 		return at.After(bt)
 	})
 	if len(ids) > maxLiveAgentCandidates {
-		// Finished agents sort last: dropping only those leaves the working
-		// set complete.
-		if r.agents[ids[maxLiveAgentCandidates]].Ref.Status != StatusFinished {
+		// Claude main: statuses come from sidecars and finished agents sort
+		// last, so dropping only those leaves the working set complete. A
+		// Codex child can still turn running on inspection.
+		if r.codex || r.sidechain || r.agents[ids[maxLiveAgentCandidates]].Ref.Status != StatusFinished {
 			r.live.AgentsState = "unknown"
 		}
 		ids = ids[:maxLiveAgentCandidates]
