@@ -705,6 +705,39 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertTrue(model.outgoing.isEmpty, "the combined entry is its echo")
     }
 
+    /// Fix round 2 (codex N1): Send together on line B while a sweep of the held
+    /// lines is delivering line A. The sweep's copy of B is stale; B is tried as
+    /// the live queue holds it — under Send together's gate — and goes beside the
+    /// prompt's text instead of being held again.
+    func testSendTogetherDuringASweepIsNotUndoneByIt() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        processes[0].host.tracksDrafts = true
+        processes[0].onOwnerInput?(Array("fix the".utf8))
+        let model = try makeModel(session)
+        model.draft = "First"
+        await model.send()
+        model.draft = "Second"
+        await model.send()
+        let second = try XCTUnwrap(model.outgoing.last?.id)
+        XCTAssertEqual(model.outgoing.map(\.holdReason), [.promptHasText, .promptHasText])
+
+        let gate = Gate()
+        delivery.refreshStates = { await gate.wait(); return true }
+        let sweep = Task { await delivery.deliverHeld() }
+        await gate.untilReached()
+        await model.sendTogether(second)
+        XCTAssertEqual(model.outgoing.last?.state, .queued, "behind the first, which is on its way")
+        gate.release()
+        await sweep.value
+        await delivery.settled()
+
+        XCTAssertEqual(model.outgoing.first?.state, .queued, "the first is still held for the text")
+        XCTAssertEqual(model.outgoing.last?.state, .typed, "the second went beside the text")
+        XCTAssertTrue(typedText.contains("Second"))
+        XCTAssertFalse(typedText.contains("First"))
+    }
+
     /// Fix round 1 (codex P2): the hold reason is the try's own. A failed state
     /// read holds the line for no known reason — the generic caption, no Send
     /// together — even while the prompt holds text.

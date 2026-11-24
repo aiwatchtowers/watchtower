@@ -249,15 +249,15 @@ final class SessionLineDelivery {
     func holdCause(_ key: LineKey) -> HoldCause? { holdCauses[key] }
 
     /// Tries the held line `key` now under `gate` in place of its own (kept for
-    /// its later tries), at its own turn and only into the run it was held for:
-    /// its run ended or changed since, `.noSession`. nil when it is not held (gone,
+    /// its later tries), ahead of any earlier held line but back at its own place
+    /// in the queue when held again, and only into the run it was held for: its
+    /// run ended or changed since, `.noSession`. nil when it is not held (gone,
     /// or its retry under way). No `onEvent` is sent: the caller has the result.
     func retryHeld(sessionID: Int64, key: LineKey, gate: @escaping Gate) async -> Delivery? {
         guard var held = queues[sessionID]?.first(where: { $0.key == key }) else { return nil }
         held.gate = gate
         removeHeldLine(held)
         let sameRun = terminalCenter?.runs[sessionID] == held.run
-        if !sameRun { holdCauses[key] = nil }
         let delivery = sameRun ? await deliver(held.line, key: key, sessionID: sessionID, gate: gate) : .noSession
         if delivery == .held || delivery == .queued {
             held.behindAnother = delivery == .queued
@@ -282,8 +282,11 @@ final class SessionLineDelivery {
         return dropped.map(\.key)
     }
 
-    private func retryHeldLine(_ held: HeldLine) async {
-        guard isQueued(held), !delivering.contains(held.sessionID) else { return }
+    /// `snapshot` is a sweep's copy (`deliverHeld`): the line is tried as the
+    /// live queue holds it now — gone, or with the gate a `retryHeld` set since.
+    private func retryHeldLine(_ snapshot: HeldLine) async {
+        guard let held = queues[snapshot.sessionID]?.first(where: { $0.order == snapshot.order }),
+              !delivering.contains(held.sessionID) else { return }
         if needsApproval(held.sessionID) {
             held.onEvent(.awaitingApproval)
             return
@@ -291,7 +294,6 @@ final class SessionLineDelivery {
         // Taken before any wait, so an overlapping call never sends it twice.
         removeHeldLine(held)
         let sameRun = terminalCenter?.runs[held.sessionID] == held.run
-        if !sameRun { holdCauses[held.key] = nil }
         let delivery = sameRun
             ? await deliver(held.line, key: held.key, sessionID: held.sessionID, gate: held.gate) : .noSession
         if delivery == .held || delivery == .queued {
@@ -400,10 +402,6 @@ final class SessionLineDelivery {
         return withheld == nil
     }
 
-    private func isQueued(_ held: HeldLine) -> Bool {
-        queues[held.sessionID]?.contains { $0.order == held.order } == true
-    }
-
     /// Back in its session's queue at its own place: a line held again
     /// keeps its turn.
     private func queueHeldLine(_ held: HeldLine) {
@@ -413,7 +411,9 @@ final class SessionLineDelivery {
         queues[held.sessionID] = queue
     }
 
+    /// Out of the queue, its last hold's cause with it (a try that holds it again sets a new one).
     private func removeHeldLine(_ held: HeldLine) {
+        holdCauses[held.key] = nil
         queues[held.sessionID]?.removeAll { $0.order == held.order }
         if queues[held.sessionID]?.isEmpty == true { queues[held.sessionID] = nil }
     }

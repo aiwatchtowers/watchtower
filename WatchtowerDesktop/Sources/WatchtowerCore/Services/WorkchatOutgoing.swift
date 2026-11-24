@@ -49,9 +49,10 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     /// Why it waits while `queued`; nil: not known (another line goes first,
     /// or no check said yet).
     package var holdReason: HoldReason?
-    /// Sent together with the prompt's text (Send together): the transcript
-    /// records that text and the line as one owner entry ending in the line.
-    package var sentTogether = false
+    /// When the owner's Send together tried the line beside the prompt's text:
+    /// the transcript records that text and the line as one owner entry ending
+    /// in the line, dated at or after this.
+    package var sentTogetherAt: Date?
 
     package init(
         id: UUID,
@@ -118,7 +119,8 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     /// The feed's owner entry for this line: same text with whitespace collapsed
     /// (a "/name args" line equals the parser's slash entry), dated at or after sentAt.
     /// Matched on `text`, the expanded line the transcript records (#2065 §6), not on the tokenized `typedText`.
-    /// A line sent together with the prompt's text matches an entry that ends with it.
+    /// A line sent together with the prompt's text matches an entry from its Send together on that ends with
+    /// it (one with only files: an entry that holds one of them).
     package static func matches(_ entry: SessionFeedEntry, line: Self) -> Bool {
         guard entry.kind == "owner", let at = entry.at, at >= line.sentAt else { return false }
         // Claude Code records a pasted image path as "[Image #N]"; the feed
@@ -127,7 +129,10 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
             ? (collapsed(entry.text), collapsed(line.text))
             : (withoutImageMarkers(withoutPaths(entry.text, line.attachmentPaths)),
                withoutImageMarkers(withoutPaths(line.text, line.attachmentPaths)))
-        return line.sentTogether ? !sent.isEmpty && recorded.hasSuffix(sent) : recorded == sent
+        guard let together = line.sentTogetherAt else { return recorded == sent }
+        guard at >= together else { return false }
+        // Files only: what the stripping took out of the entry was the line's paths or image markers.
+        return sent.isEmpty ? recorded != collapsed(entry.text) : recorded.hasSuffix(sent)
     }
 
     /// A path as it goes into a line: one with a space, a double quote or a backslash in double quotes, with `\`

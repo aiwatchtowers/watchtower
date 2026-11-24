@@ -266,10 +266,14 @@ final class WorkchatModel {
               lineDelivery.heldKeys(sessionID: sessionID).contains(.workchat(id)) else { return }
         outgoing[index].state = .sending
         outgoing[index].holdReason = nil
-        outgoing[index].sentTogether = true
+        let attempt = now()
         let delivery = await lineDelivery.retryHeld(
             sessionID: sessionID, key: .workchat(id), gate: gate(id, besideText: true)
         )
+        // Only a retry under the override sends it together (nil: its retry was under way).
+        if delivery != nil, let index = outgoing.firstIndex(where: { $0.id == id }) {
+            outgoing[index].sentTogetherAt = attempt
+        }
         settle(id, delivery ?? .queued)
     }
 

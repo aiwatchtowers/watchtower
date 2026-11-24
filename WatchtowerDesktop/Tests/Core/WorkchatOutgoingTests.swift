@@ -67,11 +67,32 @@ final class WorkchatOutgoingTests: XCTestCase {
     func testALineSentTogetherMatchesTheEntryEndingInIt() {
         var sent = line("Run the  linter")
         XCTAssertFalse(WorkchatOutgoing.matches(owner("fix the Run the linter"), line: sent))
-        sent.sentTogether = true
+        sent.sentTogetherAt = sentAt
         XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the Run the linter"), line: sent))
         XCTAssertTrue(WorkchatOutgoing.matches(owner("fix theRun the linter"), line: sent))
         XCTAssertTrue(WorkchatOutgoing.matches(owner("Run the linter"), line: sent), "alone, if the text was gone")
         XCTAssertFalse(WorkchatOutgoing.matches(owner("Run the linter later"), line: sent))
+    }
+
+    /// Fix round 2 (codex N3): the suffix match counts only entries from the Send
+    /// together on — a short queued "look" claims no earlier "take a look".
+    func testASentTogetherMatchIsBoundedByItsAttempt() {
+        var sent = line("look")
+        sent.sentTogetherAt = sentAt.addingTimeInterval(60)
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("take a look", after: 30), line: sent), "before the click")
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("take a look", after: 61), line: sent))
+    }
+
+    /// Fix round 2 (codex N2): a line of files only, sent together, matches the
+    /// entry that holds one of its paths or an image marker.
+    func testAFilesOnlyLineSentTogetherMatchesItsPathOrMarker() {
+        var sent = WorkchatOutgoing(
+            id: UUID(), text: "/x/1.png", sentAt: sentAt, state: .typed, typedText: "", attachmentPaths: ["/x/1.png"]
+        )
+        sent.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the /x/1.png"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the [Image #1]"), line: sent))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("fix the"), line: sent), "no file in it")
     }
 
     /// Spec §6.3: a queued line's caption says why it waits; the hold reason
