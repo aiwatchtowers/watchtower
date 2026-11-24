@@ -224,6 +224,7 @@ the pane's presentation, with tests.
 | Draft model: erase releases, cursor keys hold, submit/clear empty | T5 | Go `prompt_state_test`, Swift `TerminalCenterPromptDraftTests` (same table) |
 | Held line re-checks on draft change; caption and actions | T6 | `WorkchatModelTests`, `WorkchatOutgoingTests` |
 | Clear and send refuses when working, gives up after 1 s | T6 | `WorkchatModelTests` with fake control/clock |
+| Quiet error bar and loading copy (C7) | T1 | `SessionChatViewTests` (strings, Retry) |
 | PROJ-16 / PROJ-23 guards stay green (never over a draft) | T5 | existing guards + a new `TestProj23_…ErasedDraftReleases` |
 
 All strings in presentation models (`WorkchatLivePresentation`,
