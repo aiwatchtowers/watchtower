@@ -28,10 +28,11 @@ final class LinkRoutePolicyTests: XCTestCase {
     }
 
     func testACloudKitCodeLinksOverICloud() async {
+        // A code that offers Relay asks while the relay is available: a free phone links over iCloud.
         for (transport, relay) in [(nil, available), (TransportKind.cloudKit, available), (nil, .off(.notConfigured))] {
-            let (route, asked) = await decide(code(transport), relay: relay)
+            let (route, asked) = await decide(code(transport), relay: relay, paying: .success(false))
             XCTAssertEqual(route, .cloudKit, "\(String(describing: transport))")
-            XCTAssertEqual(asked, 0, "a hub on iCloud never asks the relay")
+            XCTAssertEqual(asked, relay == available ? 1 : 0, "a hub on iCloud asks the relay only while it is available")
         }
         // A v3 code (no relay fields at all).
         let v3 = LinkPayload(
@@ -41,6 +42,77 @@ final class LinkRoutePolicyTests: XCTestCase {
         let (route, asked) = await decide(v3, relay: available)
         XCTAssertEqual(route, .cloudKit)
         XCTAssertEqual(asked, 0)
+    }
+
+    /// `decide` with an entitlement answer: the route, the paying asks and the entitlement reads.
+    private func decide(
+        _ code: LinkPayload, relay: RelayAvailability, entitled: Bool, paying answer: Result<Bool, HostedRelayPairing.Refusal>
+    ) async -> (LinkRoute, asked: Int, entitlementAsked: Int) {
+        var asked = 0
+        var entitlementAsked = 0
+        let route = await LinkRoutePolicy.decide(code, relay: relay, entitled: {
+            entitlementAsked += 1
+            return entitled
+        }, paying: {
+            asked += 1
+            return answer
+        })
+        return (route, asked, entitlementAsked)
+    }
+
+    func testAPayingPhoneLinksACloudKitMacOverRelay() async {
+        for cloudKitCode in [code(.cloudKit), code(nil)] {
+            let (route, asked, _) = await decide(cloudKitCode, relay: available, entitled: false, paying: .success(true))
+            XCTAssertEqual(route, .relay(mac: mac.deviceID, authPub: mac.authPub), "\(String(describing: cloudKitCode.transport))")
+            XCTAssertEqual(asked, 1)
+        }
+    }
+
+    func testAnUnknownPayingAnswerWithAnEntitlementIsRelayUnreachable() async {
+        for answer in [Result<Bool, HostedRelayPairing.Refusal>.failure(.unreachable), .failure(.attestationBackoff(until: now))] {
+            let (route, _, entitlementAsked) = await decide(code(.cloudKit), relay: available, entitled: true, paying: answer)
+            XCTAssertEqual(route, .refuse(.relayUnreachable), "\(answer)")
+            XCTAssertEqual(entitlementAsked, 1)
+        }
+    }
+
+    func testAnUnknownPayingAnswerWithoutAnEntitlementLinksOverICloud() async {
+        for answer in [Result<Bool, HostedRelayPairing.Refusal>.failure(.unreachable), .failure(.attestationBackoff(until: now))] {
+            let (route, _, entitlementAsked) = await decide(code(.cloudKit), relay: available, entitled: false, paying: answer)
+            XCTAssertEqual(route, .cloudKit, "\(answer)")
+            XCTAssertEqual(entitlementAsked, 1)
+        }
+    }
+
+    func testAFreePhoneLinksACloudKitCodeOverICloud() async {
+        for answer in [Result<Bool, HostedRelayPairing.Refusal>.success(false), .failure(.notPaying)] {
+            let (route, asked, entitlementAsked) = await decide(code(.cloudKit), relay: available, entitled: true, paying: answer)
+            XCTAssertEqual(route, .cloudKit, "\(answer)")
+            XCTAssertEqual(asked, 1)
+            XCTAssertEqual(entitlementAsked, 0, "a definite answer needs no entitlement read")
+        }
+    }
+
+    func testRelayOffNeverAsksOnACloudKitCode() async {
+        for relay in [RelayAvailability.off(.notConfigured), .off(.unsupportedDevice)] {
+            let (route, asked, entitlementAsked) = await decide(code(.cloudKit), relay: relay, entitled: true, paying: .success(true))
+            XCTAssertEqual(route, .cloudKit, "\(relay)")
+            XCTAssertEqual(asked, 0)
+            XCTAssertEqual(entitlementAsked, 0)
+        }
+    }
+
+    func testACloudKitCodeWithoutRelayNeverAsks() async {
+        let iCloudOnly = mac.code(hubID: hub, macName: "Work Mac", owner: "_owner-acme", now: now, transport: .cloudKit, transports: ["cloudkit"])
+        let (route, asked, entitlementAsked) = await decide(iCloudOnly, relay: available, entitled: true, paying: .success(true))
+        XCTAssertEqual(route, .cloudKit)
+        XCTAssertEqual(asked, 0)
+        XCTAssertEqual(entitlementAsked, 0)
+    }
+
+    func testUpdateRequiredOnACloudKitCodeIsUpdateApp() async {
+        let (route, _, _) = await decide(code(.cloudKit), relay: available, entitled: false, paying: .failure(.updateRequired))
+        XCTAssertEqual(route, .refuse(.updateApp))
     }
 
     func testAPayingPhoneLinksAMacOnRelayOverAPairingSlot() async {

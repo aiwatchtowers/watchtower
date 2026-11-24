@@ -122,6 +122,25 @@ final class StoreKitRelayStore: RelaySubscriptionStore, @unchecked Sendable {
         return mapped
     }
 
+    /// Whether this device holds a current entitlement to `productID`, from StoreKit's local record only: no
+    /// `AppStore.sync()`, so it never asks for an Apple ID. A device whose purchases were never restored answers false.
+    static func holdsCurrentEntitlement(productID: String, now: Date) async -> Bool {
+        guard let verification = await Transaction.currentEntitlement(for: productID),
+              case .verified(let transaction) = verification, transaction.productID == productID else { return false }
+        let mapped = map(
+            id: transaction.id, originalID: transaction.originalID, appAccountToken: transaction.appAccountToken,
+            jws: verification.jwsRepresentation, revocationDate: transaction.revocationDate,
+            isRenewal: transaction.reason == .renewal, expirationDate: transaction.expirationDate
+        )
+        return isCurrent(mapped, now: now)
+    }
+
+    /// A transaction that is neither revoked nor past its expiry.
+    static func isCurrent(_ transaction: RelayTransaction?, now: Date) -> Bool {
+        guard let transaction else { return false }
+        return !transaction.revoked && transaction.expiresAt > now
+    }
+
     /// The plain-field mapping. A transaction with no expiry is not a subscription period: nil.
     static func map(
         id: UInt64, originalID: UInt64, appAccountToken: UUID?, jws: String, revocationDate: Date?, isRenewal: Bool, expirationDate: Date?

@@ -91,9 +91,18 @@ final class FakeLinkAccess: LinkAccess {
         self.log = log
     }
 
-    func availability() async -> CloudAvailability { status }
+    /// How many times the iCloud account was asked (`availability` or `identity`).
+    private(set) var accountAsks = 0
 
-    func identity() async throws -> String { userRecordNameValue }
+    func availability() async -> CloudAvailability {
+        accountAsks += 1
+        return status
+    }
+
+    func identity() async throws -> String {
+        accountAsks += 1
+        return userRecordNameValue
+    }
 
     func join(_ invitation: LinkInvitation, route: HubRoute, hubID: String) async throws {
         let urls = [invitation.dataShare, invitation.relayShare].compactMap { $0.flatMap(URL.init(string:)) }

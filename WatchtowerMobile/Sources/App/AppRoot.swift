@@ -249,6 +249,12 @@ final class AppRoot {
         let env = try AppEnvironment.live(
             registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults, relay: relay
         )
+        let relayConfig = RelayConfig.from(bundle: .main)
+        let productID = relayConfig.productID
+        let linkOps = HostedRelayLinkOps(relay: relay) {
+            guard let productID else { return false }
+            return await StoreKitRelayStore.holdsCurrentEntitlement(productID: productID, now: Date())
+        }
         let root = AppRoot(
             env: env,
             registry: registry,
@@ -256,13 +262,10 @@ final class AppRoot {
             factory: factory,
             identity: identity,
             defaults: defaults,
-            linking: LinkingViewModel(
-                access: CloudKitLinkAccess(), store: store, identity: identity, keys: keys, relay: HostedRelayLinkOps(relay: relay)
-            ),
+            linking: LinkingViewModel(access: CloudKitLinkAccess(), store: store, identity: identity, keys: keys, relay: linkOps),
             startWork: BackgroundWork.starter(),
             farewellDelivery: .live(transports: transports)
         )
-        let relayConfig = RelayConfig.from(bundle: .main)
         root.wireRelayAccount { relayConfig.productID.map { StoreKitRelayStore(productID: $0) } }
         root.wireRelayPush(environment: relayConfig.pushEnvironment)
         root.launch { Set([store.pending?.link.hubID].compactMap { $0 } + store.promoted.keys + store.unreadablePromotedHubIDs) }

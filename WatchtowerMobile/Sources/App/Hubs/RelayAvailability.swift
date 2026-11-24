@@ -152,8 +152,15 @@ final class SharedRelaySession: @unchecked Sendable {
 /// first op, and nothing at all while the relay is off (every op then throws `.unreachable`).
 struct HostedRelayLinkOps: RelayLinkOps {
     let relay: SharedRelaySession
+    /// The device's current Relay entitlement, read without an App Store sync (`StoreKitRelayStore.holdsCurrentEntitlement`);
+    /// false in a build without a product.
+    var entitlement: @Sendable () async -> Bool = { false }
 
     var availability: RelayAvailability { relay.availability }
+
+    func holdsRelayEntitlement() async -> Bool {
+        await entitlement()
+    }
 
     private func pairing() throws -> HostedRelayPairing {
         guard let session = try relay.session() else { throw HostedRelayPairing.Refusal.unreachable }

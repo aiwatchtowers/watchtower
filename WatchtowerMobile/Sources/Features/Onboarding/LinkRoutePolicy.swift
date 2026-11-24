@@ -13,22 +13,47 @@ enum LinkRoute: Equatable {
     case refuse(LinkFailure)
 }
 
-/// The link route rule (R4), pure. A code whose hub is on iCloud (v3; v4 with `transport` absent or `cloudkit`)
-/// links over iCloud. A code whose hub runs over Relay links over a pairing slot when this phone may use Relay,
-/// and is refused otherwise: an iCloud link to a Mac on Relay would only ever receive `hub_on_relay`.
+/// The link route rule (R4; #2191), pure. A code *offers Relay* when its relay identity is coherent and its
+/// `transports` lists `relay` (a code without `transports` goes by the identity alone). In order:
+///
+/// | Code | Relay on this phone | Paying answer | Route |
+/// |---|---|---|---|
+/// | offers Relay | available | yes | `.relay` (also for a hub on iCloud) |
+/// | offers Relay | available | none (unreachable, backoff), device entitled | `.refuse(.relayUnreachable)` |
+/// | hub on iCloud | available | none, device not entitled | `.cloudKit` |
+/// | offers Relay | available | `.updateRequired` | `.refuse(.updateApp)` |
+/// | hub on iCloud | off, or not paying | — | `.cloudKit` |
+/// | hub on Relay | off, or not paying | — | `.macOnRelay` / `.needsRelay` |
+/// | neither route | — | — | `.refuse(.refused)` |
+///
+/// An iCloud link to a Mac on Relay would only ever receive `hub_on_relay`, so a hub on Relay is never linked over
+/// iCloud.
 enum LinkRoutePolicy {
-    /// `paying` is asked only when the code's hub is on the relay and the relay is available. An answer that is not
-    /// a definite yes or no (unreachable, an attestation backoff) refuses with `.relayUnreachable`: it is never read
-    /// as "not paying", so a paying phone is never sent to iCloud.
+    /// `paying` is asked only when the code offers Relay and the relay is available. On a hub on Relay, an answer that
+    /// is not a definite yes or no refuses with `.relayUnreachable`: it is never read as "not paying". On a hub on
+    /// iCloud it does so only when `entitled` (the device's StoreKit entitlement, read only then) says this phone
+    /// pays; otherwise the phone links over iCloud as before.
     static func decide(
         _ code: LinkPayload,
         relay: RelayAvailability,
+        entitled: () async -> Bool = { false },
         paying: () async -> Result<Bool, HostedRelayPairing.Refusal>
     ) async -> LinkRoute {
+        let offersRelay = code.offersRelay && (code.transports.map { $0.contains("relay") } ?? true)
         let onRelay = code.transport == .relay || (code.transport == nil && !code.offersCloudKit && code.offersRelay)
         guard onRelay else {
-            // A code that names no route this phone can use (a v4 code with neither iCloud nor a relay identity).
-            return code.offersCloudKit ? .cloudKit : .refuse(.refused)
+            guard code.offersCloudKit else {
+                // A code that names no route this phone can use (a v4 code with neither iCloud nor a relay identity).
+                return .refuse(.refused)
+            }
+            guard offersRelay, case .available = relay, let mac = code.relayDeviceID,
+                  let authPub = code.relayAuthPub.flatMap(WireBytes.fromBase64URL) else { return .cloudKit }
+            switch await paying() {
+            case .success(true): return .relay(mac: mac, authPub: authPub)
+            case .success(false), .failure(.notPaying): return .cloudKit
+            case .failure(.updateRequired): return .refuse(.updateApp)
+            case .failure: return await entitled() ? .refuse(.relayUnreachable) : .cloudKit
+            }
         }
         guard code.offersRelay, let mac = code.relayDeviceID,
               let authPub = code.relayAuthPub.flatMap(WireBytes.fromBase64URL) else { return .refuse(.refused) }

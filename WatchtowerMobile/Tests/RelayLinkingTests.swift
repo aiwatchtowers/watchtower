@@ -365,6 +365,52 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(model.phase, .linked(macName: "build-box"))
     }
 
+    // MARK: - An iCloud Mac's code on a paying phone (#2191)
+
+    private func iCloudCode() -> LinkPayload {
+        mac.code(hubID: hub, macName: "Work Mac", owner: owner, now: clock.now(), transport: .cloudKit)
+    }
+
+    func testACloudKitCodeOnAPayingPhoneOpensAPairingSlot() async throws {
+        let payload = iCloudCode()
+        let model = makeModel()
+
+        await link(payload, model: model)
+
+        XCTAssertEqual(model.phase, .linked(macName: "Work Mac"))
+        XCTAssertEqual(relay.ops, ["accountState", "open \(mac.deviceID)", "vouch \(mac.deviceID)", "promote slot-1"])
+        XCTAssertEqual(container.accountAsks, 0, "no iCloud account read on the relay path")
+        XCTAssertTrue(container.accepted.isEmpty)
+        XCTAssertEqual(host.linkedCalls.last?.record.route, .hostedRelay(macDeviceID: mac.deviceID))
+        XCTAssertTrue(try keysHeld())
+    }
+
+    func testACloudKitCodeOnAPayingPhoneWithTheMacOffRelayOffersTryAgain() async throws {
+        relay.fail("open", with: HostedRelayError.server(code: .notFound, retryAfter: nil))
+        let model = makeModel()
+
+        await model.open(iCloudCode().url())
+
+        XCTAssertEqual(model.phase, .failed(.macNotOnRelay(macName: "Work Mac")))
+        XCTAssertEqual(LinkFailure.macNotOnRelay(macName: "Work Mac").retryTitle, "Try Again")
+        XCTAssertEqual(container.accountAsks, 0)
+        XCTAssertFalse(try keysHeld())
+    }
+
+    func testAnEntitledPhoneWhoseCheckFailsIsRelayUnreachableOnACloudKitCode() async throws {
+        relay.fail("accountState", with: HostedRelayPairing.Refusal.unreachable)
+        relay.entitled = true
+        let model = makeModel()
+
+        await model.open(iCloudCode().url())
+
+        XCTAssertEqual(model.phase, .failed(.relayUnreachable))
+        XCTAssertEqual(relay.entitlementAsks, 1)
+        XCTAssertEqual(relay.count("open"), 0)
+        XCTAssertEqual(container.accountAsks, 0, "no iCloud account read")
+        XCTAssertFalse(try keysHeld())
+    }
+
     /// Review round 1, finding 12: four Macs linked meanwhile — the promoted link waits for the owner, not for ever.
     func testAFullRegistryAsksTheOwnerInsteadOfRetryingForEver() async throws {
         try seedPromoted(relayCode(), state: .promoted)

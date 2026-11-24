@@ -251,10 +251,13 @@ final class LinkingViewModel {
             phase = .failed(.tooManyMacs)
             return
         }
-        // The route (R4): the paying check only for a hub on the relay with the relay available.
-        let route = await LinkRoutePolicy.decide(payload, relay: relay.availability) { [relay] in
-            await LinkRoutePolicy.paying { try await relay.accountState() }
-        }
+        // The route (R4, #2191): the paying check for any code that offers Relay while the relay is available; the
+        // device's entitlement only when that check gets no answer on an iCloud Mac's code.
+        let route = await LinkRoutePolicy.decide(
+            payload, relay: relay.availability,
+            entitled: { [relay] in await relay.holdsRelayEntitlement() },
+            paying: { [relay] in await LinkRoutePolicy.paying { try await relay.accountState() } }
+        )
         let ownerUser: String
         switch route {
         case let .refuse(failure):
