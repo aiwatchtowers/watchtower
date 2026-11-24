@@ -22,7 +22,7 @@ Workchat is a session's second mode. It shows the same session in the same place
 
 Each session opens in the mode you last showed it in. A new session always opens in the terminal, because a fresh agent may stop at a trust or login prompt only the terminal shows.
 
-Claude Code's own notices show as quiet lines instead of as your messages. When a helper agent or a background command finishes, its line shows a green ✓ when it worked, a red ✕ when it failed or a grey mark when it was stopped or ended with no known outcome, the agent's name and how it went, such as `finished · 9 tools · 43.5k tokens · 1m 29s` or `exit 0 · 3m 34s`. Click it for the agent's result, **Open output** and **Details** (the task's ids). A message from another session is one grey line; click it for the details.
+Claude Code's own notices show as quiet lines instead of as your messages. When a helper agent or a background command finishes, its line shows a green ✓ (worked), a red ✕ (failed) or a grey mark (stopped or unknown), the agent's name and how it went, such as `finished · 9 tools · 43.5k tokens · 1m 29s`. Click it for the agent's result, **Open output** and **Details** (the task's ids). A message from another session is one grey line; click it for details.
 
 Once the session ends, the field gives way to **Session finished. The history stays readable.** You can still scroll, and the agents button under it still opens finished subagents.
 
@@ -62,7 +62,7 @@ action: nav:projects
 - You can send while the agent works: with text in the field the round button is Send in every state. With Claude Code the line shows **Queued · the agent reads it at its next step** until the agent picks it up. If it has to wait a moment, it reads **Queued · sends in a moment**, and **Cancel** drops it; quitting drops it too. While a Codex session works, the field says **Codex takes your message when this turn ends.** and your line reads **Queued · sends when the agent stops**.
 - The small line above the field shows the current tool, or **Last · …** for the last completed action while the assistant continues working. **Working…** is the fallback for Claude and Codex alike. This line stays outside your conversation history.
 - Paste a screenshot with ⌘V and **[Image #1]** goes into the text at the cursor; a long text paste goes in as **[Pasted text #2 +42 lines]**, as in Claude Code. One Backspace removes the whole token. On send, the text goes in full and the image as its saved file's path. If the image file is gone by then, **Pasted image #N is gone — paste it again** shows and your draft stays.
-- A pasted PDF, files copied in Finder and pasted, dropped files and the paperclip's picks show as chips above the field (✕ removes one). The paperclip opens a menu: **Paste screenshot** (or **Paste 2 files**, **Paste text**: named by what the clipboard holds; greyed out when it holds nothing to paste) and **Attach files…**. Pasted files are kept in Watchtower's folder until the session stops. If a paste can't be saved, or a file's path has a line break, the reason shows under the field.
+- A pasted PDF, files pasted from Finder, dropped files and the paperclip's picks show as chips above the field (✕ removes one). The paperclip opens a menu: **Paste screenshot** (named by what the clipboard holds, such as **Paste 2 files** or **Paste text**; greyed out when nothing fits) and **Attach files…**. Pasted files are kept in Watchtower's folder until the session stops. If a paste can't be saved, or a file's path has a line break, the reason shows under the field.
 - The round button is **Stop** (■) only with an empty field while the agent works; it, or Esc in the empty field, interrupts the agent. If it can't, the reason shows above the field.
 - A line typed into the terminal but not sent says so, with **Show in Terminal**: press Return there.
 
@@ -123,7 +123,7 @@ Subagents never show in the conversation. The agents button above the field (two
 
 The button shows the working count, a dimmed **✓ N** when only finished agents remain, and **?** when the agent state is unavailable, which is not the same as none running. It stays while there are finished agents. Done is collapsed while agents work and opens by itself when none do; your own choice wins until you quit.
 
-While the agent works, the line reads **This turn · N steps** with the step that runs now and its time. Click the line, or press ⌥↓ in the field, to show the newest six steps above it (older ones are counted as "N earlier steps"); the list starts closed, and Workchat remembers your choice for that pane. The list goes away when the turn ends or a permission card shows.
+While the agent works, the line reads **This turn · N steps** with the step that runs now and its time. Click the line, or press ⌥↓ in the field, to show the newest six steps above it; the list starts closed, and Workchat remembers your choice for that pane. The list goes away when the turn ends or a permission card shows.
 
 ## When it's empty or wrong
 
@@ -132,7 +132,7 @@ While the agent works, the line reads **This turn · N steps** with the step tha
 - **Stop says A permission prompt is open — answer it on the card or in the terminal.** Esc would answer the prompt, so Stop holds back. Use the card or the terminal.
 - **Could not read the permission prompt.** Watchtower could not read its database, so no card shows. Answer in the terminal; the next session update tries again.
 - **No permission card, but the session says Needs approval.** Only prompts the agent's hooks report get a card. Answer in the terminal.
-- **Your line says Waiting: the terminal prompt holds text.** Unsent text sits in the terminal, shown under the caption. Send or erase it and the line goes; **Send together** pastes it beside that text, and your next Return there sends both.
+- **Your line says Waiting: the terminal prompt holds text.** Unsent text in the terminal shows under the caption. Send or erase it and the line goes; **Send together** puts it beside that text; your next Return there sends both.
 - **The session opened in the terminal.** It is new, or you last showed it there.
 
 ## Related

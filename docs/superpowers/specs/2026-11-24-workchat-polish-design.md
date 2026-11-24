@@ -14,12 +14,13 @@ Board: #2201. Approved design: [`docs/design/mockups/workchat-polish/`](../../de
 | D6 | A line held because the terminal prompt "has text" must go once the owner erased it; when text really is there, say so and offer a way out | owner, conversation 2026-11-24; ask #1747 |
 | C1 | Highlighting covers `#N` refs, commit hashes, file paths, commands; verdict words and durations are not coloured | author's call, from D3 (v2 dropped them) |
 | C2 | Highlighting is Workchat-only (a `ChatFeedContext` flag); the AI chat and the phone are unchanged in v1 | author's call |
-| C3 | The prompt-empty fix is a per-agent "draft length" model in both twins (Mac `TerminalCenter`, Go `sessionhost.promptState`, test fake `FakeHostDelivery`), not screen scraping. **Narrower than the v2 mockup's "read the line off the screen":** an erase releases the line when it was a Ctrl+C (D7), or a Backspace or Ctrl+U erase of a draft typed straight (no cursor keys); after cursor or word-edit keys the line stays held as today, and the hold caption's actions are the way out | author's call, §6.1 — the owner confirms it by approving this spec |
+| C3 | The prompt-empty fix is a per-agent "draft length" model in both twins (Mac `TerminalCenter`, Go `sessionhost.promptState`, test fake `FakeHostDelivery`), not screen scraping. **Narrower than the v2 mockup's "read the line off the screen":** an erase releases the line when it was a Ctrl+C (D7), or a Backspace or Ctrl+U erase of a draft typed straight (no cursor keys) — as built, a Backspace erase only (Ctrl+C and Ctrl+U make the draft inexact: C11, C12); after cursor or word-edit keys the line stays held as today, and the hold caption's actions are the way out | author's call, §6.1 — the owner confirms it by approving this spec |
 | C9 | The app's clear is a host delivery flag (`clear_first`), not a Mac-side keystroke: the host owns the prompt state | author's call (raised by the plan's independent review); approved with this spec |
 | C10 | Clear and send exists only in Claude Code sessions (another agent's Ctrl+C can mean quit); other agents' held lines offer Send together and Cancel; the host answers `clear_unsupported` | author's call; approved with this spec |
 | C11 | If T6's hand check finds that Claude Code's Ctrl+C does not just clear the input (idle or working), D7 falls back to `exact = false` for the owner's Ctrl+C and Clear and send is not shipped (Send together and Cancel only); T6 stops and the owner is told through an ask | author's call; approved with this spec |
-| D7 | A draft erased with the owner's own Ctrl+C releases the held line | owner, ask #1763 ("когда текст в терминале стёрт, сообщение должно уйти") |
-| C4 | "Clear and send" is one Ctrl+C (the v2 mockup said Ctrl+U: in Claude Code Ctrl+U only clears the current line before the cursor, Ctrl+C clears the whole input), offered only while the agent is idle; while it works only "Send together" and Cancel | author's call, §6.3 (in Claude Code Esc interrupts and Ctrl+C clears the input, but a Ctrl+C on an empty prompt arms "press again to exit" — idle-only keeps the app's clear to the plain case) |
+| C12 | C11 confirmed — T6's hand check (Claude Code 2.1.331: a working Ctrl+C interrupts the turn and keeps the text) applied C11: the owner's Ctrl+C makes the draft inexact (lines stay held), Clear and send / `clear_first` are not built; a held line offers Send together and Cancel | owner, ask #1803 |
+| D7 | A draft erased with the owner's own Ctrl+C releases the held line — **superseded by C11 (confirmed, ask #1803)**: the owner's Ctrl+C keeps lines held | owner, ask #1763 ("когда текст в терминале стёрт, сообщение должно уйти") |
+| C4 | **Not built (C11, ask #1803).** "Clear and send" is one Ctrl+C (the v2 mockup said Ctrl+U: in Claude Code Ctrl+U only clears the current line before the cursor, Ctrl+C clears the whole input), offered only while the agent is idle; while it works only "Send together" and Cancel | author's call, §6.3 (in Claude Code Esc interrupts and Ctrl+C clears the input, but a Ctrl+C on an empty prompt arms "press again to exit" — idle-only keeps the app's clear to the plain case) |
 | C5 | The expanded steps list stays above the live line (as today), not below it as the HTML drew | author's call, mock shots |
 | C6 | A pasted screenshot is an inline `Image #N` token (the #2065 paste tokens), not the HTML's thumbnail chip; only Finder files are chips | owner's earlier D7 of `2026-11-19-workchat-agents-and-progress-design.md` ("pastes go inline as tokens, as in Claude Code"); the v2 chip contradicted it |
 | C7 | The Workchat error bar becomes quiet too (glyph, grey text, quiet Retry; no orange box), and the loading state reads "Reading the session…" | author's call, D3 applied to the screen's other states |
@@ -56,10 +57,10 @@ forever after the owner typed into the terminal prompt and erased it.
    paperclip menu gains "Paste from clipboard", titled by what the clipboard holds
    (screenshot / N files / text) and disabled when it holds nothing usable.
 5. **No stuck line** (D6, C3, C4). Erasing the prompt text in the terminal with
-   Ctrl+C (D7), or with Backspace or Ctrl+U (no cursor keys before it) releases a held
-   line; after cursor or
+   Backspace (no cursor keys before it) releases a held line (Ctrl+C and Ctrl+U make the
+   draft inexact: C11 and T6's hand check); after cursor or
    word-edit keys the line stays held as today and its caption offers the way out. A line held by real prompt text shows why and the text itself, with
-   "Clear and send" (idle only), "Send together" and Cancel.
+   "Send together" and Cancel ("Clear and send" is not built: C11, ask #1803).
 
 ## Non-goals
 
@@ -130,7 +131,10 @@ forever after the owner typed into the terminal prompt and erased it.
   failure through `Tone`, glyph only, caption size for a command); `SessionChatRow.eventLine` draws it when `task`
   is set, else today's line (teammate messages unchanged).
 - Open output opens the file read-only in the chat's artifact viewer (its first 256 KB) when
-  it resolves, symlinks followed, inside the session's temp dir, else reveals it in Finder;
+  it resolves, symlinks followed, to a regular file of the row's own conversation — inside
+  its temp dir, or its subagent transcripts under `~/.claude/projects/<project>/<session
+  id>/subagents/` (where an agent's `tasks/<id>.output` link points; `<project>` from the
+  feed's `transcript_dirs`) — else reveals it in Finder (`TaskOutputFile`);
   Details shows the ids as `.caption2 .tertiary`.
 
 ### §4 Clipboard paste
@@ -194,8 +198,11 @@ host holds the same line for `hold_if_prompt_text`.
    - printable runes and a bracketed paste add their rune count;
    - Backspace subtracts 1 (floor 0) while `exact`;
    - Ctrl+U while `exact` and the draft holds no line break sets `{0, true}` (the cursor
-     is at the end, so it clears the whole line);
-   - a submitting Return sets `{0, true}`; the owner's own Ctrl+C also sets `{0, true}`
+     is at the end, so it clears the whole line) — as built it sets `exact = false` (next item);
+   - a submitting Return sets `{0, true}`. **As built (C11, ask #1803):** the owner's
+     Ctrl+C sets `exact = false` for every profile — T6's hand check found that a
+     working Ctrl+C interrupts the turn and keeps the text — and Ctrl+U too (it erases
+     only the last screen row of a wrapped draft). The original rule, kept for the record: the owner's own Ctrl+C also sets `{0, true}`
      for the Claude Code profile: in Claude Code Ctrl+C clears the input (Esc is the
      interrupt), working or not, so a draft erased with Ctrl+C releases the line (owner,
      ask #1763: "когда текст в терминале стёрт, сообщение должно уйти"). T6 starts by
@@ -225,7 +232,7 @@ host holds the same line for `hold_if_prompt_text`.
    terminal", `agentBusy` (a line just submitted) → "Queued · sends in a moment", and
    `promptHasText` → "Waiting: the terminal prompt holds text", plus the prompt's last line when the
    Mac terminal buffer can show it (read-only display, never a decision). Actions:
-   - **Clear and send** (Claude Code sessions only — another agent's Ctrl+C can mean quit, so the button is not offered there and the host refuses `clear_first` with `held(clear_unsupported)`; idle only, checked by the Mac's `workchatLineCheck` right
+   - **Clear and send — not built (C11, confirmed ask #1803); the design below is kept for the record.** (Claude Code sessions only — another agent's Ctrl+C can mean quit, so the button is not offered there and the host refuses `clear_first` with `held(clear_unsupported)`; idle only, checked by the Mac's `workchatLineCheck` right
      before): the line goes to the session host as a delivery with a new flag
      `clear_first`. The host — the authority on the prompt — does it atomically under
      its session lock: refuse with `held(clear_too_soon)` if it sent a clear to this
@@ -259,7 +266,7 @@ the pane's presentation, with tests.
   the Mac thought free is held by the host with `held(prompt_has_text)` and stays queued.
 - **Host closes while a line is held:** the line turns `notSent`, its text back in the
   field (existing path). Test: `WorkchatModel` held → session gone → `notSent`.
-- **Clear and send, agent starts working between the Mac's check and the host's
+- *(Not built, C11.)* **Clear and send, agent starts working between the Mac's check and the host's
   Ctrl+C:** the host does not know the agent's state (hooks report to the Mac, not to
   the host), so the idle check is the Mac's, right before it sends `clear_first`. The
   remaining window is the request's flight (milliseconds). Its worst case is bounded:
@@ -270,7 +277,7 @@ the pane's presentation, with tests.
   just-started turn. Worst case: one turn cancelled right at its start, the owner's line
   then sent — no text lost, no session closed (one Ctrl+C never exits). Accepted.
   Test: the Mac refuses when the fake `SessionControl` says Working (no request sent).
-- **Clear and send, the Mac's connection to the host ends after the request:** the Mac
+- *(Not built, C11.)* **Clear and send, the Mac's connection to the host ends after the request:** the Mac
   client reports its existing `.interrupted` outcome (`TerminalCenter`, "the delivery's
   connection ended before the host answered" — a client-side outcome, not a new host
   reply) → the existing "may be typed" path; the Mac never re-sends a `clear_first`
@@ -309,11 +316,11 @@ the pane's presentation, with tests.
 | Hold captions per reason | T6 | `WorkchatOutgoingTests` |
 | `SyntaxTint` values | T2 | `TokenTests` (`make kit-test FILTER=TokenTests`) |
 | Held line re-checks on draft change; caption and actions | T6 | `WorkchatModelTests`, `WorkchatOutgoingTests` |
-| Clear and send refuses when working (Mac check), once per performed clear, hidden for non-Claude profiles | T7 | `WorkchatModelTests` with fake control/clock and `FakeHostDelivery` |
-| Host `clear_first`: one Ctrl+C, pause via `settle`, `clearedByApp`, 3 s window, `clear_unsupported`, dialog during the pause | T7 | Go `deliver_test` (`TestDeliver_ClearFirst_*`, fake `now`/`settle`) |
-| `clear_too_soon` caption and the button's return | T7 | `WorkchatOutgoingTests`, `WorkchatModelTests` |
-| Connection ends after `clear_first` → `.interrupted`, no re-send | T7 | `WorkchatModelTests` with `FakeHostDelivery` |
-| Owner's Ctrl+C empties the draft (Claude Code profile) | T6 | `draft_cases.json` `ctrl-c-owner` |
+| *(not built, C11)* Clear and send refuses when working (Mac check), once per performed clear, hidden for non-Claude profiles | T7 | `WorkchatModelTests` with fake control/clock and `FakeHostDelivery` |
+| *(not built, C11)* Host `clear_first`: one Ctrl+C, pause via `settle`, `clearedByApp`, 3 s window, `clear_unsupported`, dialog during the pause | T7 | Go `deliver_test` (`TestDeliver_ClearFirst_*`, fake `now`/`settle`) |
+| *(not built, C11)* `clear_too_soon` caption and the button's return | T7 | `WorkchatOutgoingTests`, `WorkchatModelTests` |
+| *(not built, C11)* Connection ends after `clear_first` → `.interrupted`, no re-send | T7 | `WorkchatModelTests` with `FakeHostDelivery` |
+| Owner's Ctrl+C makes the draft inexact, every profile (C11 as built) | T6 | `draft_cases.json` `ctrl-c-owner` |
 | Relaunch starts empty; the Mac mirror resets on re-attach | T6 | Go `TestPromptState_NewRunEmpty`, Swift `testReattachResetsDraft` |
 | Quiet error bar and loading copy (C7) | T1 | `SessionChatViewTests` (strings, Retry) |
 | PROJ-16 / PROJ-23 guards stay green (never over a draft) | T5 | existing guards + a new `TestProj23_…ErasedDraftReleases` |

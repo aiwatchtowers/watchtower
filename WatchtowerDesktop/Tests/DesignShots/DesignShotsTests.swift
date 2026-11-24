@@ -119,6 +119,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(WorkchatAgentFinishedShotFixtures.shots)
     }
 
+    /// The other polish states on the built pane (#2201 T8): 01–03, 06, 07, 10–12.
+    func testWorkchatPolishRealShotsRender() throws {
+        try renderShots(WorkchatPolishRealShotFixtures.shots)
+    }
+
     /// The same states on the built views (#2065), `workchat-agents-real-NN-…` beside each mockup.
     func testWorkchatAgentsShotsRender() throws {
         try renderShots(WorkchatAgentsShotFixtures.shots)

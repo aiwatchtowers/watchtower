@@ -63,6 +63,7 @@ package enum WorkchatActivityPresenter {
         case "Grep", "Glob": "magnifyingglass"
         case "Agent", "Task": "person.2"
         case "WebFetch", "WebSearch": "globe"
+        case "SendMessage": "paperplane"
         default: tool.hasPrefix("mcp__") ? "powerplug" : "gearshape"
         }
     }
