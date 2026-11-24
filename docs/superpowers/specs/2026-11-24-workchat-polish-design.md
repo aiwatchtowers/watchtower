@@ -15,8 +15,8 @@ Board: #2201. Approved design: [`docs/design/mockups/workchat-polish/`](../../de
 | C1 | Highlighting covers `#N` refs, commit hashes, file paths, commands; verdict words and durations are not coloured | author's call, from D3 (v2 dropped them) |
 | C2 | Highlighting is Workchat-only (a `ChatFeedContext` flag); the AI chat and the phone are unchanged in v1 | author's call |
 | C3 | The prompt-empty fix is a per-agent "draft length" model in both twins (Mac `TerminalCenter`, Go `sessionhost.promptState`, test fake `FakeHostDelivery`), not screen scraping. **Narrower than the v2 mockup's "read the line off the screen":** an erase releases the line when it was a Ctrl+C (D7), or a Backspace or Ctrl+U erase of a draft typed straight (no cursor keys) — as built, a Backspace erase only (Ctrl+C and Ctrl+U make the draft inexact: C11, C12); after cursor or word-edit keys the line stays held as today, and the hold caption's actions are the way out | author's call, §6.1 — the owner confirms it by approving this spec |
-| C9 | The app's clear is a host delivery flag (`clear_first`), not a Mac-side keystroke: the host owns the prompt state | author's call (raised by the plan's independent review); approved with this spec |
-| C10 | Clear and send exists only in Claude Code sessions (another agent's Ctrl+C can mean quit); other agents' held lines offer Send together and Cancel; the host answers `clear_unsupported` | author's call; approved with this spec |
+| C9 | **Not built (C11, ask #1803).** The app's clear is a host delivery flag (`clear_first`), not a Mac-side keystroke: the host owns the prompt state | author's call (raised by the plan's independent review); approved with this spec |
+| C10 | **Not built (C11, ask #1803).** Clear and send exists only in Claude Code sessions (another agent's Ctrl+C can mean quit); other agents' held lines offer Send together and Cancel; the host answers `clear_unsupported` | author's call; approved with this spec |
 | C11 | If T6's hand check finds that Claude Code's Ctrl+C does not just clear the input (idle or working), D7 falls back to `exact = false` for the owner's Ctrl+C and Clear and send is not shipped (Send together and Cancel only); T6 stops and the owner is told through an ask | author's call; approved with this spec |
 | C12 | C11 confirmed — T6's hand check (Claude Code 2.1.331: a working Ctrl+C interrupts the turn and keeps the text) applied C11: the owner's Ctrl+C makes the draft inexact (lines stay held), Clear and send / `clear_first` are not built; a held line offers Send together and Cancel | owner, ask #1803 |
 | D7 | A draft erased with the owner's own Ctrl+C releases the held line — **superseded by C11 (confirmed, ask #1803)**: the owner's Ctrl+C keeps lines held | owner, ask #1763 ("когда текст в терминале стёрт, сообщение должно уйти") |
@@ -287,7 +287,7 @@ the pane's presentation, with tests.
   length, until a submit, a clear or the next `false` from the host), so after the reconnect a host that did clear releases the Mac's held lines.
   Swift test with `FakeHostDelivery` dropping the connection, then reconnecting with
   `prompt_holds_text: false`.
-- **`held(clear_too_soon)`:** the line stays held; the caption adds "Cleared a moment
+- *(Not built, C11, ask #1803.)* **`held(clear_too_soon)`:** the line stays held; the caption adds "Cleared a moment
   ago · try again in a few seconds" and the Clear button comes back after the host's
   3 s window (the once-per-line rule counts only clears the host actually performed).
   Swift test with a fake clock.
@@ -349,12 +349,15 @@ compared against these after the build.
   naming this spec's ask.
 - PROJ-16 / PROJ-23 (workbench): the "prompt holds text" input is now the draft model;
   no guard relaxed — an unknown state still holds; the new guard covers the erased draft.
-- PROJ-12 (workbench, the session host's delivery protocol): `Deliver` gains the optional
-  request flag `clear_first`, the hold reasons `clear_too_soon` and
-  `clear_unsupported`, and a `prompt_holds_text` field on every reply and on the
-  re-attach snapshot (additive; existing outcomes `submitted`, `typed`, `held`,
-  `no_paste_mode`, `no_session` unchanged). The inventory text and the protocol doc
-  gain them with a change-log line naming this spec's ask.
+- PROJ-12 (workbench, the session host's delivery protocol), as built: the "prompt holds
+  text" input is the draft length model (`count`, `exact`; host `internal/sessionhost/draft.go`
+  the authority, Mac mirror `DraftModel`, one shared case table); the `left_typed` delivery
+  event gains the delivery `id` and `ends_in_backslash` (additive), so the Mac mirror applies
+  a left-typed line's `\` whichever of the event and the reply comes first; a line ending in
+  `\` is only pasted and left typed, never followed by the app's Return. Existing outcomes
+  (`submitted`, `typed`, `held`, `no_paste_mode`, `no_session`) unchanged. `clear_first`,
+  `clear_too_soon`, `clear_unsupported` and `prompt_holds_text` were not built (C11, ask
+  #1803). The inventory text gained this with a change-log line.
 - §1 (steps closed by default) touches no inventory contract; it reverses C1 of the
   2026-11-19 spec, and `WorkchatPaneMemoryTests`' default assertion flips with it.
 

@@ -727,6 +727,7 @@ enum DesignShotFixtures {
         ClosedAsksShotFixtures.cleanUp()
         WatchmanArmingShotFixture.cleanUp()
         IPhoneChatShotFixtures.cleanUp()
+        WorkchatPolishRealShotFixtures.cleanUp()
         cleanUpIdeaRows()
         UnifiedChatShotFixtures.cleanUp()
         ComposerShotFixtures.cleanUp()

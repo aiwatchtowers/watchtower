@@ -1,5 +1,5 @@
 import AppKit
-import ChatUI
+@testable import ChatUI
 import DesignKit
 import SwiftUI
 import WatchtowerChatText
@@ -11,14 +11,17 @@ import WatchtowerCore
 /// hairline, composer — over the mock's copy and clock. The states other lanes already shot are not drawn again:
 /// 04 (`WorkchatHighlightShotFixtures`), 05 (`WorkchatAgentFinishedShotFixtures`), 08 and 09
 /// (`WorkchatHeldLineShotFixtures`). The paperclip's menu (06) is an `NSMenu`, which an offscreen render cannot open:
-/// 06 is the pane under it, its titles are `ComposerPasteMenu`'s.
+/// 06 draws the production `ComposerAttachMenu`'s items (a clipboard advertising an image) in a stand-in, hanging
+/// below the paperclip as `ComposerAttachMenu.show` pops it, past the pane's bottom edge.
 @MainActor
 enum WorkchatPolishRealShotFixtures {
     static let shots: [DesignShot] = [
         shot("01-steps-collapsed", WorkchatPolishRealShot.State(steps: .collapsed)),
         shot("02-steps-expanded", WorkchatPolishRealShot.State(steps: .expanded)),
         shot("03-steps-narrow", WorkchatPolishRealShot.State(steps: .expanded), width: 340),
-        shot("06-paste-menu", WorkchatPolishRealShot.State()),
+        DesignShot(name: "workchat-polish-real-06-paste-menu", size: NSSize(width: 720, height: 560)) {
+            AnyView(PasteMenuShot(paneHeight: 480))
+        },
         DesignShot(name: "workchat-polish-real-07-pasted", prepare: {
             AnyView(WorkchatPolishRealShot(state: .init(), model: try await pastedModel()))
         }, size: NSSize(width: 720, height: 480)),
@@ -44,15 +47,34 @@ enum WorkchatPolishRealShotFixtures {
                       attachmentStore: attachmentStore, kind: { .claude }, now: { now })
     }
 
+    struct PasteRefused: Error, CustomStringConvertible {
+        let what: String
+        var description: String { "shot 07: the model did not take the pasted \(what)" }
+    }
+
+    /// The folders shot 07 wrote, removed by `cleanUp` once the shots are drawn.
+    private static var folders: [URL] = []
+
+    static func cleanUp() {
+        folders.forEach { try? FileManager.default.removeItem(at: $0) }
+        folders = []
+    }
+
     /// Mock 07: a pasted screenshot and a long text as inline tokens around typed text, a Finder file as a chip.
     private static func pastedModel() async throws -> WorkchatModel {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("workchat-polish-real-07")
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workchat-polish-real-07-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        folders.append(folder)
         let model = model(attachmentStore: WorkchatAttachmentStore(root: folder.appendingPathComponent("store")))
-        let png = NSImage(size: NSSize(width: 4, height: 4)).tiffRepresentation ?? Data([0])
-        let image = await model.paste(.image(png, name: "screenshot.png")) ?? ""
+        let png = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4, bitsPerSample: 8,
+                                   samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                   bytesPerRow: 0, bitsPerPixel: 0)?.representation(using: .png, properties: [:])
+        guard let png, let image = await model.paste(.image(png, name: "screenshot.png")) else {
+            throw PasteRefused(what: "image")
+        }
         let longText = (1...212).map { "--- FAIL: TestGate/step_\($0)" }.joined(separator: "\n")
-        let text = await model.paste(.text(longText)) ?? ""
+        guard let text = await model.paste(.text(longText)) else { throw PasteRefused(what: "text") }
         let log = folder.appendingPathComponent("gate.log")
         try Data(count: 84 * 1024).write(to: log)
         model.attach(files: [log])
@@ -174,5 +196,62 @@ struct WorkchatPolishRealShot: View {
         context.follow = follow
         return ChatUI.ChatFeedView(messages: workchatFeed.messages, context: context)
             .macChatStyle(hooks: .app, look: .workchat)
+    }
+}
+
+/// A clipboard that advertises a screenshot.
+private struct ScreenshotAdvert: PasteboardAdvert {
+    var advertisedTypes: [String] { [NSPasteboard.PasteboardType.png.rawValue] }
+    var fileItemCount: Int { 0 }
+}
+
+/// Shot 06: the idle pane with the paperclip's menu open under the paperclip. The menu's items are the production
+/// `ComposerAttachMenu`'s (titles, enabled state, key equivalents); only their drawing is a stand-in for the
+/// `NSMenu`, which an offscreen render cannot open.
+@MainActor
+private struct PasteMenuShot: View {
+    let paneHeight: CGFloat
+    private let items = ComposerAttachMenu(advertised: ScreenshotAdvert(), paste: {}, attach: {}).menu.items
+
+    var body: some View {
+        VStack(spacing: 0) {
+            WorkchatPolishRealShot(state: .init(), model: WorkchatPolishRealShotFixtures.model())
+                .frame(height: paneHeight)
+            Color.clear
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .topLeading) {
+            menu
+                .padding(.leading, Spacing.regular)
+                .padding(.top, paneHeight - Spacing.small)
+        }
+    }
+
+    private var menu: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack {
+                    Text(item.title)
+                    Spacer(minLength: Spacing.hero)
+                    Text(Self.keyLabel(item)).foregroundStyle(.secondary)
+                }
+                .foregroundStyle(item.isEnabled ? .primary : .tertiary)
+                .padding(.horizontal, Spacing.regular)
+                .padding(.vertical, Spacing.compact)
+            }
+        }
+        .font(.body)
+        .frame(width: 240)
+        .padding(.vertical, Spacing.compact)
+        .background(Surface.window, in: RoundedRectangle(cornerRadius: Radius.container))
+        .overlay(RoundedRectangle(cornerRadius: Radius.container).strokeBorder(.quaternary, lineWidth: Stroke.hairline))
+    }
+
+    /// "⌘V" for a key equivalent with ⌘, as AppKit draws it; nothing for none.
+    static func keyLabel(_ item: NSMenuItem) -> String {
+        guard !item.keyEquivalent.isEmpty else { return "" }
+        let mask = item.keyEquivalentModifierMask
+        let mods = (mask.contains(.shift) ? "⇧" : "") + (mask.contains(.command) ? "⌘" : "")
+        return mods + item.keyEquivalent.uppercased()
     }
 }

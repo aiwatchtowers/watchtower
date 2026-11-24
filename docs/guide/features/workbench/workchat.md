@@ -22,7 +22,7 @@ Workchat is a session's second mode. It shows the same session in the same place
 
 Each session opens in the mode you last showed it in. A new session always opens in the terminal, because a fresh agent may stop at a trust or login prompt only the terminal shows.
 
-Claude Code's own notices show as quiet lines instead of as your messages. When a helper agent or a background command finishes, its line shows a green ✓ (worked), a red ✕ (failed) or a grey mark (stopped or unknown), the agent's name and how it went, such as `finished · 9 tools · 43.5k tokens · 1m 29s`. Click it for the agent's result, **Open output** and **Details** (the task's ids). A message from another session is one grey line; click it for details.
+Claude Code's own notices show as quiet lines. When a helper agent or a background command finishes, its line shows a green ✓ (worked), a red ✕ (failed) or a grey mark (stopped or unknown), the agent's name and how it went, such as `finished · 9 tools · 43.5k tokens · 1m 29s`. Click it for the result, **Open output** and **Details** (the task's ids). A message from another session is one grey line; click it for details.
 
 Once the session ends, the field gives way to **Session finished. The history stays readable.** You can still scroll, and the agents button under it still opens finished subagents.
 
@@ -123,7 +123,7 @@ Subagents never show in the conversation. The agents button above the field (two
 
 The button shows the working count, a dimmed **✓ N** when only finished agents remain, and **?** when the agent state is unavailable, which is not the same as none running. It stays while there are finished agents. Done is collapsed while agents work and opens by itself when none do; your own choice wins until you quit.
 
-While the agent works, the line reads **This turn · N steps** with the step that runs now and its time. Click the line, or press ⌥↓ in the field, to show the newest six steps above it; the list starts closed, and Workchat remembers your choice for that pane. The list goes away when the turn ends or a permission card shows.
+While the agent works, the line reads **This turn · N steps** with the step that runs now and its time. Click the line, or press ⌥↓ in the field, to show the newest six steps above it (older ones as "N earlier steps"); the list starts closed, and Workchat remembers your choice for that pane. The list goes away when the turn ends or a permission card shows.
 
 ## When it's empty or wrong
 

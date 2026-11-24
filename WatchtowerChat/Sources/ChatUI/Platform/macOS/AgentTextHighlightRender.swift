@@ -27,7 +27,8 @@ final class AgentTextHighlightBox: NSObject {
 }
 
 /// A finished run of the agent's text with its refs, hashes, paths and commands in their `SyntaxTint` (spec
-/// 2026-11-24-workchat-polish §2, D3): the foreground colour only — no background, no weight. Plain text is scanned
+/// 2026-11-24-workchat-polish §2, D3): the foreground colour — no background, no weight; hashes and paths also in the
+/// monospaced design of their own font, as mock 04 draws them (#2201 T8). Plain text is scanned
 /// with `AgentTextHighlights.spans(inPlain:)`, inline code only for a command, links never (code blocks are not in a
 /// run). A path keeps its colour only when `resolvesPath` says it is a file of the session's folders. Memoised: the
 /// scan per run, the coloured text per run and set of resolved paths.
@@ -127,8 +128,21 @@ enum AgentTextHighlightRender {
         for item in found {
             out.addAttributes([.foregroundColor: color(item.span.kind), .agentHighlight: AgentTextHighlightBox(item.span)],
                               range: item.range)
+            if item.span.kind == .hash || item.span.kind == .path { monospace(item.range, in: out) }
         }
         return out
+    }
+
+    /// Each font in `range` in its monospaced design, size, weight and italic kept.
+    private static func monospace(_ range: NSRange, in text: NSMutableAttributedString) {
+        text.enumerateAttribute(.font, in: range) { value, piece, _ in
+            guard let font = value as? NSFont else { return }
+            text.addAttribute(.font, value: monospaced(font), range: piece)
+        }
+    }
+
+    static func monospaced(_ font: NSFont) -> NSFont {
+        font.fontDescriptor.withDesign(.monospaced).flatMap { NSFont(descriptor: $0, size: font.pointSize) } ?? font
     }
 }
 /// When a click on a highlighted span runs its action (review round 1): a plain single click — no modifier, no
