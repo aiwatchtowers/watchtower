@@ -497,50 +497,142 @@ extension LinkingViewModelTests {
         XCTAssertEqual(try secure.wireName(plain: plain, zone: .data), location.recordName, "the name the sealer maps the grant to")
     }
 
-    /// The fetch fallback counts only when the data zone was polled to its end during it (a throttled or cut pull
-    /// returns normally).
-    func testALinkFetchCountsOnlyWhenItReadTheDataZone() {
-        XCTAssertFalse(HubSession.linkFetchCompleted(refreshed: false, pollsBefore: 1, pollsAfter: 2, unlinked: false))
+    /// The fetch counts only when it polled the zones it needed to their end (a throttled or cut pull returns
+    /// normally): the data zone for a baseline or a poll, and the mailbox too for a completing link.
+    func testALinkFetchCountsOnlyWhenItReadTheZonesItNeeds() {
+        let before = HubSession.LinkFetchCounts(data: 3, relay: 5)
+        let dataOnly = HubSession.LinkFetchCounts(data: 4, relay: 5)
+        let both = HubSession.LinkFetchCounts(data: 4, relay: 6)
+        XCTAssertFalse(HubSession.linkFetchMoved(before: before, after: before, mailbox: false), "a skipped pull")
+        XCTAssertTrue(HubSession.linkFetchMoved(before: before, after: dataOnly, mailbox: false))
+        XCTAssertFalse(HubSession.linkFetchMoved(before: before, after: dataOnly, mailbox: true), "the mailbox not read")
+        XCTAssertTrue(HubSession.linkFetchMoved(before: before, after: both, mailbox: true))
+
+        XCTAssertFalse(HubSession.linkFetchCompleted(refreshed: false, moved: true, unlinked: false))
+        XCTAssertFalse(HubSession.linkFetchCompleted(refreshed: true, moved: false, unlinked: false))
+        XCTAssertTrue(HubSession.linkFetchCompleted(refreshed: true, moved: true, unlinked: false))
         XCTAssertFalse(
-            HubSession.linkFetchCompleted(refreshed: true, pollsBefore: 3, pollsAfter: 3, unlinked: false), "a skipped pull")
-        XCTAssertTrue(HubSession.linkFetchCompleted(refreshed: true, pollsBefore: 3, pollsAfter: 4, unlinked: false))
-        XCTAssertFalse(
-            HubSession.linkFetchCompleted(refreshed: true, pollsBefore: 3, pollsAfter: 4, unlinked: true),
+            HubSession.linkFetchCompleted(refreshed: true, moved: true, unlinked: true),
             "the data zone polled, then the relay zone's zoneNotFound unlinked the transport")
-        XCTAssertTrue(
-            HubSession.linkFetchCompleted(refreshed: true, pollsBefore: nil, pollsAfter: nil, unlinked: false), "off CloudKit")
     }
 
-    /// A fetch that joined a pull already past the data zone moves no count: one more fetch is judged, unless the
+    /// A fetch that joined a pull already past the zones moves no count: one more fetch is judged, unless the
     /// transport is throttled or unlinked (then the first one stands, unavailable).
     func testALinkFetchThatMovedNoPollTriesOneMorePull() {
-        XCTAssertTrue(HubSession.linkFetchNeedsSecondPull(
-            refreshed: true, pollsBefore: 2, pollsAfter: 2, unlinked: false, throttled: false))
-        XCTAssertFalse(HubSession.linkFetchNeedsSecondPull(
-            refreshed: true, pollsBefore: 2, pollsAfter: 3, unlinked: false, throttled: false), "it read the zone")
-        XCTAssertFalse(HubSession.linkFetchNeedsSecondPull(
-            refreshed: true, pollsBefore: 2, pollsAfter: 2, unlinked: false, throttled: true), "throttled")
-        XCTAssertFalse(HubSession.linkFetchNeedsSecondPull(
-            refreshed: true, pollsBefore: 2, pollsAfter: 2, unlinked: true, throttled: false), "unlinked")
-        XCTAssertFalse(HubSession.linkFetchNeedsSecondPull(
-            refreshed: false, pollsBefore: 2, pollsAfter: 2, unlinked: false, throttled: false), "the fetch failed")
+        XCTAssertTrue(HubSession.linkFetchNeedsSecondPull(refreshed: true, moved: false, unlinked: false, throttled: false))
+        XCTAssertFalse(
+            HubSession.linkFetchNeedsSecondPull(refreshed: true, moved: true, unlinked: false, throttled: false), "it read them")
+        XCTAssertFalse(
+            HubSession.linkFetchNeedsSecondPull(refreshed: true, moved: false, unlinked: false, throttled: true), "throttled")
+        XCTAssertFalse(
+            HubSession.linkFetchNeedsSecondPull(refreshed: true, moved: false, unlinked: true, throttled: false), "unlinked")
+        XCTAssertFalse(
+            HubSession.linkFetchNeedsSecondPull(refreshed: false, moved: false, unlinked: false, throttled: false), "failed")
+    }
+
+    /// A completing link reads the replica after a fetch that also read the mailbox, whichever source showed it.
+    func testALinkCompletesThroughAFetchThatReadTheMailbox() async throws {
+        let payload = code()
+        macLinks(payload)
+        let model = makeModel()
+
+        await model.open(payload.url())
+
+        XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
+        XCTAssertEqual(host.completionHubIDs, [helloAcme])
+    }
+
+    // MARK: A keybox this phone cannot open
+
+    /// A re-pair over an old keybox sealed to a key this phone no longer has: it is the baseline by its fingerprint,
+    /// the hello goes out, and the Mac's new keybox completes the link (codex review, #2189).
+    func testARePairOverAnUnopenableKeyboxLinks() async throws {
+        let payload = code()
+        host.macOpaque = { writes in writes.isEmpty ? "old-keybox" : nil }
+        macLinks(payload)
+        let model = makeModel()
+
+        await model.open(payload.url())
+
+        XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
+        XCTAssertEqual(host.directSaves, [helloAcme], "the hello went out")
+    }
+
+    /// An opaque baseline and a record that still does not open: no answer, never a failure to reach iCloud.
+    func testAStillUnopenableKeyboxIsNoAnswer() async throws {
+        host.macOpaque = { _ in "old-keybox" }
+        let model = makeModel()
+
+        await model.open(code().url())
+
+        XCTAssertEqual(model.phase, .failed(.noAnswer))
+        XCTAssertEqual(host.directSaves, [helloAcme])
+    }
+
+    /// A resume whose baseline is opaque: the old keybox stays unopenable for a while, then the Mac's answer opens.
+    func testAResumeWithAnOpaqueBaselineTakesTheAnswer() async throws {
+        try keyStore.saveHubLink(try ScannedHubKeys(code()).unconfirmedLink)
+        let record = linkRecordForResume()
+        LinkStore(defaults: defaults).pending = PendingLink(
+            link: record, deadline: start.addingTimeInterval(60), baseline: nil, baselineCaptured: true,
+            issuedAt: start.addingTimeInterval(-10), baselineSource: .server, baselineFingerprint: "old-keybox"
+        )
+        let answerAt = start.addingTimeInterval(6)
+        host.macOpaque = { [clock] _ in
+            guard let clock, clock.now() >= answerAt else { return "old-keybox" }
+            return nil
+        }
+        let refused = refusal(.notConfirmed, decidedAt: start.addingTimeInterval(1))
+        host.mac = { _ in refused }
+        let model = makeModel()
+
+        await model.resumePendingLink()
+
+        XCTAssertEqual(model.phase, .failed(.refused), "any keybox that opens differs from an opaque baseline")
+        XCTAssertGreaterThanOrEqual(clock.slept, 6)
+    }
+
+    func testABaselineFingerprintSurvivesAndAnOlderValueReadsWithoutOne() throws {
+        let opaque = PendingLink(
+            link: linkRecordForResume(), deadline: start, baseline: nil, baselineCaptured: true, baselineFingerprint: "fp"
+        )
+        let decoded = try JSONDecoder().decode(PendingLink.self, from: JSONEncoder().encode(opaque))
+        XCTAssertEqual(decoded.keyboxBaseline, .opaque("fp"))
+
+        let stale = staleRefusal
+        var object = try XCTUnwrap(try JSONSerialization.jsonObject(with: JSONEncoder().encode(PendingLink(
+            link: linkRecordForResume(), deadline: start, baseline: stale, baselineCaptured: true
+        ))) as? [String: Any])
+        object.removeValue(forKey: "baselineFingerprint")
+        let older = try JSONDecoder().decode(PendingLink.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertEqual(older.keyboxBaseline, .grant(stale))
+        XCTAssertTrue(older.differsFromBaseline(refusal(.notConfirmed, decidedAt: start)))
+        XCTAssertFalse(older.differsFromBaseline(stale))
+        XCTAssertTrue(decoded.differsFromBaseline(stale), "any grant that opens differs from an opaque baseline")
     }
 
     // MARK: The session's mapping of a read
 
-    func testAReadsThrowIsUnavailableNeverAnAbsence() async throws {
+    func testAReadKeepsAbsentUnopenableAndFailedApart() async throws {
+        let sealed = Data("sealed".utf8)
         let failures: [any Error] = [
             CancellationError(), KeyStoreError.locked, SecureTransportError.keysUnavailable, DirectCallRefusal.unreadableRecord,
             DirectCallRefusal.throttled
         ]
         for failure in failures {
-            let read = await HubSession.keyboxRead { throw failure }
-            guard case .unavailable = read else { return XCTFail("\(failure) read as \(read)") }
+            let fetchFailed = await HubSession.keyboxRead { throw failure } open: { _ in nil }
+            guard case .unavailable = fetchFailed else { return XCTFail("\(failure) read as \(fetchFailed)") }
         }
-        let absent = await HubSession.keyboxRead { nil }
+        for failure in [KeyStoreError.locked as any Error, SecureTransportError.keysUnavailable] {
+            let openFailed = await HubSession.keyboxRead { sealed } open: { _ in throw failure }
+            guard case .unavailable = openFailed else { return XCTFail("\(failure) on open read as \(openFailed)") }
+        }
+        let unopenable = await HubSession.keyboxRead { sealed } open: { _ in throw EnvelopeError.authenticationFailed }
+        XCTAssertEqual(unopenable, .opaque(fingerprint: KeyboxRead.fingerprint(sealed)), "a fingerprint, never a grant")
+        let absent = await HubSession.keyboxRead { nil } open: { _ in nil }
         XCTAssertEqual(absent, .read(nil))
         let box = Keybox(grant: staleRefusal, keys: nil)
-        let present = await HubSession.keyboxRead { box }
+        let present = await HubSession.keyboxRead { sealed } open: { _ in box }
         XCTAssertEqual(present, .read(box))
     }
 }

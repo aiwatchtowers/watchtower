@@ -93,7 +93,13 @@ extension CloudKitTransport {
         }
         let start = now()
         if throttledSince == nil { throttledSince = start }
-        throttledUntil = start.addingTimeInterval(delay)
+        let deadline = start.addingTimeInterval(delay)
+        if let throttledUntil, throttledUntil >= deadline {
+            // A longer throttle stands: it is kept, and so is the retry waiting for it.
+            logger.notice("CloudKit throttled sync; a longer wait already stands")
+            return
+        }
+        throttledUntil = deadline
         logger.notice("CloudKit throttled sync; retrying in \(delay, privacy: .public) s")
         retryTask?.cancel()
         retryTask = Task { [weak self, sleep] in

@@ -19,9 +19,9 @@ public enum DirectCallRefusal: Error, Equatable, Sendable {
 /// goes out.
 extension CloudKitTransport {
     /// The server's current copy of one record by its wire name: one `record(for:)`. nil only when the server has no
-    /// such record; one it holds that does not map throws `DirectCallRefusal.unreadableRecord` (as `serverCopy`'s
-    /// `unreadableRecord`), never nil. Throws `DirectCallRefusal.throttled`/`.unlinked` without a request, and what
-    /// CloudKit threw.
+    /// such record (also a `partialFailure` whose entry for it is `unknownItem`); one it holds that does not map throws
+    /// `DirectCallRefusal.unreadableRecord` (as `serverCopy`'s `unreadableRecord`), never nil. Throws
+    /// `DirectCallRefusal.throttled`/`.unlinked` without a request, and what CloudKit threw.
     public func serverRecord(named recordName: String, in zone: CloudZoneID) async throws -> CloudRecord? {
         try checkDirectCallAllowed()
         let throttleAtStart = throttledUntil
@@ -30,6 +30,9 @@ extension CloudKitTransport {
         let server: CKRecord?
         do {
             server = try await conditionalDatabase().fetchRecord(id)
+        } catch let error as CKError
+            where error.code == .partialFailure && (error.partialErrorsByItemID?[id] as? CKError)?.code == .unknownItem {
+            server = nil
         } catch let error as CKError {
             applyDirectCallFailure(error, recordID: id)
             throw error

@@ -355,6 +355,18 @@ final class FakeLinkHost: LinkHost {
         didSet { unpark() }
     }
 
+    /// A keybox on both sources that this phone cannot open (sealed to a key it no longer has): its fingerprint for
+    /// the device records written so far; nil = none such, `mac` decides.
+    var macOpaque: (@MainActor (_ writes: [DevicePayload]) -> String?)?
+
+    /// Every `completionKeybox` (a fetch that also read the mailbox), by hub, in call order.
+    private(set) var completionHubIDs: [String] = []
+
+    func completionKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
+        completionHubIDs.append(hubID)
+        return await fetchKeybox(hubID: hubID, deviceID: deviceID)
+    }
+
     func fetchKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
         grantHubIDs.append(hubID)
         let writes = (try? await deviceWrites()) ?? []
@@ -362,6 +374,7 @@ final class FakeLinkHost: LinkHost {
         await park { self.parksFetchGrant || (self.parksReadsAfterWrite && !writes.isEmpty) }
         if refreshFails || Task.isCancelled { return .unavailable(reason: "fetch failed") }
         fetchedHubs.insert(hubID)
+        if let fingerprint = macOpaque?(writes) { return .opaque(fingerprint: fingerprint) }
         return .read(await storedKeybox(hubID: hubID, deviceID: deviceID))
     }
 
@@ -375,6 +388,7 @@ final class FakeLinkHost: LinkHost {
             failingServerReads -= 1
             return .unavailable(reason: "read failed")
         }
+        if let fingerprint = macOpaque?(writes) { return .opaque(fingerprint: fingerprint) }
         return .read(keybox(mac(writes)))
     }
 
@@ -411,6 +425,7 @@ final class FakeLinkHost: LinkHost {
 
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox? {
         let writes = (try? await deviceWrites()) ?? []
+        if macOpaque?(writes) != nil { return nil }
         return keybox((replicaMac ?? mac)(writes))
     }
 

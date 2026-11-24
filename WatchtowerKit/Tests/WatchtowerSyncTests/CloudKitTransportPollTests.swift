@@ -296,4 +296,19 @@ final class CloudKitTransportPollTests: XCTestCase {
         let throttled = await transport.throttledUntil
         XCTAssertNotNil(throttled, "the refetch's success did not clear it")
     }
+
+    func testThePullCountsTheRelayZonePollApart() async throws {
+        let engine = FakeSyncEngine()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+        try await transport.pull()
+        let relay = await transport.relayZonePollsCompleted
+        XCTAssertEqual(relay, 1)
+
+        engine.enqueueZonePage(.failure(CKError(.serverRejectedRequest)), zoneName: HubZones.testRelayZoneName)
+        _ = try? await transport.pull()
+        let data = await transport.dataZonePollsCompleted
+        let relayAfter = await transport.relayZonePollsCompleted
+        XCTAssertEqual(data, 2, "the data zone read again")
+        XCTAssertEqual(relayAfter, 1, "the mailbox was not")
+    }
 }

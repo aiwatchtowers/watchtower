@@ -962,6 +962,16 @@ public final class ReplicaStore: Sendable {
         return seconds.map(Date.init(timeIntervalSince1970:))
     }
 
+    /// This phone's keybox envelope as stored, sealed (`device_grant-<device_id>`), from an ALREADY-OPEN database; nil
+    /// when the record is absent. The link flow fingerprints one that does not open (#2189).
+    public func keyboxEnvelope(deviceID: UUID, from db: Database) throws -> Data? {
+        try Data.fetchOne(
+            db,
+            sql: "SELECT payload FROM slice_records WHERE plain_name = ?",
+            arguments: [SliceKind.deviceGrant.recordName(id: deviceID.uuidString)]
+        )
+    }
+
     /// This phone's whole keybox (`device_grant-<device_id>`, the epoch keys included), from an ALREADY-OPEN
     /// database; nil when the record is absent. A locked keychain throws `KeyStoreError.locked`, and an envelope
     /// that does not open throws its `EnvelopeError` (counted): absent, locked and unreadable stay apart.

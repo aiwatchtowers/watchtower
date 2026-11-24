@@ -213,7 +213,12 @@ extension CloudKitTransport {
                 }
                 try store.setPollToken(page.changeToken, zone: zone)
                 moreComing = page.moreComing
-                if zone == .data, !moreComing { dataZonePollsCompleted += 1 }
+                if !moreComing {
+                    switch zone {
+                    case .data: dataZonePollsCompleted += 1
+                    case .relay: relayZonePollsCompleted += 1
+                    }
+                }
             }
         }
         if allZonesUpToDate, engineBufferFailures == failuresBefore {

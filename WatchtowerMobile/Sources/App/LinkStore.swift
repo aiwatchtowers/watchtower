@@ -281,6 +281,9 @@ struct PendingLink: Codable, Equatable, Sendable {
     /// `baselineSource` held it: an earlier answer (a refusal of another
     /// code) is not this scan's.
     let baseline: DeviceGrant?
+    /// The baseline was a keybox this phone could not open (#2189: a re-pair over a keybox sealed to a key it no
+    /// longer has): the fingerprint of its sealed bytes, `baseline` nil. Absent in an older build's value.
+    let baselineFingerprint: String?
     /// `baseline` was read (nil then means no grant). false while the sync
     /// stack restarts, before the device record is written; a value saved
     /// by an older build reads false, and so does one whose `baselineSource`
@@ -313,8 +316,10 @@ struct PendingLink: Codable, Equatable, Sendable {
         relaySlot: String? = nil,
         relaySlotExpiresAt: Date? = nil,
         baselineSource: KeyboxSource? = nil,
-        helloSent: Bool = true
+        helloSent: Bool = true,
+        baselineFingerprint: String? = nil
     ) {
+        self.baselineFingerprint = baselineFingerprint
         self.link = link
         self.deadline = deadline
         self.baseline = baseline
@@ -331,6 +336,7 @@ struct PendingLink: Codable, Equatable, Sendable {
         link = try container.decode(LinkRecord.self, forKey: .link)
         deadline = try container.decode(Date.self, forKey: .deadline)
         baseline = try container.decodeIfPresent(DeviceGrant.self, forKey: .baseline)
+        baselineFingerprint = try container.decodeIfPresent(String.self, forKey: .baselineFingerprint)
         let captured = try container.decodeIfPresent(Bool.self, forKey: .baselineCaptured) ?? false
         do {
             baselineSource = try container.decodeIfPresent(KeyboxSource.self, forKey: .baselineSource)
@@ -345,6 +351,28 @@ struct PendingLink: Codable, Equatable, Sendable {
         relaySlot = try container.decodeIfPresent(String.self, forKey: .relaySlot)
         relaySlotExpiresAt = try container.decodeIfPresent(Date.self, forKey: .relaySlotExpiresAt)
         linkedAt = try container.decodeIfPresent(Date.self, forKey: .linkedAt)
+    }
+}
+
+/// The baseline as the link flow compares it (#2189).
+enum KeyboxBaseline: Equatable {
+    /// No keybox before the hello.
+    case none
+    case grant(DeviceGrant)
+    /// One this phone could not open: only its fingerprint.
+    case opaque(String)
+}
+
+extension PendingLink {
+    var keyboxBaseline: KeyboxBaseline {
+        if let baselineFingerprint { return .opaque(baselineFingerprint) }
+        return baseline.map(KeyboxBaseline.grant) ?? .none
+    }
+
+    /// An opened grant answers only when it differs from the baseline; any grant that opens differs from an opaque one.
+    func differsFromBaseline(_ grant: DeviceGrant) -> Bool {
+        if case .grant(let base) = keyboxBaseline { return grant != base }
+        return true
     }
 }
 

@@ -18,19 +18,40 @@ extension HubSession {
         guard let direct = directCloud else { return .unavailable(reason: "no direct read on this route") }
         let location = Self.keyboxLocation(deviceID: deviceID)
         return await Self.keyboxRead {
-            guard let record = try await direct.cloud.serverRecord(named: location.recordName, in: location.zone) else {
-                return nil
-            }
-            return try await direct.secure.openKeybox(sealed: record.payload, deviceID: deviceID)
+            try await direct.cloud.serverRecord(named: location.recordName, in: location.zone)?.payload
+        } open: { sealed in
+            try await direct.secure.openKeybox(sealed: sealed, deviceID: deviceID)
         }
     }
 
-    /// A keybox read's outcome as the link flow takes it: the copy, or nil only when the source holds none. Any throw
-    /// is `.unavailable` (a record that does not map or open, locked keys, a throttle, a CloudKit failure, a
-    /// cancellation), never an absence. Logged at debug (the link flow logs a wait's first one); a cancellation not.
-    static func keyboxRead(_ read: () async throws -> Keybox?) async -> KeyboxRead {
+    /// This phone's keybox as the replica holds it, without a fetch: as `serverKeybox` reads the server's.
+    func replicaKeybox(deviceID: UUID) async -> KeyboxRead {
+        let store = store
+        return await Self.keyboxRead {
+            try store.reader.read { db in try store.keyboxEnvelope(deviceID: deviceID, from: db) }
+        } open: { _ in
+            try self.keybox(deviceID: deviceID)
+        }
+    }
+
+    /// A keybox read's outcome as the link flow takes it (#2189), three ways apart:
+    /// - absent (`fetch` returned nil): `.read(nil)`;
+    /// - present and opened: `.read(keybox)`;
+    /// - present but not opening (`EnvelopeError`: sealed to a key this phone no longer has, signed by a reset hub's
+    ///   old key, a newer format): `.opaque` with a fingerprint of the sealed bytes, never the grant, so a re-pair over
+    ///   an old keybox still has a baseline;
+    /// - a failed request or any other throw (a throttle, the unlink, a record that does not map, locked keys, a
+    ///   cancellation): `.unavailable`. Logged at debug (the link flow logs a wait's first one); a cancellation not.
+    static func keyboxRead(
+        fetch: () async throws -> Data?, open: (Data) async throws -> Keybox?
+    ) async -> KeyboxRead {
         do {
-            return .read(try await read())
+            guard let sealed = try await fetch() else { return .read(nil) }
+            do {
+                return .read(try await open(sealed))
+            } catch is EnvelopeError {
+                return .opaque(fingerprint: KeyboxRead.fingerprint(sealed))
+            }
         } catch is CancellationError {
             return .unavailable(reason: "cancelled")
         } catch {
@@ -40,47 +61,53 @@ extension HubSession {
         }
     }
 
-    /// One fetch for the link flow's replica read (`LinkHost.fetchKeybox`): true only when it brought the data zone in.
-    /// On CloudKit a pull skipped by a throttle or the unlink, or cut short, returns normally and `refresh` counts it
-    /// as no data, and a later zone's `zoneNotFound` unlinks the transport and returns normally too; so the data
-    /// zone's completed polls are compared around it, and the transport must not be unlinked after it
-    /// (`linkFetchCompleted`). A fetch that joined a pull already past the data zone (the launch's) moves no count
-    /// although nothing went wrong: when the transport is neither throttled nor unlinked, one more fetch (a new pull)
-    /// is judged instead (`linkFetchNeedsSecondPull`).
-    func refreshForLink() async -> Bool {
+    /// One fetch for the link flow's replica read (`LinkHost.fetchKeybox`, `LinkHost.completionKeybox`): true only
+    /// when it brought the data zone in (and, with `mailbox`, the relay zone too: the R4 `hub_on_relay` check of a
+    /// completing link reads the mailbox). On CloudKit a pull skipped by a throttle or the unlink, or cut short,
+    /// returns normally and `refresh` counts it as no data, and a later zone's `zoneNotFound` unlinks the transport
+    /// and returns normally too; so the zones' completed polls are compared around it, and the transport must not be
+    /// unlinked after it (`linkFetchCompleted`). A fetch that joined a pull already past a zone (the launch's) moves no
+    /// count although nothing went wrong: when the transport is neither throttled nor unlinked, one more fetch (a new
+    /// pull) is judged instead (`linkFetchNeedsSecondPull`).
+    func refreshForLink(mailbox: Bool) async -> Bool {
         guard let cloud = directCloud?.cloud else { return await refresh(.link) }
-        var outcome = await linkFetch(cloud)
+        var outcome = await linkFetch(cloud, mailbox: mailbox)
         if Self.linkFetchNeedsSecondPull(
-            refreshed: outcome.refreshed, pollsBefore: outcome.before, pollsAfter: outcome.after,
-            unlinked: outcome.unlinked, throttled: await cloud.isThrottled
+            refreshed: outcome.refreshed, moved: outcome.moved, unlinked: outcome.unlinked, throttled: await cloud.isThrottled
         ) {
-            outcome = await linkFetch(cloud)
+            outcome = await linkFetch(cloud, mailbox: mailbox)
         }
-        return Self.linkFetchCompleted(
-            refreshed: outcome.refreshed, pollsBefore: outcome.before, pollsAfter: outcome.after, unlinked: outcome.unlinked)
+        return Self.linkFetchCompleted(refreshed: outcome.refreshed, moved: outcome.moved, unlinked: outcome.unlinked)
     }
 
-    /// One `refresh(.link)` with the data zone's completed polls around it and the unlink after it.
-    private func linkFetch(_ cloud: CloudKitTransport) async -> (refreshed: Bool, before: Int, after: Int, unlinked: Bool) {
-        let before = await cloud.dataZonePollsCompleted
+    /// One `refresh(.link)` with the zones' completed polls around it and the unlink after it.
+    private func linkFetch(_ cloud: CloudKitTransport, mailbox: Bool) async -> (refreshed: Bool, moved: Bool, unlinked: Bool) {
+        let before = LinkFetchCounts(data: await cloud.dataZonePollsCompleted, relay: await cloud.relayZonePollsCompleted)
         let refreshed = await refresh(.link)
-        return (refreshed, before, await cloud.dataZonePollsCompleted, await cloud.isUnlinked)
+        let after = LinkFetchCounts(data: await cloud.dataZonePollsCompleted, relay: await cloud.relayZonePollsCompleted)
+        return (refreshed, Self.linkFetchMoved(before: before, after: after, mailbox: mailbox), await cloud.isUnlinked)
     }
 
-    /// A fetch that succeeded but moved no data-zone poll, on a transport neither throttled nor unlinked: it joined a
-    /// pull already past the data zone, so one more fetch is worth judging.
-    static func linkFetchNeedsSecondPull(
-        refreshed: Bool, pollsBefore: Int, pollsAfter: Int, unlinked: Bool, throttled: Bool
-    ) -> Bool {
-        refreshed && pollsAfter == pollsBefore && !unlinked && !throttled
+    /// The zones' completed polls (`CloudKitTransport.dataZonePollsCompleted`, `relayZonePollsCompleted`).
+    struct LinkFetchCounts: Equatable {
+        var data: Int
+        var relay: Int
     }
 
-    /// A fetch that succeeded, left the transport linked and, on CloudKit (the poll counts given), polled the data zone
-    /// to its end during it.
-    static func linkFetchCompleted(refreshed: Bool, pollsBefore: Int?, pollsAfter: Int?, unlinked: Bool) -> Bool {
-        guard refreshed, !unlinked else { return false }
-        guard let pollsBefore, let pollsAfter else { return true }
-        return pollsAfter > pollsBefore
+    /// The fetch polled the data zone to its end, and with `mailbox` the relay zone too.
+    static func linkFetchMoved(before: LinkFetchCounts, after: LinkFetchCounts, mailbox: Bool) -> Bool {
+        after.data > before.data && (!mailbox || after.relay > before.relay)
+    }
+
+    /// A fetch that succeeded but did not move the zones it needed, on a transport neither throttled nor unlinked: it
+    /// joined a pull already past them, so one more fetch is worth judging.
+    static func linkFetchNeedsSecondPull(refreshed: Bool, moved: Bool, unlinked: Bool, throttled: Bool) -> Bool {
+        refreshed && !moved && !unlinked && !throttled
+    }
+
+    /// A CloudKit fetch that succeeded, left the transport linked and polled the zones it needed.
+    static func linkFetchCompleted(refreshed: Bool, moved: Bool, unlinked: Bool) -> Bool {
+        refreshed && !unlinked && moved
     }
 
     /// Saves `record` sealed with this session's keys straight to CloudKit (`CloudKitTransport.saveDirectly`, outside

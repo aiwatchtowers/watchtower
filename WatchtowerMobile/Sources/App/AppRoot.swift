@@ -993,10 +993,19 @@ extension AppRoot: LinkHost {
     }
 
     func fetchKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
+        await fetchedKeybox(hubID: hubID, deviceID: deviceID, mailbox: false)
+    }
+
+    func completionKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
+        await fetchedKeybox(hubID: hubID, deviceID: deviceID, mailbox: true)
+    }
+
+    /// One fetch that read the zones it needs (a pull skipped by a throttle or cut short does not count: the replica's
+    /// copy would read as an absence), then the replica's keybox.
+    private func fetchedKeybox(hubID: String, deviceID: String, mailbox: Bool) async -> KeyboxRead {
         guard let session = env.session(hubID) else { return .unavailable(reason: "no session") }
-        // A pull skipped by a throttle or cut short does not count: the replica's copy would read as an absence.
-        guard await session.refreshForLink() else { return .unavailable(reason: "the fetch did not read the zone") }
-        return replicaKeybox(session, deviceID: deviceID)
+        guard await session.refreshForLink(mailbox: mailbox) else { return .unavailable(reason: "the fetch did not read the zone") }
+        return await replicaKeybox(session, deviceID: deviceID)
     }
 
     func serverKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
@@ -1011,24 +1020,23 @@ extension AppRoot: LinkHost {
     }
 
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox? {
-        guard let session = env.session(hubID), case .read(let keybox) = replicaKeybox(session, deviceID: deviceID) else {
-            return nil
-        }
+        guard let session = env.session(hubID), case .read(let keybox) = await replicaKeybox(session, deviceID: deviceID)
+        else { return nil }
         return keybox
     }
 
-    /// The replica's keybox of this phone: an absence is `.read(nil)`, a copy that does not open `.unavailable`.
-    private func replicaKeybox(_ session: HubSession, deviceID: String) -> KeyboxRead {
+    /// The replica's keybox of this phone (`HubSession.replicaKeybox`): an absence is `.read(nil)`, a copy that does
+    /// not open `.opaque`, a failed read `.unavailable`.
+    private func replicaKeybox(_ session: HubSession, deviceID: String) async -> KeyboxRead {
         guard let id = UUID(uuidString: deviceID) else {
             Self.logger.error("keybox read for a device id that is not a UUID")
             return .unavailable(reason: "a device id that is not a UUID")
         }
-        do {
-            return .read(try session.keybox(deviceID: id))
-        } catch {
-            Self.logger.error("keybox read failed: \(String(describing: error), privacy: .public)")
-            return .unavailable(reason: String(describing: error))
+        let read = await session.replicaKeybox(deviceID: id)
+        if case .unavailable(let reason) = read, reason != "cancelled" {
+            Self.logger.error("keybox read failed: \(reason, privacy: .public)")
         }
+        return read
     }
 
     func mergeKeybox(_ keys: KeyboxKeys, hubID: String, now: Date, reseal: KeyboxMergeReseal) async throws -> KeyboxMerge? {

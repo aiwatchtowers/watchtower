@@ -185,6 +185,45 @@ final class CloudKitLinkDirectTests: XCTestCase {
         XCTAssertTrue(unlinked)
     }
 
+    /// A partial failure whose entry for the requested record is `unknownItem` is an absence; one about another
+    /// record still throws.
+    func testAPartialUnknownItemForTheRecordIsAnAbsence() async throws {
+        let id = CKRecord.ID(recordName: "keybox-DEVICE", zoneID: zones.zoneID(for: .data))
+        let other = CKRecord.ID(recordName: "keybox-OTHER", zoneID: zones.zoneID(for: .data))
+        let (transport, database, _) = try make()
+        database.fetchFailures = [
+            CKError(.partialFailure, userInfo: [CKPartialErrorsByItemIDKey: [id: CKError(.unknownItem)]]),
+            CKError(.partialFailure, userInfo: [CKPartialErrorsByItemIDKey: [other: CKError(.unknownItem)]])
+        ]
+
+        let absent = try await transport.serverRecord(named: "keybox-DEVICE", in: .data)
+        XCTAssertNil(absent)
+        do {
+            _ = try await transport.serverRecord(named: "keybox-DEVICE", in: .data)
+            XCTFail("expected a throw")
+        } catch let error as CKError {
+            XCTAssertEqual(error.code, .partialFailure)
+        }
+    }
+
+    /// A shorter throttle never shortens a longer one, nor cancels the retry waiting for it.
+    func testAShorterThrottleKeepsTheLongerOne() async throws {
+        let sleeps = Collector<TimeInterval>()
+        let transport = CloudKitTransport.conditionalTesting(store: try .inMemory(), database: FakeConditionalDatabase()) {
+            sleeps.append($0)
+            try? await Task.sleep(for: .seconds(3_600))
+        }
+        _ = await transport.applyThrottle(from: [CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 60.0])])
+        let long = await transport.throttledUntil
+        _ = await transport.applyThrottle(from: [CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 5.0])])
+
+        let after = await transport.throttledUntil
+        XCTAssertEqual(after, long, "the later deadline stands")
+        for _ in 0..<10_000 where sleeps.values.isEmpty { await Task.yield() }
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(sleeps.values, [60], "one retry, for the longer wait")
+    }
+
     func testAServiceOutageWithoutRetryAfterDoesNotThrottle() async throws {
         let (transport, database, _) = try make()
         database.fetchFailures = [CKError(.serviceUnavailable)]

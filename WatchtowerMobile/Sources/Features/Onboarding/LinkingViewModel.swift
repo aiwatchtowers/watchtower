@@ -423,7 +423,7 @@ final class LinkingViewModel {
         }
         var pending = PendingLink(
             link: record, deadline: deadline, baseline: baseline.grant, baselineCaptured: true, issuedAt: issuedAt,
-            baselineSource: baseline.source, helloSent: false
+            baselineSource: baseline.source, helloSent: false, baselineFingerprint: baseline.fingerprint
         )
         store.pending = pending
         do {
@@ -692,16 +692,18 @@ final class LinkingViewModel {
         phase = .waiting(macName: pending.link.macName)
         while true {
             if let deviceID = identity.deviceID {
-                switch await readKeybox(hubID: hubID, deviceID: deviceID, from: source) {
-                case .read(let read):
-                    let keybox = read.flatMap { $0.grant.hubID == hubID ? $0 : nil }
+                let result = await readKeybox(hubID: hubID, deviceID: deviceID, from: source)
+                switch result {
+                case .read, .opaque:
+                    // A keybox that does not open is no answer, as none at all (#2189).
+                    let keybox = Self.openedKeybox(result, hubID: hubID)
                     if let unsent = resend {
                         guard let settled = await settleUnsentHello(keybox, pending: pending, code: code, resend: unsent)
                         else { return }
                         pending = settled
                         if pending.helloSent { resend = nil }
                     }
-                    if let keybox, await answer(keybox, from: source, pending: pending, code: code, deviceID: deviceID) {
+                    if let keybox, await answer(keybox, pending: pending, code: code, deviceID: deviceID) {
                         return
                     }
                 case .unavailable(let reason) where !Task.isCancelled:
@@ -748,7 +750,7 @@ final class LinkingViewModel {
             if grant.awaitingConfirmation == true, grant.linkRefused == nil, grant.linkCodeTag == code.linkCodeTag {
                 return markHelloSent(pending)
             }
-            let refused = grant.linkRefused != nil && grant != pending.baseline
+            let refused = grant.linkRefused != nil && pending.differsFromBaseline(grant)
             if refused || (Self.answersAsLinked(grant, pending) && keybox.keys != nil) { return pending }
         }
         return await resend(pending)
@@ -758,11 +760,9 @@ final class LinkingViewModel {
     /// differs from the baseline. A waiting keybox counts by the link code it names instead: an unchanged re-send of
     /// this QR keeps the Mac's request (equal to the baseline) and still gives the code; one left from an earlier
     /// code never does.
-    private func answer(
-        _ keybox: Keybox, from source: KeyboxSource, pending: PendingLink, code: PairingCode, deviceID: String
-    ) async -> Bool {
+    private func answer(_ keybox: Keybox, pending: PendingLink, code: PairingCode, deviceID: String) async -> Bool {
         let grant = keybox.grant
-        if grant != pending.baseline, grant.linkRefused != nil {
+        if pending.differsFromBaseline(grant), grant.linkRefused != nil {
             await fail(.refused, hubID: grant.hubID)
             return true
         }
@@ -772,29 +772,21 @@ final class LinkingViewModel {
                 Self.logger.warning("a linked keybox without keys: still waiting")
                 return false
             }
-            let linked: Keybox
-            if source == .server {
-                // The server's copy shows the link; the link completes only from the replica's. The fetch that brings
-                // it in also reads the data zone and the mailbox (the R4 relay check in `complete`, the ordered
-                // actions), and the linked keybox lands through `ReplicaStore`'s rollback checks. A failed fetch, or a
-                // replica not caught up yet, keeps waiting. A refusal or a waiting keybox read directly skips those
-                // marks: a replayed older copy (from whoever holds the storage) can at most end or stall this scan,
-                // which the storage can do anyway by withholding the Mac's answer, so the impact is denial of service
-                // only, and no key or link comes from such a copy.
-                guard case .read(let replica?) = await host?.fetchKeybox(hubID: grant.hubID, deviceID: deviceID),
-                      replica.grant.hubID == grant.hubID, Self.answersAsLinked(replica.grant, pending), replica.keys != nil
-                else {
-                    Self.logger.notice("linked on the server, not in the replica yet: still waiting")
-                    return false
-                }
-                linked = replica
-            } else {
-                linked = keybox
+            // The link completes only from the replica's copy after one fetch that read the data zone and the mailbox
+            // (`completionKeybox`: the R4 relay check in `complete` sees a waiting control, and the ordered actions),
+            // whichever source showed it; the linked keybox lands through `ReplicaStore`'s rollback checks. A failed
+            // fetch, or a replica not caught up yet, keeps waiting. A refusal or a waiting keybox read directly skips
+            // those marks: a replayed older copy (from whoever holds the storage) can at most end or stall this scan,
+            // which the storage can do anyway by withholding the Mac's answer, so the impact is denial of service only,
+            // and no key or link comes from such a copy.
+            guard case .read(let replica?) = await host?.completionKeybox(hubID: grant.hubID, deviceID: deviceID),
+                  replica.grant.hubID == grant.hubID, Self.answersAsLinked(replica.grant, pending), let boxKeys = replica.keys
+            else {
+                Self.logger.notice("linked, not in the replica with the mailbox read yet: still waiting")
+                return false
             }
-            if let boxKeys = linked.keys {
-                await complete(pending, keys: boxKeys, linkedAt: linked.grant.linkedAt)
-                return true
-            }
+            await complete(pending, keys: boxKeys, linkedAt: replica.grant.linkedAt)
+            return true
         } else if grant.awaitingConfirmation == true, grant.linkRefused == nil {
             let ours = grant.linkCodeTag == code.linkCodeTag
             macSeesPhone = ours
@@ -805,7 +797,14 @@ final class LinkingViewModel {
 
     /// A linked, unrevoked grant that differs from the baseline and was decided at or after the code's `iat`.
     private static func answersAsLinked(_ grant: DeviceGrant, _ pending: PendingLink) -> Bool {
-        grant != pending.baseline && grant.linked && grant.revoked != true && isDecided(grant.linkedAt, after: pending.issuedAt)
+        pending.differsFromBaseline(grant) && grant.linked && grant.revoked != true
+            && isDecided(grant.linkedAt, after: pending.issuedAt)
+    }
+
+    /// A read's keybox of `hubID` that opened; nil for none, one that does not open, or another hub's.
+    private static func openedKeybox(_ read: KeyboxRead, hubID: String) -> Keybox? {
+        guard case .read(let keybox?) = read, keybox.grant.hubID == hubID else { return nil }
+        return keybox
     }
 
     /// One poll's keybox read from `source`.
@@ -820,12 +819,30 @@ final class LinkingViewModel {
     /// The scan's baseline and where it came from: the server's copy of the keybox record by name (#2189: no wait on
     /// a fresh replica's full download), else one fetch of the session and the replica's copy (the relay's pairing
     /// slot, a failed direct read). nil when neither could say: the scan then writes no hello.
-    private func readBaseline(hubID: String, deviceID: String) async -> (grant: DeviceGrant?, source: KeyboxSource)? {
+    private func readBaseline(hubID: String, deviceID: String) async -> ScanBaseline? {
         guard let host else { return nil }
-        if case .read(let keybox) = await host.serverKeybox(hubID: hubID, deviceID: deviceID) { return (keybox?.grant, .server) }
+        if let baseline = ScanBaseline(await host.serverKeybox(hubID: hubID, deviceID: deviceID), source: .server) {
+            return baseline
+        }
         guard !Task.isCancelled else { return nil }
-        if case .read(let keybox) = await host.fetchKeybox(hubID: hubID, deviceID: deviceID) { return (keybox?.grant, .replica) }
-        return nil
+        return ScanBaseline(await host.fetchKeybox(hubID: hubID, deviceID: deviceID), source: .replica)
+    }
+
+    /// A scan's baseline: the grant, or a keybox that does not open by its fingerprint (#2189), and its source.
+    private struct ScanBaseline {
+        let grant: DeviceGrant?
+        let fingerprint: String?
+        let source: KeyboxSource
+
+        /// nil for an unavailable read: it says nothing about the Mac's last answer.
+        init?(_ read: KeyboxRead, source: KeyboxSource) {
+            switch read {
+            case .read(let keybox): (grant, fingerprint) = (keybox?.grant, nil)
+            case .opaque(let fingerprint): (grant, self.fingerprint) = (nil, fingerprint)
+            case .unavailable: return nil
+            }
+            self.source = source
+        }
     }
 
     /// A link decided at `decidedAt` (the Mac's clock) answers a code issued
@@ -1596,7 +1613,8 @@ extension LinkingViewModel {
         }
         var pending = PendingLink(
             link: record, deadline: deadline, baseline: baseline.grant, baselineCaptured: true, issuedAt: issuedAt,
-            relaySlot: slot.slot, relaySlotExpiresAt: slot.expiresAt, baselineSource: baseline.source, helloSent: false
+            relaySlot: slot.slot, relaySlotExpiresAt: slot.expiresAt, baselineSource: baseline.source, helloSent: false,
+            baselineFingerprint: baseline.fingerprint
         )
         store.pending = pending
         do {

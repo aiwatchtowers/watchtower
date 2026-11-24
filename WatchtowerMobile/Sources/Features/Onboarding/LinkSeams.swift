@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import WatchtowerHostedRelay
 import WatchtowerSync
@@ -122,6 +123,9 @@ protocol LinkHost: AnyObject {
     /// (`device_grant-<device_id>`, the epoch keys included). `.unavailable` when no session runs, the fetch failed
     /// (`HubSession.refresh` false) or the replica's copy did not open: never a guessed absence.
     func fetchKeybox(hubID: String, deviceID: String) async -> KeyboxRead
+    /// `fetchKeybox` for a completing link: its fetch must also have read the relay zone (the mailbox), so the R4
+    /// `hub_on_relay` check sees a waiting control (#2189).
+    func completionKeybox(hubID: String, deviceID: String) async -> KeyboxRead
     /// `hubID`'s keybox as its replica holds it, without a fetch.
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox?
     /// `hubID`'s keybox as the server holds it now (#2189): one read of `keybox-<DEVICE_ID>` by its fixed name,
@@ -200,8 +204,16 @@ protocol LinkHost: AnyObject {
 enum KeyboxRead: Equatable {
     /// The source's copy; nil when it holds none.
     case read(Keybox?)
+    /// The source holds a keybox this phone cannot open (sealed to a key it no longer has, signed by a reset hub's old
+    /// key): only a fingerprint of its sealed bytes, never a grant. A re-pair's baseline, never an answer.
+    case opaque(fingerprint: String)
     /// No such read here, or it failed (`reason` is for the log).
     case unavailable(reason: String)
+
+    /// A keybox envelope's fingerprint: SHA-256 of its sealed bytes, base64url.
+    static func fingerprint(_ sealed: Data) -> String {
+        WireBytes.base64URL(Data(SHA256.hash(data: sealed)))
+    }
 }
 
 /// What a wipe reports to the link flow.
