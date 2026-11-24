@@ -438,11 +438,13 @@ func TestNoticeTask_AdversarialCloseTagsIsFast(t *testing.T) {
 	for _, n := range []int{5000, 10000} {
 		text := "<task-notification>\n<task-id>a</task-id>\n<result>" + strings.Repeat("</result></status>", n) + "<status>x</task-notification>"
 		budget := maxTaskCloseAttempts
-		_, ok := taskChildren(text[len(taskOpen):], nil, &budget)
+		_, ok := taskChildren(text[len(taskOpen):], nil, &budget, false)
 		assert.False(t, ok)
 		assert.Less(t, budget, 0, "attempts are capped, whatever the input size")
 		assert.GreaterOrEqual(t, budget, -1)
-		assert.Nil(t, parseTaskNotification(text))
+		_, ok = parseTaskChildren(text)
+		assert.False(t, ok)
+		assert.Nil(t, noticeEntry("n1", text).Task)
 	}
 }
 
@@ -502,4 +504,34 @@ func TestNoticeTask_UnparsedNotificationKeepsItsText(t *testing.T) {
 	require.Len(t, res.Entries, 1)
 	assert.Nil(t, res.Entries[0].Task)
 	assert.Contains(t, res.Entries[0].Text, "<status>comp")
+}
+
+// Fix round 1 (codex P2): a result quoting a whole notification whose last
+// child is a result: the quoted `</result>` must not close the outer result,
+// and the outer fields after it (usage) are kept.
+func TestNoticeTask_ResultQuotingANotificationEndingInAResult(t *testing.T) {
+	quoted := "<task-notification>\n<task-id>zz</task-id>\n<result>inner</result>\n</task-notification>"
+	n := strings.Replace(agentNotice, `This agent's report was delivered to you as a message from "aaea0001".`, "It printed: "+quoted, 1)
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.NotNil(t, res.Entries[0].Task)
+	assert.Equal(t, "aaea0001", res.Entries[0].Task.TaskID)
+	assert.Equal(t, "It printed: "+quoted, res.Entries[0].Task.Result)
+	assert.Equal(t, 43545, res.Entries[0].Task.Tokens)
+}
+
+// Fix round 1 (codex P2): a complete summary before an unclosed result still
+// titles the entry; the truncated notification is no task.
+func TestNoticeTask_SummaryBeforeAnUnclosedResultTitles(t *testing.T) {
+	n := "<task-notification>\n<task-id>a1</task-id>\n<summary>Agent \"X\" finished</summary>\n<result>partial"
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Nil(t, res.Entries[0].Task)
+	assert.Equal(t, `Agent "X" finished`, res.Entries[0].Title)
+}
+
+// Fix round 1 (codex P3): a usage block with no number in it is no task field.
+func TestNoticeTask_UsageWithoutNumbersIsNoTask(t *testing.T) {
+	res := parseStr(t, join(userStr("n1", "<task-notification>\n<usage>unavailable</usage>\n</task-notification>")), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Nil(t, res.Entries[0].Task)
 }

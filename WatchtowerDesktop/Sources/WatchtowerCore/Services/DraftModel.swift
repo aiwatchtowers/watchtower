@@ -36,6 +36,9 @@ package struct DraftModel: Equatable, Sendable {
     /// `esc` is a lone ESC that ended its write, already read as the Esc
     /// key; only `[` or `O` next makes it the start of a sequence.
     private var escKey = false
+    /// An escape sequence past `maxEscapeBytes` was dropped and its tail is
+    /// consumed, unbuffered, up to its final byte (or a new ESC).
+    private var discard = false
     /// The characters typed since the draft was empty, the app's own paste
     /// or the cursor last became unknown — whether each is a backslash — so
     /// a Backspace knows whether the character then before the cursor is
@@ -121,7 +124,13 @@ package struct DraftModel: Equatable, Sendable {
                 esc = [] // it was the Esc key
                 escKey = false
             }
-            if inPaste {
+            if discard, byte == 0x1B {
+                discard = false // a new sequence ends the dropped one
+            }
+            if discard {
+                discard = !(0x40...0x7E).contains(byte) // its final byte ends it
+                edited = true
+            } else if inPaste {
                 pasteByte(byte, profile: profile)
                 edited = true
             } else if !esc.isEmpty || byte == 0x1B {
@@ -162,9 +171,11 @@ package struct DraftModel: Equatable, Sendable {
         escKey = false
         guard Self.escapeComplete(esc) else {
             guard esc.count >= Self.maxEscapeBytes else { return false }
-            // Dropped: what the program made of it is unknown, a Return it
+            // Dropped: its tail is consumed up to the final byte, never
+            // typed; what the program made of it is unknown, a Return it
             // may still have swallowed included — read as a `\`.
             esc = []
+            discard = true
             backslash = true
             setInexact()
             return true
@@ -191,10 +202,12 @@ package struct DraftModel: Equatable, Sendable {
         return true
     }
 
-    /// The longest escape sequence kept pending outside a paste: one not
-    /// complete by then (a CSI's parameters running on) is dropped, the draft
-    /// made inexact and the character before the cursor unknown, so untrusted
-    /// input never grows the buffer. Twin of Go `maxEscapeBytes`.
+    /// The longest escape sequence kept pending outside a paste, in raw
+    /// bytes: one not complete by then (only a CSI's parameters can run on)
+    /// is dropped — its tail consumed without buffering up to its final byte
+    /// (0x40–0x7E) or a new ESC — the draft made inexact and the character
+    /// before the cursor unknown, so untrusted input never grows the buffer.
+    /// Twin of Go `maxEscapeBytes`.
     static let maxEscapeBytes = 64
 
     /// Whether `seq` (starting with ESC) is a whole escape sequence: CSI

@@ -44,6 +44,9 @@ type draftModel struct {
 	// escKey: esc is a lone ESC that ended its write, already read as the
 	// Esc key; only `[` or `O` next makes it the start of a sequence.
 	escKey bool
+	// discard: an escape sequence past maxEscapeBytes was dropped and its
+	// tail is consumed, unbuffered, up to its final byte (or a new ESC).
+	discard bool
 	// run: the characters typed since the draft was empty, the app's own
 	// paste or the cursor last became unknown — `\` for a backslash, `.`
 	// for anything else — so a Backspace knows whether the character then
@@ -111,7 +114,13 @@ func (d *draftModel) feed(b []byte, prof Profile, dialog bool) draftKey {
 		if d.escKey && c != '[' && c != 'O' {
 			d.esc, d.escKey = "", false // it was the Esc key
 		}
+		if d.discard && c == 0x1B {
+			d.discard = false // a new sequence ends the dropped one
+		}
 		switch {
+		case d.discard:
+			d.discard = c < 0x40 || c > 0x7E // its final byte ends it
+			edited = true
 		case d.inPaste:
 			d.pasteByte(c, prof)
 			edited = true
@@ -151,16 +160,18 @@ func (d *draftModel) escapeByte(c byte, last bool) bool {
 		}
 		return false
 	}
-	d.esc += string(c)
+	d.esc += string([]byte{c}) // raw bytes, as the Swift twin counts
 	d.escKey = false
 	if !escapeComplete(d.esc) {
 		if len(d.esc) < maxEscapeBytes {
 			return false
 		}
-		// Dropped: what the program made of it is unknown, a Return
-		// it may still have swallowed included — read as a `\` (a
-		// Return holds).
+		// Dropped: its tail is consumed up to the final byte, never
+		// typed; what the program made of it is unknown, a Return it
+		// may still have swallowed included — read as a `\` (a Return
+		// holds).
 		d.esc = ""
+		d.discard = true
 		d.backslash = true
 		d.setInexact()
 		return true
@@ -187,10 +198,11 @@ func (d *draftModel) escapeByte(c byte, last bool) bool {
 	return true
 }
 
-// maxEscapeBytes caps an escape sequence pending outside a paste: one that
-// has not completed by then (a CSI's parameters running on) is dropped, the
-// draft made inexact and the character before the cursor unknown, so
-// untrusted input never grows the buffer.
+// maxEscapeBytes caps an escape sequence pending outside a paste, in raw
+// bytes: one that has not completed by then (only a CSI's parameters can run
+// on) is dropped — its tail consumed without buffering up to its final byte
+// (0x40–0x7E) or a new ESC — the draft made inexact and the character before
+// the cursor unknown, so untrusted input never grows the buffer.
 const maxEscapeBytes = 64
 
 // escapeComplete reports whether s (starting with ESC) is a whole escape
@@ -214,7 +226,7 @@ func escapeComplete(s string) bool {
 // wider or narrower than its bytes: a broken match makes the draft inexact.
 func (d *draftModel) pasteByte(c byte, prof Profile) {
 	if d.esc != "" {
-		if next := d.esc + string(c); strings.HasPrefix(escPasteEnd, next) {
+		if next := d.esc + string([]byte{c}); strings.HasPrefix(escPasteEnd, next) {
 			d.esc = next
 			if next == escPasteEnd {
 				d.esc, d.inPaste = "", false

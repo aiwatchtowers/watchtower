@@ -358,21 +358,21 @@ func noticeEntry(uuid, text string) Entry {
 		e.EventType = EventTask
 		// The same element-name-matched children as the task: a child
 		// quoting a close tag keeps its whole text. One that does not parse
-		// keeps its own text.
-		budget := maxTaskCloseAttempts
-		if kids, ok := taskChildren(text[len(taskOpen):], nil, &budget); ok {
+		// keeps its own text, titled by a summary among its leading
+		// complete children.
+		kids, ok := parseTaskChildren(text)
+		if ok {
 			lines := make([]string, 0, len(kids))
 			for _, k := range kids {
 				lines = append(lines, k.name+": "+k.value)
-				if k.name == "summary" && e.Title == "" {
-					e.Title = k.value
-				}
 			}
 			e.Text = strings.Join(lines, "\n")
 			e.Task = taskRef(taskFields(kids))
 		} else {
+			kids = leadingTaskChildren(text[len(taskOpen):])
 			e.Text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, taskOpen), taskClose))
 		}
+		e.Title = taskFields(kids)["summary"]
 	} else {
 		e.EventType = EventTeammate
 		body := strings.TrimPrefix(text, "<teammate-message")
@@ -414,10 +414,14 @@ type taskChild struct{ name, value string }
 // taskChildren consumes the children of a notification from rest up to its
 // closing tag, which it takes after the last child (a result may quote a whole
 // notification, so a child's close is tried at each occurrence until the rest
-// parses). The children come in document order.
-func taskChildren(rest string, kids []taskChild, budget *int) ([]taskChild, bool) {
+// parses). The children come in document order. lastClose takes the
+// notification's close only where no other `</task-notification>` follows it.
+// Ambiguity: the first close that parses wins, so where several readings
+// parse (a child quoting close tags) the shortest earlier child is taken —
+// parseTaskChildren tries the reading that runs to the last close first.
+func taskChildren(rest string, kids []taskChild, budget *int, lastClose bool) ([]taskChild, bool) {
 	rest = strings.TrimSpace(rest)
-	if strings.HasPrefix(rest, taskClose) {
+	if strings.HasPrefix(rest, taskClose) && (!lastClose || !strings.Contains(rest[len(taskClose):], taskClose)) {
 		return kids, true
 	}
 	if rest == "" || rest[0] != '<' {
@@ -440,7 +444,7 @@ func taskChildren(rest string, kids []taskChild, budget *int) ([]taskChild, bool
 			return nil, false // crafted text with many close tags: give up
 		}
 		next := append(slices.Clip(kids), taskChild{name, strings.TrimSpace(body[:i])})
-		if got, ok := taskChildren(body[i+len(closeTag):], next, budget); ok {
+		if got, ok := taskChildren(body[i+len(closeTag):], next, budget, lastClose); ok {
 			return got, true
 		}
 		off = i + len(closeTag)
@@ -467,25 +471,52 @@ func taskFields(kids []taskChild) map[string]string {
 // hasTaskField reports whether a notification carries a child the agent-
 // finished row shows; one with only unknown children is not a task.
 func hasTaskField(kids map[string]string) bool {
-	for _, k := range []string{"task-id", "tool-use-id", "status", "summary", "result", "output-file", "usage"} {
+	for _, k := range []string{"task-id", "tool-use-id", "status", "summary", "result", "output-file"} {
 		if _, ok := kids[k]; ok {
 			return true
 		}
 	}
-	return false
+	usage := kids["usage"] // only with a number in it
+	return taskTokensRe.MatchString(usage) || taskUsesRe.MatchString(usage) || taskDurRe.MatchString(usage)
 }
 
-// parseTaskNotification reads the structured task from the notification at
-// the start of text, up to its first closing tag (text after it, such as a
-// "read the output file" line, is ignored). Every child must close with its
-// own element name; a truncated or mismatched notification yields nil.
-func parseTaskNotification(text string) *TaskRef {
-	budget := maxTaskCloseAttempts
-	kids, ok := taskChildren(text[len(taskOpen):], nil, &budget)
-	if !ok {
-		return nil
+// parseTaskChildren reads the children of the notification at the start of
+// text, up to its closing tag (text after it, such as a "read the output
+// file" line, is ignored). Every child must close with its own element name;
+// a truncated or mismatched notification does not parse. The reading that
+// ends at the text's last `</task-notification>` is preferred (a result
+// quoting a whole notification keeps the outer fields after it), then the
+// first that parses; each try is bounded by maxTaskCloseAttempts.
+func parseTaskChildren(text string) ([]taskChild, bool) {
+	for _, lastClose := range []bool{true, false} {
+		budget := maxTaskCloseAttempts
+		if kids, ok := taskChildren(text[len(taskOpen):], nil, &budget, lastClose); ok {
+			return kids, true
+		}
 	}
-	return taskRef(taskFields(kids))
+	return nil, false
+}
+
+// leadingTaskChildren is the complete children at the start of a notification
+// that does not parse, each closed at its own first close tag, stopping at the
+// first one that is not (at most maxTaskCloseAttempts).
+func leadingTaskChildren(rest string) []taskChild {
+	var kids []taskChild
+	for range maxTaskCloseAttempts {
+		rest = strings.TrimSpace(rest)
+		gt := strings.IndexByte(rest, '>')
+		if rest == "" || rest[0] != '<' || gt < 2 || rest[1] == '/' {
+			break
+		}
+		name := rest[1:gt]
+		i := strings.Index(rest[gt+1:], "</"+name+">")
+		if i < 0 {
+			break
+		}
+		kids = append(kids, taskChild{name, strings.TrimSpace(rest[gt+1 : gt+1+i])})
+		rest = rest[gt+1+i+len(name)+3:]
+	}
+	return kids
 }
 
 // taskRef is the task a notification's children describe, nil when none of
