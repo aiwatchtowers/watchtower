@@ -59,8 +59,16 @@ final class AgentTextHighlightTests: XCTestCase {
         for (needle, tint) in tints {
             let attributes = attributes(of: needle, in: text)
             XCTAssertEqual(attributes[.foregroundColor] as? NSColor, tint, needle)
-            // D3: colour only — the font (weight) is the base text's, no background, no underline at rest.
-            XCTAssertEqual(attributes[.font] as? NSFont, self.attributes(of: needle, in: base)[.font] as? NSFont, needle)
+            // D3: no weight, no background, no underline at rest; hashes and paths in the base font's monospaced
+            // design (mock 04), refs and commands in the base font (a command is inline code, already monospaced).
+            let baseFont = self.attributes(of: needle, in: base)[.font] as? NSFont
+            let monospaced = needle == "67a59755a" || needle == "internal/a.go"
+            XCTAssertEqual(attributes[.font] as? NSFont,
+                           monospaced ? baseFont.map(AgentTextHighlightRender.monospaced) : baseFont, needle)
+            if monospaced, let font = attributes[.font] as? NSFont {
+                XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(.monoSpace), needle)
+                XCTAssertEqual(font.pointSize, baseFont?.pointSize, needle)
+            }
             XCTAssertNil(attributes[.backgroundColor], needle)
             XCTAssertNil(attributes[.underlineStyle], needle)
         }

@@ -83,6 +83,7 @@ final class WorkchatActivityPresenterTests: XCTestCase {
     func testSymbols() {
         XCTAssertEqual(WorkchatActivityPresenter.symbol(for: "Edit"), "pencil")
         XCTAssertEqual(WorkchatActivityPresenter.symbol(for: "mcp__x__y"), "powerplug")
+        XCTAssertEqual(WorkchatActivityPresenter.symbol(for: "SendMessage"), "paperplane")
         XCTAssertEqual(WorkchatActivityPresenter.symbol(for: "exec"), "gearshape")
     }
 

@@ -134,7 +134,7 @@ Depends on: Task 3 (JSON shape), Task 2 (`AgentTextHighlights.spans`, `SyntaxTin
   - `result == ""` → `result == nil` (the row shows no Result block); `details == "task aaea… · toolu_01…"` (ids cut to 12 chars + "…").
   - decode: an entry without `task` decodes with `task == nil`.
 - [ ] **Step 2:** `make test-swift FILTER='AgentFinishedPresentationTests|SessionFeed'` → FAIL.
-- [ ] **Step 3:** Implement; row per mock 05: glyph tinted by `Tone`, title `.callout` `.secondary` (refs coloured via `SyntaxTint.ref`), meta `.caption2` `.tertiary`, chevron; expanded: leading rule, "RESULT" label, result text, text buttons Open output (code viewer read-only when under the session temp dir, else `NSWorkspace.activateFileViewerSelecting`) and Details (toggles the ids line). Command rows caption-size. Teammate events unchanged.
+- [ ] **Step 3:** Implement; row per mock 05: glyph tinted by `Tone`, title `.callout` `.secondary` (refs coloured via `SyntaxTint.ref`), meta `.caption2` `.tertiary`, chevron; expanded: leading rule, "RESULT" label, result text, text buttons Open output (the chat's read-only artifact viewer when under the session temp dir, else `NSWorkspace.activateFileViewerSelecting`) and Details (toggles the ids line). Command rows caption-size. Teammate events unchanged.
 - [ ] **Step 4:** tests PASS; shot vs mock 05 light/dark.
 - [ ] **Step 5: Commit** `feat(workchat): quiet agent-finished row (#2201)`.
 

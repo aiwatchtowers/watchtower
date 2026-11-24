@@ -697,9 +697,7 @@ struct SessionChatView: View {
         if Self.showsLoading(feedLoaded: store.feedLoaded, error: store.error, runnerMissing: store.runnerMissing) {
             SessionChatLoadingView()
         } else if store.error == nil && !store.runnerMissing {
-            Text("No messages yet")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            SessionChatEmptyView()
                 // The empty state's paint: once the first read is back and found nothing.
                 .task(id: store.liveLoaded) { if store.liveLoaded { store.openTrace?.mark(.paint) } }
         } else if store.runnerMissing {
@@ -711,6 +709,15 @@ struct SessionChatView: View {
 
     private func errorBar(_ message: String, retry: (() -> Void)?) -> some View {
         SessionChatErrorBar(message: message, retry: retry)
+    }
+}
+
+/// The pane once the first read is back and found nothing.
+struct SessionChatEmptyView: View {
+    var body: some View {
+        Text("No messages yet")
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
