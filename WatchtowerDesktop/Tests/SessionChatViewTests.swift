@@ -174,22 +174,30 @@ final class SessionChatViewTests: XCTestCase {
         let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
         func action(
             _ text: String, _ kind: AgentTextHighlights.Kind, message: Int64 = 1, root: CodeRoot? = root
-        ) -> WorkchatHighlights.Action {
-            highlights.action(for: span(text, kind), messageID: message, root: root, indexFiles: [])
+        ) async -> WorkchatHighlights.Action {
+            await highlights.action(for: span(text, kind), messageID: message, root: root, indexFiles: [])
         }
-        XCTAssertEqual(action("#2188", .ref(2188)), .showTarget(2188))
-        XCTAssertEqual(action("67a59755a", .hash), .copy("67a59755a"))
-        XCTAssertEqual(action("make test", .command), .copy("make test"))
-        XCTAssertEqual(action("a/b.go", .path), .nothing, "not looked up yet")
+        let got1 = await action("#2188", .ref(2188))
+        XCTAssertEqual(got1, .showTarget(2188))
+        let got2 = await action("67a59755a", .hash)
+        XCTAssertEqual(got2, .copy("67a59755a"))
+        let got3 = await action("make test", .command)
+        XCTAssertEqual(got3, .copy("make test"))
+        let got4 = await action("a/b.go", .path)
+        XCTAssertEqual(got4, .nothing, "not looked up yet")
 
         XCTAssertFalse(highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, revision: 0, indexFiles: []))
         await highlights.lookupsFinished()
         XCTAssertTrue(highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, revision: 0, indexFiles: []))
-        XCTAssertEqual(action("a/b.go", .path), .openFile("a/b.go", root))
-        XCTAssertEqual(action("a/b.go", .path, message: 2), .nothing, "keyed by message: no stale entry")
-        XCTAssertEqual(action("a/b.go", .path, root: nil), .nothing)
+        let got5 = await action("a/b.go", .path)
+        XCTAssertEqual(got5, .openFile("a/b.go", root))
+        let got6 = await action("a/b.go", .path, message: 2)
+        XCTAssertEqual(got6, .nothing, "keyed by message: no stale entry")
+        let got7 = await action("a/b.go", .path, root: nil)
+        XCTAssertEqual(got7, .nothing)
         onDisk.remove("a/b.go")
-        XCTAssertEqual(action("a/b.go", .path), .nothing, "deleted since")
+        let got8 = await action("a/b.go", .path)
+        XCTAssertEqual(got8, .nothing, "deleted since")
         XCTAssertFalse(highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, revision: 0, indexFiles: []))
         XCTAssertEqual(WorkchatHighlights.copiedNotice("67a59755a"), "Copied 67a59755a")
     }
@@ -227,8 +235,9 @@ final class SessionChatViewTests: XCTestCase {
         XCTAssertTrue(resolves("Transport.swift", epoch: 6, revision: 2, files: two), "the old answer stands meanwhile")
         await highlights.lookupsFinished()
         XCTAssertFalse(resolves("Transport.swift", epoch: 6, revision: 2, files: two), "ambiguous now: plain")
-        XCTAssertEqual(highlights.action(for: span("Transport.swift", .path), messageID: 1, root: root, indexFiles: two),
-                       .nothing)
+        let click = await highlights.action(for: span("Transport.swift", .path), messageID: 1, root: root,
+                                            indexFiles: two)
+        XCTAssertEqual(click, .nothing)
     }
 
     /// A newer ask while a lookup runs is not dropped: the lookup runs again for it.

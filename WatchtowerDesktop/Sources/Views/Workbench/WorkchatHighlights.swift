@@ -29,18 +29,22 @@ final class WorkchatHighlights {
         let root: CodeRoot
     }
 
-    /// What a lookup was asked against.
-    struct Ask {
+    /// Which state of the dialog and the index an answer is for.
+    struct Stamp: Equatable {
         let epoch: Int
         let revision: Int
-        let indexFiles: [String]
-
-        func isSame(_ other: Self) -> Bool { epoch == other.epoch && revision == other.revision }
     }
 
+    /// A lookup to run: its stamp and the index's file list then (kept only while the lookup is pending).
+    private struct Ask {
+        let stamp: Stamp
+        let indexFiles: [String]
+    }
+
+    /// A lookup's answer: the file list it read is not kept.
     private struct Answer {
         let file: String?
-        let ask: Ask
+        let stamp: Stamp
     }
 
     /// The last answer per path asked. Observed: an answer landing re-renders the feed.
@@ -66,8 +70,9 @@ final class WorkchatHighlights {
         let key = Key(messageID: messageID, path: path, root: root)
         let answer = answers[key]
         let shown = answer?.file != nil
-        if let answer, answer.ask.epoch == epoch, answer.ask.revision == revision { return shown }
-        let ask = Ask(epoch: epoch, revision: revision, indexFiles: path.contains("/") ? [] : indexFiles())
+        let stamp = Stamp(epoch: epoch, revision: revision)
+        if answer?.stamp == stamp || newest[key]?.stamp == stamp { return shown }
+        let ask = Ask(stamp: stamp, indexFiles: path.contains("/") ? [] : indexFiles())
         if inFlight[key] != nil {
             newest[key] = ask
         } else {
@@ -82,8 +87,8 @@ final class WorkchatHighlights {
             let file = await Task.detached(priority: .utility) { lookUp(key.path, key.root, ask.indexFiles) }.value
             guard let self else { return }
             inFlight[key] = nil
-            answers[key] = Answer(file: file, ask: ask)
-            if let next = newest.removeValue(forKey: key), !next.isSame(ask) { start(key, next) }
+            answers[key] = Answer(file: file, stamp: ask.stamp)
+            if let next = newest.removeValue(forKey: key), next.stamp != ask.stamp { start(key, next) }
         }
     }
 
@@ -102,9 +107,11 @@ final class WorkchatHighlights {
         case nothing
     }
 
+    /// Off the main actor for a path (the base-name scan reads the whole file list); the click's action runs when
+    /// it lands, still keyed by message, path and root.
     func action(
         for span: AgentTextHighlights.Span, messageID: Int64, root: CodeRoot?, indexFiles: @autoclosure () -> [String]
-    ) -> Action {
+    ) async -> Action {
         switch span.kind {
         case let .ref(number): return .showTarget(Int64(number))
         case .hash, .command: return .copy(span.text)
@@ -112,8 +119,10 @@ final class WorkchatHighlights {
             guard let root else { return .nothing }
             let key = Key(messageID: messageID, path: span.text, root: root)
             guard let answer = answers[key], answer.file != nil else { return .nothing }
-            guard let file = lookUp(span.text, root, span.text.contains("/") ? [] : indexFiles()) else {
-                answers[key] = Answer(file: nil, ask: answer.ask)
+            let (path, files, lookUp) = (span.text, span.text.contains("/") ? [] : indexFiles(), lookUp)
+            let file = await Task.detached(priority: .userInitiated) { lookUp(path, root, files) }.value
+            guard let file else {
+                answers[key] = Answer(file: nil, stamp: answer.stamp)
                 return .nothing
             }
             return .openFile(file, root)
@@ -150,9 +159,10 @@ struct WorkchatHighlightHandlers {
     let resolvesPath: (String, Int64) -> Bool
 }
 
-/// The Workchat holds its session root's code index while it is on screen (review round 2): the index runs (and is
-/// released after its idle time) as for Files and Open Quickly, so a bare file name resolves with Files never shown.
-/// Every `show` is balanced by one `hide`.
+/// The Workchat holds its session root while it is on screen, the way FILES does (`CodeFilesCenter.startWatching`,
+/// reviews rounds 2–3): the root's code index runs and its folder watcher keeps the index's file list current, so a
+/// bare file name resolves — and a later duplicate turns it plain — with FILES never shown. Every `show` is balanced
+/// by one `hide`.
 @MainActor
 final class WorkchatIndexLease {
     private(set) var held: CodeRoot?

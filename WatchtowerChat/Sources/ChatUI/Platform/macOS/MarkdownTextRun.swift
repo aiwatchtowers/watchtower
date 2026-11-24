@@ -595,10 +595,14 @@ class MarkdownRunTextView: NSTextView {
     /// A completed single click on `span`: its action runs unless a second click follows.
     func clickEnded(_ span: AgentTextHighlights.Span) {
         guard onHighlight != nil else { return }
+        // Weak: the item must not keep itself. A newer single click may own the slot by now — it stays then.
+        weak var weakItem: DispatchWorkItem?
         let item = DispatchWorkItem { [weak self] in
-            self?.pendingClick = nil
-            self?.onHighlight?(span)
+            guard let self else { return }
+            if let weakItem, pendingClick === weakItem { pendingClick = nil }
+            onHighlight?(span)
         }
+        weakItem = item
         pendingClick = item
         scheduleClick(item)
     }

@@ -438,6 +438,29 @@ final class CodeFilesCenterTests: XCTestCase {
         XCTAssertTrue(tree.rows.contains { $0.entry.relPath == "new.txt" })
     }
 
+    /// The Workchat holds its session root the way FILES does (#2201 T2 review): while held, the root's folder
+    /// batches are handled (they reach the code index, so its file list follows the disk with FILES collapsed);
+    /// once released, a worktree root is no longer watched.
+    func testAWorkchatLeaseWatchesItsRootLikeFiles() throws {
+        let worktreeFolder = folder.appendingPathComponent("wt")
+        try FileManager.default.createDirectory(at: worktreeFolder, withIntermediateDirectories: true)
+        let worktree = CodeRoot(workbenchID: project.id, worktree: worktreeFolder)
+        let center = makeCenter()
+        let lease = WorkchatIndexLease()
+        lease.connect(show: { center.startWatching($0) }, hide: { center.stopShowing($0) })
+        let tree = center.tree(for: worktree)
+        lease.hold(worktree)
+        tree.loadIfNeeded()
+        try "x".write(to: worktreeFolder.appendingPathComponent("new.txt"), atomically: true, encoding: .utf8)
+        center.handle(FolderWatcher.Batch(paths: ["new.txt"]), root: worktree)
+        XCTAssertTrue(tree.rows.contains { $0.entry.relPath == "new.txt" }, "held: the batch is handled")
+
+        lease.release()
+        try "y".write(to: worktreeFolder.appendingPathComponent("later.txt"), atomically: true, encoding: .utf8)
+        center.handle(FolderWatcher.Batch(paths: ["later.txt"]), root: worktree)
+        XCTAssertFalse(tree.rows.contains { $0.entry.relPath == "later.txt" }, "released: no longer watched")
+    }
+
     func testAMovedWorkbenchFolderDropsTheOldMainRootsWatchAndTree() throws {
         let moved = FileManager.default.temporaryDirectory.appendingPathComponent("center-moved-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: moved, withIntermediateDirectories: true)
@@ -452,6 +475,10 @@ final class CodeFilesCenterTests: XCTestCase {
 
         center.startWatching(worktree)
         XCTAssertTrue(center.tree(for: root) === oldTree, "a worktree root never drops the main root")
+        let hub = WorkbenchFolder(id: 5, workbenchID: project.id, folderPath: moved.appendingPathComponent("hub").path,
+                                  position: 1, name: "hub")
+        center.startWatching(CodeRoot(folder: hub, homeFolderID: 3))
+        XCTAssertTrue(center.tree(for: root) === oldTree, "another bench folder's root never drops the home root")
         center.startWatching(newRoot)
 
         XCTAssertFalse(center.tree(for: root) === oldTree, "the stale main root's tree is gone")

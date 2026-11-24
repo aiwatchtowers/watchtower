@@ -128,8 +128,20 @@ final class CodeIndexCenterTests: XCTestCase {
         center.markShown(root: otherWorkbench)
         XCTAssertTrue(center.index(for: root(7)) === mainIndex, "another workbench's main root leaves it alone")
 
+        // Another bench folder's own (main) root: no stale root of the home folder, and the other way round
+        // (two Workchats on two bench folders, #2201 T2 review).
+        let hub = WorkbenchFolder(id: 5, workbenchID: 7, folderPath: moved.appendingPathComponent("hub").path,
+                                  position: 1, name: "hub")
+        let hubRoot = CodeRoot(folder: hub, homeFolderID: 3)
+        center.markShown(root: hubRoot)
+        let hubIndex = center.index(for: hubRoot)
+        XCTAssertTrue(center.index(for: root(7)) === mainIndex, "another bench folder leaves the home index alone")
+        center.markShown(root: root(7))
+        XCTAssertTrue(center.index(for: hubRoot) === hubIndex, "and the home folder leaves the other folder's")
+
         center.markShown(root: movedRoot)
         XCTAssertFalse(center.index(for: root(7)) === mainIndex, "the stale main index is released")
+        XCTAssertTrue(center.index(for: hubRoot) === hubIndex, "a move of the home folder leaves another folder's")
         XCTAssertTrue(center.index(for: worktree) === worktreeIndex, "the worktree's index stays")
     }
 

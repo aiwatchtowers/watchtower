@@ -222,7 +222,9 @@ final class CodeFilesCenter {
     /// and tree go (as `CodeIndexCenter.markShown` drops its index). Its
     /// buffers stay — one may still hold an edit to save.
     private func dropStaleMainRoots(of root: CodeRoot) {
-        for stale in watched where stale.isMain && stale.workbenchID == root.workbenchID && stale != root {
+        // Another bench folder's main root is no stale one (#2201 T2 review).
+        for stale in watched where stale.isMain && stale.workbenchID == root.workbenchID && stale.folderID == root.folderID
+            && stale != root {
             unwatchRoot(stale)
             dropRootViews(stale)
         }

@@ -137,6 +137,26 @@ final class AgentTextHighlightTests: XCTestCase {
         XCTAssertEqual(opened, ["#2188"])
     }
 
+    /// Click A, then click B: A's action runs and leaves B's slot alone, so a double click on B still drops B
+    /// (review round 3).
+    func testAnEarlierClickLeavesALaterClicksSlot() throws {
+        var opened: [String] = []
+        var scheduled: [DispatchWorkItem] = []
+        let (view, _) = textView { opened.append($0.text) }
+        view.scheduleClick = { scheduled.append($0) }
+        let spanA = AgentTextHighlights.spans(inPlain: "#2188")[0]
+        let spanB = AgentTextHighlights.spans(inPlain: "#2189")[0]
+        view.clickBegan(clickCount: 1)
+        view.clickEnded(spanA)
+        view.clickBegan(clickCount: 1)
+        view.clickEnded(spanB)
+        scheduled[0].perform()
+        XCTAssertEqual(opened, ["#2188"])
+        view.clickBegan(clickCount: 2) // the second click on B
+        scheduled[1].perform()
+        XCTAssertEqual(opened, ["#2188"], "the double click on B opens nothing")
+    }
+
     func testWithoutAnActionTheSpansAreInert() throws {
         var scheduled: [DispatchWorkItem] = []
         let (view, _) = textView(onHighlight: nil)

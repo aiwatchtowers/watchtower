@@ -27,16 +27,20 @@ final class WorkbenchCodeIndexTests: XCTestCase {
         XCTAssertEqual(index.symbols(in: "a.swift").map(\.name), ["Buffer", "save"])
     }
 
-    /// A file joining or leaving bumps the revision; a re-index of a known file does not.
+    /// A batch in which a file joins or leaves bumps the revision once; a re-index of a known file does not.
     func testTheFilesRevisionFollowsMembership() {
         let index = WorkbenchCodeIndex()
         index.applyIndexLines([file("a.swift"), file("b.swift")], from: .update)
-        let afterAdd = index.filesRevision
-        XCTAssertGreaterThan(afterAdd, 0)
+        XCTAssertEqual(index.filesRevision, 1, "one bump per batch")
         index.applyIndexLines([file("a.swift", [symbol("A", .class, "a.swift")])], from: .update)
-        XCTAssertEqual(index.filesRevision, afterAdd, "same files")
+        XCTAssertEqual(index.filesRevision, 1, "same files")
         index.applyIndexLines([.deleted("b.swift"), file("c.swift")], from: .update)
-        XCTAssertGreaterThan(index.filesRevision, afterAdd, "a rename keeping the count still changes it")
+        XCTAssertEqual(index.filesRevision, 2, "a rename keeping the count still changes it")
+        index.beginFullRun()
+        index.applyIndexLines([file("a.swift")], from: .fullRun)
+        XCTAssertEqual(index.filesRevision, 2)
+        index.finishFullRun()
+        XCTAssertEqual(index.filesRevision, 3, "the run dropped c.swift")
     }
 
     /// Ruling R31: go to definition searches text only in a file whose

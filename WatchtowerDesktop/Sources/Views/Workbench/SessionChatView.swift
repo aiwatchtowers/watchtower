@@ -445,9 +445,11 @@ struct SessionChatView: View {
         vm.summaries.first { $0.id == projectID }.map { vm.codeRoot(sessionID: sessionID, project: $0.project) }
     }
 
+    /// The session root shown the way FILES shows it (`CodeFilesCenter.startWatching`): its code index runs and its
+    /// folder watcher keeps the index's file list current, balanced by `stopShowing`.
     private func holdIndex(_ root: CodeRoot?) {
-        let center = appState.codeIndexCenter
-        indexLease.connect(show: { center.markShown(root: $0) }, hide: { center.markHidden(root: $0) })
+        let files = vm.codeFiles
+        indexLease.connect(show: { files.startWatching($0) }, hide: { files.stopShowing($0) })
         indexLease.hold(root)
     }
 
@@ -462,16 +464,19 @@ struct SessionChatView: View {
         let (highlights, vm, sessionID) = (highlights, vm, sessionID)
         return WorkchatHighlightHandlers(
             open: { span, messageID in
-                switch highlights.action(for: span, messageID: messageID, root: root, indexFiles: index?.files ?? []) {
-                case let .showTarget(targetID):
-                    vm.showTargetOnBoard(targetID, projectID: projectID)
-                case let .copy(text):
-                    WorkchatFeed.copy(text)
-                    copiedNotice = WorkchatHighlights.copiedNotice(text)
-                case let .openFile(file, root):
-                    Task { await vm.openSessionFile(file, root: root, pane: .sessionChat(sessionID)) }
-                case .nothing:
-                    NSSound.beep()
+                Task { @MainActor in
+                    let files = index?.files ?? []
+                    switch await highlights.action(for: span, messageID: messageID, root: root, indexFiles: files) {
+                    case let .showTarget(targetID):
+                        vm.showTargetOnBoard(targetID, projectID: projectID)
+                    case let .copy(text):
+                        WorkchatFeed.copy(text)
+                        copiedNotice = WorkchatHighlights.copiedNotice(text)
+                    case let .openFile(file, root):
+                        await vm.openSessionFile(file, root: root, pane: .sessionChat(sessionID))
+                    case .nothing:
+                        NSSound.beep()
+                    }
                 }
             },
             resolvesPath: { path, messageID in
