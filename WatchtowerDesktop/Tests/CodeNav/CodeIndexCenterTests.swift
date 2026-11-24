@@ -411,6 +411,39 @@ final class CodeIndexCenterTests: XCTestCase {
         XCTAssertTrue(center.fullRunPending(root: root(7)))
     }
 
+    /// #2386 fix round 2: a rescan asked while an update is in flight runs once that update's `--serve` child
+    /// exits without answering — the exit starts the waiting full run. The debounce that sent the update is over.
+    func testARescanWaitingOnAServeThatDiesStillRuns() async throws {
+        let debounceClock = HandMovedDebounceClock()
+        let center = makeCenter(["STUB_SERVE_DELAY": "30"], debounceClock: debounceClock)
+        let worktree = CodeRoot(workbenchID: 7, worktree: folder)
+        center.markShown(root: worktree)
+        let index = center.index(for: worktree)
+        let ready = await eventually { index.state == .ready }
+        XCTAssertTrue(ready)
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["lib/a.swift"]), root: worktree)
+        await debounceClock.untilSleeps(1)
+        debounceClock.advance(by: .milliseconds(300))
+        let asked = await eventually { self.stub.requests.count == 1 }
+        XCTAssertTrue(asked)
+        XCTAssertFalse(center.debouncePending(root: worktree), "the debounce fired")
+
+        center.markHidden(root: worktree)
+        center.markShown(root: worktree, rescan: true)
+        XCTAssertTrue(center.fullRunPending(root: worktree), "waits behind the update")
+        let serve = try XCTUnwrap(stub.serveStarts.first.flatMap { pid_t($0.split(separator: " ")[1]) })
+        killpg(serve, SIGKILL)
+        let moved = await eventually {
+            if case .failed = index.state { return true }
+            if case .indexing = index.state { return true }
+            return self.stub.fullRuns >= 2
+        }
+        XCTAssertTrue(moved)
+        if case .failed = index.state { return XCTFail("the waiting rescan never started") }
+        let again = await eventually { self.stub.fullRuns == 2 && index.state == .ready }
+        XCTAssertTrue(again, "full runs: \(stub.fullRuns)")
+    }
+
     /// #2386 fix round 1: a show-time rescan covers the changes waiting out the debounce (as a mustRescan batch
     /// does); a batch arriving after it debounces as usual.
     func testAShowTimeRescanDropsTheWaitingDebounce() async {

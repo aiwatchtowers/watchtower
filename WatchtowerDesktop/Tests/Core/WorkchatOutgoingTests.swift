@@ -109,8 +109,13 @@ final class WorkchatOutgoingTests: XCTestCase {
         XCTAssertFalse(WorkchatOutgoing.matches(owner("open /var/tmp/report.pdf"), line: pdf), "another absolute path")
         // #2386 fix round 1: a path head without a `/` is still a path, not the owner's word.
         for other in ["open ~/tmp/report.pdf", "open ./tmp/report.pdf", "open ../tmp/report.pdf",
-                      "open $HOME/tmp/report.pdf", "open ${TMP}/tmp/report.pdf", "open ~acme/tmp/report.pdf"] {
+                      "open $HOME/tmp/report.pdf", "open ${TMP}/tmp/report.pdf", "open ~acme/tmp/report.pdf",
+                      "open .hidden/tmp/report.pdf"] {
             XCTAssertFalse(WorkchatOutgoing.matches(owner(other), line: pdf), other)
+        }
+        // Fix round 2: prose that only looks like a path head is still the owner's word.
+        for prose in ["wait .../tmp/report.pdf", "it costs $19.99/tmp/report.pdf"] {
+            XCTAssertTrue(WorkchatOutgoing.matches(owner(prose), line: pdf), prose)
         }
         XCTAssertFalse(WorkchatOutgoing.matches(owner("open \"/tmp/report.pdf draft\""), line: pdf),
                        "the start of a longer quoted name")

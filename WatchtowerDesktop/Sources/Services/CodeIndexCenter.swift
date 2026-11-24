@@ -167,6 +167,7 @@ final class CodeIndexCenter {
         session.debounceTask = Task { @MainActor [weak self, weak session, debounceSleep] in
             try? await debounceSleep(wait)
             guard !Task.isCancelled, let self, let session else { return }
+            session.debounceTask = nil
             session.queued.formUnion(session.debouncing)
             session.debouncing = []
             startNextRun(session)
@@ -346,7 +347,7 @@ final class CodeIndexCenter {
             session.run = nil
             if case .failed = index.state, session.fullRunFinished { index.state = .ready }
             startNextRun(session)
-        } onExit: { [weak session] exit, _ in
+        } onExit: { [weak self, weak session] exit, _ in
             guard let session, session.serve === process else { return }
             session.serve = nil
             NSLog("CodeIndexCenter: code index --serve for %@ exited: %@", session.folder.path, exit.stderr)
@@ -356,6 +357,9 @@ final class CodeIndexCenter {
             session.run = nil
             session.queued.formUnion(paths)
             index.state = .failed(exit.failureMessage(command: "code index --serve"))
+            // A full run that waited on this update (a show-time rescan) starts
+            // now; queued paths alone still wait for the next change (#2386).
+            if session.fullPending { self?.startNextRun(session) }
         }
         return process
     }

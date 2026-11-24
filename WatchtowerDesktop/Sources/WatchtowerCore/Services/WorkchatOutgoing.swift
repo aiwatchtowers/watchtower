@@ -169,11 +169,29 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     }
 
     /// The text before `index`, back to whitespace or a quote, is a word with no `/` (the owner's text the path was
-    /// pasted straight after) — not a path's own head: `~`, `~user`, `.`, `..` or a `$` variable (fix round 1).
+    /// pasted straight after) — not a path's own head (`pathHead`).
     private static func gluedToWord(_ text: String, before index: String.Index) -> Bool {
         let head = String(text[..<index].reversed().prefix { !$0.isWhitespace && $0 != "\"" && $0 != "'" }.reversed())
-        guard let first = head.first, !head.contains("/") else { return false }
-        return first != "~" && first != "$" && !head.allSatisfy { $0 == "." }
+        return !head.isEmpty && !head.contains("/") && !pathHead(head)
+    }
+
+    /// A head that makes the path after it another path: `.`, `..`, a dot-directory (`.hidden`), `~` or `~user`,
+    /// `$NAME` or `${…}` (#2386 fix rounds 1-2). Prose such as `...` or `$19.99` is not one.
+    private static func pathHead(_ head: String) -> Bool {
+        let nameChar: (Character) -> Bool = { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" || $0 == "." }
+        let rest = head.dropFirst()
+        switch head.first {
+        case "."?:
+            return head == "." || head == ".." || rest.first.map { $0.isLetter || $0.isNumber || $0 == "_" } == true
+        case "~"?:
+            return rest.allSatisfy(nameChar)
+        case "$"?:
+            if rest.hasPrefix("{") { return rest.hasSuffix("}") }
+            guard let start = rest.first, start.isLetter || start == "_" else { return false }
+            return rest.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
+        default:
+            return false
+        }
     }
 
     /// `index` is the end, whitespace or a quote, once any closing punctuation is skipped.
