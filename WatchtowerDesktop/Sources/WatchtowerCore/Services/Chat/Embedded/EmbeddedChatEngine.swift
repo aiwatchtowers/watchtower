@@ -118,6 +118,10 @@ package final class EmbeddedChatEngine {
     /// chat's run writes the row; mobile Inbox spec §8: the bubble never
     /// waits for the write). Nil once the row is on disk or the start failed.
     package private(set) var pendingOwnerText: String?
+    /// The last turn to start was a hidden one (no owner text) and it could
+    /// not start: nothing was sent and no row holds it. Cleared when the
+    /// next turn starts. Only reports; no chat's behaviour reads it.
+    package private(set) var hiddenTurnNotStarted = false
     package var isBusy: Bool { isStreaming || isQueued || isStarting }
     /// Busy, or holding follow-ups for a later turn — the center keeps such
     /// an engine even when no view has shown it for a while.
@@ -459,6 +463,7 @@ package final class EmbeddedChatEngine {
         let turnID = UUID().uuidString
         let options = spec.runOptions()
         isStarting = true
+        hiddenTurnNotStarted = false
         pendingOwnerText = request.ownerText
         stopBeforeStart = false
         startTask = Task { [self] in
@@ -497,6 +502,7 @@ package final class EmbeddedChatEngine {
                 draftMirror?.clear(for: spec.key)  // back in the composer: an ordinary draft
             }
             queuedFollowUps.insert(contentsOf: request.carriedFollowUps, at: 0)
+            hiddenTurnNotStarted = request.ownerText == nil
             report(error, prefix: "Couldn't send")
             onTurnFinished?(.notStarted(message: "Couldn't send: \(error.localizedDescription)"))
             return

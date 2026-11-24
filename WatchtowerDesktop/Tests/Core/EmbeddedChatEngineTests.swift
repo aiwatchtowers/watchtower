@@ -963,6 +963,29 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertNotNil(engine.bannerError, "only \"not found\" is swallowed")
     }
 
+    /// A hidden turn that cannot start says so until the next turn starts;
+    /// an owner send that cannot start never does.
+    func testHiddenTurnNotStartedIsReportedForAHiddenTurnOnly() async throws {
+        let store = FlakyStore()
+        let engine = makeEngine(store: store)
+        store.failBegin = true
+        XCTAssertTrue(engine.startFirstTurnIfEmpty(hidden: "Explain."))
+        await engine.finished()
+        XCTAssertTrue(engine.hiddenTurnNotStarted)
+        XCTAssertNotNil(engine.bannerError)
+
+        engine.send("Why?")
+        await engine.finished()
+        XCTAssertFalse(engine.hiddenTurnNotStarted, "the owner's own send failed, not the hidden turn")
+        XCTAssertEqual(engine.draft, "Why?")
+
+        store.failBegin = false
+        XCTAssertTrue(engine.startFirstTurnIfEmpty(hidden: "Explain."))
+        XCTAssertFalse(engine.hiddenTurnNotStarted, "cleared when a turn starts")
+        await engine.finished()
+        XCTAssertFalse(engine.hiddenTurnNotStarted)
+    }
+
     func testFollowUpsComeBackWhenTheirTurnCannotBeSaved() async throws {
         let store = FlakyStore()
         let engine = makeEngine(store: store)

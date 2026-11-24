@@ -63,6 +63,9 @@ final class AskExplainViewTests: XCTestCase {
         XCTAssertNil(fx.vm.explainErrors[ask.id])
         let failure = try XCTUnwrap(AskExplainChatView.startFailure(engine))
         XCTAssertTrue(failure.contains("the CLI exited"), failure)
+        engine.draft = "What does park mean?"
+        XCTAssertEqual(AskExplainChatView.startFailure(engine), failure, "typing keeps the Retry row")
+        engine.draft = ""
 
         fx.ai.persistStartError = nil
         await fx.vm.openExplain(ask)
@@ -76,9 +79,9 @@ final class AskExplainViewTests: XCTestCase {
         XCTAssertNil(AskExplainChatView.startFailure(engine))
     }
 
-    /// An owner send that fails before any row put its text back into the
-    /// draft: no Retry row (it would send the explanation prompt instead);
-    /// the composer keeps its own error status and the restored draft.
+    /// An owner send that fails before any row is not a hidden turn: no
+    /// Retry row (it would send the explanation prompt instead), even once
+    /// the restored draft is cleared; the composer keeps its own status.
     func testOwnerSendFailingBeforeStartOffersNoRetryRow() async throws {
         struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
         let ask = try fx.insertAsk()
@@ -94,6 +97,8 @@ final class AskExplainViewTests: XCTestCase {
         XCTAssertEqual(engine.draft, "Will my scripts be queued?", "the owner's text is back in the composer")
         XCTAssertNotNil(engine.bannerError, "the composer's own status says it")
         XCTAssertNil(AskExplainChatView.startFailure(engine))
+        engine.draft = ""
+        XCTAssertNil(AskExplainChatView.startFailure(engine), "clearing the restored question offers no Retry")
     }
 
     /// Before the engine: a spinner while the conversation is found or

@@ -51,15 +51,14 @@ struct AskExplainChatView: View {
         }
     }
 
-    /// The hidden first turn failed before its reply row existed (the CLI
-    /// exited early): no row carries it or offers Retry, so the chat does.
-    /// An owner send that failed the same way put its text back into the
-    /// draft: then only the composer's own error status shows, and Retry
-    /// (which would send the explanation prompt instead) does not. A failure
-    /// after a reply row keeps the feed's own card.
+    /// The hidden first turn could not start (the CLI exited early): no row
+    /// carries it or offers Retry, so the chat does — whatever the draft
+    /// holds. An owner send that failed the same way is not a hidden turn:
+    /// only the composer's own error status and its restored text show,
+    /// never a Retry that would send the explanation prompt instead. A
+    /// failure after a reply row keeps the feed's own card.
     static func startFailure(_ engine: EmbeddedChatEngine) -> String? {
-        guard engine.messages.isEmpty, !engine.isBusy,
-              engine.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard engine.hiddenTurnNotStarted, engine.messages.isEmpty, !engine.isBusy else { return nil }
         return engine.bannerError
     }
 
