@@ -328,6 +328,26 @@ Then merge into `umbrella/2187-iphone-pairing` locally. A job that cannot run lo
 
 ---
 
+## Amendments after review
+
+Tasks 1–6 were merged with changes beyond the text above. The code and `docs/features/go-hub.md`, `relay-client.md` and `mobile-companion.md` describe what shipped; this section records why it differs.
+
+**Owner decisions taken during the run:**
+
+- **Ask #1827: `relay_switch` and `hub_meta.relay_slot_links`.** Every code a new Mac issues carries `relay_switch: true` (`wire.LinkPayload.RelaySwitch`, Kit `LinkPayload.relaySwitch`, unsigned like the rest of the code). A phone takes an iCloud Mac's code over Relay only when the field is there, so an older Mac's code still links over iCloud (`LinkRoutePolicy.offersRelay`). This is a phone-wire addition (an optional field, `hub_contract_cases.json` extended), contrary to the "no phone-wire change" constraint above, which the owner accepted. The same ask replaced the derived "empty iCloud user" candidate with a positive record: `hub_meta.relay_slot_links` = `{linked: {id: link_nonce}, pending: {id: code nonce}}`, written only by `internal/hub/link` in the transaction of each hello, confirm, refusal and unlink. Only phones in `linked` (under the link nonce their row still carries) can move the Mac.
+- **Ask #1829: the Mac's copy.** The pairing sheet's warning (Q6) is approved as written. In Settings → Mobile, a Mac `paused`/`no_icloud` that has a relay shows one warning line in place of the hub line and the account line. It names the reason: "iCloud is off on this Mac." / "iCloud is restricted by your organization on this Mac." / "iCloud is temporarily unavailable on this Mac.", then "A phone with Relay can still link; linking moves this Mac to Relay." **Link a phone…** stays enabled. This is the one extra Mac line beyond the Global Constraints' "exactly one".
+- **Ask #1825 (#2380):** an expired code from a Mac this phone is already linked to says "This code expired / This iPhone is already linked to <Mac>" at once (`LinkFailure.expiredButLinked`). It merged separately, and the guide covers it.
+
+**Main review-driven changes:**
+
+- **Task 1:** the relay-code fallback runs only when the relay is connected now (`relayConnected`) and iCloud is really unusable. An unreadable account or Mac iCloud user counts only past a 30 s bridge start grace (`bridgeStartGrace`, `iCloudStarting`, on the hub's monotonic clock). A relay code that replaces a CloudKit code refuses that code's waiting requests `expired_code` and closes its link as an answering close.
+- **Task 2:** `acceptRelayLink` checks the candidate again in the accept's transaction (same link nonce, `linked_at`, relay id, still slot-linked, after the last switch). The `relay_link_since` and `switched_at` floors are compared at the whole second (`relayLinkSince`: the second before the stamp's second), so a link confirmed in the start's or the switch's second counts. A `relay_link_since` in the future is pulled back.
+- **Task 3:** only a confirm that actually linked kicks the check (`afterConfirm(device, linkedNow)`), as does an account read that newly lists a linked phone.
+- **Task 4 grew into a pairing-stream contract.** Pairing events are routed per stream by token and code nonce, never broadcast to every stream. The `sas` line also carries `request`, a replaced request is printed again, and a confirm may name `code`, `moves_to_relay` and `request`. Every answer is bound to the stream's own last `sas` (`code_changed`, `no_request`). A hub without request ids refuses every yes (`errPairHubTooOld`), and stdin EOF sends nothing (`errPairNoAnswer`). A failed route read makes `moves_to_relay` true (warn when unsure), not false as planned.
+- **Task 5:** a paying phone whose slots all hold other Macs links an iCloud Mac over iCloud when iCloud is usable. The entitlement read is shared and bounded (`SharedEntitlementRead`: 5 s per caller, a read older than 60 s replaced) and counts billing grace.
+- **Task 6:** the sheet's **Link**/**Refuse** answer the question drawn (`confirm(_:answering:)`), naming its code, `moves_to_relay` and request.
+- **Task 7:** documented the code as merged, not the plan's text.
+
 ## Spec promise → task → test
 
 | Spec promise | Task | Test |
