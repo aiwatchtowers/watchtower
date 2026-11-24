@@ -317,6 +317,62 @@ func TestARelayCodeRefusesTheReplacedPhoneOnlyOnItsSASStream(t *testing.T) {
 	})
 }
 
+// #2385: a stream that asked for an iCloud code and then, iCloud gone, for a
+// relay code is not ended when a phone scans the replaced iCloud code: the
+// hello's refusal is about a phone the stream never showed. The refusal is
+// decided (the desktop watch hears it) and sent to no pairing stream.
+func TestAScanOfAReplacedICloudCodeLeavesTheRelayCodeStreamOpen(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		r, ck, c := startPairDesk(t, transport.KindCloudKit)
+		old := pairCode(t, c)
+		if old.Transport != wire.TransportCloudKit {
+			t.Fatalf("first code %+v, want an iCloud code", old)
+		}
+		ck.acct.Store(transport.AccountNoAccount)
+		fresh := pairStep(t, c, ControlRequest{Op: OpPair}, link.EventQR)[link.EventQR]
+		if lp, err := wire.ParseLinkURL(fresh.URL); err != nil || lp.Transport != wire.TransportRelay {
+			t.Fatalf("second code %+v (%v), want a relay code", lp, err)
+		}
+		watch := r.dial()
+		t.Cleanup(func() { _ = watch.Close() })
+		if err := watch.Send(ControlRequest{Op: OpDesktopWatch}); err != nil {
+			t.Fatal(err)
+		}
+		phone, err := hubtest.FromLink(old, ck.Fake, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := phone.Hello(transport.SharedMailboxZone(old.RelayDeviceID)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			a, err := watch.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.Event == EventPair && a.Pair == link.EventRefused {
+				if !strings.EqualFold(a.DeviceID, phone.ID().String()) {
+					t.Fatalf("watch heard %+v, want the old code's phone", a)
+				}
+				break
+			}
+		}
+		// Every pairing event is queued before the watch's: anything more on
+		// the stream before the deadline (on the bubble's clock) is the refusal.
+		_ = c.c.SetReadDeadline(time.Now().Add(time.Minute))
+		for {
+			ev, err := c.Next()
+			var ne net.Error
+			if err != nil && errors.As(err, &ne) && ne.Timeout() {
+				break
+			}
+			if err != nil || ev.Event == link.EventRefused {
+				t.Fatalf("the relay-code stream got %+v (err %v)", ev, err)
+			}
+		}
+	})
+}
+
 // Two pairing streams at once: A asks for a code, then B. A is shown neither
 // B's qr nor the SAS of B's phone; B is shown its phone's SAS.
 func TestTwoPairStreamsSeeOnlyTheirOwnCodes(t *testing.T) {
