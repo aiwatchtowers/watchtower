@@ -981,7 +981,7 @@ final class TerminalCenter {
     /// new process. `startedAt` is the host's, so a hook state stamped
     /// during the run stays trusted. An exited run is adopted the same way
     /// and reports its exit once the replay is in. Nothing happens while the row already
-    /// runs here or no host is connected.
+    /// runs here or no host is connected. On a v1-only host the adopted run's draft mirror is inexact.
     func adopt(_ session: TerminalSession, info: SessionHostSessionInfo) {
         guard let host = sessionHost, states[session.id] != .running else { return }
         let process: HostedTerminalSession
@@ -1001,6 +1001,10 @@ final class TerminalCenter {
             process = makeHosted(host)
         }
         wire(process, session: session, startedAt: Date(timeIntervalSince1970: Double(info.startedAtMs) / 1000))
+        // The run's prompt may hold text typed before the restart. A v2 host knows it and holds a line by itself,
+        // so the mirror starts exact and empty; with a v1-only host the Mac types and adds its own Return, so the
+        // mirror cannot vouch for an empty prompt until a submit (final review, codex #1).
+        if !process.hostDelivers { leaveDraftInexact(session.id) }
         process.attach(info)
     }
 

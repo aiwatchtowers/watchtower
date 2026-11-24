@@ -14,6 +14,8 @@ final class TerminalCenterReattachTests: XCTestCase {
     private var path: String!
     private var defaults: UserDefaults!
     private var transports: [FakeSessionHostTransport] = []
+    /// The transports of a v1-only host's client (`testReattachOnAV1HostLeavesTheDraftInexact`).
+    private var v1Transports: [FakeSessionHostTransport] = []
     private var signals: [(pid_t, Int32)] = []
     /// Pids the signaller reports alive; one in `diesOnHangup` leaves on SIGHUP.
     private var alive: Set<pid_t> = []
@@ -412,6 +414,53 @@ final class TerminalCenterReattachTests: XCTestCase {
         XCTAssertNil(center.drafts[row.id])
         XCTAssertFalse(center.promptHoldsText(row.id))
         let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
+        await hosted.connecting?.value
+        hosted.detachFromHost()
+    }
+
+    /// Final review (codex #1): a run adopted from a v1-only host may hold text typed before the restart, and the
+    /// Mac types its lines there with its own Return — so the mirror is inexact until a submit. A v2 host holds a
+    /// line by itself: its adopted run stays exact and empty (`testReattachResetsDraft`).
+    func testReattachOnAV1HostLeavesTheDraftInexact() async throws {
+        let client = SessionHostClient(socketPath: "/tmp/wt-test-v1.sock", cliPath: { nil }, makeTransport: { [weak self] _ in
+            let transport = FakeSessionHostTransport()
+            transport.v1Host = true
+            self?.v1Transports.append(transport)
+            return transport
+        })
+        client.signalGroup = { _, _ in XCTFail("reattach signals through the center's signaller") }
+        let running = await client.ensureRunning()
+        XCTAssertTrue(running)
+        XCTAssertFalse(client.speaksV2)
+        center.sessionHost = client
+        let row = try await sessionRow()
+        // The v2 hello is refused and the client connects again as v1: every connection lists the run.
+        for transport in v1Transports {
+            transport.listed = [SessionHostSessionInfo(row: row.id, run: "run-v1", pid: 7401, startedAtMs: 1,
+                                                       exited: false, code: nil)]
+        }
+
+        await vm.reattachHostedSessions()
+
+        XCTAssertEqual(center.drafts[row.id]?.exact, false)
+        XCTAssertTrue(center.promptHoldsText(row.id), "a line of the app's waits for the owner's Return")
+        let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
+        XCTAssertFalse(hosted.hostDelivers)
+        await hosted.connecting?.value
+        hosted.detachFromHost()
+    }
+
+    /// The v2 twin: an adopted run with no earlier process here starts exact and empty.
+    func testReattachOnAV2HostKeepsTheDraftExactAndEmpty() async throws {
+        let row = try await sessionRow()
+        control.listed = [SessionHostSessionInfo(row: row.id, run: "run-v2", pid: 7402, startedAtMs: 1, exited: false, code: nil)]
+
+        await vm.reattachHostedSessions()
+
+        let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
+        XCTAssertTrue(hosted.hostDelivers)
+        XCTAssertNil(center.drafts[row.id])
+        XCTAssertFalse(center.promptHoldsText(row.id))
         await hosted.connecting?.value
         hosted.detachFromHost()
     }
