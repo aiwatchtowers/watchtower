@@ -160,8 +160,8 @@ package struct ChatRunOptions: Equatable, Sendable {
     /// `--model`; nil = the provider's resolved strong-tier model.
     package var model: String?
     /// `--read-folder`: the workbench folder of a code question (spec
-    /// 2026-10-02 §9.1), checked by the CLI; no provider reads files in it
-    /// yet (rulings R42/R44).
+    /// 2026-10-02 §9.1), checked by the CLI; claude and codex read
+    /// files in it, ollama reads none (`internal/providers/caps/caps.go`).
     package var readFolder: String?
     /// `--purpose`: the LLM usage ledger's purpose for the turn's calls (a
     /// value `ai query` knows, such as `spec_review.discuss`); nil = none.

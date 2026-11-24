@@ -94,12 +94,13 @@ final class EmbeddedChatEngineFactory {
     /// review Discuss thread stays out of the ideas registry (spec
     /// 2026-11-08 §3), nor does Branch review's reviewer thread, which
     /// quotes the folder's code as a code question does (board #1025), nor
-    /// does the tuning chat (spec 2026-11-03 §4.1), like the Go filters:
+    /// does the tuning chat (spec 2026-11-03 §4.1), nor the ask explain chat,
+    /// which holds the ask's and the folder's text (spec 2026-11-24), like the Go filters:
     /// there it saves nothing. Remember
     /// still applies, as in every chat with the owner's instructions.
     static func savesKnowledge(contextType: String) -> Bool {
         ![CodeQuestionList.contextType, SpecReviewThreadKey.contextType, ReviewerSurface.contextType,
-          TuningChatSurface.contextType].contains(contextType)
+          TuningChatSurface.contextType, AskExplainKey.contextType].contains(contextType)
     }
 
     @MainActor

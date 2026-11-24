@@ -30,6 +30,10 @@ final class EmbeddedChatWiringTests: XCTestCase {
         XCTAssertTrue(EmbeddedChatEngineFactory.savesKnowledge(contextType: "target"))
     }
 
+    func testAskExplainSavesNoKnowledge() {
+        XCTAssertFalse(EmbeddedChatEngineFactory.savesKnowledge(contextType: "owner_ask_explain"))
+    }
+
     /// The owner's `решили:` line stored in a Discuss thread writes no idea;
     /// the same line in another embedded chat does.
     func testADecisionPrefixInAThreadWritesNoIdea() async throws {
