@@ -449,7 +449,7 @@ func TestSlackConnectServe_EOFWhileRequestsWait(t *testing.T) {
 	}
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(unblock)
+	defer unblock()
 	// A connection is reported once net/http has it http.StateActive: a
 	// shutdown waits for those, but closes a StateNew one that a loaded
 	// machine has not let the client finish (#2367).
@@ -484,10 +484,16 @@ func TestSlackConnectServe_EOFWhileRequestsWait(t *testing.T) {
 		return ch
 	}
 	callbackPage := fetch(h.redirectPath(t, "code=code-1"))
-	<-active
+	select {
+	case <-active:
+	case cp := <-callbackPage:
+		unblock()
+		t.Fatalf("the callback ended before it became active: %+v", cp)
+	}
 	select { // the loop is inside the account write
 	case <-inAuth:
 	case cb := <-callbackPage:
+		unblock()
 		t.Fatalf("the callback ended before the account write: %+v", cb)
 	}
 	linkPage := fetch("/slack/connect?team=" + connTeam + "&client=" + connNewID)
