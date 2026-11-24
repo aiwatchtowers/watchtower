@@ -316,9 +316,9 @@ final class MobilePairingModelTests: XCTestCase {
     }
 
     /// A new CLI on an older hub prints `"request":""`. The answer stays a
-    /// valid line with an empty `request`; a reprint after it asks again (no
-    /// id ties it to the answer), and the CLI's "out of date" failure shows
-    /// as a failure with its text.
+    /// valid line with an empty `request`; the CLI then refuses every yes
+    /// (even with one line) and exits with "the hub is out of date", which
+    /// shows as a failure with its text, the warning gone.
     func testAnEmptyRequestStillAnswersAndAnOldHubFailsWithItsText() async throws {
         let streamer = FakePairStreamer()
         let model = makeModel(streamer, clock: Clock(start))
@@ -327,22 +327,91 @@ final class MobilePairingModelTests: XCTestCase {
         let line = #"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827","moves_to_relay":true,"request":""}"#
         let yes = #"{"code":"4827","confirm":true,"moves_to_relay":true,"request":""}"#
 
-        model.receive(line)
+        session.push(line)
+        await waitUntil("the code") { model.step == .sas(code: "4827", phone: "Phone A") }
         model.confirm(true, answering: try XCTUnwrap(model.question))
         XCTAssertEqual(session.sent, [yes])
+        XCTAssertEqual(model.step, .waiting)
         let decoded = try JSONSerialization.jsonObject(with: Data(yes.utf8)) as? [String: Any]
         XCTAssertEqual(decoded?["request"] as? String, "", "a valid JSON line")
-
-        model.receive(line)
-        XCTAssertEqual(model.step, .sas(code: "4827", phone: "Phone A"), "no request id: the reprint asks again")
-        model.confirm(true, answering: try XCTUnwrap(model.question))
-        XCTAssertEqual(session.sent, [yes, yes])
 
         let stderr = "Error: the hub is out of date: restart Watchtower, then link again\n"
         session.failureText = MobileHubCLI.reason(CLIRunnerError.nonZeroExit(code: 1, stderr: stderr))
         session.end()
         await waitUntil("failed") { if case .failed = model.step { true } else { false } }
         XCTAssertEqual(model.step, .failed("The hub is out of date: restart Watchtower, then link again."))
+        XCTAssertNil(model.relayMoveWarning)
+        XCTAssertNil(model.question)
+    }
+
+    /// A no can get `code_changed` too: the CLI reprints the current line and
+    /// asks again, the same as after a yes.
+    func testANoOnAReplacedRequestAsksAgain() async throws {
+        let streamer = FakePairStreamer()
+        let model = makeModel(streamer, clock: Clock(start))
+        await model.start()
+        let session = try XCTUnwrap(streamer.sessions.first)
+        let old = #"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827","moves_to_relay":false,"request":"0123456789abcdef"}"#
+        let current = #"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"1093","moves_to_relay":true,"request":"fedcba9876543210"}"#
+        model.receive(old)
+        model.confirm(false, answering: try XCTUnwrap(model.question))
+        XCTAssertEqual(model.step, .waiting)
+        model.receive(current) // printed again after code_changed
+        XCTAssertEqual(model.step, .sas(code: "1093", phone: "Phone A"))
+        model.confirm(false, answering: try XCTUnwrap(model.question))
+        XCTAssertEqual(session.sent, [
+            #"{"code":"4827","confirm":false,"moves_to_relay":false,"request":"0123456789abcdef"}"#,
+            #"{"code":"1093","confirm":false,"moves_to_relay":true,"request":"fedcba9876543210"}"#
+        ])
+    }
+
+    /// The request moved to another window: the CLI prints `refused`
+    /// `expired_code` and exits 0. The sheet ends there, from the code or
+    /// while waiting after Link, and the clean exit adds nothing.
+    func testARequestThatMovedAwayEndsAsExpired() async throws {
+        let streamer = FakePairStreamer()
+        let model = makeModel(streamer, clock: Clock(start))
+        let sas = #"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827","moves_to_relay":true,"request":"0123456789abcdef"}"#
+        let expired = #"{"event":"refused","reason":"expired_code"}"#
+        for afterLink in [false, true] {
+            await model.start()
+            let session = try XCTUnwrap(streamer.sessions.last)
+            session.push(sas)
+            await waitUntil("the code") { model.step == .sas(code: "4827", phone: "Phone A") }
+            if afterLink {
+                model.confirm(true, answering: try XCTUnwrap(model.question))
+                XCTAssertEqual(model.step, .waiting)
+            }
+            session.push(expired)
+            session.end()
+            await waitUntil("expired") { model.step == .refused("expired_code") }
+            XCTAssertNil(model.relayMoveWarning)
+            XCTAssertNil(model.question)
+            let reader = try XCTUnwrap(model.reader)
+            await reader.value // the stream has ended; the exit changed nothing
+            XCTAssertEqual(model.step, .refused("expired_code"), "after Link: \(afterLink)")
+            XCTAssertEqual(Model.refusalAction("expired_code"), Model.showNewCodeTitle)
+        }
+    }
+
+    /// Closing the sheet while it waits after Link stops the child; the
+    /// child's "no answer" exit that follows shows nothing.
+    func testDismissingWhileWaitingAfterLinkStopsQuietly() async throws {
+        let streamer = FakePairStreamer()
+        let model = makeModel(streamer, clock: Clock(start))
+        await model.start()
+        let session = try XCTUnwrap(streamer.sessions.first)
+        session.push(#"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827","moves_to_relay":true,"request":"0123456789abcdef"}"#)
+        await waitUntil("the code") { if case .sas = model.step { true } else { false } }
+        model.confirm(true, answering: try XCTUnwrap(model.question))
+        let reader = try XCTUnwrap(model.reader)
+        model.cancel()
+        XCTAssertTrue(session.stopped)
+        session.failureText = "No answer: stdin closed."
+        session.end()
+        await reader.value
+        XCTAssertEqual(model.step, .waiting, "nothing more shows after the sheet closed")
+        XCTAssertEqual(session.sent.count, 1)
     }
 
     /// The answer line is built by hand: every string is escaped, so any
