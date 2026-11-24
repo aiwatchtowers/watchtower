@@ -188,10 +188,10 @@ type hubRuntime struct {
 	// failures ("" = the last read answered, or nothing logged; worker only,
 	// desktop_facts.go).
 	ckReadFail, ckReadLogged string
-	// ckLaunchSeen is the bridge's launch generation the last housekeeping
-	// saw, and ckLaunchSettled whether the one before it saw the same:
-	// that launch has had a whole housekeeping interval to serve its socket
-	// (worker only, desktop_facts.go).
+	// ckLaunchSeen is the bridge's launch generation the last houseEvery
+	// tick saw, and ckLaunchSettled whether the tick before it saw the same:
+	// that launch has had at least one whole houseEvery interval to serve
+	// its socket (worker only, desktop_facts.go).
 	ckLaunchSeen    uint64
 	ckLaunchSettled bool
 
@@ -803,6 +803,7 @@ func (h *hubRuntime) work(ctx context.Context) {
 		case <-h.houseKick:
 			h.housekeeping(ctx)
 		case <-house.C:
+			h.noteBridgeLaunch() // only the ticker's runs are spaced houseEvery apart
 			h.housekeeping(ctx)
 		}
 	}
@@ -1320,7 +1321,6 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 // age and seq cap, and the daily hygiene (CloudKit sweep, ledger prune).
 func (h *hubRuntime) housekeeping(ctx context.Context) {
 	h.retryCloudKitReset(ctx)
-	h.noteBridgeLaunch()
 	h.refreshCloudKitAccount(ctx)
 	h.retireOldCloudKitZones(ctx)
 	h.savePhoneContact()

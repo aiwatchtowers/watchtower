@@ -568,7 +568,8 @@ privacy page says so.
   account available releases it: one full diff and one pass. An account not read yet holds nothing (the bridge
   starts after the hub, so each pass reads it again until a first answer). The reads log once per run of failures
   (again on a class change, and once when an answer ends it); before the first answer a read that finds no bridge
-  is silent until the first housekeeping after the bridge's launch (a relaunch starts that over) (#2192). While
+  listening is silent until the second `houseEvery` tick after the bridge's launch (a relaunch starts that over;
+  a dropped connection logs at once) (#2192). While
   CloudKit is the active transport the status reads `state: paused`, `reason: no_icloud` (the Swift hub showed itself
   unavailable, "No iCloud account is signed in"): `hub status` adds a line saying so and Settings → Mobile shows
   "Paused until iCloud is available on this Mac. It goes on by itself." above the account's own line. On the relay

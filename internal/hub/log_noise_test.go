@@ -86,25 +86,28 @@ func (b *stateBridge) Run(ctx context.Context) error {
 func (b *stateBridge) Running() bool    { return b.running.Load() }
 func (b *stateBridge) Launches() uint64 { return b.launches.Load() }
 
-var errBridgeDown = fmt.Errorf("cloudkit: bridge not running: %w", transport.ErrUnavailable)
+// errBridgeDown is the client finding no bridge listening on its socket.
+var errBridgeDown = fmt.Errorf("cloudkit: bridge not running: %w", cloudkit.ErrBridgeNotListening)
 
 // newAcctRuntime is a desktop host whose bridge was not launched yet and
-// whose account reads find no bridge.
+// whose account reads find no bridge listening.
 func newAcctRuntime() (*hubRuntime, *failingAcct, *stateBridge) {
 	f := &failingAcct{ckShares: newCKShares(), acct: transport.AccountAvailable, err: errBridgeDown}
 	b := &stateBridge{}
 	return &hubRuntime{sup: &supervisor{o: Options{Desktop: &Desktop{}}}, tr: f, ck: f, bridge: b}, f, b
 }
 
+// readAccount is n account reads of a pass, the start's housekeeping or a
+// daemon cycle's (none of which looks at the bridge's launch).
 func readAccount(h *hubRuntime, n int) {
 	for range n {
 		h.refreshCloudKitAccount(context.Background())
 	}
 }
 
-// houseRead is housekeeping's account step: it notes the bridge's launch,
-// then reads.
-func houseRead(h *hubRuntime) {
+// tickRead is a houseEvery tick (work's house.C): it notes the bridge's
+// launch, then its housekeeping reads the account.
+func tickRead(h *hubRuntime) {
 	h.noteBridgeLaunch()
 	h.refreshCloudKitAccount(context.Background())
 }
@@ -117,45 +120,46 @@ const (
 
 // A start reads the account before the bridge serves its socket — the first
 // pass, the housekeeping and the link upkeep's pass, all kicked at once —
-// with the supervisor reporting the bridge running already: silent, and so
-// is a socket still missing at a housekeeping right after a relaunch. The
-// first housekeeping after a launch the one before it saw logs a socket
-// still missing, once.
-func TestAccountReadsLogAMissingSocketOnlyAfterAHousekeeping(t *testing.T) {
+// with the supervisor reporting the bridge running already: silent, however
+// many daemon cycles' housekeepings follow, and so is a socket still
+// missing at the first houseEvery tick after a relaunch. The second tick
+// that sees the same launch logs a socket still missing, once.
+func TestAccountReadsLogAMissingSocketOnlyAfterTwoTicks(t *testing.T) {
 	logs := captureLog(t)
 	h, _, b := newAcctRuntime()
 	readAccount(h, 1) // the first pass, before the launch
 	b.launch()
-	houseRead(h)      // the kicked housekeeping: sees launch 1
-	readAccount(h, 3) // the link upkeep's pass, the pass ticks
+	readAccount(h, 3) // the kicked housekeeping, the link upkeep's pass, a pass
+	readAccount(h, 5) // daemon cycles back to back: never settle a launch
+	tickRead(h)       // tick 1: sees launch 1
 	b.launch()        // the bridge exited and was launched again
-	houseRead(h)      // sees launch 2 first: still silent
+	tickRead(h)       // tick 2: sees launch 2 first
 	readAccount(h, 2)
 	if out := logs(); out != "" {
 		t.Fatalf("a bridge being launched was logged:\n%s", out)
 	}
-	houseRead(h) // the next housekeeping, launch 2 still without a socket
-	houseRead(h)
+	tickRead(h) // tick 3: launch 2 a whole interval old, still no socket
+	tickRead(h)
 	readAccount(h, 2)
 	if out := logs(); out != acctUnavailable {
 		t.Fatalf("log:\n%s\nwant:\n%s", out, acctUnavailable)
 	}
 }
 
-// A healthy start: the socket is served before the next housekeeping, and
-// nothing is logged, nor is the first answer; a relaunched hub (a fresh
-// runtime) the same.
+// A healthy start: the socket is served before the ticks, and nothing is
+// logged, nor is the first answer; a relaunched hub (a fresh runtime) the
+// same.
 func TestAccountReadsWhileTheBridgeStartsAreNotLogged(t *testing.T) {
 	logs := captureLog(t)
 	for range 2 {
 		h, f, b := newAcctRuntime()
 		readAccount(h, 1)
 		b.launch()
-		houseRead(h)
-		readAccount(h, 2)
+		readAccount(h, 3)
 		f.err = nil
 		readAccount(h, 1)
-		houseRead(h)
+		tickRead(h)
+		tickRead(h)
 		if got := h.cloudKitStatus().Account; got != string(transport.AccountAvailable) {
 			t.Fatalf("account after the bridge came up: %q", got)
 		}
@@ -165,17 +169,41 @@ func TestAccountReadsWhileTheBridgeStartsAreNotLogged(t *testing.T) {
 	}
 }
 
+// A connection that drops (or a write that fails) is ErrUnavailable but not
+// a bridge still starting: logged at once, even on the first read.
+func TestADroppedBridgeConnectionIsLoggedAtOnce(t *testing.T) {
+	logs := captureLog(t)
+	h, f, b := newAcctRuntime()
+	b.launch()
+	f.err = fmt.Errorf("cloudkit: bridge connection lost: %w", transport.ErrUnavailable)
+	readAccount(h, 2)
+	if out := logs(); out != acctUnavailable {
+		t.Fatalf("log:\n%s\nwant:\n%s", out, acctUnavailable)
+	}
+}
+
+// notListeningCK is ckShares whose bridge never listens: every account read
+// fails as the client's does on a missing socket, and is counted.
+type notListeningCK struct {
+	*ckShares
+	reads atomic.Int64
+}
+
+func (c *notListeningCK) AccountStatus(context.Context) (transport.Account, error) {
+	c.reads.Add(1)
+	return "", errBridgeDown
+}
+
 // The real start order on a running desktop host, whose bridge supervisor
 // reports the bridge running before its socket is served and whose socket
-// never comes: the start logs nothing, and the daemon cycles' housekeepings
-// log it once.
-func TestAHubStartWithABridgeThatNeverServesLogsOnceAtAHousekeeping(t *testing.T) {
+// never comes: the start and the daemon cycles log nothing; the second
+// houseEvery tick after the launch logs it once.
+func TestAHubStartWithABridgeThatNeverServesLogsOnceAtTheSecondTick(t *testing.T) {
 	bubble(t, func(t *testing.T) {
 		policytest.Set(t, nil)
 		logs := captureLog(t)
 		r := newDeskRig(t, shortDir(t))
-		ck := newAcctCK(transport.AccountAvailable)
-		ck.failNext("account_status", 1<<30)
+		ck := &notListeningCK{ckShares: newCKShares()}
 		r.ck = ck.Fake
 		fctx, fcancel := context.WithCancel(context.Background())
 		t.Cleanup(fcancel)
@@ -188,17 +216,25 @@ func TestAHubStartWithABridgeThatNeverServesLogsOnceAtAHousekeeping(t *testing.T
 		r.waitStatus("running", func(s Status) bool { return s.State == StateRunning && s.Bridge == BridgeRunning })
 		time.Sleep(10 * time.Second) // the start's passes
 		synctest.Wait()
-		before := ck.count("account_status")
+		before := ck.reads.Load()
 		ck.inject(transport.Event{PullNow: true}) // a pass now, with the bridge running
 		time.Sleep(time.Second)
 		synctest.Wait()
-		if ck.count("account_status") == before {
+		if ck.reads.Load() == before {
 			t.Fatal("no account read while the bridge ran without a socket")
 		}
+		r.cycles(4) // daemon cycles back to back
 		if strings.Contains(logs(), "iCloud account") {
-			t.Fatalf("the start was logged:\n%s", logs())
+			t.Fatalf("the start or a daemon cycle was logged:\n%s", logs())
 		}
-		r.cycles(4)
+		time.Sleep(houseEvery) // tick 1: sees the launch
+		synctest.Wait()
+		if strings.Contains(logs(), "iCloud account") {
+			t.Fatalf("the first tick was logged:\n%s", logs())
+		}
+		time.Sleep(houseEvery) // tick 2: the same launch, still no socket
+		synctest.Wait()
+		r.cycles(2)
 		if got := strings.Count(logs(), acctUnavailable); got != 1 {
 			t.Fatalf("the missing socket logged %d times, want 1:\n%s", got, logs())
 		}

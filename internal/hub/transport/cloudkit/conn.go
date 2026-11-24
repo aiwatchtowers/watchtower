@@ -22,6 +22,12 @@ import (
 // it.
 var ErrBridgeRefused = errors.New("cloudkit: bridge socket refused")
 
+// ErrBridgeNotListening is no bridge serving the socket yet — the file is
+// missing or nothing accepts on it (a bridge not running, or started and not
+// listening yet). It is a transport.ErrUnavailable; a write that fails or a
+// connection that drops is ErrUnavailable without it.
+var ErrBridgeNotListening = fmt.Errorf("cloudkit: bridge not listening: %w", transport.ErrUnavailable)
+
 // conn is one connection to the bridge: frames out under wmu, answers routed
 // to their pending request by id.
 type conn struct {
@@ -138,7 +144,7 @@ func (c *Client) connect(ctx context.Context) (*conn, error) {
 	var d net.Dialer
 	nc, err := d.DialContext(ctx, "unix", path)
 	if err != nil {
-		return nil, fmt.Errorf("cloudkit: bridge not reachable: %w", transport.ErrUnavailable)
+		return nil, fmt.Errorf("cloudkit: bridge not reachable: %w", ErrBridgeNotListening)
 	}
 	uc, ok := nc.(*net.UnixConn)
 	if !ok {
@@ -197,11 +203,11 @@ func (c *Client) current() (*conn, error) {
 
 // checkSocket refuses (ErrBridgeRefused) a socket file that is not a
 // socket, is open to anyone but its owner, or is owned by another user; a
-// missing one is ErrUnavailable (the bridge is not running).
+// missing one is ErrBridgeNotListening (the bridge is not running).
 func checkSocket(path string) error {
 	fi, err := os.Lstat(path)
 	if err != nil {
-		return fmt.Errorf("cloudkit: bridge not running: %w", transport.ErrUnavailable)
+		return fmt.Errorf("cloudkit: bridge not running: %w", ErrBridgeNotListening)
 	}
 	if fi.Mode().Type() != fs.ModeSocket {
 		return fmt.Errorf("%w: the path is not a socket", ErrBridgeRefused)
