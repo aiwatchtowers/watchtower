@@ -1,6 +1,6 @@
 # Revoked access deletes an account's data
 
-When a company revokes your Slack, Google, Jira or Linear access, Watchtower deletes what it synced from that account, so a Mac you no longer work on for them stops holding their messages and mail. It is off by default: you, your company's configuration profile or the corporate build turn it on. This page explains when it deletes, what it keeps and how to turn it on or off.
+When a company revokes your Slack, Google, Jira or Linear access, Watchtower deletes what it synced from that account, so a Mac you no longer work on for them stops holding their messages and mail. It is off by default: you or your company's configuration profile turn it on. This page explains when it deletes, what it keeps and how to turn it on or off.
 
 ## Why turn it on
 
