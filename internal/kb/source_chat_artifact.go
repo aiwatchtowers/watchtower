@@ -35,7 +35,7 @@ const keptJoin = `FROM chat_knowledge_artifacts k
 	JOIN chat_artifacts a ON a.conversation_id = k.conversation_id
 		AND a.artifact_key = k.artifact_key AND a.version = k.version
 	JOIN chat_conversations c ON c.id = k.conversation_id
-		AND COALESCE(c.context_type, '') NOT IN ('code_question', 'review_reviewer', 'spec_review_thread', 'analytics_tuning')
+		AND COALESCE(c.context_type, '') NOT IN ('code_question', 'review_reviewer', 'spec_review_thread', 'owner_ask_explain', 'analytics_tuning')
 		AND ` + db.ChatNotPrivateMeeting + `
 		AND c.live_slack_since IS NULL`
 

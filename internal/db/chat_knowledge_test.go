@@ -207,6 +207,31 @@ func TestListChatTurnsForIdeas_SkipsSpecReviewThreads(t *testing.T) {
 	assert.Equal(t, []int64{before, after}, ids)
 }
 
+// TestListChatTurnsForIdeas_SkipsAskExplainChats: a "Not clear?" chat on an
+// ask stays on its panel: its turns are never mined.
+func TestListChatTurnsForIdeas_SkipsAskExplainChats(t *testing.T) {
+	d := openTestDB(t)
+	cutoff := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	old := float64(cutoff.Add(-time.Hour).Unix())
+	require.NoError(t, d.SetMediaStartAt(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
+
+	plain := insertChatConversation(t, d, "", "")
+	explain := insertChatConversation(t, d, AskExplainContextType, "4:7")
+	before := insertChatMessage(t, d, plain, "user", "we ship on Monday", old)
+	owner := insertChatMessage(t, d, explain, "user", "we decided to drop the cache", old)
+	insertChatMessage(t, d, explain, "assistant", "the ask means this", old)
+	attachChatImage(t, d, explain, owner, "shot.png")
+	after := insertChatMessage(t, d, plain, "user", "after", old)
+
+	got, err := d.ListChatTurnsForIdeas(0, cutoff.Format(time.RFC3339), 10)
+	require.NoError(t, err)
+	var ids []int64
+	for _, g := range got {
+		ids = append(ids, g.ID)
+	}
+	assert.Equal(t, []int64{before, after}, ids)
+}
+
 // TestListChatTurnsForIdeas_SkipsTuningChats: a tuning chat is never mined.
 func TestListChatTurnsForIdeas_SkipsTuningChats(t *testing.T) {
 	d := openTestDB(t)

@@ -357,7 +357,7 @@ func TestMergeRewritesStaleOtherBench(t *testing.T) {
 }
 
 // Chats keyed by the workbench id follow it: code questions, spec review
-// threads, reviewer threads (B's home-folder thread gains its folder).
+// threads, ask explain chats, reviewer threads (B's home-folder thread gains its folder).
 func TestMergeReKeysTheChats(t *testing.T) {
 	ctx := context.Background()
 	d := testDB(t)
@@ -374,6 +374,7 @@ func TestMergeReKeysTheChats(t *testing.T) {
 	bs, as := strconv.FormatInt(b, 10), strconv.FormatInt(a, 10)
 	question := chat("code_question", bs+":src/main.go:12")
 	thread := chat(db.SpecReviewThreadContextType, bs+":7:item-1")
+	explain := chat(db.AskExplainContextType, bs+":9")
 	home := chat("review_reviewer", bs+":main")
 	folder := chat("review_reviewer", bs+":f"+strconv.FormatInt(bHome, 10)+":wt/fix")
 	mine := chat("review_reviewer", as+":main")
@@ -396,6 +397,7 @@ func TestMergeReKeysTheChats(t *testing.T) {
 	}
 	assert.Equal(t, as+":src/main.go:12", key(question))
 	assert.Equal(t, as+":7:item-1", key(thread))
+	assert.Equal(t, as+":9", key(explain))
 	assert.Equal(t, as+":f"+strconv.FormatInt(bHome, 10)+":main", key(home), "B's home is a folder of A now")
 	assert.Equal(t, as+":f"+strconv.FormatInt(bHome, 10)+":wt/fix", key(folder))
 	assert.Equal(t, as+":main", key(mine), "A's own thread untouched")

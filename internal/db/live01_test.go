@@ -148,6 +148,7 @@ var displayOnlyReaders = map[string]string{
 	"IdeasChatFloorTop":                "MAX(id), a number with no text",
 	"deleteWorkbenchCodeQuestions":     "delete only",
 	"deleteWorkbenchSpecReviewThreads": "delete only",
+	"deleteWorkbenchAskExplainChats":   "delete only",
 	"keptJoin":                         "the knowledge source's join: it skips a marked conversation (internal/kb TestLIVE01_KeptArtifactSkipped)",
 }
 

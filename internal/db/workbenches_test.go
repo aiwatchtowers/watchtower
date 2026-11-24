@@ -434,6 +434,31 @@ func TestDeleteWorkbench_CodeQuestionPrefixIsExact(t *testing.T) {
 	assert.Equal(t, 1, n, "the id with the same leading digits survives")
 }
 
+// TestDeleteWorkbenchDropsAskExplainChats: a workbench's "Not clear?" chats go
+// with it, the prefix matched exactly (workbench 1 never takes 10's).
+func TestDeleteWorkbenchDropsAskExplainChats(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	insert := func(contextID string) int64 {
+		res, err := d.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+			VALUES ('q', ?, ?, 0, 0)`, AskExplainContextType, contextID)
+		require.NoError(t, err)
+		id, err := res.LastInsertId()
+		require.NoError(t, err)
+		return id
+	}
+	mine := insert(fmt.Sprintf("%d:5", pid))
+	longer := insert(fmt.Sprintf("%d1:5", pid))
+
+	require.NoError(t, d.DeleteWorkbench(pid))
+
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE id = ?`, mine).Scan(&n))
+	assert.Equal(t, 0, n, "the workbench's explain chat is gone")
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE id = ?`, longer).Scan(&n))
+	assert.Equal(t, 1, n, "the id with the same leading digits survives")
+}
+
 // insertCodeQuestion plants a code question conversation with one owner
 // message, as the Desktop writes it.
 func insertCodeQuestion(t *testing.T, d *DB, contextID, question string) int64 {
