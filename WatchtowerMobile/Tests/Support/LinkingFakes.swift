@@ -324,10 +324,11 @@ final class FakeLinkHost: LinkHost {
     /// The hub of each `fetchKeybox`, in call order.
     private(set) var grantHubIDs: [String] = []
 
-    /// One keybox read of the link flow: a zone fetch (`fetchKeybox`, the full download on a fresh replica) or a
-    /// server read by record name (`serverKeybox`), with how many device records had been written when it began.
+    /// One keybox read of the link flow: a zone fetch (`fetchKeybox`, the full download on a fresh replica), a
+    /// server read by record name (`serverKeybox`) or a read of the replica's stored copy alone (`storedKeybox`),
+    /// with how many device records had been written when it began.
     struct ReadCall: Equatable {
-        enum Kind: Equatable { case fetch, server }
+        enum Kind: Equatable { case fetch, server, stored }
         let kind: Kind
         let writesBefore: Int
     }
@@ -390,9 +391,9 @@ final class FakeLinkHost: LinkHost {
             return .unavailable(reason: "fetch failed")
         }
         fetchedHubs.insert(hubID)
-        if let stored = await storedKeybox(hubID: hubID, deviceID: deviceID), stored.grant.linked { returnedLinked = true }
+        if let stored = replicaKeybox(writes), stored.grant.linked { returnedLinked = true }
         if let fingerprint = macOpaque?(writes) { return .opaque(fingerprint: fingerprint) }
-        return .read(await storedKeybox(hubID: hubID, deviceID: deviceID))
+        return .read(replicaKeybox(writes))
     }
 
     func serverKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
@@ -442,6 +443,12 @@ final class FakeLinkHost: LinkHost {
 
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox? {
         let writes = (try? await deviceWrites()) ?? []
+        keyboxReads.append(ReadCall(kind: .stored, writesBefore: writes.count))
+        return replicaKeybox(writes)
+    }
+
+    /// The replica's copy of the keybox for the device records written so far (a fetch's own read, not recorded).
+    private func replicaKeybox(_ writes: [DevicePayload]) -> Keybox? {
         if macOpaque?(writes) != nil { return nil }
         return keybox((replicaMac ?? mac)(writes))
     }

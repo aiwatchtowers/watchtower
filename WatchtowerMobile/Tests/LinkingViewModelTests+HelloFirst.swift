@@ -701,32 +701,57 @@ extension LinkingViewModelTests {
 // MARK: - The field timeline of #2190
 
 /// v0.29.2 read every answer of the wait from the replica (`fetchKeybox`: one fetch, then the replica's copy), so a
-/// refusal the Mac published two seconds after the hello showed only once a fetch had polled the data zone to its end
-/// and the replica had applied it; on the owner's phone neither the late hello's refusal nor the rescan's ever did.
-/// Since #2189 a scan whose baseline is the server's copy reads every answer from the server, so the Mac's refusal
-/// shows within one poll whatever the replica holds. `replicaMac` here is a replica that never catches up.
+/// refusal the Mac published shortly after the hello showed only once a fetch had polled the data zone to its end and
+/// the replica had applied it; on the owner's phone neither the late hello's refusal nor the rescan's ever did. Since
+/// #2189 a scan whose baseline is the server's copy reads every answer from the server, so the Mac's refusal shows on
+/// the first poll after it is published, whatever the replica holds. Here the Mac publishes one second after the hello
+/// (the first read after the hello sees no answer), and `replicaMac` is a replica that never catches up.
 extension LinkingViewModelTests {
-    /// The Mac's code closed before the hello arrived: it refused the hello at once (`expired_code`).
+    /// The Mac's refusal of this scan's hello from `answeredAt` on (the fake clock), `before` until then.
+    private func macRefuses(_ payload: LinkPayload, with answer: DeviceGrant, from answeredAt: Date, else before: DeviceGrant?) {
+        host.mac = { [clock] writes in
+            guard let clock, clock.now() >= answeredAt, writes.contains(where: { $0.linkNonce == payload.nonce }) else {
+                return before
+            }
+            return answer
+        }
+    }
+
+    /// The refusal came on a later poll than the hello's first read, on the first poll after it was published, and
+    /// only the server was read.
+    private func assertRefusedOnTheFirstPollAfter(
+        _ answeredAt: Date, reads: ArraySlice<FakeLinkHost.ReadCall>, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let afterTheHello = reads.filter { $0.writesBefore > 0 }
+        XCTAssertGreaterThanOrEqual(afterTheHello.count, 2, "a read before the refusal, then the one that saw it", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(clock.now(), answeredAt, file: file, line: line)
+        XCTAssertLessThan(
+            clock.now(), answeredAt.addingTimeInterval(LinkingViewModel.grantPollInterval), "the first poll after it",
+            file: file, line: line)
+        XCTAssertTrue(reads.allSatisfy { $0.kind == .server }, "never the lagging replica: \(reads)", file: file, line: line)
+    }
+
+    /// The Mac's code closed before the hello arrived: it refused the hello (`expired_code`).
     func testALateHellosRefusalShowsWhileTheReplicaNeverCatchesUp() async throws {
         let payload = code()
-        let answer = refusal(.expiredCode, decidedAt: start.addingTimeInterval(1))
-        host.mac = { writes in writes.contains { $0.linkNonce == payload.nonce } ? answer : nil }
+        let answeredAt = start.addingTimeInterval(1)
+        macRefuses(payload, with: refusal(.expiredCode, decidedAt: answeredAt), from: answeredAt, else: nil)
         host.replicaMac = { _ in nil }
         let model = makeModel()
 
         await model.open(payload.url())
 
         XCTAssertEqual(model.phase, .failed(.refused))
-        XCTAssertLessThan(clock.slept, LinkingViewModel.grantPollInterval * 2, "the first read after the hello")
-        XCTAssertTrue(host.keyboxReads.allSatisfy { $0.kind == .server }, "never the lagging replica")
+        assertRefusedOnTheFirstPollAfter(answeredAt, reads: host.keyboxReads[...])
     }
 
     /// The rescan: the server still holds the earlier code's refusal (the baseline), and the Mac refuses the rescan's
     /// hello too (`not_confirmed`, its code closed); the replica still shows the earlier refusal.
     func testARescansRefusalShowsOverTheEarlierOneWhileTheReplicaNeverCatchesUp() async throws {
         let payload = code()
-        let (stale, answer) = (staleRefusal, refusal(.notConfirmed, decidedAt: start.addingTimeInterval(1)))
-        host.mac = { writes in writes.contains { $0.linkNonce == payload.nonce } ? answer : stale }
+        let answeredAt = start.addingTimeInterval(1)
+        let stale = staleRefusal
+        macRefuses(payload, with: refusal(.notConfirmed, decidedAt: answeredAt), from: answeredAt, else: stale)
         host.replicaMac = { _ in stale }
         let model = makeModel()
 
@@ -734,29 +759,33 @@ extension LinkingViewModelTests {
 
         XCTAssertEqual(model.phase, .failed(.refused))
         XCTAssertNil(LinkStore(defaults: defaults).pending, "the refused scan leaves no pending link")
-        XCTAssertTrue(host.keyboxReads.allSatisfy { $0.kind == .server }, "never the lagging replica")
+        assertRefusedOnTheFirstPollAfter(answeredAt, reads: host.keyboxReads[...])
     }
 
-    /// The relaunch: killed after the hello, the refusal published meanwhile, the replica still on the earlier one.
+    /// The relaunch: killed at the first read after the hello, the refusal published after the relaunch's first read,
+    /// the replica still on the earlier one.
     func testARelaunchTakesThisScansRefusalWhileTheReplicaNeverCatchesUp() async throws {
         let payload = try await killedAfterTheHello()
-        let (stale, answer) = (staleRefusal, refusal(.notConfirmed, decidedAt: start.addingTimeInterval(1)))
-        host.mac = { writes in writes.contains { $0.linkNonce == payload.nonce } ? answer : stale }
+        let answeredAt = clock.now().addingTimeInterval(1)
+        let stale = staleRefusal
+        macRefuses(payload, with: refusal(.notConfirmed, decidedAt: answeredAt), from: answeredAt, else: stale)
         host.replicaMac = { _ in stale }
+        let readsBefore = host.keyboxReads.count
         let relaunched = makeModel()
 
         await relaunched.resumePendingLink()
 
         XCTAssertEqual(relaunched.phase, .failed(.refused))
+        assertRefusedOnTheFirstPollAfter(answeredAt, reads: host.keyboxReads.dropFirst(readsBefore))
     }
 
-    /// The v0.29.2 path, still taken when the server read fails at the scan: the baseline comes from the replica and
-    /// so does every read of the wait, so a replica that never catches up ends the wait unanswered (known limit: the
-    /// server's copy is never compared with a replica baseline, which may lag it).
+    /// The v0.29.2 path, still taken when the server read fails at the scan (docs/features/mobile-companion.md, the
+    /// link flow's Known limits: "A scan whose server read of the keybox fails"): the baseline comes from the replica
+    /// and so does every read of the wait, so a replica that never catches up ends the wait unanswered at its deadline.
     func testAReplicaBaselineStillWaitsOnTheReplica() async throws {
         let payload = code()
-        let answer = refusal(.expiredCode, decidedAt: start.addingTimeInterval(1))
-        host.mac = { writes in writes.contains { $0.linkNonce == payload.nonce } ? answer : nil }
+        let answeredAt = start.addingTimeInterval(1)
+        macRefuses(payload, with: refusal(.expiredCode, decidedAt: answeredAt), from: answeredAt, else: nil)
         host.replicaMac = { _ in nil }
         host.failingServerReads = 1
         let model = makeModel()
@@ -765,5 +794,9 @@ extension LinkingViewModelTests {
 
         XCTAssertEqual(model.phase, .failed(.noAnswer))
         XCTAssertEqual(host.keyboxReads.filter { $0.kind == .server }.count, 1, "only the failed baseline read")
+        XCTAssertTrue(
+            host.keyboxReads.contains { $0.kind == .fetch && $0.writesBefore > 0 }, "the hello went out, the replica was polled")
+        let deadline = Date(timeIntervalSince1970: TimeInterval(payload.exp) + LinkingViewModel.expiryGrace)
+        XCTAssertGreaterThanOrEqual(clock.now(), deadline, "waited to the deadline")
     }
 }
