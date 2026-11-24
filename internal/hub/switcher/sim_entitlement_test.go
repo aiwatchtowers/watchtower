@@ -774,3 +774,22 @@ func TestG2ANotFreshReadKeepsTheCountAndRetriesAtOnce(t *testing.T) {
 		w.wantActive(transport.KindCloudKit)
 	})
 }
+
+// §3: after a relay-linked phone moved the hub to the relay, G2 cannot move
+// it back: its fingerprint is empty while that phone has no iCloud route,
+// even when the account lists nobody paying.
+func TestNoPayerIgnoresARelayOnlyLinkAfterRelayLinkSwitch(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := w.addPhone(false)
+		w.route(a, true)
+		w.relayPhone(true)
+		w.relayLinkCheck()
+		w.wantActive(transport.KindRelay)
+		w.mu.Lock()
+		w.paying = map[string]bool{}
+		w.mu.Unlock()
+		w.pollAfterInterval()
+		w.pollAfterInterval()
+		w.wantActive(transport.KindRelay)
+	})
+}

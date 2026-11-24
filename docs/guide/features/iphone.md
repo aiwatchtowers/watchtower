@@ -54,7 +54,7 @@ done_when: iphone.paired
 4. The phone shows a four-digit code. Check it matches the code on the Mac, then click **Link** there (**Refuse** cancels).
 5. The phone shows **Linked to <Mac name>**. **Continue** asks for notification permission and opens **Now**.
 
-If the phone uses the same Apple ID as the Mac, it syncs through your private iCloud. With another Apple ID, it joins the two folders the Mac shares. Failed phone recordings wait under **Recordings** (**Retry**, **Discard…**).
+On the Mac's Apple ID, the phone syncs through your private iCloud. With another Apple ID, it joins the two folders the Mac shares. Failed phone recordings wait under **Recordings** (**Retry**, **Discard…**).
 
 ### Use the tabs
 <!-- learn
@@ -155,18 +155,18 @@ kind: tip
 since: 0.28.3
 -->
 
-Settings → **Towers** lists your towers. **Add tower** scans another code (up to four); drag rows to reorder. **Unlink** (or **Forget**, for one that removed the phone or is long offline) deletes its data from the phone; unsent changes are lost, and the phone says how many. With several, the status chip atop Now, Workbench and Calendar (**Acme Mac · online ▾**) lists them and the questions waiting on the others; a tap switches every tab.
+Settings → **Towers** lists your towers. **Add tower** scans another code (up to four); drag rows to reorder. **Unlink** (or **Forget**, for one that removed the phone or is long offline) deletes its data from the phone and says how many unsent changes it lost. With several, the status chip atop Now, Workbench and Calendar (**Acme Mac · online ▾**) lists them and the questions waiting on the others; a tap switches every tab.
 
 On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's hub freezes in both cases: what it synced stays readable, nothing new arrives, until you tap **Forget**. A phone on another Apple ID also leaves the Mac's iCloud sharing.
 
 ## When it's empty or wrong
 
 - **The tower doesn't show up on the phone.** Check that Watchtower is open, **Mobile sync** is on, the Mac is awake, the build is signed and iCloud is on; then the pairing above.
-- **"This code expired" or "This code can't be used".** Press **New code** on the Mac and scan again. A code works for one phone.
+- **"This code expired" or "This code can't be used".** Press **New code** on the Mac and scan again. A code works for one phone. If it also says "This iPhone is already linked to <tower>", just close the screen.
 - **"Sign in to iCloud on this iPhone to use Watchtower".** The phone and the Mac both need an iCloud account ("Mobile isn't available on this Mac: iCloud is off.").
 - **Another Apple ID won't link.** "This tower can't share with another Apple ID right now" means the Mac's share failed. Show a new code.
 - **"<tower> hasn't synced for a day".** No heartbeat for a day. If the Mac changed iCloud account, link again.
-- **"<tower> removed this phone".** It removed the link and freezes: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
+- **"<tower> removed this phone".** Its data stays readable, nothing new arrives; **Forget** deletes it and clears the row.
 - **"Your Mac has not allowed this phone to start sessions"** under **Start session**. Allow it on the Mac as above (a server tower names its `watchtower hub allow` commands).
 - **"<hub> works over Relay only".** Relay isn't in the current version of Watchtower for iPhone. That hub (a Linux box or a Mac without the Watchtower app) links only over Relay. Link it from its Mac app, if it has one.
 - **Nothing updates.** Mobile stops when you quit Watchtower, not when you close its window.
