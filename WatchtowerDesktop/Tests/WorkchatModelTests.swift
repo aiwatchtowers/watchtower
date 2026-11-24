@@ -759,6 +759,57 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertTrue(model.outgoing.isEmpty, "the combined entry is its echo")
     }
 
+    /// #2386 (N3): the looser echo match counts from the try that wrote the line, not from the click — an owner
+    /// entry ending in its text, dated between the click and that try, is not its echo.
+    func testSendTogetherEchoIsBoundedByTheTryThatWroteIt() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        processes[0].host.tracksDrafts = true
+        processes[0].onOwnerInput?(Array("fix the".utf8))
+        let model = try makeModel(session)
+        model.draft = "Run the linter"
+        await model.send()
+        let id = try XCTUnwrap(model.outgoing.first?.id)
+
+        setState(session, .needsApproval)
+        let clicked = clock.now
+        await model.sendTogether(id)
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+
+        clock.advance(30)
+        setState(session, .stopped)
+        await delivery.deliverHeld()
+        await delivery.settled()
+        XCTAssertEqual(model.outgoing.first?.state, .typed)
+        XCTAssertEqual(model.outgoing.first?.sentTogetherAt, clock.now, "the time of the try that wrote it")
+
+        let between = SessionFeedEntry(id: UUID().uuidString, kind: "owner", at: clicked.addingTimeInterval(10),
+                                       text: "fix theRun the linter")
+        model.reconcile(with: [between])
+        XCTAssertEqual(model.outgoing.count, 1, "an entry from before the write is not its echo")
+        model.reconcile(with: [owner("fix theRun the linter", after: 1)])
+        XCTAssertTrue(model.outgoing.isEmpty)
+    }
+
+    /// #2386 (N7): a line Send together tried while held again, then cancelled, leaves no attempt behind.
+    func testCancelledSendTogetherLineLeavesNoAttempt() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        processes[0].onOwnerInput?(Array("fix the".utf8))
+        let model = try makeModel(session)
+        model.draft = "Run the linter"
+        await model.send()
+        let id = try XCTUnwrap(model.outgoing.first?.id)
+
+        setState(session, .needsApproval)
+        await model.sendTogether(id)
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+        model.cancel(id)
+
+        XCTAssertTrue(model.outgoing.isEmpty)
+        XCTAssertTrue(model.togetherAttempts.isEmpty, "no entry outlives the line")
+    }
+
     /// Fix round 2 (codex N1): Send together on line B while a sweep of the held
     /// lines is delivering line A. The sweep's copy of B is stale; B is tried as
     /// the live queue holds it — under Send together's gate — and goes beside the

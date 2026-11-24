@@ -94,9 +94,10 @@ final class WorkchatModel {
     @ObservationIgnored private let promptPreview: (Int64) -> String?
     /// The reason each line's gate last held it (`holdReason`).
     @ObservationIgnored private var gateHolds: [UUID: SessionControl.LineHold] = [:]
-    /// When Send together tried a line still waiting (held or queued again): its `sentTogetherAt` once a later try
-    /// writes it (final review: the looser echo match is armed only for a line that was written).
-    @ObservationIgnored private var togetherAttempts: [UUID: Date] = [:]
+    /// When Send together's gate last let a line go — the try that writes it beside the prompt's text: its
+    /// `sentTogetherAt` once that try settles it (final review: the looser echo match is armed only for a line that
+    /// was written; #2386 N3: bounded by that try, not the click). Gone once the line settles or is cancelled.
+    @ObservationIgnored private(set) var togetherAttempts: [UUID: Date] = [:]
     /// The session's agent; nil for a shell or a kind not known yet.
     var agent: AgentKind? { kind()?.agent }
     /// Feed entries that stood for a line already: one echo, one line.
@@ -223,6 +224,8 @@ final class WorkchatModel {
                 ? control?.lineCheck(sessionID) : control?.workchatLineCheck(sessionID)
             let answer = Self.gate(check, besideText: besideText)
             if answer == .hold, case let .hold(reason)? = check { self?.gateHolds[id] = reason }
+            // The line is written right after a `.go`: Send together's echo counts from here.
+            if besideText, let self { self.togetherAttempts[id] = answer == .go ? self.now() : nil }
             return answer
         }
     }
@@ -269,13 +272,11 @@ final class WorkchatModel {
               lineDelivery.heldKeys(sessionID: sessionID).contains(.workchat(id)) else { return }
         outgoing[index].state = .sending
         outgoing[index].holdReason = nil
-        let attempt = now()
+        // Only a retry under the override sends it together (nil: its retry was under way); the line counts as
+        // sent together once a try wrote it — now, or a later one under the same gate (`gate`, `settle`).
         let delivery = await lineDelivery.retryHeld(
             sessionID: sessionID, key: .workchat(id), gate: gate(id, besideText: true)
         )
-        // Only a retry under the override sends it together (nil: its retry was under way); the line counts as
-        // sent together once a try wrote it — now, or a later one under the same gate (`settle`).
-        if delivery != nil { togetherAttempts[id] = attempt }
         settle(id, delivery ?? .queued)
     }
 
@@ -402,6 +403,8 @@ final class WorkchatModel {
         let dropped = lineDelivery.dropHeld(sessionID: sessionID) { $0 == .workchat(id) }
         guard !dropped.isEmpty else { return }
         outgoing.removeAll { $0.id == id }
+        togetherAttempts[id] = nil
+        gateHolds[id] = nil
         restore(id, typed: line.typedText)
     }
 

@@ -90,6 +90,19 @@ final class TaskOutputFileTests: XCTestCase {
         XCTAssertEqual(read("\(sessionDir)/tasks/q1.output"), .reveal)
     }
 
+    /// #2386 (codex #2): the temp dir is bound to the project the feed read the session from, like the subagents
+    /// branch — the same session id under another project's temp dir is not read, nor any without a project.
+    func testSameSessionUnderAnotherProjectsTempDirIsNotRead() throws {
+        let other = "\(base)/claude-\(getuid())/-q/\(sid)/tasks"
+        try FileManager.default.createDirectory(atPath: other, withIntermediateDirectories: true)
+        try write("other project\n", "\(other)/r1.output")
+        try write("own project\n", "\(sessionDir)/tasks/r1.output")
+        XCTAssertEqual(read("\(other)/r1.output"), .reveal)
+        XCTAssertEqual(read("\(sessionDir)/tasks/r1.output"), .text("own project\n", cut: false))
+        XCTAssertEqual(TaskOutputFile.read("\(sessionDir)/tasks/r1.output", claudeSessionID: sid, projectDir: nil,
+                                           bases: [base], claudeDir: claudeDir), .reveal)
+    }
+
     func testWithoutAClaudeDirOrAProjectDirNoTranscriptIsRead() throws {
         let link = "\(sessionDir)/tasks/a4.output"
         try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: try transcript(session: sid, id: "a4"))

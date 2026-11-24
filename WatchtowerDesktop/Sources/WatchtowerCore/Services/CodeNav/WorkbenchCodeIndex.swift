@@ -124,8 +124,12 @@ package final class WorkbenchCodeIndex {
             }
         }
         removeFiles(gone)
+        compactIfWasteful()
         bumpRevisionIfChanged()
     }
+
+    /// The corpus slots held, live and dead (tests).
+    package var corpusSlotCount: Int { corpus.slotCount }
 
     private func bumpRevisionIfChanged() {
         guard membershipChanged else { return }
@@ -143,6 +147,7 @@ package final class WorkbenchCodeIndex {
         guard let seen = seenInFullRun else { return }
         seenInFullRun = nil
         removeFiles(Set(files.filter { !seen.contains($0) }))
+        compactIfWasteful()
         bumpRevisionIfChanged()
     }
 
@@ -208,6 +213,13 @@ package final class WorkbenchCodeIndex {
         }
         files.removeAll { doomed.contains($0) }
         membershipChanged = true
+    }
+
+    /// Re-indexing a file kills its old symbol slots, and removing one all of
+    /// its slots: once the dead outnumber half the corpus (and 4096) it is
+    /// rebuilt — after every batch, so repeated full runs (a root shown again)
+    /// keep it bounded, not only removals (#2386 fix round 1).
+    private func compactIfWasteful() {
         if corpus.deadCount > max(4096, corpus.slotCount / 2) { rebuildCorpus() }
     }
 

@@ -71,7 +71,57 @@ final class WorkchatOutgoingTests: XCTestCase {
         XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the Run the linter"), line: sent))
         XCTAssertTrue(WorkchatOutgoing.matches(owner("fix theRun the linter"), line: sent))
         XCTAssertTrue(WorkchatOutgoing.matches(owner("Run the linter"), line: sent), "alone, if the text was gone")
-        XCTAssertFalse(WorkchatOutgoing.matches(owner("Run the linter later"), line: sent))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Run the linters"), line: sent), "not its whole words")
+    }
+
+    /// #2386 (codex #7): the caret was not at the end of the prompt's text — the line was pasted mid-draft, so the
+    /// entry holds it as a whole word sequence with the owner's text on both sides.
+    func testALineSentTogetherMidDraftMatchesItsWordsInside() {
+        var sent = line("Run the  linter")
+        sent.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix Run the linter the tests"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("Run the linter later"), line: sent), "pasted before the text")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("fix reRun the linters"), line: sent), "only inside other words")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Run the tests"), line: sent))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("fix Run the linter the tests", after: -1), line: sent),
+                       "still bounded by its send")
+    }
+
+    /// #2386 (T7 minors): a files-only line sent together — a path followed by punctuation matches; one pasted
+    /// straight after the prompt's text (no space) matches; a bare path that is only the start of a longer quoted
+    /// name, or the tail of a longer absolute path, does not.
+    func testAFilesOnlyLineSentTogetherPathEdges() {
+        var image = WorkchatOutgoing(
+            id: UUID(), text: "/x/1.png", sentAt: sentAt, state: .typed, typedText: "", attachmentPaths: ["/x/1.png"]
+        )
+        image.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("look at /x/1.png."), line: image), "a full stop after it")
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("look at /x/1.png, please"), line: image))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("(see /x/1.png)"), line: image))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("look at /x/1.png.bak"), line: image), "a longer name")
+
+        var pdf = WorkchatOutgoing(
+            id: UUID(), text: "/tmp/report.pdf", sentAt: sentAt, state: .typed, typedText: "",
+            attachmentPaths: ["/tmp/report.pdf"]
+        )
+        pdf.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("review/tmp/report.pdf"), line: pdf), "pasted right after the text")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("open /var/tmp/report.pdf"), line: pdf), "another absolute path")
+        // #2386 fix round 1: a path head without a `/` is still a path, not the owner's word.
+        for other in ["open ~/tmp/report.pdf", "open ./tmp/report.pdf", "open ../tmp/report.pdf",
+                      "open $HOME/tmp/report.pdf", "open ${TMP}/tmp/report.pdf", "open ~acme/tmp/report.pdf",
+                      "open .hidden/tmp/report.pdf", "open $(pwd)/tmp/report.pdf", "open $1/tmp/report.pdf",
+                      "open $@/tmp/report.pdf", "open ~+/tmp/report.pdf", "open ~-/tmp/report.pdf"] {
+            XCTAssertFalse(WorkchatOutgoing.matches(owner(other), line: pdf), other)
+        }
+        // Fix round 2: prose that only looks like a path head is still the owner's word.
+        for prose in ["wait .../tmp/report.pdf", "it costs $19.99/tmp/report.pdf", "port to .NET:/tmp/report.pdf"] {
+            XCTAssertTrue(WorkchatOutgoing.matches(owner(prose), line: pdf), prose)
+        }
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("open \"/tmp/report.pdf draft\""), line: pdf),
+                       "the start of a longer quoted name")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("open '/tmp/report.pdf draft'"), line: pdf))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("open '/tmp/report.pdf'"), line: pdf), "quoted whole")
     }
 
     /// Fix round 2 (codex N3): the suffix match counts only entries from the Send
@@ -107,7 +157,7 @@ final class WorkchatOutgoingTests: XCTestCase {
         XCTAssertTrue(WorkchatOutgoing.matches(owner("review /tmp/report.pdf"), line: pdf))
         XCTAssertTrue(WorkchatOutgoing.matches(owner("review /tmp/report.pdf now"), line: pdf))
         XCTAssertFalse(WorkchatOutgoing.matches(owner("review /tmp/report.pdf.bak"), line: pdf), "a longer path")
-        XCTAssertFalse(WorkchatOutgoing.matches(owner("review x/tmp/report.pdf"), line: pdf))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("review x/y/tmp/report.pdf"), line: pdf), "the tail of a longer path")
         XCTAssertFalse(WorkchatOutgoing.matches(owner("look at [image]"), line: pdf), "no image was sent")
         XCTAssertFalse(WorkchatOutgoing.matches(owner("look at [Image #1]"), line: pdf))
 
