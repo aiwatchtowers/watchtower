@@ -318,16 +318,22 @@ func (h *hubRuntime) removePhone(device string) error {
 	return nil
 }
 
-// afterConfirm closes the CloudKit link in the background once a confirm
-// linked device (CloseUsed): the public link closes now, the participants
-// after the answer grace. A failure keeps the sweep pending (retried by
-// SweepShares, and by the next start's restart close).
+// afterConfirm follows a confirm that linked device. It asks the switcher
+// for its relay-link check at once (a phone that linked over a Relay pairing
+// slot and pays moves a CloudKit hub to the relay now, not at the check's
+// next NoPayerPoll), and closes the CloudKit link in the background
+// (CloseUsed): the public link closes now, the participants after the
+// answer grace. A failure keeps the sweep pending (retried by SweepShares,
+// and by the next start's restart close).
 func (h *hubRuntime) afterConfirm(device string) {
-	s, ok := h.shares()
-	if !ok {
+	if _, linked, err := h.st.Device(device); err != nil || !linked {
 		return
 	}
-	if _, linked, err := h.st.Device(device); err != nil || !linked {
+	if h.sw != nil {
+		h.sw.RelayLinkSoon()
+	}
+	s, ok := h.shares()
+	if !ok {
 		return
 	}
 	h.inBackground(func(ctx context.Context) {
