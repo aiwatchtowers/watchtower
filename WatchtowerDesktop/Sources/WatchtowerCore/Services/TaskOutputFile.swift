@@ -6,13 +6,18 @@ import Foundation
 /// session — inside its temp dir (`<base>/claude-<uid>/<project>/<session id>/…`, a background command's output) or
 /// its subagent transcripts (`~/.claude/projects/<project>/<session id>/subagents/…`, where an agent's
 /// `tasks/<id>.output` link points: it opens as raw JSONL), `<project>` being the one the feed reads the session's
-/// transcript from. Anything else is revealed in Finder.
+/// transcript from. A path not spelled under a temp base's `claude-<uid>/` or Claude Code's `projects/` is refused
+/// before anything touches the disk (final review F6: a transcript-supplied path under a TCC-protected folder never
+/// reaches `realpath`, a stat or Finder); one spelled there that resolves elsewhere is revealed in Finder.
 package enum TaskOutputFile {
     package enum Outcome: Equatable, Sendable {
         /// The first `limit` bytes as text; `cut` when the file is longer.
         case text(String, cut: Bool)
-        /// Not inside the session's temp dir: reveal it in Finder.
+        /// Spelled inside a temp base or `projects/` but not resolving into the session's own dirs: reveal it in
+        /// Finder.
         case reveal
+        /// Not spelled under a temp base's `claude-<uid>/` or Claude Code's `projects/`: never touched, not revealed.
+        case refused
         /// Gone, or inside but unreadable or not a regular file.
         case unreadable
     }
@@ -27,14 +32,23 @@ package enum TaskOutputFile {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         osTemp: String = NSTemporaryDirectory()
     ) -> [String] {
-        var candidates = ["/tmp", osTemp]
-        if let dir = environment["CLAUDE_CODE_TMPDIR"], !dir.isEmpty { candidates.append(dir) }
         var out: [String] = []
-        for candidate in candidates {
-            guard candidate.hasPrefix("/"), let resolved = realPath(candidate), !out.contains(resolved) else { continue }
+        for candidate in tempCandidates(environment: environment, osTemp: osTemp) {
+            guard let resolved = realPath(candidate), !out.contains(resolved) else { continue }
             out.append(resolved)
         }
         return out
+    }
+
+    /// The absolute temp roots as spelled, unresolved: what a transcript's path may start with before the
+    /// lexical check (`read`) lets anything resolve it.
+    package static func tempCandidates(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        osTemp: String = NSTemporaryDirectory()
+    ) -> [String] {
+        var candidates = ["/tmp", osTemp]
+        if let dir = environment["CLAUDE_CODE_TMPDIR"], !dir.isEmpty { candidates.append(dir) }
+        return candidates.filter { $0.hasPrefix("/") }
     }
 
     /// Claude Code's directory as the session feed reads it: `~/.claude`, never `$CLAUDE_CONFIG_DIR` (Go's
@@ -46,18 +60,31 @@ package enum TaskOutputFile {
     /// Reads `path` for the viewer when it resolves inside the session's temp dir under one of `bases`, or inside
     /// `<projectDir>/<session id>/subagents/` when `projectDir` (the directory the feed read the conversation's transcript from) is a
     /// project of `claudeDir`'s `projects` — both compared fully resolved, so a linked `projects` still matches.
+    /// First, before `resolve` or any other call touches `path`, it must be spelled under `<base>/claude-<uid>/` of
+    /// a base (`bases` or `spelledBases`, the roots as written) or under `claudeDir`'s `projects/`, with no `.` or
+    /// `..` component; anything else is `.refused`. `resolve` is `realpath` (a seam for tests).
     package static func read(
         _ path: String,
         claudeSessionID: String?,
         projectDir: String?,
         uid: uid_t = getuid(),
         bases: [String] = tempBases(),
+        spelledBases: [String] = tempCandidates(),
         claudeDir: String? = defaultClaudeDir(),
-        limit: Int = limit
+        limit: Int = limit,
+        resolve: (String) -> String? = realPath
     ) -> Outcome {
-        guard let claudeSessionID, !claudeSessionID.isEmpty, path.hasPrefix("/") else { return .reveal }
-        guard let resolved = realPath(path) else { return .unreadable }
-        let subagents = subagentsRoot(projectDir: projectDir, claudeDir: claudeDir).map { $0 + [claudeSessionID, "subagents"] }
+        let projects = claudeDir.map { ($0 as NSString).appendingPathComponent("projects") }
+        var roots = (bases + spelledBases).map { components($0) + ["claude-\(uid)"] }
+        if let projects, projects.hasPrefix("/") {
+            roots.append(components(projects))
+            if let linked = resolve(projects) { roots.append(components(linked)) }
+        }
+        guard spelledInside(path, roots: roots) else { return .refused }
+        guard let claudeSessionID, !claudeSessionID.isEmpty else { return .reveal }
+        guard let resolved = resolve(path) else { return .unreadable }
+        let subagents = subagentsRoot(projectDir: projectDir, projects: projects, resolve: resolve)
+            .map { $0 + [claudeSessionID, "subagents"] }
         let inside = { (file: String) in
             Self.inside(file, sessionID: claudeSessionID, uid: uid, bases: bases)
                 || subagents.map { root in
@@ -96,11 +123,20 @@ package enum TaskOutputFile {
         }
     }
 
+    /// `path` is absolute, has no `.` or `..` component, and lies strictly under one of `roots` as written — checked
+    /// on the spelling alone, touching nothing.
+    private static func spelledInside(_ path: String, roots: [[String]]) -> Bool {
+        guard path.hasPrefix("/") else { return false }
+        let parts = components(path)
+        guard !parts.contains("."), !parts.contains("..") else { return false }
+        return roots.contains { root in parts.count > root.count && Array(parts.prefix(root.count)) == root }
+    }
+
     /// The resolved project dir as components, when it is a direct child of the resolved `<claudeDir>/projects`.
-    private static func subagentsRoot(projectDir: String?, claudeDir: String?) -> [String]? {
-        guard let projectDir, projectDir.hasPrefix("/"), let claudeDir, claudeDir.hasPrefix("/"),
-              let projects = realPath((claudeDir as NSString).appendingPathComponent("projects")),
-              let project = realPath(projectDir)
+    private static func subagentsRoot(projectDir: String?, projects: String?, resolve: (String) -> String?) -> [String]? {
+        guard let projectDir, projectDir.hasPrefix("/"), let projectsPath = projects, projectsPath.hasPrefix("/"),
+              let projects = resolve(projectsPath),
+              let project = resolve(projectDir)
         else { return nil }
         let (root, parts) = (components(projects), components(project))
         return parts.count == root.count + 1 && Array(parts.prefix(root.count)) == root ? parts : nil
@@ -110,7 +146,7 @@ package enum TaskOutputFile {
         path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
     }
 
-    private static func realPath(_ path: String) -> String? {
+    package static func realPath(_ path: String) -> String? {
         guard let resolved = Darwin.realpath(path, nil) else { return nil }
         defer { free(resolved) }
         return String(cString: resolved)

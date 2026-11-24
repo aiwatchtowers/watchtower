@@ -523,24 +523,27 @@ extension WorkbenchesViewModel {
     /// session is that one, and a split with another session (or that session's report) never takes the chat's
     /// place. A single pane opens Files the way a FILES click does. Either way the Files pane works in `root`, not
     /// a FILES root chosen before. `pane` is the pane hosting the chat (the Workchat's own, or Branch review's for
-    /// its Author chat); one no longer on screen opens nothing. `stillValid` re-checks the click after the
-    /// unsent edits are pulled — the pull may suspend while the index changes (review round 4). Returns whether the
-    /// file opened.
+    /// its Author chat); one no longer on screen opens nothing. `stillValid` is the click's own lookup, which may
+    /// suspend: it runs before the unsent edits are pulled, so an edit typed into the preview tab meanwhile is
+    /// pulled too and never lost to the preview open (final review F1). After the pull only synchronous checks run
+    /// — `stillCurrent` (the index unchanged since the lookup), the pane still on screen, not cancelled — and the
+    /// open follows with no suspension between. Returns whether the file opened.
     @discardableResult
     func openSessionFile(
         _ relPath: String,
         root: CodeRoot,
         pane: WorkspacePane,
-        stillValid: @MainActor () async -> Bool = { true }
+        stillValid: @MainActor () async -> Bool = { true },
+        stillCurrent: @MainActor () -> Bool = { true }
     ) async -> Bool {
         let projectID = root.workbenchID
         guard layout(projectID: projectID).visiblePanes.contains(pane) else { return false }
+        guard await stillValid(), !Task.isCancelled else { return false }
         await codeFiles.pullPending(root)
-        guard !Task.isCancelled, await stillValid() else { return false }
-        // The click's chat left, or its pane is off screen, meanwhile: nothing
-        // opens, and another session's layout is never changed (review round 3).
+        // The click's chat left, its pane is off screen or its lookup went stale during the pull: nothing opens,
+        // and another session's layout is never changed (review round 3).
         var updated = layout(projectID: projectID)
-        guard !Task.isCancelled, updated.visiblePanes.contains(pane) else { return false }
+        guard !Task.isCancelled, stillCurrent(), updated.visiblePanes.contains(pane) else { return false }
         codeFiles.open(relPath, root: root, preview: true)
         if updated.isSplit {
             beginSwitch(projectID: projectID)

@@ -94,6 +94,9 @@ final class WorkchatModel {
     @ObservationIgnored private let promptPreview: (Int64) -> String?
     /// The reason each line's gate last held it (`holdReason`).
     @ObservationIgnored private var gateHolds: [UUID: SessionControl.LineHold] = [:]
+    /// When Send together tried a line still waiting (held or queued again): its `sentTogetherAt` once a later try
+    /// writes it (final review: the looser echo match is armed only for a line that was written).
+    @ObservationIgnored private var togetherAttempts: [UUID: Date] = [:]
     /// The session's agent; nil for a shell or a kind not known yet.
     var agent: AgentKind? { kind()?.agent }
     /// Feed entries that stood for a line already: one echo, one line.
@@ -270,10 +273,9 @@ final class WorkchatModel {
         let delivery = await lineDelivery.retryHeld(
             sessionID: sessionID, key: .workchat(id), gate: gate(id, besideText: true)
         )
-        // Only a retry under the override sends it together (nil: its retry was under way).
-        if delivery != nil, let index = outgoing.firstIndex(where: { $0.id == id }) {
-            outgoing[index].sentTogetherAt = attempt
-        }
+        // Only a retry under the override sends it together (nil: its retry was under way); the line counts as
+        // sent together once a try wrote it — now, or a later one under the same gate (`settle`).
+        if delivery != nil { togetherAttempts[id] = attempt }
         settle(id, delivery ?? .queued)
     }
 
@@ -579,6 +581,10 @@ final class WorkchatModel {
         case .noSession: .notSent
         }
         outgoing[index].state = state
+        if state == .sent || state == .typed, let attempt = togetherAttempts[id] {
+            outgoing[index].sentTogetherAt = attempt
+        }
+        if state != .queued, state != .sending { togetherAttempts[id] = nil }
         // A line behind another (`.queued`) or on its way has no reason of its own.
         outgoing[index].holdReason = delivery == .held ? holdReason(id) : nil
         gateHolds[id] = nil

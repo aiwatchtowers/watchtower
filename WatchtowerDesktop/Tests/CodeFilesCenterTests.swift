@@ -542,6 +542,35 @@ final class CodeFilesCenterTests: XCTestCase {
         XCTAssertTrue(center.isWatching(hubRoot), "a main root's stream stays while hidden")
     }
 
+    /// Holds are counted per lease (final review): two Workchats hold a worktree root of a bench folder, the folder
+    /// leaves the bench and comes back, and both hold it again on their next render. Releasing one keeps the root
+    /// held for the other; the last release lets it go.
+    func testTwoLeasesOnARestoredRootAreCountedEach() throws {
+        let hubFolder = folder.appendingPathComponent("hub")
+        let wtFolder = folder.appendingPathComponent("hub-wt")
+        for dir in [hubFolder, wtFolder] { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
+        let hub = WorkbenchFolder(id: 5, workbenchID: project.id, folderPath: hubFolder.path, position: 1, name: "hub")
+        let home = WorkbenchFolder(id: 3, workbenchID: project.id, folderPath: folder.path, position: 0, name: "acme")
+        let removed = WorkbenchFolder(id: 5, workbenchID: project.id, folderPath: hubFolder.path, position: 1,
+                                      removedAt: "2026-11-24T00:00:00Z", name: "hub")
+        let worktree = CodeRoot(workbenchID: project.id, worktree: wtFolder, folderID: 5, homeFolderID: 3)
+        let center = makeCenter()
+        let (first, second) = (WorkchatIndexLease(), WorkchatIndexLease())
+        first.hold(worktree, in: center)
+        second.hold(worktree, in: center)
+        center.retireRootsOffTheBench([project.id: BenchFolders(folders: [home, removed], homeID: 3)])
+        XCTAssertFalse(center.isWatching(worktree))
+
+        center.retireRootsOffTheBench([project.id: BenchFolders(folders: [home, hub], homeID: 3)])
+        first.hold(worktree, in: center)
+        second.hold(worktree, in: center)
+        XCTAssertTrue(center.isWatching(worktree))
+        first.release()
+        XCTAssertTrue(center.isWatching(worktree), "the second chat still holds it")
+        second.release()
+        XCTAssertFalse(center.isWatching(worktree), "the last release lets it go")
+    }
+
     /// A deleted workbench: every root of it stops being watched, the main root's stream too (round 4).
     func testADeletedWorkbenchsRootsAreRetired() {
         let center = makeCenter()

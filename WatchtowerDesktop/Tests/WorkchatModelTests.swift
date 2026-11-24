@@ -728,6 +728,37 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertTrue(model.outgoing.isEmpty, "the combined entry is its echo")
     }
 
+    /// Final review: Send together on a line that is held again (a permission prompt came) writes nothing, so it
+    /// is not "sent together" yet — the looser echo match stays off and an owner entry ending in its text is not
+    /// taken for its echo. Once a later try writes it beside the text, the combined entry is its echo.
+    func testSendTogetherHeldAgainArmsTheEchoOnlyOnceWritten() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        processes[0].host.tracksDrafts = true
+        processes[0].onOwnerInput?(Array("fix the".utf8))
+        let model = try makeModel(session)
+        model.draft = "Run the linter"
+        await model.send()
+        let id = try XCTUnwrap(model.outgoing.first?.id)
+        XCTAssertEqual(model.outgoing.first?.holdReason, .promptHasText)
+
+        setState(session, .needsApproval)
+        await model.sendTogether(id)
+        XCTAssertEqual(model.outgoing.first?.state, .queued, "held again for the permission prompt")
+        XCTAssertNil(model.outgoing.first?.sentTogetherAt, "nothing written: not sent together")
+        model.reconcile(with: [owner("fix theRun the linter", after: 3)])
+        XCTAssertEqual(model.outgoing.count, 1, "an earlier entry ending in its text is not its echo")
+        model.reconcile(with: [])
+
+        setState(session, .stopped)
+        await delivery.deliverHeld()
+        await delivery.settled()
+        XCTAssertEqual(model.outgoing.first?.state, .typed, "written beside the text by the later try")
+        XCTAssertNotNil(model.outgoing.first?.sentTogetherAt)
+        model.reconcile(with: [owner("fix theRun the linter", after: 3)])
+        XCTAssertTrue(model.outgoing.isEmpty, "the combined entry is its echo")
+    }
+
     /// Fix round 2 (codex N1): Send together on line B while a sweep of the held
     /// lines is delivering line A. The sweep's copy of B is stale; B is tried as
     /// the live queue holds it — under Send together's gate — and goes beside the

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -64,9 +65,43 @@ type Feed struct {
 // conversations before after.Conv are not read, that one is read from
 // after.Offset and later ones from 0. An entry whose record lies after the
 // cursor is emitted with its original ID (a streamed message that grew);
-// callers upsert by ID.
+// callers upsert by ID. Task notifications get their result from the
+// agents' sidecar transcripts (fillTaskResults).
 func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
+	feed, dirs, err := build(convs, after, asks)
+	if err != nil {
+		return nil, err
+	}
+	fillTaskResultsOf(feed.Entries, dirs)
+	return feed, nil
+}
+
+// BuildTail is Build keeping only TailPage(before, n) of the entries; the
+// sidecar transcripts are read only for task notifications on that page. It
+// also returns the id to pass as before for the next older page.
+func BuildTail(convs []Conversation, after *Cursor, asks AskLookup, before string, n int) (*Feed, string, error) {
+	feed, dirs, err := build(convs, after, asks)
+	if err != nil {
+		return nil, "", err
+	}
+	start, end, err := tailBounds(feed.Entries, before, n)
+	if err != nil {
+		return nil, "", err
+	}
+	nextBefore := ""
+	if start > 0 {
+		nextBefore = feed.Entries[start].ID
+	}
+	feed.Entries = feed.Entries[start:end]
+	fillTaskResultsOf(feed.Entries, dirs[start:end])
+	return feed, nextBefore, nil
+}
+
+// build is Build without the task results; dirs holds the session directory
+// of each entry's conversation (the sidecar root fillTaskResults reads).
+func build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, []string, error) {
 	feed := &Feed{Unknown: map[string]int{}}
+	var dirs []string
 	if after != nil {
 		feed.Cursor = *after
 	}
@@ -87,8 +122,7 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 			feed.Subagents = append(feed.Subagents, e)
 		}
 	}
-	handbacks := map[string][]handback{} // sidecar path -> handbacks, read once per Build
-	read := false                        // an earlier conversation counts as read
+	read := false // an earlier conversation counts as read
 	for i, c := range convs {
 		if afterIdx >= 0 && i < afterIdx {
 			addSubagents(subagentMarkers(c), false)
@@ -101,27 +135,45 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 		}
 		res, err := parseFile(c, start)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if res == nil {
 			addSubagents(subagentMarkers(c), false)
 			continue
 		}
-		ResolveSubagents(strings.TrimSuffix(c.Path, ".jsonl"), res.Entries)
-		fillTaskResults(strings.TrimSuffix(c.Path, ".jsonl"), res.Entries, handbacks)
+		dir := strings.TrimSuffix(c.Path, ".jsonl")
+		ResolveSubagents(dir, res.Entries)
 		addSubagents(res.Entries, true)
 		addSubagents(subagentMarkers(c), false)
 		if read && start == 0 {
 			feed.Entries = append(feed.Entries, separatorEntry(c.AgentSessionID, res.Entries))
+			dirs = append(dirs, dir)
 		}
 		read = true
 		feed.Entries = append(feed.Entries, res.Entries...)
+		for range res.Entries {
+			dirs = append(dirs, dir)
+		}
 		feed.Cursor = Cursor{Conv: c.AgentSessionID, Offset: res.Offset}
 		feed.Skipped += res.Skipped
 		addCounts(feed.Unknown, res.Unknown)
 	}
 	fillAskAnswers(feed.Entries, asks)
-	return feed, nil
+	return feed, dirs, nil
+}
+
+// fillTaskResultsOf runs fillTaskResults over each run of entries of one
+// session directory, reading each sidecar transcript once.
+func fillTaskResultsOf(entries []Entry, dirs []string) {
+	cache := map[string][]handback{} // sidecar path -> handbacks
+	for i := 0; i < len(entries); {
+		j := i + 1
+		for j < len(entries) && dirs[j] == dirs[i] {
+			j++
+		}
+		fillTaskResults(dirs[i], entries[i:j], cache)
+		i = j
+	}
 }
 
 // maxTaskResultRunes caps a task result taken from a subagent report.
@@ -131,7 +183,8 @@ const maxTaskResultRunes = 600
 // boilerplate the first paragraph of the agent's own SubagentHandback message,
 // read from its sidecar transcript (the meta file names the agent by
 // tool_use_id). Without a handback the result stays "": the parent's tool
-// result is a launch notice, never a report.
+// result is a launch notice, never a report. Enrichment is best-effort: a
+// sidecar that cannot be read is logged and leaves the notice's own text.
 func fillTaskResults(sessionDir string, entries []Entry, cache map[string][]handback) {
 	var metas map[string]subagentMeta
 	for i := range entries {
@@ -149,7 +202,11 @@ func fillTaskResults(sessionDir string, entries []Entry, cache map[string][]hand
 		path := filepath.Join(sessionDir, "subagents", "agent-"+m.agentID+".jsonl")
 		hbs, seen := cache[path]
 		if !seen {
-			hbs = scanHandbacks(path)
+			var err error
+			if hbs, err = scanHandbacks(path); err != nil {
+				log.Printf("sessionfeed: task result of %s: %v", filepath.Base(path), err)
+				hbs = nil
+			}
 			cache[path] = hbs
 		}
 		// A resumed agent hands back more than once: the notification takes
@@ -173,24 +230,27 @@ type handback struct {
 var openSidecar = os.Open
 
 // scanHandbacks lists the SubagentHandback messages of a subagent transcript
-// in file order, decoding only the lines that name the tool. An unreadable or
-// non-regular file has none.
-func scanHandbacks(path string) []handback {
+// in file order, decoding only the lines that name the tool. A missing or
+// non-regular file has none; a file that fails to open or read is an error.
+func scanHandbacks(path string) ([]handback, error) {
 	fi, err := os.Lstat(path)
 	if err != nil || !fi.Mode().IsRegular() {
-		return nil
+		return nil, nil
 	}
 	f, err := openSidecar(path)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer func() { _ = f.Close() }()
 	var out []handback
 	br := bufio.NewReaderSize(f, 64<<10)
 	for {
-		raw, _, complete, _ := agentfiles.NextLine(br, maxLineBytes)
+		raw, _, complete, err := agentfiles.NextLine(br, maxLineBytes)
 		if !complete {
-			return out
+			if err != nil && !errors.Is(err, io.EOF) {
+				return nil, err
+			}
+			return out, nil // EOF, or a partial last line still being written
 		}
 		if raw == nil || !bytes.Contains(raw, []byte(handbackTool)) {
 			continue
@@ -406,10 +466,22 @@ func addCounts(dst, src map[string]int) {
 // of the feed when before is empty) and the id to pass as before for the next
 // older page, "" when the page starts at entry 0.
 func TailPage(entries []Entry, before string, n int) (page []Entry, nextBefore string, err error) {
-	if n < 1 {
-		return nil, "", fmt.Errorf("tail page size %d: must be at least 1", n)
+	start, end, err := tailBounds(entries, before, n)
+	if err != nil {
+		return nil, "", err
 	}
-	end := len(entries)
+	if start > 0 {
+		nextBefore = entries[start].ID
+	}
+	return entries[start:end], nextBefore, nil
+}
+
+// tailBounds is the [start, end) range of entries TailPage returns.
+func tailBounds(entries []Entry, before string, n int) (start, end int, err error) {
+	if n < 1 {
+		return 0, 0, fmt.Errorf("tail page size %d: must be at least 1", n)
+	}
+	end = len(entries)
 	if before != "" {
 		end = -1
 		matches := 0
@@ -422,17 +494,12 @@ func TailPage(entries []Entry, before string, n int) (page []Entry, nextBefore s
 			}
 		}
 		if end < 0 {
-			return nil, "", fmt.Errorf("before %q: no such entry", before)
+			return 0, 0, fmt.Errorf("before %q: no such entry", before)
 		}
 		if matches > 1 {
 			// legacy Codex ids ("L<offset>") can repeat across conversations
-			return nil, "", fmt.Errorf("before id %q is ambiguous (%d entries)", before, matches)
+			return 0, 0, fmt.Errorf("before id %q is ambiguous (%d entries)", before, matches)
 		}
 	}
-	start := max(end-n, 0)
-	page = entries[start:end]
-	if start > 0 {
-		nextBefore = entries[start].ID
-	}
-	return page, nextBefore, nil
+	return max(end-n, 0), end, nil
 }

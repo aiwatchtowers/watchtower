@@ -122,9 +122,36 @@ final class WorkbenchesViewModelFilesTests: XCTestCase {
         XCTAssertTrue(vm.layout(projectID: project.id).isShowing(.files))
     }
 
-    /// The click is checked again after the unsent edits are pulled (the pull may suspend while the index changes,
-    /// round 4): a click no longer valid then opens nothing.
-    func testAPathClickIsCheckedAgainAfterThePull() async throws {
+    /// The click's lookup may suspend while the owner types into the preview tab (final review F1): the lookup runs
+    /// before the unsent edits are pulled, so an edit typed during it reaches its buffer and keeps the preview tab
+    /// the open would otherwise replace.
+    func testAnEditTypedDuringTheClickLookupIsPulledBeforeTheOpen() async throws {
+        let (vm, project) = try await vmWithProject()
+        var single = WorkspaceLayout.default
+        single.primary = .sessionChat(2)
+        vm.setLayout(single, projectID: project.id)
+        let root = project.mainCodeRoot
+        vm.codeFiles.open("b.go", root: root, preview: true)
+        let buffer = vm.codeFiles.buffer(for: root, relPath: "b.go")
+        buffer.loadIfNeeded()
+        let page = PendingPage(edits: [])
+        vm.codeFiles.register(page, for: root)
+        // Labelled: a trailing closure would bind to `stillCurrent`, the last closure parameter.
+        // swiftlint:disable:next trailing_closure
+        let opened = await vm.openSessionFile("a.go", root: root, pane: .sessionChat(2), stillValid: {
+            page.edits = [CodeEditorPendingEdit(id: buffer.id, text: "package typed\n", base: 0)]
+            return true
+        })
+        XCTAssertTrue(opened)
+        XCTAssertTrue(page.edits.isEmpty, "the edit typed during the lookup was pulled")
+        XCTAssertEqual(vm.codeFiles.tabs(for: root).paths, ["b.go", "a.go"], "the edited preview tab is kept")
+        XCTAssertTrue(vm.codeFiles.existingBuffer(root, "b.go") === buffer)
+        XCTAssertEqual(buffer.text, "package typed\n")
+    }
+
+    /// After the pull only synchronous checks run (final review F1): a click whose index moved during the pull, or
+    /// whose chat left the screen, opens nothing — and its edit is still pulled.
+    func testAPathClickIsCheckedSynchronouslyAfterThePull() async throws {
         let (vm, project) = try await vmWithProject()
         var single = WorkspaceLayout.default
         single.primary = .sessionChat(2)
@@ -134,13 +161,16 @@ final class WorkbenchesViewModelFilesTests: XCTestCase {
         buffer.loadIfNeeded()
         let page = PendingPage(edits: [CodeEditorPendingEdit(id: buffer.id, text: "package typed\n", base: 0)])
         vm.codeFiles.register(page, for: root)
-        var checks: [Bool] = []
-        let opened = await vm.openSessionFile("a.go", root: root, pane: .sessionChat(2)) {
-            checks.append(page.edits.isEmpty)
+        var order: [String] = []
+        let opened = await vm.openSessionFile("a.go", root: root, pane: .sessionChat(2), stillValid: {
+            order.append(page.edits.isEmpty ? "lookup after pull" : "lookup before pull")
+            return true
+        }, stillCurrent: {
+            order.append(page.edits.isEmpty ? "current after pull" : "current before pull")
             return false
-        }
+        })
         XCTAssertFalse(opened)
-        XCTAssertEqual(checks, [true], "checked once, after the pull")
+        XCTAssertEqual(order, ["lookup before pull", "current after pull"])
         XCTAssertEqual(vm.codeFiles.tabs(for: root).paths, [])
         XCTAssertEqual(vm.layout(projectID: project.id), single)
     }

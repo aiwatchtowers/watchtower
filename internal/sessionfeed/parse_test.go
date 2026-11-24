@@ -445,3 +445,12 @@ func TestNoticeTask_AdversarialCloseTagsIsFast(t *testing.T) {
 		assert.Nil(t, parseTaskNotification(text))
 	}
 }
+
+// A notification whose children are all unrecognised keeps today's title-only
+// line: no agent-finished row with nothing in it.
+func TestNoticeTask_OnlyUnknownChildrenIsNil(t *testing.T) {
+	res := parseStr(t, join(userStr("n1", "<task-notification>\n<origin>x</origin>\n<note>read it</note>\n</task-notification>")), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Equal(t, KindEvent, res.Entries[0].Kind)
+	assert.Nil(t, res.Entries[0].Task)
+}

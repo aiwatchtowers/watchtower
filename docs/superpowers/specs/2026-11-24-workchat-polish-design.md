@@ -10,7 +10,7 @@ Board: #2201. Approved design: [`docs/design/mockups/workchat-polish/`](../../de
 | D2 | Highlighting in the agent's text in the Workchat, not in the terminal pane | ask #1748 |
 | D3 | No fills, pills, coloured boxes or bold: colour only on the text, muted, like IDE syntax colouring | owner, conversation 2026-11-24 ("сильно пестро … как в раскраски IDE"); ask #1747 approved v2 |
 | D4 | The "agent finished" notice is a quiet row with the result, not the raw `<task-notification>` dump | owner, conversation 2026-11-24; ask #1747 |
-| D5 | ⌘V in the Workchat composer takes a screenshot/image and Finder-copied files | ask #1748 (both failed for the owner) |
+| D5 | ⌘V in the Workchat composer takes a screenshot/image and Finder-copied files | ask #1748 (both failed for the owner; images and PDF were the confirmed cause, the Finder-file failure was not reproduced — §4) |
 | D6 | A line held because the terminal prompt "has text" must go once the owner erased it; when text really is there, say so and offer a way out | owner, conversation 2026-11-24; ask #1747 |
 | C1 | Highlighting covers `#N` refs, commit hashes, file paths, commands; verdict words and durations are not coloured | author's call, from D3 (v2 dropped them) |
 | C2 | Highlighting is Workchat-only (a `ChatFeedContext` flag); the AI chat and the phone are unchanged in v1 | author's call |
@@ -134,10 +134,17 @@ forever after the owner typed into the terminal prompt and erased it.
   it resolves, symlinks followed, to a regular file of the row's own conversation — inside
   its temp dir, or its subagent transcripts under `~/.claude/projects/<project>/<session
   id>/subagents/` (where an agent's `tasks/<id>.output` link points; `<project>` from the
-  feed's `transcript_dirs`) — else reveals it in Finder (`TaskOutputFile`);
+  feed's `transcript_dirs`) — else reveals it in Finder (`TaskOutputFile`). A path not spelled under a temp
+  base's `claude-<uid>/` or `~/.claude/projects/` (or with a `.`/`..` component) is refused before `realpath`, a
+  stat or Finder touches it, and is not revealed (final review F6: no app-attributed TCC prompt);
   Details shows the ids as `.caption2 .tertiary`.
 
 ### §4 Clipboard paste
+
+Confirmed cause: screenshots and other images (and PDF). The Finder-file failure the owner
+reported was **not reproduced**: Finder copies were already accepted by the code before the fix
+(`testFinderFilePasteAttaches` passes on the pre-fix code), so this section claims no fix for it.
+The new file-URL validation covers Finder paste, and the owner's original failure stays unexplained.
 
 Root cause (confirmed for images): the composer's `PastingTextView` is plain text
 (`isRichText = false`), and AppKit enables Edit ▸ Paste — hence ⌘V — only when the
@@ -309,7 +316,7 @@ the pane's presentation, with tests.
 | Highlights drawn only with the flag, actions wired | T2 | `SessionChatViewTests` (flag on/off), `ChatUITests` |
 | `task` object parsed; boilerplate dropped; handback fills result | T3 | Go `parse_test` / `feed_test`, `TestSessionFeedJSON_PinnedKeys` updated |
 | Finished row presentation (ok/failed/command, meta strings) | T3 | `AgentFinishedPresentationTests` |
-| ⌘V screenshot and Finder files through the menu path | T4 | `PastingTextViewTests` via `sendAction` + `validateUserInterfaceItem` |
+| ⌘V screenshot (the confirmed failure) and Finder files (covered, failure not reproduced) through the menu path | T4 | `PastingTextViewTests` via `sendAction` + `validateUserInterfaceItem` |
 | Paperclip "Paste …" item title/disabled | T4 | `WorkchatComposerTests` |
 | Draft model: erase releases, cursor keys hold, submit/clear empty, dialog input ignored | T5 | Go `prompt_state_test`, Swift `TerminalCenterPromptDraftTests`, `FakeHostDelivery` (one shared case table) |
 | Held ask answers re-check on draft change | T6 | `SessionLineDeliveryTests` |
