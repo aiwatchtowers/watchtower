@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"watchtower/internal/hub/secure"
+	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 )
 
@@ -79,17 +80,20 @@ func (c *Center) HandleHello(zone, wireName string, env []byte) (Pending, error)
 	if err != nil {
 		return Pending{}, err
 	}
-	return c.decideHello(opened, "", opened.relayID != "")
+	return c.decideHello(opened, "", true)
 }
 
 // decideHello is HandleHello after the hello opened: user is the iCloud
 // user the request is bound to on CloudKit ("" elsewhere), kept with it so
-// the participant sweep spares a linked shared phone's user. overRelay: the
-// hello came through a Relay pairing slot (its sas event's OverRelay); a
-// CloudKit hello never did, even a private one whose owner read came back
-// empty. A code an answering CloudKit close retired reads that close's
-// refusal (retired), not expired_code.
-func (c *Center) decideHello(opened openedHello, user string, overRelay bool) (Pending, error) {
+// the participant sweep spares a linked shared phone's user. slot is true
+// for a hello read from a relay pairing slot (HandleHello): a saved request
+// is marked so in hub_meta relay_slot_links (state.MarkRelaySlotRequestTx),
+// one from CloudKit clears that mark; its sas event's OverRelay is slot
+// with a relay device id in the hello (a CloudKit hello never is, even a
+// private one whose owner read came back empty). A code an answering
+// CloudKit close retired reads that close's refusal (retired), not
+// expired_code.
+func (c *Center) decideHello(opened openedHello, user string, slot bool) (Pending, error) {
 	c.mu.Lock()
 	defer c.unlock()
 	payload := opened.hello.Device
@@ -131,7 +135,7 @@ func (c *Center) decideHello(opened openedHello, user string, overRelay bool) (P
 			return err
 		case decisionValid:
 		}
-		saved, err := savePending(tx, request)
+		saved, err := savePending(tx, request, slot)
 		if err != nil {
 			return err
 		}
@@ -146,6 +150,9 @@ func (c *Center) decideHello(opened openedHello, user string, overRelay bool) (P
 			out.Unanswered = !answered
 			return err
 		case pendingSaved:
+			if err := state.MarkRelaySlotRequestTx(tx, opened.device, opened.code.nonce, slot); err != nil {
+				return err
+			}
 		}
 		out.Code, out.Request, waiting = sas, RequestID(confirm), true
 		return nil
@@ -157,7 +164,7 @@ func (c *Center) decideHello(opened openedHello, user string, overRelay bool) (P
 	case waiting:
 		log.Printf("hub link: link request from phone %s waits for the owner", out.DeviceID)
 		c.emit(PairEvent{Kind: EventSAS, DeviceID: out.DeviceID, Name: out.Name, Code: out.Code, Request: out.Request,
-			OverRelay: overRelay, Nonce: opened.code.nonce})
+			OverRelay: slot && opened.relayID != "", Nonce: opened.code.nonce})
 		c.changed()
 	case out.Refused != "" && out.Unanswered:
 		log.Printf("hub link: hello from phone %s refused (%s), unanswered", out.DeviceID, out.Refused)
@@ -436,20 +443,47 @@ const (
 )
 
 // savePending stores p, drawing one of its code's confirm nonces (the Swift
-// savePendingDevice): the same device with the same code, keys and relay
-// device id is unchanged and draws none; any other hello for the code — a new
-// device, or a known one under new keys or another relay id — draws one and
-// replaces that device's request, until the code has drawn MaxNoncesPerCode.
-func savePending(tx *sql.Tx, p pendingDevice) (pendingSave, error) {
+// savePendingDevice): the same device with the same code, keys, relay device
+// id and route (slot: through a relay pairing slot, else CloudKit; the
+// request's mark in hub_meta relay_slot_links) is unchanged and draws none;
+// any other hello for the code — a new device, or a known one under new
+// keys, another relay id or the other route — draws one and replaces that
+// device's request, until the code has drawn MaxNoncesPerCode. A route that
+// cannot be read (an undecodable relay_slot_links) counts as changed. A
+// route change past the cap removes the superseded request and its mark, so
+// the phone reads the refusal and nothing of the old route can be confirmed.
+func savePending(tx *sql.Tx, p pendingDevice, slot bool) (pendingSave, error) {
+	rerouted := false
 	if stored, ok, err := pendingTx(tx, p.deviceID); err != nil {
 		return 0, err
 	} else if ok && stored.linkNonce == p.linkNonce && bytes.Equal(stored.signingKey, p.signingKey) &&
 		bytes.Equal(stored.agreementKey, p.agreementKey) && stored.relayDeviceID == p.relayDeviceID {
-		return pendingUnchanged, nil
+		storedSlot, err := state.RelaySlotPendingTx(tx, p.deviceID, stored.linkNonce)
+		switch {
+		case errors.Is(err, state.ErrRelaySlotLinksUndecodable):
+			rerouted = true // the route is unknown: replace, never keep
+		case err != nil:
+			return 0, err
+		case storedSlot == slot:
+			return pendingUnchanged, nil
+		default:
+			rerouted = true
+		}
 	}
 	drawn, err := drawAnswer(tx, p.linkNonce, MaxNoncesPerCode)
-	if err != nil || !drawn {
-		return pendingCapped, err
+	if err != nil {
+		return 0, err
+	}
+	if !drawn {
+		if rerouted {
+			if _, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID); err != nil {
+				return 0, err
+			}
+			if err := state.MarkRelaySlotRequestTx(tx, p.deviceID, "", false); err != nil {
+				return 0, err
+			}
+		}
+		return pendingCapped, nil
 	}
 	if _, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID); err != nil {
 		return 0, err
@@ -520,8 +554,11 @@ func refusePending(tx *sql.Tx, p pendingDevice, reason string, now time.Time) er
 	if err := saveRefusal(tx, p, reason, now); err != nil {
 		return err
 	}
-	_, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID)
-	return err
+	if _, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID); err != nil {
+		return err
+	}
+	// Only the request's slot mark: a linked phone's own link stays.
+	return state.MarkRelaySlotRequestTx(tx, p.deviceID, "", false)
 }
 
 // saveRefusal upserts the phone's one refusal row with the key its keybox is

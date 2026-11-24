@@ -75,11 +75,17 @@ func (c *Center) ConfirmRequest(device, code, requestID string, ok bool) error {
 			reason = why
 			return refusePending(tx, p, reason, now)
 		case decisionUsedByThisDevice:
-			_, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID)
-			return err
+			if _, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID); err != nil {
+				return err
+			}
+			return state.MarkRelaySlotRequestTx(tx, p.deviceID, "", false)
 		case decisionValid:
 		}
 		if err := linkPending(tx, p, now); err != nil {
+			return err
+		}
+		// Linked through a pairing slot only when this request came from one.
+		if err := state.ConfirmRelaySlotLinkTx(tx, p.deviceID, p.linkNonce); err != nil {
 			return err
 		}
 		linked = true
