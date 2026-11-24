@@ -99,12 +99,15 @@ enum ComposerPasteMenu {
         }
     }
 
+    /// Types a Finder copy advertises: either one means files, even when the items cannot be counted.
+    private static let fileTypes = [NSPasteboard.PasteboardType.fileURL.rawValue, "NSFilenamesPboardType"]
+
     /// What ⌘V would most likely do, from the advertised types alone; nil when nothing usable is advertised. The
     /// one guess: text beside an image is the image when a URL type is there too (a browser's "Copy Image" puts
     /// the image's link beside it), otherwise the text — `PasteClassifier` decides for real on the paste.
     static func action(advertised: some PasteboardAdvert) -> PasteAction? {
-        if advertised.fileItemCount > 0 { return .attachFiles([]) }
         let types = advertised.advertisedTypes
+        if types.contains(where: fileTypes.contains) { return .attachFiles([]) }
         let hasText = types.contains(NSPasteboard.PasteboardType.string.rawValue)
         let hasImage = types.contains(where: PasteClassifier.isImageType)
         let hasLink = types.contains(NSPasteboard.PasteboardType.URL.rawValue)

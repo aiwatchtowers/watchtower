@@ -385,6 +385,13 @@ final class PastingTextViewTests: XCTestCase {
     }
 
     /// Finder writes each copied file as a file reference URL (`file:///.file/id=…`) plus its name as text.
+    /// The file's canonical path (`realpath`: `/var` and `/private/var` are one folder), for comparing files.
+    private static func realPath(_ url: URL) throws -> String {
+        let resolved = try XCTUnwrap(realpath(url.path, nil))
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
     func testFinderFilePasteAttaches() throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("wt-paste-\(UUID().uuidString).png")
         try Data([1]).write(to: file)
@@ -405,7 +412,7 @@ final class PastingTextViewTests: XCTestCase {
         let attached = attachedFiles.flatMap { $0 }
         XCTAssertEqual(attached.count, 1)
         XCTAssertFalse(attached.contains { $0.path.hasPrefix("/.file/") }, "the reference is resolved to a path")
-        XCTAssertEqual(attached.first?.lastPathComponent, file.lastPathComponent)
+        XCTAssertEqual(try Self.realPath(XCTUnwrap(attached.first)), try Self.realPath(file), "the copied file itself")
         XCTAssertEqual(view.string, "", "the file name is not typed in")
     }
 
@@ -445,7 +452,9 @@ final class PastingTextViewTests: XCTestCase {
     func testPasteRequestPastesOnce() async {
         pasteboard.setString("hello", forType: .string)
         let view = makeView()
-        _ = inKeyWindow(view)
+        let window = inKeyWindow(view)
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        XCTAssertFalse(window.firstResponder === view, "the field starts without the keyboard")
         var seen: UUID?
         let request = UUID()
 

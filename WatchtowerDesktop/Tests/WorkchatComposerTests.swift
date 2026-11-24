@@ -98,6 +98,11 @@ final class WorkchatComposerTests: XCTestCase {
         )
         let files = AdvertSpy(["public.file-url", "public.utf8-plain-text"], files: 2)
         XCTAssertEqual(ComposerPasteMenu.action(advertised: files), .attachFiles([]))
+        let uncounted = AdvertSpy(["public.file-url", "public.utf8-plain-text"], files: 0)
+        XCTAssertEqual(ComposerPasteMenu.action(advertised: uncounted), .attachFiles([]), "items not countable")
+        XCTAssertEqual(ComposerPasteMenu.action(advertised: AdvertSpy(["NSFilenamesPboardType"])), .attachFiles([]))
+        let control = ComposerAttachMenu(advertised: uncounted, paste: {}, attach: {})
+        XCTAssertEqual(control.menu.items.first?.title, "Paste files")
         XCTAssertNil(ComposerPasteMenu.action(advertised: AdvertSpy(["com.example.private"])))
     }
 
