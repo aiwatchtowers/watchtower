@@ -122,10 +122,12 @@ final class CodeFilesCenter {
     /// How many views (FILES, the Files pane) show each root: git runs
     /// only for one on screen, a hidden one is refreshed when it shows again.
     @ObservationIgnored private var showing: [CodeRoot: Int] = [:]
-    /// How many Workchats hold each root (`startHolding`): its folder is
-    /// watched and indexed as for a shown one, but a hold alone never runs
-    /// `git status` (#2201 T2 review round 3).
-    @ObservationIgnored private var holds: [CodeRoot: Int] = [:]
+    /// The Workchat leases holding each root (`startHolding`), one entry per
+    /// lease — so a lease holding a restored root again is counted once,
+    /// beside any other lease on it (final review): its folder is watched and
+    /// indexed as for a shown one, but a hold alone never runs `git status`
+    /// (#2201 T2 review round 3).
+    @ObservationIgnored private var holds: [CodeRoot: Set<ObjectIdentifier>] = [:]
     /// Roots retired with their bench folder or workbench: shown or held
     /// again, their buffers and index read the disk afresh (round 4).
     @ObservationIgnored private var retiredRoots: Set<CodeRoot> = []
@@ -209,20 +211,26 @@ final class CodeFilesCenter {
     /// the chat is no FILES consumer — no `git status` runs for a hold
     /// alone. Returns whether the hold counted (a worktree gone before it
     /// showed does not); only a counted hold is balanced by `stopHolding`.
+    /// Counted per `lease`: holding again by the same lease counts it once.
     @discardableResult
-    func startHolding(_ root: CodeRoot) -> Bool {
+    func startHolding(_ root: CodeRoot, lease: AnyObject) -> Bool {
         guard beginWatch(root) else { return false }
-        holds[root, default: 0] += 1
+        holds[root, default: []].insert(ObjectIdentifier(lease))
         return true
     }
 
-    /// Balances a counted `startHolding`. A worktree root nothing shows or
-    /// holds any more stops being watched.
-    func stopHolding(_ root: CodeRoot) {
-        let count = max(0, (holds[root] ?? 0) - 1)
-        holds[root] = count
+    /// Balances `lease`'s counted `startHolding` (nothing when its hold went
+    /// with a retired root). A worktree root nothing shows or holds any more
+    /// stops being watched.
+    func stopHolding(_ root: CodeRoot, lease: AnyObject) {
+        holds[root]?.remove(ObjectIdentifier(lease))
         codeIndex?.markHidden(root: root)
-        if count == 0, (showing[root] ?? 0) == 0, !root.isMain { unwatchRoot(root) }
+        if holds[root]?.isEmpty ?? true, (showing[root] ?? 0) == 0, !root.isMain { unwatchRoot(root) }
+    }
+
+    /// Whether `lease` holds `root` (a retired root's holds are gone).
+    func isHolding(_ root: CodeRoot, lease: AnyObject) -> Bool {
+        holds[root]?.contains(ObjectIdentifier(lease)) == true
     }
 
     /// Whether the root's folder is watched (tests).
@@ -347,7 +355,7 @@ final class CodeFilesCenter {
         let count = max(0, (showing[root] ?? 0) - 1)
         showing[root] = count
         codeIndex?.markHidden(root: root)
-        if count == 0, (holds[root] ?? 0) == 0, !root.isMain { unwatchRoot(root) }
+        if count == 0, holds[root]?.isEmpty ?? true, !root.isMain { unwatchRoot(root) }
     }
 
     /// `startWatching` for as long as the calling task runs — a view's

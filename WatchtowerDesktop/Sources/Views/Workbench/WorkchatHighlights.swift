@@ -237,17 +237,17 @@ final class WorkchatIndexLease {
     /// Holds `root` in `files` (nil: none), letting go of the one held before. A root the centre does not count
     /// (a worktree gone before it showed) is not held, and a later call tries again.
     func hold(_ root: CodeRoot?, in files: CodeFilesCenter) {
-        // The same root still watched in the same centre: nothing to do. One retired meanwhile (its folder left
-        // the bench and came back) is held again.
-        if root == held, self.files === files, root.map(files.isWatching) ?? true { return }
+        // The same root still held by this lease in the same centre: nothing to do. One retired meanwhile (its
+        // folder left the bench and came back) is held again — by each lease on it (final review).
+        if root == held, self.files === files, root.map { files.isHolding($0, lease: self) } ?? true { return }
         release()
-        guard let root, files.startHolding(root) else { return }
+        guard let root, files.startHolding(root, lease: self) else { return }
         held = root
         self.files = files
     }
 
     func release() {
-        if let held { files?.stopHolding(held) }
+        if let held { files?.stopHolding(held, lease: self) }
         held = nil
         files = nil
     }
