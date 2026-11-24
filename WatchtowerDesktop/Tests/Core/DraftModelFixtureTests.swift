@@ -104,4 +104,23 @@ final class DraftModelFixtureTests: XCTestCase {
         draft.feed([0x09], profile: .claude, dialog: false)
         XCTAssertEqual(draft.runCapacity, 0, "an inexact key keeps no buffer")
     }
+
+    /// #2386 codex #5: an escape sequence that never completes keeps at most
+    /// `maxEscapeBytes` pending however long the input runs (counted, never
+    /// timed), and the dropped sequence leaves the draft inexact and holding.
+    func testAPendingEscapeSequenceIsBounded() {
+        for total in [1_000, 100_000] {
+            var draft = DraftModel()
+            draft.feed([0x1B, UInt8(ascii: "[")], profile: .claude, dialog: false)
+            let chunk = [UInt8](repeating: UInt8(ascii: "1"), count: 7)
+            var longest = 0
+            for _ in stride(from: 0, to: total, by: chunk.count) {
+                draft.feed(chunk, profile: .claude, dialog: false)
+                longest = max(longest, draft.pendingEscapeLength)
+            }
+            XCTAssertLessThan(longest, DraftModel.maxEscapeBytes, "total \(total)")
+            XCTAssertFalse(draft.exact)
+            XCTAssertTrue(draft.holdsText)
+        }
+    }
 }

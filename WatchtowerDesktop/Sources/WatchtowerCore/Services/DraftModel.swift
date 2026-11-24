@@ -88,6 +88,14 @@ package struct DraftModel: Equatable, Sendable {
     /// line in its pause): only a submit empties the draft from now on.
     package mutating func markInexact() { setInexact() }
 
+    /// Nothing is known of the prompt (a run adopted from a host that cannot
+    /// hold a line, its text typed before the restart): inexact, and the
+    /// character before the cursor may be `\` (a Return holds).
+    package mutating func markUnknown() {
+        backslash = true
+        setInexact()
+    }
+
     /// Whether a bracketed paste payload's text ends in `\`.
     package static func pasteEndsInBackslash(_ payload: [UInt8]) -> Bool {
         payload.count > pasteEnd.count && payload.suffix(pasteEnd.count).elementsEqual(pasteEnd)
@@ -98,6 +106,8 @@ package struct DraftModel: Equatable, Sendable {
     var runLength: Int { run.count }
     /// The run's buffer, for the tests that pin that a long one goes.
     var runCapacity: Int { run.capacity }
+    /// The pending escape sequence's length, for the test that pins its cap.
+    var pendingEscapeLength: Int { esc.count }
 
     /// Reads one chunk of the owner's input. Input while a permission
     /// dialog is up changes nothing (it answers the dialog).
@@ -150,7 +160,15 @@ package struct DraftModel: Equatable, Sendable {
         }
         esc.append(byte)
         escKey = false
-        guard Self.escapeComplete(esc) else { return false }
+        guard Self.escapeComplete(esc) else {
+            guard esc.count >= Self.maxEscapeBytes else { return false }
+            // Dropped: what the program made of it is unknown, a Return it
+            // may still have swallowed included — read as a `\`.
+            esc = []
+            backslash = true
+            setInexact()
+            return true
+        }
         let seq = esc
         esc = []
         switch seq {
@@ -172,6 +190,12 @@ package struct DraftModel: Equatable, Sendable {
         }
         return true
     }
+
+    /// The longest escape sequence kept pending outside a paste: one not
+    /// complete by then (a CSI's parameters running on) is dropped, the draft
+    /// made inexact and the character before the cursor unknown, so untrusted
+    /// input never grows the buffer. Twin of Go `maxEscapeBytes`.
+    static let maxEscapeBytes = 64
 
     /// Whether `seq` (starting with ESC) is a whole escape sequence: CSI
     /// `ESC [ … final`, SS3 `ESC O x`, or `ESC x`.

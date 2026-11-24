@@ -154,7 +154,16 @@ func (d *draftModel) escapeByte(c byte, last bool) bool {
 	d.esc += string(c)
 	d.escKey = false
 	if !escapeComplete(d.esc) {
-		return false
+		if len(d.esc) < maxEscapeBytes {
+			return false
+		}
+		// Dropped: what the program made of it is unknown, a Return
+		// it may still have swallowed included — read as a `\` (a
+		// Return holds).
+		d.esc = ""
+		d.backslash = true
+		d.setInexact()
+		return true
 	}
 	seq := d.esc
 	d.esc = ""
@@ -177,6 +186,12 @@ func (d *draftModel) escapeByte(c byte, last bool) bool {
 	}
 	return true
 }
+
+// maxEscapeBytes caps an escape sequence pending outside a paste: one that
+// has not completed by then (a CSI's parameters running on) is dropped, the
+// draft made inexact and the character before the cursor unknown, so
+// untrusted input never grows the buffer.
+const maxEscapeBytes = 64
 
 // escapeComplete reports whether s (starting with ESC) is a whole escape
 // sequence: CSI `ESC [ … final`, SS3 `ESC O x`, or `ESC x`.

@@ -1003,8 +1003,9 @@ final class TerminalCenter {
         wire(process, session: session, startedAt: Date(timeIntervalSince1970: Double(info.startedAtMs) / 1000))
         // The run's prompt may hold text typed before the restart. A v2 host knows it and holds a line by itself,
         // so the mirror starts exact and empty; with a v1-only host the Mac types and adds its own Return, so the
-        // mirror cannot vouch for an empty prompt until a submit (final review, codex #1).
-        if !process.hostDelivers { leaveDraftInexact(session.id) }
+        // mirror cannot vouch for an empty prompt until a submit (final review, codex #1) — nor for what precedes the
+        // cursor: a saved prompt ending in `\` makes the owner's Return a line break (#2386 N1).
+        if !process.hostDelivers { drafts[session.id, default: DraftModel()].markUnknown() }
         process.attach(info)
     }
 
