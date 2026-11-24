@@ -61,7 +61,14 @@ extension LinkingViewModelTests {
         host.parksStoredRead = true
         let model = makeModel()
         let scan = Task { await model.open(expiredCode().url()) }
-        try await poll { host.keyboxReads.map(\.kind) == [.stored] }
+        do {
+            try await pollBounded({ host.keyboxReads.map(\.kind) == [.stored] }, "the stored read began")
+        } catch {
+            host.parksStoredRead = false
+            scan.cancel()
+            await scan.value
+            throw error
+        }
 
         await model.removedByMac(TestE2E.hubID.uuidString)
         host.parksStoredRead = false
@@ -69,6 +76,41 @@ extension LinkingViewModelTests {
 
         XCTAssertEqual(host.rows.map(\.state), [.unlinkedByMac])
         XCTAssertEqual(model.phase, .failed(.expired))
+    }
+
+    /// A removal that starts during the stored read and is still running (its hub ending, the row still linked)
+    /// when the read finishes: the ending is checked again, so the plain expired failure.
+    func testExpiredCodeOfALinkStartingToEndDuringTheReadShowsTheExpiredFailure() async throws {
+        let hubID = TestE2E.hubID.uuidString
+        host.seed(savedLink())
+        macGrantsTheLink()
+        host.parksStoredRead = true
+        host.parksMarkRemoved = true
+        let model = makeModel()
+        let scan = Task { await model.open(expiredCode().url()) }
+        var removal: Task<Void, Never>?
+        do {
+            // The scan passed its first live-link check before the removal begins.
+            try await pollBounded({ host.keyboxReads.map(\.kind) == [.stored] }, "the stored read began")
+            removal = Task { await model.removedByMac(hubID) }
+            try await pollBounded({ host.markedRemoved == [hubID] }, "the removal is running")
+        } catch {
+            host.parksStoredRead = false
+            host.parksMarkRemoved = false
+            scan.cancel()
+            await scan.value
+            await removal?.value
+            throw error
+        }
+
+        host.parksStoredRead = false
+        await scan.value
+        XCTAssertEqual(host.rows.map(\.state), [.linked], "the removal still running")
+        XCTAssertEqual(model.phase, .failed(.expired))
+
+        host.parksMarkRemoved = false
+        await removal?.value
+        XCTAssertEqual(host.rows.map(\.state), [.unlinkedByMac])
     }
 
     /// A link to another Mac does not count: the plain expired-code failure.
@@ -117,7 +159,13 @@ extension LinkingViewModelTests {
         host.parksMarkRemoved = true
         let model = makeModel()
         let removal = Task { await model.removedByMac(TestE2E.hubID.uuidString) }
-        try await poll { host.markedRemoved == [TestE2E.hubID.uuidString] }
+        do {
+            try await pollBounded({ host.markedRemoved == [TestE2E.hubID.uuidString] }, "the removal is running")
+        } catch {
+            host.parksMarkRemoved = false
+            await removal.value
+            throw error
+        }
 
         await model.open(expiredCode().url())
 
