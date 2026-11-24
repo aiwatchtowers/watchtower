@@ -35,9 +35,7 @@ final class GitRefsWatcher: GitRefsWatching {
     final class Relay {
         weak var watcher: GitRefsWatcher?
 
-        /// One FSEvents batch, as the stream's callback hands it over. Tests
-        /// feed batches here: the real fseventsd can take seconds to deliver
-        /// on a busy machine (#2389).
+        /// One FSEvents batch, as the stream's callback hands it over.
         @MainActor
         func deliver(paths: [String], flags: [FSEventStreamEventFlags], ids: [FSEventStreamEventId]) {
             watcher?.handle(paths: paths, flags: flags, ids: ids)
@@ -184,29 +182,39 @@ final class GitRefsWatcher: GitRefsWatching {
         )
     }
 
+    /// What the stream reports: one event per file (the header's paths are
+    /// files), at once for the first change, a rescan when the root moves,
+    /// paths as a CFArray of CFString.
+    nonisolated static let streamFlags = FSEventStreamCreateFlags(
+        kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
+            | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagUseCFTypes
+    )
+
+    /// The stream's callback: unpacks one batch and hands it to the relay
+    /// the context points at. Tests call it with a batch of their own, as
+    /// fseventsd can deliver seconds late on a busy machine (#2389).
+    nonisolated static let streamCallback: FSEventStreamCallback = { _, info, count, paths, flags, ids in
+        guard let info else { return }
+        let relay = Unmanaged<Relay>.fromOpaque(info).takeUnretainedValue()
+        // kFSEventStreamCreateFlagUseCFTypes: `paths` is a CFArray of CFString.
+        let list = unsafeBitCast(paths, to: NSArray.self) as? [String] ?? []
+        let flagList = Array(UnsafeBufferPointer(start: flags, count: count))
+        let idList = Array(UnsafeBufferPointer(start: ids, count: count))
+        // The stream is scheduled on the main queue.
+        MainActor.assumeIsolated { relay.deliver(paths: list, flags: flagList, ids: idList) }
+    }
+
     /// A stream relaying to `relay`, or nil when FSEvents refuses it (FSEvents
     /// has then dropped its reference again). `relay` is kept alive across
     /// the create: the context hands it over unretained.
     nonisolated static func makeStream(
         relay: Relay, paths: [String], latency: TimeInterval
     ) -> FSEventStreamRef? {
-        let callback: FSEventStreamCallback = { _, info, count, paths, flags, ids in
-            guard let info else { return }
-            let relay = Unmanaged<Relay>.fromOpaque(info).takeUnretainedValue()
-            // kFSEventStreamCreateFlagUseCFTypes: `paths` is a CFArray of CFString.
-            let list = unsafeBitCast(paths, to: NSArray.self) as? [String] ?? []
-            let flagList = Array(UnsafeBufferPointer(start: flags, count: count))
-            let idList = Array(UnsafeBufferPointer(start: ids, count: count))
-            // The stream is scheduled on the main queue.
-            MainActor.assumeIsolated { relay.deliver(paths: list, flags: flagList, ids: idList) }
-        }
-        let flags = kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
-            | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagUseCFTypes
-        return withExtendedLifetime(relay) {
+        withExtendedLifetime(relay) {
             var context = context(for: relay)
             return FSEventStreamCreate(
-                kCFAllocatorDefault, callback, &context, paths as CFArray,
-                FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, FSEventStreamCreateFlags(flags)
+                kCFAllocatorDefault, streamCallback, &context, paths as CFArray,
+                FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, streamFlags
             )
         }
     }

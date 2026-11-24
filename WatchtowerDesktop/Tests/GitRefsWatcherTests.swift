@@ -147,15 +147,30 @@ final class GitRefsWatcherTests: XCTestCase {
         return watcher
     }
 
-    /// One batch through the path the stream's callback takes, with event ids
+    /// One batch through the stream's own callback, the way fseventsd hands
+    /// it over (a CFArray of paths, C arrays of flags and ids), with ids
     /// newer than the stream's start. The real fseventsd is not waited on: on
     /// a busy machine it delivers seconds late (#2389).
-    private func deliver(_ watcher: GitRefsWatcher, _ names: [String], flag: Int = kFSEventStreamEventFlagItemModified) {
-        watcher.relay.deliver(
-            paths: names.map { realGitDir + "/" + $0 },
-            flags: names.map { _ in FSEventStreamEventFlags(flag) },
-            ids: names.indices.map { watcher.startEventID + 1 + FSEventStreamEventId($0) }
-        )
+    private func deliver(_ watcher: GitRefsWatcher, _ names: [String], flag: Int = kFSEventStreamEventFlagItemRenamed) throws {
+        try feed(watcher.relay, paths: names.map { realGitDir + "/" + $0 }, flag: flag,
+                 ids: names.indices.map { watcher.startEventID + 1 + FSEventStreamEventId($0) })
+    }
+
+    private func feed(_ relay: GitRefsWatcher.Relay, paths: [String], flag: Int, ids: [FSEventStreamEventId]) throws {
+        let flags = paths.map { _ in FSEventStreamEventFlags(flag) }
+        let info = Unmanaged.passUnretained(relay).toOpaque()
+        // The callback ignores the stream argument.
+        let stream = try XCTUnwrap(OpaquePointer(bitPattern: 1))
+        let cfPaths = paths as CFArray
+        try withExtendedLifetime(cfPaths) {
+            try flags.withUnsafeBufferPointer { flagBuffer in
+                try ids.withUnsafeBufferPointer { idBuffer in
+                    GitRefsWatcher.streamCallback(stream, info, paths.count,
+                                                  Unmanaged.passUnretained(cfPaths).toOpaque(),
+                                                  try XCTUnwrap(flagBuffer.baseAddress), try XCTUnwrap(idBuffer.baseAddress))
+                }
+            }
+        }
     }
 
     /// FSEvents reports `/private/var/…`, not the temp dir's `/var/…`.
@@ -166,40 +181,79 @@ final class GitRefsWatcherTests: XCTestCase {
         return String(cString: resolved)
     }
 
+    /// Per-file events (the header's paths are files), the first change at
+    /// once, a rescan when `.git` is replaced, paths the callback can read.
+    func testTheStreamReportsFilesAndRootChanges() {
+        let flags = GitRefsWatcher.streamFlags
+        for flag in [kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagNoDefer,
+                     kFSEventStreamCreateFlagWatchRoot, kFSEventStreamCreateFlagUseCFTypes] {
+            XCTAssertNotEqual(flags & FSEventStreamCreateFlags(flag), 0, "flag \(flag)")
+        }
+    }
+
     func testTheWatcherStartsAStreamOnTheGitDir() {
         XCTAssertTrue(watch { _ in }.isWatching)
     }
 
-    /// The way git updates a ref: `<ref>.lock` written, then renamed into place.
-    func testARefUpdateFiresOnce() {
+    /// The way git updates a ref: `<ref>.lock` written, then renamed into
+    /// place — one batch, one call.
+    func testARefUpdateFiresOnce() throws {
         var changes: [GitRefsChange] = []
         let watcher = watch { changes.append($0) }
-        deliver(watcher, ["refs/heads/x.lock", "refs/heads/x"])
+        try deliver(watcher, ["refs/heads/x.lock", "refs/heads/x"])
         XCTAssertEqual(changes, [GitRefsChange(mayMoveWorktrees: true)])
     }
 
-    func testObjectWritesDoNotFire() {
+    /// One call per batch: a ref whose lock and final name land in two
+    /// batches calls twice, and only the folder's own HEAD leaves the other
+    /// worktrees alone. `latency` is what coalesces batches.
+    func testEachNotifyingBatchIsOneCall() throws {
+        var changes: [GitRefsChange] = []
+        let watcher = watch { changes.append($0) }
+        try deliver(watcher, ["refs/heads/x.lock"])
+        try deliver(watcher, ["refs/heads/x"])
+        try deliver(watcher, ["HEAD"])
+        XCTAssertEqual(changes, [GitRefsChange(mayMoveWorktrees: true), GitRefsChange(mayMoveWorktrees: false)])
+    }
+
+    func testObjectWritesDoNotFire() throws {
         var fired = 0
         let watcher = watch { _ in fired += 1 }
-        deliver(watcher, ["objects/ab/cd", "logs/HEAD"])
+        XCTAssertTrue(watcher.isWatching)
+        try deliver(watcher, ["objects/ab/cd", "logs/HEAD"])
         XCTAssertEqual(fired, 0)
     }
 
     /// `.git` moved away and a new one put in its place (a re-clone, a
     /// worktree recreated): FSEvents says RootChanged, with event id 0.
-    func testReplacingTheWatchedDirFires() {
+    func testReplacingTheWatchedDirFires() throws {
         var fired = 0
         let watcher = watch { _ in fired += 1 }
-        watcher.relay.deliver(paths: [realGitDir], flags: [FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged)], ids: [0])
+        try feed(watcher.relay, paths: [realGitDir], flag: kFSEventStreamEventFlagRootChanged, ids: [0])
         XCTAssertEqual(fired, 1)
     }
 
-    func testStopSilencesTheWatcher() {
+    func testStopSilencesTheWatcher() throws {
         var fired = 0
         let watcher = watch { _ in fired += 1 }
+        XCTAssertTrue(watcher.isWatching)
         watcher.stop()
         XCTAssertFalse(watcher.isWatching)
-        deliver(watcher, ["refs/heads/y"])
+        try deliver(watcher, ["refs/heads/y"])
+        XCTAssertEqual(fired, 0)
+    }
+
+    /// A batch FSEvents had in flight when the watcher went away finds the
+    /// relay pointing at nothing.
+    func testABatchAfterTheWatcherIsGoneIsDropped() throws {
+        var fired = 0
+        let relay: GitRefsWatcher.Relay
+        do {
+            let watcher = GitRefsWatcher(gitDir: gitDir.path, commonDir: gitDir.path) { _ in fired += 1 }
+            relay = watcher.relay
+        }
+        XCTAssertNil(relay.watcher)
+        try feed(relay, paths: [realGitDir + "/refs/heads/z"], flag: kFSEventStreamEventFlagItemRenamed, ids: [.max])
         XCTAssertEqual(fired, 0)
     }
 }
