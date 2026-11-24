@@ -238,6 +238,31 @@ final class CloudKitLinkDirectTests: XCTestCase {
         XCTAssertNil(database.record(named: "hello-DEVICE"))
     }
 
+    /// A direct save over the quota pauses the transport as an engine send does; no save goes out while paused, a
+    /// read still does.
+    func testAQuotaFailurePausesAndStopsTheSaves() async throws {
+        let (transport, database, _) = try make()
+        let events = Collector<TransportEvent>()
+        await transport.setEventHandler { events.append($0) }
+        database.recordFailures = ["hello-DEVICE": CKError(.quotaExceeded)]
+
+        _ = try? await transport.saveDirectly(record("hello-DEVICE", zone: .relay, payload: "new"))
+
+        let paused = await transport.isPaused
+        XCTAssertTrue(paused)
+        XCTAssertEqual(events.values, [.quotaExceeded])
+        let calls = database.calls.count
+        do {
+            try await transport.saveDirectly(record("hello-DEVICE", zone: .relay, payload: "again"))
+            XCTFail("expected paused")
+        } catch {
+            XCTAssertEqual(error as? DirectCallRefusal, .paused)
+        }
+        XCTAssertEqual(database.calls.count, calls, "no save while paused")
+        _ = try await transport.serverRecord(named: "keybox-DEVICE", in: .data)
+        XCTAssertEqual(database.fetches.count, 1, "a read still goes out")
+    }
+
     func testAServiceOutageWithoutRetryAfterDoesNotThrottle() async throws {
         let (transport, database, _) = try make()
         database.fetchFailures = [CKError(.serviceUnavailable)]

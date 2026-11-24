@@ -66,14 +66,18 @@ extension CloudKitTransport {
 
     /// A call outside the engine about `recordID` failed (the link flow's direct read or save, #2189): the throttle
     /// codes throttle as `applyThrottle` does, a `.serviceUnavailable` naming a retry-after waits it out too, and a
-    /// zone gone unlinks the phone role as a fetch does. A `.partialFailure` is judged by the record's own error, as
-    /// the conditional writes' path reads it.
+    /// zone gone unlinks the phone role as a fetch does, and a `quotaExceeded` pauses as an engine send's does. A
+    /// `.partialFailure` is judged by the record's own error, as the conditional writes' path reads it.
     func applyDirectCallFailure(_ thrown: CKError, recordID: CKRecord.ID) {
         let error = thrown.code == .partialFailure
             ? (thrown.partialErrorsByItemID?[recordID] as? CKError) ?? thrown
             : thrown
         if !managesZones, Self.zoneGoneCodes.contains(error.code) {
             emitUnlinked(reason: "zone not found on a direct call")
+            return
+        }
+        if error.code == .quotaExceeded {
+            applySendFailures([error])
             return
         }
         if applyThrottle(from: [error]) { return }

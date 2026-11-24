@@ -364,6 +364,9 @@ final class FakeLinkHost: LinkHost {
 
     /// When true, every `completionKeybox` fails (its pull did not complete).
     var completionFails = false
+    /// When true, every fetch after one that returned a linked keybox fails (a throttle holding a second fetch).
+    var failsFetchesAfterLinked = false
+    private var returnedLinked = false
 
     func completionKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
         completionHubIDs.append(hubID)
@@ -376,8 +379,11 @@ final class FakeLinkHost: LinkHost {
         let writes = (try? await deviceWrites()) ?? []
         keyboxReads.append(ReadCall(kind: .fetch, writesBefore: writes.count))
         await park { self.parksFetchGrant || (self.parksReadsAfterWrite && !writes.isEmpty) }
-        if refreshFails || Task.isCancelled { return .unavailable(reason: "fetch failed") }
+        if refreshFails || Task.isCancelled || (failsFetchesAfterLinked && returnedLinked) {
+            return .unavailable(reason: "fetch failed")
+        }
         fetchedHubs.insert(hubID)
+        if let stored = await storedKeybox(hubID: hubID, deviceID: deviceID), stored.grant.linked { returnedLinked = true }
         if let fingerprint = macOpaque?(writes) { return .opaque(fingerprint: fingerprint) }
         return .read(await storedKeybox(hubID: hubID, deviceID: deviceID))
     }

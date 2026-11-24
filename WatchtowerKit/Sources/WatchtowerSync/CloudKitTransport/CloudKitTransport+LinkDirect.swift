@@ -11,6 +11,8 @@ public enum DirectCallRefusal: Error, Equatable, Sendable {
     case unreadableRecord
     /// A save's answer named no result for the record: it is not known saved.
     case noResult
+    /// The iCloud quota is exceeded (`isPaused`): no save goes out until `resume()`. Reads still do.
+    case paused
 }
 
 /// The phone's link flow outside `CKSyncEngine` (#2189): its keybox read by name and its hello saved at once, so
@@ -46,18 +48,16 @@ extension CloudKitTransport {
     }
 
     /// Saves one already sealed record now, outside the engine's queue, as the kept farewell's direct save does (a
-    /// fresh record, then once over the server copy it collided with; that second try is checked against the throttle
-    /// and the unlink again). Throws `DirectCallRefusal.throttled`/`.unlinked` without a request, and what CloudKit
-    /// threw.
+    /// fresh record, then once over the server copy it collided with). Every try is checked against the quota pause,
+    /// the throttle and the unlink right before its request, so none goes out past one of them: it throws
+    /// `DirectCallRefusal.paused`/`.throttled`/`.unlinked` instead. A `quotaExceeded` pauses as an engine send's does.
+    /// Throws what CloudKit threw.
     public func saveDirectly(_ record: CloudRecord) async throws {
-        try checkDirectCallAllowed()
         let throttleAtStart = throttledUntil
         let database = conditionalDatabase()
-        var tries = 0
         do {
             try await Self.saveDirectly(record, scope: scope, hubID: zones.hubID) { ck in
-                tries += 1
-                if tries > 1 { try self.checkDirectCallAllowed() }
+                try await self.checkDirectSaveAllowed()
                 self.energy?.record(.sendBatch)
                 do {
                     let (saves, _) = try await database.modify(saving: [ck], deleting: [])
@@ -81,6 +81,12 @@ extension CloudKitTransport {
     public var isThrottled: Bool {
         guard let throttledUntil else { return false }
         return now() < throttledUntil
+    }
+
+    /// `checkDirectCallAllowed`, and no save while the quota pause holds.
+    private func checkDirectSaveAllowed() throws {
+        if isPaused { throw DirectCallRefusal.paused }
+        try checkDirectCallAllowed()
     }
 
     private func checkDirectCallAllowed() throws {

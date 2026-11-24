@@ -692,7 +692,7 @@ final class LinkingViewModel {
         phase = .waiting(macName: pending.link.macName)
         while true {
             if let deviceID = identity.deviceID {
-                let result = await readKeybox(hubID: hubID, deviceID: deviceID, from: source)
+                let (result, mailboxRead) = await readKeybox(hubID: hubID, deviceID: deviceID, from: source, pending: pending)
                 switch result {
                 case .read, .opaque:
                     // A keybox that does not open is no answer, as none at all (#2189).
@@ -703,7 +703,8 @@ final class LinkingViewModel {
                         pending = settled
                         if pending.helloSent { resend = nil }
                     }
-                    if let keybox, await answer(keybox, pending: pending, code: code, deviceID: deviceID) {
+                    if let keybox,
+                       await answer(keybox, pending: pending, code: code, deviceID: deviceID, mailboxRead: mailboxRead) {
                         return
                     }
                 case .unavailable(let reason) where !Task.isCancelled:
@@ -760,7 +761,10 @@ final class LinkingViewModel {
     /// differs from the baseline. A waiting keybox counts by the link code it names instead: an unchanged re-send of
     /// this QR keeps the Mac's request (equal to the baseline) and still gives the code; one left from an earlier
     /// code never does.
-    private func answer(_ keybox: Keybox, pending: PendingLink, code: PairingCode, deviceID: String) async -> Bool {
+    /// `mailboxRead`: the keybox is the replica's after a fetch that read the data zone and the mailbox.
+    private func answer(
+        _ keybox: Keybox, pending: PendingLink, code: PairingCode, deviceID: String, mailboxRead: Bool
+    ) async -> Bool {
         let grant = keybox.grant
         if pending.differsFromBaseline(grant), grant.linkRefused != nil {
             await fail(.refused, hubID: grant.hubID)
@@ -773,8 +777,10 @@ final class LinkingViewModel {
                 return false
             }
             // A Relay pairing completes from this keybox: it is the replica's, from a pull of `pair/<slot>` that
-            // succeeded; a second pull before the keys are kept could only fail a link the owner already confirmed.
-            if pending.relaySlot != nil, let boxKeys = keybox.keys {
+            // succeeded; a second pull before the keys are kept could only fail a link the owner already confirmed. So
+            // does an iCloud link whose poll read the replica after a fetch that read the mailbox too: one more fetch
+            // (that a throttle could hold to the deadline) would add nothing.
+            if pending.relaySlot != nil || mailboxRead, let boxKeys = keybox.keys {
                 await complete(pending, keys: boxKeys, linkedAt: grant.linkedAt)
                 return true
             }
@@ -813,12 +819,20 @@ final class LinkingViewModel {
         return keybox
     }
 
-    /// One poll's keybox read from `source`.
-    private func readKeybox(hubID: String, deviceID: String, from source: KeyboxSource) async -> KeyboxRead {
-        guard let host else { return .unavailable(reason: "no host") }
+    /// One poll's keybox read from `source`, and whether it is the replica's after a fetch that read the mailbox: an
+    /// iCloud link's replica poll reads it that way (`completionKeybox`), so a link it shows completes from it; a Relay
+    /// pairing's reads its slot (`fetchKeybox`).
+    private func readKeybox(
+        hubID: String, deviceID: String, from source: KeyboxSource, pending: PendingLink
+    ) async -> (read: KeyboxRead, mailboxRead: Bool) {
+        guard let host else { return (.unavailable(reason: "no host"), false) }
         switch source {
-        case .server: return await host.serverKeybox(hubID: hubID, deviceID: deviceID)
-        case .replica: return await host.fetchKeybox(hubID: hubID, deviceID: deviceID)
+        case .server:
+            return (await host.serverKeybox(hubID: hubID, deviceID: deviceID), false)
+        case .replica where pending.relaySlot == nil:
+            return (await host.completionKeybox(hubID: hubID, deviceID: deviceID), true)
+        case .replica:
+            return (await host.fetchKeybox(hubID: hubID, deviceID: deviceID), false)
         }
     }
 

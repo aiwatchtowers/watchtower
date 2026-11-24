@@ -542,6 +542,21 @@ extension LinkingViewModelTests {
         XCTAssertEqual(host.completionHubIDs, [helloAcme])
     }
 
+    /// An iCloud link on a replica baseline: the poll's fetch read the mailbox, so the link it shows completes from it,
+    /// even when any further fetch would fail (a throttle holding it to the deadline).
+    func testAReplicaPollThatReadTheMailboxCompletesWithoutASecondFetch() async throws {
+        host.serverReadFails = true
+        host.failsFetchesAfterLinked = true
+        let payload = code()
+        macLinks(payload)
+        let model = makeModel()
+
+        await model.open(payload.url())
+
+        XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
+        XCTAssertEqual(host.completionHubIDs, [helloAcme], "the poll's read, and no second one")
+    }
+
     // MARK: A keybox this phone cannot open
 
     /// A re-pair over an old keybox sealed to a key this phone no longer has: it is the baseline by its fingerprint,
