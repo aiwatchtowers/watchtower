@@ -16,12 +16,13 @@ final class ConnectBrowserProbeTests: XCTestCase {
         clock = ConnectTestClock()
     }
 
-    private func probing() -> Task<ConnectBrowserProbe.Answer, Never> {
-        let probe = ConnectBrowserProbe(aiService: ai, clock: clock)
+    private func probing(timeout: Duration = ConnectBrowserProbe.answerTimeout) -> Task<ConnectBrowserProbe.Answer, Never> {
+        let probe = ConnectBrowserProbe(aiService: ai, clock: clock, timeout: timeout)
         return Task { [harness] in await probe.answer(for: harness, service: "slack") }
     }
 
-    private func emitList(_ result: String) {
+    @discardableResult
+    private func emitList(_ result: String) -> Bool {
         ai.emit(.toolStart(ChatToolStart(turnID: "p", id: "probe", name: "claude-in-chrome:list_connected_browsers",
                                          argsJSON: "{}")),
                 .toolEnd(ChatToolEnd(turnID: "p", id: "probe", ok: true, summary: result, sources: [])),
@@ -29,7 +30,8 @@ final class ConnectBrowserProbeTests: XCTestCase {
     }
 
     /// The browser MCP server never answers: at the timeout the probe is
-    /// `unknown` and its turn is torn down (the process is told to stop).
+    /// `unknown` and its turn is torn down (the process is told to stop), so
+    /// an answer after that is never read: it finds no stream to land on.
     func testNoAnswerWithinTheTimeoutIsUnknownAndEndsTheTurn() async {
         let task = probing()
         await ai.untilCalls(1)
@@ -41,20 +43,20 @@ final class ConnectBrowserProbeTests: XCTestCase {
         let answer = await task.value
         XCTAssertEqual(answer, .unknown)
         XCTAssertEqual(ai.terminated, [true], "the probe's stream is cancelled: its process ends")
+        XCTAssertFalse(emitList(#"[{"id":"b1"}]"#), "a late answer finds the stream gone")
         XCTAssertEqual(clock.sleeperCount, 0)
+        XCTAssertEqual(ai.calls.count, 1, "no second probe")
     }
 
-    /// An answer after the timeout is never read: the stream is gone.
-    func testLateAnswerAfterTheTimeoutChangesNothing() async {
-        let task = probing()
+    /// The bound is the caller's: a shorter one ends the probe sooner.
+    func testCustomTimeout() async {
+        let task = probing(timeout: .seconds(5))
         await ai.untilCalls(1)
         _ = await clock.sleepers(1, orAnswer: [task])
-        clock.advance(by: ConnectBrowserProbe.answerTimeout)
+        clock.advance(by: .seconds(5))
         let answer = await task.value
-        emitList(#"[{"id":"b1"}]"#)
-        ai.finish(call: 0)
         XCTAssertEqual(answer, .unknown)
-        XCTAssertEqual(ai.calls.count, 1, "no second probe")
+        XCTAssertEqual(ai.terminated, [true])
     }
 
     /// An answer in time wins, and the timer goes with the probe: a later

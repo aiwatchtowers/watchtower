@@ -342,4 +342,41 @@ extension WatchtowerAIServiceTests {
         // A JSON object without `found` is not a clean answer either.
         XCTAssertEqual(WatchtowerAIService.decodeWhich(out(#"{"provider":"codex"}"#)), .failed(nil))
     }
+
+    // MARK: - Process handle (#2352)
+
+    /// A `sleep` child that ends only when stopped; a test that started one
+    /// kills and reaps it whatever happens.
+    private func sleeper() -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["600"]
+        addTeardownBlock {
+            if process.isRunning { process.terminate() }
+            if process.processIdentifier != 0 { process.waitUntilExit() }
+        }
+        return process
+    }
+
+    /// A stop that lands before the launch (a timeout or Cancel while the CLI
+    /// is looked up) is sticky: the process never starts.
+    func testTerminateBeforeLaunchKeepsTheProcessFromStarting() throws {
+        let handle = WatchtowerProcessHandle()
+        handle.terminate()
+        let process = sleeper()
+        XCTAssertFalse(try handle.launch(process))
+        XCTAssertFalse(process.isRunning)
+        XCTAssertEqual(process.processIdentifier, 0, "never launched")
+    }
+
+    func testTerminateAfterLaunchStopsTheProcess() throws {
+        let handle = WatchtowerProcessHandle()
+        let process = sleeper()
+        XCTAssertTrue(try handle.launch(process))
+        XCTAssertTrue(process.isRunning)
+        handle.terminate()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationReason, .uncaughtSignal)
+        handle.terminate()  // a second stop is harmless
+    }
 }

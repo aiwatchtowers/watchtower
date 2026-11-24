@@ -45,8 +45,10 @@ final class ConnectAssistantSessionTests: XCTestCase {
         return ai.calls.count - 1
     }
 
-    /// Answers the probe turn at `call` with `result` as the list tool's.
-    private func answerProbe(_ result: String, call: Int) {
+    /// Answers the probe turn at `call` with `result` as the list tool's;
+    /// false when that turn's stream was already torn down (nothing reads it).
+    @discardableResult
+    private func answerProbe(_ result: String, call: Int) -> Bool {
         ai.emit(.toolStart(ChatToolStart(turnID: "p", id: "probe\(call)",
                                          name: "claude-in-chrome:list_connected_browsers", argsJSON: "{}")),
                 .toolEnd(ChatToolEnd(turnID: "p", id: "probe\(call)", ok: true, summary: result, sources: [])),
@@ -470,8 +472,10 @@ final class ConnectAssistantSessionTests: XCTestCase {
         XCTAssertEqual(ai.calls[1].connectArgs?.last, "words")
         XCTAssertNil(session.presentation.browserGuide, "no answer offers no guide")
 
-        answerProbe(#"[{"id":"b1"}]"#, call: 0)
-        XCTAssertEqual(session.mode, .words, "a late answer is never read")
+        // The late answer finds the stream torn down: nothing is enqueued, so
+        // nothing can reach the session after these checks either.
+        XCTAssertFalse(answerProbe(#"[{"id":"b1"}]"#, call: 0), "a late answer is never read")
+        XCTAssertEqual(session.mode, .words)
         XCTAssertEqual(ai.calls.count, 2)
     }
 
@@ -494,8 +498,8 @@ final class ConnectAssistantSessionTests: XCTestCase {
         XCTAssertEqual(session.state, .browserMissing)
         XCTAssertEqual(session.presentation.browserGuide?.note, "Couldn't check the browser — try again.")
         XCTAssertEqual(session.presentation.actions, [.checkBrowser, .continueWithoutBrowser, .setUpByHand])
-        answerProbe(#"[{"id":"b1"}]"#, call: 1)
-        XCTAssertEqual(session.state, .browserMissing, "the timed-out check's late answer starts nothing")
+        XCTAssertFalse(answerProbe(#"[{"id":"b1"}]"#, call: 1), "the timed-out check's late answer is never read")
+        XCTAssertEqual(session.state, .browserMissing)
         XCTAssertNil(session.engine)
 
         session.checkBrowser()
@@ -530,8 +534,8 @@ final class ConnectAssistantSessionTests: XCTestCase {
         XCTAssertEqual(session.browserCheck, .failed)
         XCTAssertEqual(session.mode, .words)
         XCTAssertEqual(session.presentation.actions, [.cancel, .checkBrowser])
-        answerProbe(#"[{"id":"b1"}]"#, call: turn + 1)
-        XCTAssertEqual(session.mode, .words, "a late answer switches nothing back")
+        XCTAssertFalse(answerProbe(#"[{"id":"b1"}]"#, call: turn + 1), "a late answer is never read")
+        XCTAssertEqual(session.mode, .words)
         XCTAssertEqual(ai.calls.count, turn + 2, "no follow-up turn")
     }
 

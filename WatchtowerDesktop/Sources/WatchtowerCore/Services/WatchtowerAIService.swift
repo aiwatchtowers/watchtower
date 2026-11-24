@@ -409,8 +409,9 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         let stdin = Pipe()
         process.standardInput = stdin
 
-        processHandle.set(process)
-        try process.run()
+        // A consumer that stopped before the launch (a timeout or Cancel
+        // while the CLI was looked up) gets no process at all.
+        guard try processHandle.launch(process) else { throw CancellationError() }
 
         // On a thread of its own (never the caller's actor or the concurrency
         // pool, see ProcessPipes): a prompt larger than the pipe buffer blocks
@@ -502,20 +503,29 @@ extension WatchtowerAIService {
 
 // MARK: - Process Handle
 
-private final class WatchtowerProcessHandle: @unchecked Sendable {
+/// The `ai query` child of one stream. `terminate()` is sticky: one that
+/// lands before `launch` (the consumer stopped while the CLI was looked up)
+/// keeps the process from starting at all, so nothing runs on unread. Launch
+/// and terminate take the same lock, so neither slips between the other's
+/// check and act.
+final class WatchtowerProcessHandle: @unchecked Sendable {
     private var process: Process?
+    private var terminated = false
     private let lock = NSLock()
 
-    func set(_ process: Process) {
-        lock.lock()
+    /// Runs `process` unless the handle was terminated first; false then.
+    func launch(_ process: Process) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !terminated else { return false }
+        try process.run()
         self.process = process
-        lock.unlock()
+        return true
     }
 
     func terminate() {
-        lock.lock()
-        if let proc = process, proc.isRunning { proc.terminate() }
-        lock.unlock()
+        lock.lock(); defer { lock.unlock() }
+        terminated = true
+        if let process, process.isRunning { process.terminate() }
     }
 }
 
