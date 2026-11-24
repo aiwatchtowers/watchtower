@@ -28,7 +28,7 @@ text: **Delete an account's data when its access ends** is off by default; turn 
 area: setup
 level: power
 kind: feature
-since: next
+since: 0.29.3
 replaces: [revoked-delete-data]
 changed: It was on by default; now you turn it on, and your organization can set the notice before deletion.
 -->

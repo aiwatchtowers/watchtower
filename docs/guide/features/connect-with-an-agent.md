@@ -29,7 +29,7 @@ text: No Claude in Chrome? The connect panel shows how to add it; press **Check 
 area: setup
 level: next
 kind: tip
-since: next
+since: 0.29.3
 action: nav:connections
 -->
 

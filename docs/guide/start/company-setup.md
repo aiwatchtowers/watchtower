@@ -38,7 +38,7 @@ text: Press **Set up with Claude** on any step of **Set up for my company**; the
 area: setup
 level: next
 kind: tip
-since: next
+since: 0.29.3
 action: nav:connections
 -->
 
