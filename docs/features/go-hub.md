@@ -80,7 +80,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 | `hub allow <device> typing\|permissions\|start_sessions [--revoke]` | `device_id`, `grant`, `allowed` |
 | `hub name <name>` | `name` |
 | `hub enable` / `hub disable` | `enabled` |
-| `hub pair [--stream]` | JSON lines: `{event: qr, url, expires_at}`, `{event: waiting}`, `{event: sas, device_id, name, code, moves_to_relay, request}` (#2191: `moves_to_relay` always present; `request` names the waiting request), `{event: linked, device_id}`, `{event: refused, reason}`; the owner's `{confirm: true\|false, code?, moves_to_relay?, request?}` on stdin (the contract is in "`hub pair --json --stream` and a replaced request" below) |
+| `hub pair [--stream]` | JSON lines: `{event: qr, url, expires_at}`, `{event: waiting}`, `{event: sas, device_id, name, code, moves_to_relay, request}` (#2191: `moves_to_relay` always present; `request` names the waiting request), `{event: linked, device_id}`, `{event: refused, reason}`; the owner's `{confirm: true\|false, code?, moves_to_relay?, request?}` on stdin (a line without `confirm`, or not JSON, is a no, `readPairConfirm`; the contract is in "`hub pair --json --stream` and a replaced request" below) |
 | `hub desktop heartbeat` (darwin only) | `desktop_at` (the socket op's answer also carries `phone_contact_at`, RFC 3339, when a hub runs and a phone was ever in touch: this run's last admitted phone contact (an action past the gates, or a linked phone's device record at its `seen_at`, never later than now; a refused action or an unlink is none), else `hub_meta.phone_contact_at` stored each daemon cycle — Desktop's keep-awake input, Task 23) |
 | `hub recordings on\|off` (owner; `on` refused "this host has no transcriber" before any Desktop heartbeat — with `--json` the refusal is exit 0 with `stored: false` and `error: no_transcriber`) | `recordings`, `stored`, `error` (refusals only) |
 | `hub recording claim --upload <id>` (a failed job claims again for the owner's Retry; `done` and `hub_moved` never) | `upload_id`, `audio_path`, `status` |
@@ -532,8 +532,10 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   and reading a new answer. A request that moved to another stream's code, or is no longer waiting, is `no_request`
   (like `no_code`): the CLI prints `{event: refused, reason: expired_code}` and ends. A yes on a running hub that sends
   no request id (older than the CLI) ends with `errPairHubTooOld` ("the hub is out of date: restart Watchtower, then
-  link again"); a no still goes through. Stdin closing before any answer ends with `errPairNoAnswer` and sends nothing
-  (the stream's end abandons its code as any closed stream does).
+  link again"); a no still goes through. Stdin closing before any answer ends with `errPairNoAnswer` and sends nothing.
+  The stream's end then retires only a CloudKit code it issued (`pairListener.ckNonce`, `hubRuntime.abandonCode`:
+  its link closes, its waiting phones read `not_confirmed`); a relay code is not retired when its stream closes and
+  stays valid until it expires or another code replaces it.
 - **`moves_to_relay` on the `sas` line** (#2191, Q6; local CLI contract, not the phone wire). `link.PairEvent.OverRelay`:
   the hello came through a Relay pairing slot and names the phone's relay id. The runtime sets `MovesToRelay`
   (`hubRuntime.movesToRelay`, on the event goroutine, outside the supervisor's `pairMu`) when the phone paired over
@@ -559,10 +561,10 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
     as an error (no candidate) and a writer replaces it with an empty one plus its change. Only phones in `linked` can
     move the Mac. No migration.
   - **The candidate** (`relayLinkCandidates`, in `devices` order): `relay_slot_links.linked[id]` equals the row's
-    `link_nonce`, the row has a relay id and no iCloud route, and `linked_at` is strictly after both
-    `relay_link_since` and the last switch's `switched_at`, each floored by `relayLinkSince` (the second before the
-    stamp's whole second: `linked_at` is written at whole seconds, so a link confirmed in the start's or the switch's
-    second counts). An unset `relay_link_since` means no candidate.
+    `link_nonce`, the row has a relay id and no iCloud route, and `linked_at > max(stored relay_link_since,
+    relayLinkSince(switched_at))`. `relayLinkSince(t)` is the second before `t`'s whole second, and the stored
+    `relay_link_since` was already written as `relayLinkSince(start)`: `linked_at` is written at whole seconds, so a
+    link confirmed in the start's or the switch's second counts. An unset `relay_link_since` means no candidate.
   - **`hub_meta.relay_link_since`** (spec Q5; RFC 3339, the `switched_at` stamp format) is written once, at the first
     start of a build with the check (`markRelayLinkSince`, only when unset), so a phone linked over a slot before the
     update never moves the Mac (only this build writes `relay_slot_links` either). A failed write is logged (`store`)
@@ -574,7 +576,8 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
     is in memory: due once a `too_soon` wait has ended and either `RelayLinkSoon` asked, `NoPayerPoll` (5 min) has
     passed since the last read, or a `too_soon` wait ended since it; the first check after a start reads, so a restart
     finishes a switch a crash cut short. With a candidate it makes one fresh account read (`AccountPhones`, bounded by
-    the old side's timeout, no switcher lock held). `ErrNotFresh` is no read and is tried at the next poll; an error, a
+    the old side's timeout). The check's own `rlMu` is held across the read (one check at a time); the switcher's `s.mu`
+    is not, and is taken only for the accept. `ErrNotFresh` is no read and is tried at the next poll; an error, a
     timeout or a list without the phone never counts as paying and moves nothing. A paying candidate (the first in
     `devices` order) is accepted in one transaction (`acceptRelayLink`) that checks again: still on CloudKit, no switch
     pending, no ask, the row still the same link (link nonce, `linked_at`, relay id), still in `relay_slot_links` and
@@ -585,7 +588,8 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
     anti-flap wait, then `Kick`). The runtime calls it on a confirm that linked the phone (`afterConfirm(device,
     linkedNow)`; a refusal or an expired or used code does not) and when an account read newly stamps a linked phone as
     listed (`admission.go`: a slot-linked phone is listed only after its promote). The iCloud account dying after the
-    code was shown still switches, with CloudKit held (`applyICloudHold`).
+    code was shown still switches, with CloudKit held (`applyICloudHold`;
+    `TestRelayPairingWhenICloudDiesAfterTheCodeSwitches`).
   - Tests: `sim_relaylink_test.go` (switcher), `relay_link_switch_test.go`, `pair_cloudkit_test.go`,
     `link/relay_slot_links_test.go`, `link/confirm_linked_test.go`, `control_test.go`, `cmd/hub_test.go`.
 - **A phone's relay id from its `device` record** (relay client Phase 3b Task 23, R22). An iCloud-linked phone that
