@@ -994,7 +994,8 @@ extension AppRoot: LinkHost {
 
     func fetchKeybox(hubID: String, deviceID: String) async -> KeyboxRead {
         guard let session = env.session(hubID) else { return .unavailable(reason: "no session") }
-        guard await session.refresh(.link) else { return .unavailable(reason: "the fetch failed") }
+        // A pull skipped by a throttle or cut short does not count: the replica's copy would read as an absence.
+        guard await session.refreshForLink() else { return .unavailable(reason: "the fetch did not read the zone") }
         return replicaKeybox(session, deviceID: deviceID)
     }
 

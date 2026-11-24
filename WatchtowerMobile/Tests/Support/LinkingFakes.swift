@@ -375,9 +375,19 @@ final class FakeLinkHost: LinkHost {
     /// Every direct save, in call order (the hub of each).
     private(set) var directSaves: [String] = []
 
+    /// Every direct save begun, in call order (a parked or failed one included).
+    private(set) var directSaveAttempts = 0
+    /// When true, a direct save waits until it is set false again or its task is cancelled (the app killed while
+    /// the request is in flight: nothing lands).
+    var parksDirectSave = false {
+        didSet { unpark() }
+    }
+
     func sendDirectly(_ record: CloudRecord, hubID: String) async -> Bool {
-        guard cloudKitHubs.contains(hubID), !directSaveFails, let index = preparedHubIDs.lastIndex(of: hubID)
-        else { return false }
+        guard cloudKitHubs.contains(hubID), let index = preparedHubIDs.lastIndex(of: hubID) else { return false }
+        directSaveAttempts += 1
+        await park { self.parksDirectSave }
+        guard !directSaveFails, !Task.isCancelled else { return false }
         directSaves.append(hubID)
         do {
             try await transport(for: prepared[index]).saveDirectly([record])

@@ -1825,10 +1825,10 @@ final class HubSession {
         return try store.reader.read { db in try store.keybox(deviceID: deviceID, from: db) }
     }
 
-    /// The CloudKit transport, the sealer and the battery counter for the link flow's direct calls
-    /// (`HubSession+LinkDirect`, #2189); nil off CloudKit (the relay, the demo).
-    var directCloud: (cloud: CloudKitTransport, secure: SecureTransport, energy: EnergyCounter?)? {
-        (transport as? CloudKitTransport).map { ($0, secure, energy) }
+    /// The CloudKit transport and the sealer for the link flow's direct calls (`HubSession+LinkDirect`, #2189); nil
+    /// off CloudKit (the relay, the demo).
+    var directCloud: (cloud: CloudKitTransport, secure: SecureTransport)? {
+        (transport as? CloudKitTransport).map { ($0, secure) }
     }
 
     /// The phone's seq ceiling (F29), carried over a wipe.

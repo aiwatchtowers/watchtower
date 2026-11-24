@@ -283,11 +283,16 @@ struct PendingLink: Codable, Equatable, Sendable {
     let baseline: DeviceGrant?
     /// `baseline` was read (nil then means no grant). false while the sync
     /// stack restarts, before the device record is written; a value saved
-    /// by an older build reads false.
+    /// by an older build reads false, and so does one whose `baselineSource`
+    /// does not decode (a newer build's source: never guessed).
     let baselineCaptured: Bool
     /// Where `baseline` was read (#2189): every read of the wait, a resumed one included, goes to the same source,
     /// so the server's copy and the replica's are never compared. nil in a value an older build saved: the replica.
     let baselineSource: KeyboxSource?
+    /// The hello was saved (directly, or queued on the engine) after the baseline (#2189). A resume of a captured
+    /// link without it sends the hello again (an unchanged re-send is a no-op on the Mac). A value an older build
+    /// saved reads true: it wrote the hello right after the baseline.
+    var helloSent: Bool
     /// The scanned code's `iat`, on the Mac's clock (mobile E2E review M-3):
     /// a `linked` keybox decided before it is an older link, not this scan's
     /// confirmation. nil in a value an older build saved.
@@ -307,13 +312,15 @@ struct PendingLink: Codable, Equatable, Sendable {
         issuedAt: Date? = nil,
         relaySlot: String? = nil,
         relaySlotExpiresAt: Date? = nil,
-        baselineSource: KeyboxSource? = nil
+        baselineSource: KeyboxSource? = nil,
+        helloSent: Bool = true
     ) {
         self.link = link
         self.deadline = deadline
         self.baseline = baseline
         self.baselineCaptured = baselineCaptured
         self.baselineSource = baselineSource
+        self.helloSent = helloSent
         self.issuedAt = issuedAt
         self.relaySlot = relaySlot
         self.relaySlotExpiresAt = relaySlotExpiresAt
@@ -324,9 +331,16 @@ struct PendingLink: Codable, Equatable, Sendable {
         link = try container.decode(LinkRecord.self, forKey: .link)
         deadline = try container.decode(Date.self, forKey: .deadline)
         baseline = try container.decodeIfPresent(DeviceGrant.self, forKey: .baseline)
-        baselineCaptured = try container.decodeIfPresent(Bool.self, forKey: .baselineCaptured) ?? false
-        // An unknown value (a newer build's source) reads as the replica, as an older build's absent one.
-        baselineSource = try? container.decodeIfPresent(KeyboxSource.self, forKey: .baselineSource)
+        let captured = try container.decodeIfPresent(Bool.self, forKey: .baselineCaptured) ?? false
+        do {
+            baselineSource = try container.decodeIfPresent(KeyboxSource.self, forKey: .baselineSource)
+            baselineCaptured = captured
+        } catch {
+            // A source this build does not know: no wait can read it, so the link offers a new scan.
+            baselineSource = nil
+            baselineCaptured = false
+        }
+        helloSent = try container.decodeIfPresent(Bool.self, forKey: .helloSent) ?? true
         issuedAt = try container.decodeIfPresent(Date.self, forKey: .issuedAt)
         relaySlot = try container.decodeIfPresent(String.self, forKey: .relaySlot)
         relaySlotExpiresAt = try container.decodeIfPresent(Date.self, forKey: .relaySlotExpiresAt)

@@ -211,6 +211,7 @@ extension CloudKitTransport {
                 }
                 try store.setPollToken(page.changeToken, zone: zone)
                 moreComing = page.moreComing
+                if zone == .data, !moreComing { dataZonePollsCompleted += 1 }
             }
         }
         if allZonesUpToDate, engineBufferFailures == failuresBefore {

@@ -3,17 +3,24 @@ import WatchtowerSync
 
 /// The link flow's direct CloudKit calls (#2189): its keybox read by name and its hello saved at once, so neither
 /// waits behind the full download of the Mac's zones a fresh replica starts with. Both go through
-/// `CloudKitTransport`'s direct calls, which honour its throttle and its unlink.
+/// `CloudKitTransport`'s direct calls, which honour its throttle and its unlink and count each request that goes out.
 extension HubSession {
-    /// This phone's keybox as the server holds it now: one read of `keybox-<DEVICE_ID>` by its fixed name in the data
-    /// zone (`CloudKitTransport.serverRecord`), opened as the replica opens it, with nothing stored. The link flow's
+    /// Where this phone's keybox lives on the server: `keybox-<DEVICE_ID>` (the uppercase UUID, as the hub writes it
+    /// and `SecureTransport.openKeybox` binds it) in the data zone.
+    static func keyboxLocation(deviceID: UUID) -> (recordName: String, zone: CloudZoneID) {
+        (Keybox.recordName(deviceID: deviceID.uuidString), .data)
+    }
+
+    /// This phone's keybox as the server holds it now: one read of its record by name (`keyboxLocation`,
+    /// `CloudKitTransport.serverRecord`), opened as the replica opens it, with nothing stored. The link flow's
     /// baseline and its grant polls take it; a link still completes from the replica. Off CloudKit: `.unavailable`.
     func serverKeybox(deviceID: UUID) async -> KeyboxRead {
         guard let direct = directCloud else { return .unavailable(reason: "no direct read on this route") }
-        direct.energy?.record(.fetchLink)
+        let location = Self.keyboxLocation(deviceID: deviceID)
         return await Self.keyboxRead {
-            let name = Keybox.recordName(deviceID: deviceID.uuidString)
-            guard let record = try await direct.cloud.serverRecord(named: name, in: .data) else { return nil }
+            guard let record = try await direct.cloud.serverRecord(named: location.recordName, in: location.zone) else {
+                return nil
+            }
             return try await direct.secure.openKeybox(sealed: record.payload, deviceID: deviceID)
         }
     }
@@ -31,6 +38,24 @@ extension HubSession {
             logger.debug("keybox read unavailable: \(reason, privacy: .public)")
             return .unavailable(reason: reason)
         }
+    }
+
+    /// One fetch for the link flow's replica read (`LinkHost.fetchKeybox`): true only when it brought the data zone in.
+    /// On CloudKit a pull skipped by a throttle or the unlink, or cut short, returns normally and `refresh` counts it
+    /// as no data, so the data zone's completed polls are compared around it (`linkFetchCompleted`).
+    func refreshForLink() async -> Bool {
+        let cloud = directCloud?.cloud
+        let before = await cloud?.dataZonePollsCompleted
+        let refreshed = await refresh(.link)
+        let after = await cloud?.dataZonePollsCompleted
+        return Self.linkFetchCompleted(refreshed: refreshed, pollsBefore: before, pollsAfter: after)
+    }
+
+    /// A fetch that succeeded and, on CloudKit (the poll counts given), polled the data zone to its end during it.
+    static func linkFetchCompleted(refreshed: Bool, pollsBefore: Int?, pollsAfter: Int?) -> Bool {
+        guard refreshed else { return false }
+        guard let pollsBefore, let pollsAfter else { return true }
+        return pollsAfter > pollsBefore
     }
 
     /// Saves `record` sealed with this session's keys straight to CloudKit (`CloudKitTransport.saveDirectly`, outside

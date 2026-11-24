@@ -13,13 +13,73 @@ final class CloudKitLinkDirectTests: XCTestCase {
     }
 
     /// A transport whose throttle, once set, holds for the test (its retry never fires).
-    private func make() throws -> (CloudKitTransport, FakeConditionalDatabase, TransportStore) {
+    private func make(energy: EnergyCounter? = nil) throws -> (CloudKitTransport, FakeConditionalDatabase, TransportStore) {
         let store = try TransportStore.inMemory()
         let database = FakeConditionalDatabase()
-        let transport = CloudKitTransport.conditionalTesting(store: store, database: database) { _ in
+        let transport = CloudKitTransport.conditionalTesting(store: store, database: database, energy: energy) { _ in
             try? await Task.sleep(for: .seconds(3_600))
         }
         return (transport, database, store)
+    }
+
+    private func counter() throws -> EnergyCounter {
+        let suite = "CloudKitLinkDirectTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return EnergyCounter(defaults: defaults)
+    }
+
+    func testOnlyARequestThatGoesOutIsCounted() async throws {
+        let energy = try counter()
+        let (transport, database, _) = try make(energy: energy)
+        database.seed(CloudKitTransport.ckRecord(
+            from: record("hello-DEVICE", zone: .relay, payload: "old"), in: zones.zoneID(for: .relay), systemFields: nil))
+
+        _ = try await transport.serverRecord(named: "keybox-DEVICE", in: .data)
+        try await transport.saveDirectly(record("hello-DEVICE", zone: .relay, payload: "new"))
+        XCTAssertEqual(energy.counts(daysAgo: 0)[.fetchLink], 1, "one read")
+        XCTAssertEqual(energy.counts(daysAgo: 0)[.sendBatch], 2, "a save per modify call, as the engine's sends")
+
+        database.fetchFailures = [CKError(.zoneBusy)]
+        _ = try? await transport.serverRecord(named: "keybox-DEVICE", in: .data)
+        _ = try? await transport.serverRecord(named: "keybox-DEVICE", in: .data)
+        _ = try? await transport.saveDirectly(record("hello-DEVICE", zone: .relay, payload: "newer"))
+        XCTAssertEqual(energy.counts(daysAgo: 0)[.fetchLink], 2, "the throttled read sent nothing")
+        XCTAssertEqual(energy.counts(daysAgo: 0)[.sendBatch], 2, "the throttled save sent nothing")
+    }
+
+    /// A throttle another request installs while a direct call runs (the launch pull's `zoneBusy`) outlives the
+    /// call's success.
+    func testASuccessKeepsANewerThrottle() async throws {
+        let (transport, database, _) = try make()
+        database.duringRequest = { _ = await transport.applyThrottle(from: [CKError(.zoneBusy)]) }
+
+        let read = try await transport.serverRecord(named: "keybox-DEVICE", in: .data)
+        XCTAssertNil(read)
+
+        database.duringRequest = nil
+        do {
+            _ = try await transport.serverRecord(named: "keybox-DEVICE", in: .data)
+            XCTFail("expected throttled")
+        } catch {
+            XCTAssertEqual(error as? DirectCallRefusal, .throttled)
+        }
+    }
+
+    /// The save's second try, over the server copy, is checked against a throttle set during the first.
+    func testTheConflictRetryHonoursAThrottleSetMeanwhile() async throws {
+        let (transport, database, _) = try make()
+        database.seed(CloudKitTransport.ckRecord(
+            from: record("hello-DEVICE", zone: .relay, payload: "old"), in: zones.zoneID(for: .relay), systemFields: nil))
+        database.duringRequest = { _ = await transport.applyThrottle(from: [CKError(.zoneBusy)]) }
+
+        do {
+            try await transport.saveDirectly(record("hello-DEVICE", zone: .relay, payload: "new"))
+            XCTFail("expected throttled")
+        } catch {
+            XCTAssertEqual(error as? DirectCallRefusal, .throttled)
+        }
+        XCTAssertEqual(database.calls.count, 1, "no second try")
     }
 
     private func seedKeybox(_ database: FakeConditionalDatabase) {

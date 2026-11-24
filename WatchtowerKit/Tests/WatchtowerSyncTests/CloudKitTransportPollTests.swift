@@ -205,4 +205,44 @@ final class CloudKitTransportPollTests: XCTestCase {
         try store.wipe()
         XCTAssertNil(try store.pollToken(zone: .data))
     }
+
+    // MARK: - #2189: the link flow knows whether a pull read the data zone
+
+    func testAPullThatPollsTheDataZoneToItsEndIsCounted() async throws {
+        let engine = FakeSyncEngine()
+        engine.enqueueZonePage(page(token: "d1", moreComing: true), zoneName: HubZones.testDataZoneName)
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+
+        try await transport.pull()
+
+        let completed = await transport.dataZonePollsCompleted
+        XCTAssertEqual(completed, 1, "once, at the last page")
+    }
+
+    func testAThrottledPullReturnsWithoutCounting() async throws {
+        let engine = FakeSyncEngine(fetchErrors: [CKError(.zoneBusy)])
+        // The throttle holds for the test: its retry never fires.
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine) { _ in
+            try? await Task.sleep(for: .seconds(3_600))
+        }
+
+        try await transport.pull()
+        try await transport.pull()
+
+        let completed = await transport.dataZonePollsCompleted
+        XCTAssertEqual(completed, 0, "the throttle skipped the poll, and then the pull")
+    }
+
+    func testADataZonePollCutShortIsNotCounted() async throws {
+        let engine = FakeSyncEngine()
+        engine.enqueueZonePage(.failure(CKError(.zoneBusy)), zoneName: HubZones.testDataZoneName)
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine) { _ in
+            try? await Task.sleep(for: .seconds(3_600))
+        }
+
+        try await transport.pull()
+
+        let completed = await transport.dataZonePollsCompleted
+        XCTAssertEqual(completed, 0)
+    }
 }

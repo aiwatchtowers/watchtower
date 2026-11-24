@@ -15,6 +15,8 @@ public enum DirectCallRefusal: Error, Equatable, Sendable {
 /// neither waits behind the full download of the Mac's zones a fresh replica starts with. Both honour the throttle
 /// and the unlink as `pull()` does, and a CloudKit failure throttles or unlinks as a fetch's does. Nothing is
 /// buffered or stored here: the engine fetches the saved record, and the one read, later like any other change.
+/// Each request is counted (`fetchLink` for a read, `sendBatch` for a save, as the engine's sends are) only once it
+/// goes out.
 extension CloudKitTransport {
     /// The server's current copy of one record by its wire name: one `record(for:)`. nil only when the server has no
     /// such record; one it holds that does not map throws `DirectCallRefusal.unreadableRecord` (as `serverCopy`'s
@@ -22,7 +24,9 @@ extension CloudKitTransport {
     /// CloudKit threw.
     public func serverRecord(named recordName: String, in zone: CloudZoneID) async throws -> CloudRecord? {
         try checkDirectCallAllowed()
+        let throttleAtStart = throttledUntil
         let id = CKRecord.ID(recordName: recordName, zoneID: zones.zoneID(for: zone))
+        energy?.record(.fetchLink)
         let server: CKRecord?
         do {
             server = try await conditionalDatabase().fetchRecord(id)
@@ -30,20 +34,26 @@ extension CloudKitTransport {
             applyDirectCallFailure(error)
             throw error
         }
-        clearThrottle()
+        clearThrottle(ifStill: throttleAtStart)
         guard let server else { return nil }
         guard let record = Self.cloudRecord(from: server, zone: zone) else { throw DirectCallRefusal.unreadableRecord }
         return record
     }
 
     /// Saves one already sealed record now, outside the engine's queue, as the kept farewell's direct save does (a
-    /// fresh record, then once over the server copy it collided with). Throws `DirectCallRefusal.throttled`/
-    /// `.unlinked` without a request, and what CloudKit threw.
+    /// fresh record, then once over the server copy it collided with; that second try is checked against the throttle
+    /// and the unlink again). Throws `DirectCallRefusal.throttled`/`.unlinked` without a request, and what CloudKit
+    /// threw.
     public func saveDirectly(_ record: CloudRecord) async throws {
         try checkDirectCallAllowed()
+        let throttleAtStart = throttledUntil
         let database = conditionalDatabase()
+        var tries = 0
         do {
             try await Self.saveDirectly(record, scope: scope, hubID: zones.hubID) { ck in
+                tries += 1
+                if tries > 1 { try self.checkDirectCallAllowed() }
+                self.energy?.record(.sendBatch)
                 let (saves, _) = try await database.modify(saving: [ck], deleting: [])
                 _ = try saves[ck.recordID]?.get()
             }
@@ -51,11 +61,18 @@ extension CloudKitTransport {
             applyDirectCallFailure(error)
             throw error
         }
-        clearThrottle()
+        clearThrottle(ifStill: throttleAtStart)
     }
 
     private func checkDirectCallAllowed() throws {
         if isUnlinked { throw DirectCallRefusal.unlinked }
         if let throttledUntil, now() < throttledUntil { throw DirectCallRefusal.throttled }
+    }
+
+    /// A direct call succeeded: the throttling stretch ends, unless another request (the engine's fetch or send)
+    /// installed a newer throttle while this one ran.
+    private func clearThrottle(ifStill throttleAtStart: Date?) {
+        guard throttledUntil == throttleAtStart else { return }
+        clearThrottle()
     }
 }

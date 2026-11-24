@@ -421,14 +421,17 @@ final class LinkingViewModel {
             await fail(.iCloud(Self.baselineUnreadableReason), hubID: record.hubID)
             return
         }
-        let pending = PendingLink(
+        var pending = PendingLink(
             link: record, deadline: deadline, baseline: baseline.grant, baselineCaptured: true, issuedAt: issuedAt,
-            baselineSource: baseline.source
+            baselineSource: baseline.source, helloSent: false
         )
         store.pending = pending
         do {
             let hello = try helloRecord(hubID: record.hubID, for: device, keys: deviceKeys, linkNonce: payload.nonce)
-            try await sendHello(hello, hubID: record.hubID, via: transport)
+            pending = try await sendHello(hello, for: pending, via: transport, directly: true)
+        } catch is CancellationError {
+            // Killed while the hello was being saved: the pending link resumes and sends it again.
+            return
         } catch {
             await fail(.local(error.localizedDescription), hubID: record.hubID)
             return
@@ -438,13 +441,25 @@ final class LinkingViewModel {
 
     static let baselineUnreadableReason = "Check the connection and scan again."
 
-    /// The hello saved at once (`LinkHost.sendDirectly`), else queued on `transport`'s engine: its store, which
-    /// CloudKit sends later, so a throw is this iPhone's.
-    private func sendHello(_ hello: CloudRecord, hubID: String, via transport: any CloudSyncTransport) async throws {
+    /// The hello saved at once (`LinkHost.sendDirectly`, when `directly`), else queued on `transport`'s engine: its
+    /// store, which CloudKit sends later, so a throw is this iPhone's. Then `pending` is marked `helloSent`, stored
+    /// while it is still the pending link, and returned.
+    private func sendHello(
+        _ hello: CloudRecord, for pending: PendingLink, via transport: any CloudSyncTransport, directly: Bool
+    ) async throws -> PendingLink {
         guard let host else { throw CancellationError() }
-        if await host.sendDirectly(hello, hubID: hubID) { return }
-        Self.logger.notice("the hello was not saved directly: queued for the sync engine")
-        try await transport.save([hello])
+        if !directly {
+            try await transport.save([hello])
+        } else if !(await host.sendDirectly(hello, hubID: pending.link.hubID)) {
+            // Killed mid-save: the link stays unsent, and the relaunch sends the hello again.
+            try Task.checkCancellation()
+            Self.logger.notice("the hello was not saved directly: queued for the sync engine")
+            try await transport.save([hello])
+        }
+        var sent = pending
+        sent.helloSent = true
+        if store.pending == pending { store.pending = sent }
+        return sent
     }
 
     /// A link that did not complete: nothing to resume, and a hub that has
@@ -531,7 +546,9 @@ final class LinkingViewModel {
     /// killed before its baseline was captured wrote nothing to the Mac
     /// (the hello follows the baseline), and without the baseline an earlier
     /// answer in the replica (a refusal of another code) would read as this
-    /// scan's: it offers to scan again at once.
+    /// scan's: it offers to scan again at once. One killed after its
+    /// baseline but before its hello was saved (`helloSent` false) sends the
+    /// hello again first.
     func resumePendingLink() async {
         guard let pending = store.pending, !isBusy else { return }
         // A hub id that is not a plain name never names a directory: the
@@ -594,17 +611,51 @@ final class LinkingViewModel {
             return
         }
         phase = .checking
+        guard let resumed = await prepareResumed(pending, keys: deviceKeys) else { return }
+        await waitForGrant(resumed, code: PairingCode(hubKeys: hubKeys, deviceKeys: deviceKeys))
+    }
+
+    /// The resumed link's session in its scope (or its pairing slot), and its hello again when the kill came before
+    /// it was saved. nil when either failed (the link failed) or the host is gone.
+    private func prepareResumed(_ pending: PendingLink, keys deviceKeys: DeviceIdentityKeys) async -> PendingLink? {
+        let transport: any CloudSyncTransport
         do {
+            guard let host else { return nil }
             if let slot = pending.relaySlot, let mac = pending.link.relayMacDeviceID {
-                _ = try await host?.preparePairing(macDeviceID: mac, slot: slot, hubID: pending.link.hubID)
+                transport = try await host.preparePairing(macDeviceID: mac, slot: slot, hubID: pending.link.hubID)
             } else {
-                _ = try await host?.prepare(route: pending.link.route, hubID: pending.link.hubID, fresh: false)
+                transport = try await host.prepare(route: pending.link.route, hubID: pending.link.hubID, fresh: false)
             }
         } catch {
             await fail(.local(error.localizedDescription), hubID: pending.link.hubID)
-            return
+            return nil
         }
-        await waitForGrant(pending, code: PairingCode(hubKeys: hubKeys, deviceKeys: deviceKeys))
+        guard !pending.helloSent else { return pending }
+        return await resendHello(pending, keys: deviceKeys, via: transport)
+    }
+
+    /// A captured link killed before its hello was saved (#2189): the hello again, under the same baseline. The Mac
+    /// takes an unchanged re-send of a hello it already read as a no-op (same code and keys: no new nonce or code,
+    /// `internal/hub/link/hello.go`). nil when it could not be sent: the link failed.
+    private func resendHello(
+        _ pending: PendingLink, keys deviceKeys: DeviceIdentityKeys, via transport: any CloudSyncTransport
+    ) async -> PendingLink? {
+        let hubID = pending.link.hubID
+        guard let device = identity.linkedDevice(for: pending.link) else {
+            await fail(.noAnswer, hubID: hubID)
+            return nil
+        }
+        do {
+            let relayDeviceID = pending.relaySlot == nil ? nil : try relay.phoneDeviceID()
+            let hello = try helloRecord(
+                hubID: hubID, for: device, keys: deviceKeys, linkNonce: pending.link.nonce, relayDeviceID: relayDeviceID)
+            return try await sendHello(hello, for: pending, via: transport, directly: pending.relaySlot == nil)
+        } catch is CancellationError {
+            return nil
+        } catch {
+            await fail(.local(error.localizedDescription), hubID: hubID)
+            return nil
+        }
     }
 
     /// Reads the keybox every 2 s until the deadline, from the source the
@@ -674,15 +725,23 @@ final class LinkingViewModel {
             return true
         }
         if Self.answersAsLinked(grant, pending) {
+            // A linked keybox without keys never completes: it keeps waiting, with no fetch per poll.
+            guard keybox.keys != nil else {
+                Self.logger.warning("a linked keybox without keys: still waiting")
+                return false
+            }
             let linked: Keybox
             if source == .server {
                 // The server's copy shows the link; the link completes only from the replica's. The fetch that brings
                 // it in also reads the data zone and the mailbox (the R4 relay check in `complete`, the ordered
-                // actions), and the linked keybox lands through `ReplicaStore`'s rollback checks. A refusal or a
-                // waiting keybox read directly has no marks to check against on this fresh replica, as before #2189.
-                // A failed fetch, or a replica not caught up yet, keeps waiting.
+                // actions), and the linked keybox lands through `ReplicaStore`'s rollback checks. A failed fetch, or a
+                // replica not caught up yet, keeps waiting. A refusal or a waiting keybox read directly skips those
+                // marks: a replayed older copy (from whoever holds the storage) can at most end or stall this scan,
+                // which the storage can do anyway by withholding the Mac's answer, so the impact is denial of service
+                // only, and no key or link comes from such a copy.
                 guard case .read(let replica?) = await host?.fetchKeybox(hubID: grant.hubID, deviceID: deviceID),
-                      replica.grant.hubID == grant.hubID, Self.answersAsLinked(replica.grant, pending) else {
+                      replica.grant.hubID == grant.hubID, Self.answersAsLinked(replica.grant, pending), replica.keys != nil
+                else {
                     Self.logger.notice("linked on the server, not in the replica yet: still waiting")
                     return false
                 }
@@ -694,7 +753,6 @@ final class LinkingViewModel {
                 await complete(pending, keys: boxKeys, linkedAt: linked.grant.linkedAt)
                 return true
             }
-            Self.logger.warning("a linked keybox without keys: still waiting")
         } else if grant.awaitingConfirmation == true, grant.linkRefused == nil {
             let ours = grant.linkCodeTag == code.linkCodeTag
             macSeesPhone = ours
@@ -1494,17 +1552,18 @@ extension LinkingViewModel {
             await fail(.relayUnreachable, hubID: record.hubID)
             return
         }
-        let pending = PendingLink(
+        var pending = PendingLink(
             link: record, deadline: deadline, baseline: baseline.grant, baselineCaptured: true, issuedAt: issuedAt,
-            relaySlot: slot.slot, relaySlotExpiresAt: slot.expiresAt, baselineSource: baseline.source
+            relaySlot: slot.slot, relaySlotExpiresAt: slot.expiresAt, baselineSource: baseline.source, helloSent: false
         )
         store.pending = pending
         do {
-            try await transport.save([
-                try helloRecord(
-                    hubID: record.hubID, for: device, keys: deviceKeys, linkNonce: payload.nonce, relayDeviceID: relayDeviceID
-                )
-            ])
+            let hello = try helloRecord(
+                hubID: record.hubID, for: device, keys: deviceKeys, linkNonce: payload.nonce, relayDeviceID: relayDeviceID
+            )
+            pending = try await sendHello(hello, for: pending, via: transport, directly: false)
+        } catch is CancellationError {
+            return
         } catch {
             await fail(.local(error.localizedDescription), hubID: record.hubID)
             return

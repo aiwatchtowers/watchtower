@@ -89,7 +89,9 @@ extension LinkingViewModelTests {
         XCTAssertEqual(model.phase, .failed(.noAnswer), "the earlier refusal is the baseline, not this scan's answer")
     }
 
-    func testNoBaselineWritesNoHello() async throws {
+    /// A throttled transport: the direct read makes no request (unavailable), and the fetch's pull returns without
+    /// reading the data zone (`HubSession.refreshForLink` false, so `fetchKeybox` is unavailable, never an absence).
+    func testAThrottledTransportGivesNoBaselineAndNoHello() async throws {
         host.serverReadFails = true
         host.refreshFails = true
         let model = makeModel()
@@ -227,6 +229,7 @@ extension LinkingViewModelTests {
         XCTAssertTrue(pending.baselineCaptured)
         XCTAssertEqual(pending.baseline, stale, "the baseline read before the hello")
         XCTAssertEqual(pending.baselineSource, .server)
+        XCTAssertTrue(pending.helloSent, "marked once the save returned")
         let writes = try await host.deviceWrites()
         XCTAssertEqual(writes.count, 1, "the hello went out")
         return payload
@@ -265,6 +268,74 @@ extension LinkingViewModelTests {
         XCTAssertEqual(relaunched.phase, .linked(macName: "Acme Mac"))
         XCTAssertEqual(relaunched.links.map(\.hubID), [helloAcme])
         XCTAssertNil(LinkStore(defaults: defaults).pending)
+        let writes = try await host.deviceWrites()
+        XCTAssertEqual(writes.count, 1, "a sent hello is not sent again")
+    }
+
+    /// Killed while the direct hello save was in flight (nothing landed): the pending link is captured but not
+    /// sent, and the relaunch sends the hello again under the same baseline, then takes this scan's link.
+    func testAKillDuringTheHelloSaveSendsItAgainOnRelaunch() async throws {
+        let payload = code()
+        let stale = staleRefusal
+        host.mac = { [grant = grantMaker] writes in
+            writes.contains { $0.linkNonce == payload.nonce } ? grant(helloAcme, true, nil) : stale
+        }
+        host.parksDirectSave = true
+        let first = makeModel()
+        let flow = Task { await first.open(payload.url()) }
+        try await poll({ self.host.directSaveAttempts == 1 }, "the hello's save in flight")
+        flow.cancel()
+        await flow.value
+        host.parksDirectSave = false
+        let pending = try XCTUnwrap(LinkStore(defaults: defaults).pending, "a resumable wait")
+        XCTAssertTrue(pending.baselineCaptured)
+        XCTAssertFalse(pending.helloSent)
+        XCTAssertEqual(pending.baseline, stale)
+        let before = try await host.deviceWrites()
+        XCTAssertTrue(before.isEmpty, "nothing landed, nothing queued")
+
+        let relaunched = makeModel()
+        await relaunched.resumePendingLink()
+
+        let after = try await host.deviceWrites()
+        XCTAssertEqual(after.map(\.linkNonce), [payload.nonce], "the hello, sent again with the code's nonce")
+        XCTAssertEqual(host.directSaves, [helloAcme])
+        XCTAssertEqual(relaunched.phase, .linked(macName: "Acme Mac"))
+    }
+
+    /// A linked keybox without keys on the direct read never starts a replica fetch: it keeps waiting.
+    func testALinkedServerReadWithoutKeysFetchesNothing() async throws {
+        host.keyboxKeys = nil
+        let payload = code()
+        macLinks(payload)
+        let model = makeModel()
+
+        await model.open(payload.url())
+
+        XCTAssertEqual(model.phase, .failed(.noAnswer))
+        XCTAssertFalse(host.keyboxReads.contains { $0.kind == .fetch }, "no fetch per poll")
+    }
+
+    /// A `baselineSource` this build cannot decode fails closed: not captured, so the relaunch offers a new scan.
+    func testAnUnknownBaselineSourceReadsAsNotCaptured() async throws {
+        let saved = PendingLink(
+            link: linkRecordForResume(), deadline: start.addingTimeInterval(60), baseline: nil, baselineCaptured: true,
+            baselineSource: .server
+        )
+        var object = try XCTUnwrap(try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved)) as? [String: Any])
+        object["baselineSource"] = "future"
+        object.removeValue(forKey: "helloSent")
+        defaults.set(try JSONSerialization.data(withJSONObject: object), forKey: "link.pending")
+
+        let pending = try XCTUnwrap(LinkStore(defaults: defaults).pending)
+        XCTAssertFalse(pending.baselineCaptured, "never read as the replica")
+        XCTAssertNil(pending.baselineSource)
+        XCTAssertTrue(pending.helloSent, "an older build's value: its hello followed the baseline")
+
+        let model = makeModel()
+        await model.resumePendingLink()
+        XCTAssertEqual(model.phase, .failed(.noAnswer))
+        XCTAssertTrue(host.keyboxReads.isEmpty, "no wait")
     }
 
     /// Killed during the baseline read: nothing was written, so the relaunch offers a new scan at once.
@@ -282,6 +353,31 @@ extension LinkingViewModelTests {
         XCTAssertTrue(writes.isEmpty, "no hello")
         XCTAssertEqual(host.keyboxReads.count, 1, "no fallback fetch after the kill")
         XCTAssertEqual(LinkStore(defaults: defaults).pending?.baselineCaptured, false)
+    }
+
+    // MARK: The session's glue
+
+    /// The record the direct read asks for: the name the hub writes and `SecureTransport` maps the grant to, in the
+    /// data zone.
+    func testTheKeyboxIsReadByItsWireNameInTheDataZone() throws {
+        try keyStore.saveHubLink(try ScannedHubKeys(code()).unconfirmedLink)
+        let provider = try PhoneKeyProvider(store: keyStore, hubID: helloAcme, seq: SeqAllocator(load: { 1 }, store: { _ in }))
+        let secure = SecureTransport(inner: InMemoryCloudTransport(), keys: provider, rollback: InMemoryRollbackGuard())
+        let location = HubSession.keyboxLocation(deviceID: TestE2E.deviceID)
+
+        XCTAssertEqual(location.recordName, "keybox-\(TestE2E.deviceID.uuidString)")
+        XCTAssertEqual(location.zone, .data)
+        let plain = SliceKind.deviceGrant.recordName(id: TestE2E.deviceID.uuidString.lowercased())
+        XCTAssertEqual(try secure.wireName(plain: plain, zone: .data), location.recordName, "the name the sealer maps the grant to")
+    }
+
+    /// The fetch fallback counts only when the data zone was polled to its end during it (a throttled or cut pull
+    /// returns normally).
+    func testALinkFetchCountsOnlyWhenItReadTheDataZone() {
+        XCTAssertFalse(HubSession.linkFetchCompleted(refreshed: false, pollsBefore: 1, pollsAfter: 2))
+        XCTAssertFalse(HubSession.linkFetchCompleted(refreshed: true, pollsBefore: 3, pollsAfter: 3), "a skipped pull")
+        XCTAssertTrue(HubSession.linkFetchCompleted(refreshed: true, pollsBefore: 3, pollsAfter: 4))
+        XCTAssertTrue(HubSession.linkFetchCompleted(refreshed: true, pollsBefore: nil, pollsAfter: nil), "off CloudKit")
     }
 
     // MARK: The session's mapping of a read

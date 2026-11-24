@@ -92,6 +92,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// Number of CloudKit account changes that forced a local reset. Read via
     /// `await transport.accountResetCount` (the hub surfaces it for diagnostics).
     public internal(set) var accountResetCount = 0
+    /// Data-zone polls that ran to the zone's current token (`pull()`): a pull skipped by a throttle or the unlink, or
+    /// cut short by one, returns normally and adds nothing. The phone's link flow reads it around a fetch (#2189).
+    public internal(set) var dataZonePollsCompleted = 0
     /// Fired after an account-change reset so an owner (the desktop hub) can
     /// wipe its own derived state. Set before `start()` via `setAccountResetHandler`.
     var accountResetHandler: (@Sendable () -> Void)?
