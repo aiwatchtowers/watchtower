@@ -61,7 +61,7 @@ final class MobilePairingModelTests: XCTestCase {
         XCTAssertEqual(Model.linkQuestion("Phone A"), "Link \u{201C}Phone A\u{201D}?")
 
         await model.confirm(true)
-        XCTAssertEqual(session.sent, [#"{"confirm":true}"#])
+        XCTAssertEqual(session.sent, [#"{"code":"4827","confirm":true,"moves_to_relay":false}"#], "an older CLI's line: no move")
         XCTAssertFalse(model.showsCode)
 
         session.push(#"{"event":"linked","device_id":"AAAA0001"}"#)
@@ -80,7 +80,7 @@ final class MobilePairingModelTests: XCTestCase {
         session.push(#"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827"}"#)
         await waitUntil("the code") { if case .sas = model.step { true } else { false } }
         await model.confirm(false)
-        XCTAssertEqual(session.sent, [#"{"confirm":false}"#])
+        XCTAssertEqual(session.sent, [#"{"code":"4827","confirm":false,"moves_to_relay":false}"#])
         session.push(#"{"event":"refused","reason":"not_confirmed"}"#)
         await waitUntil("refused") { model.step == .refused("not_confirmed") }
     }
@@ -183,6 +183,134 @@ final class MobilePairingModelTests: XCTestCase {
         XCTAssertEqual(Model.checkCodeText, "Check that your iPhone shows the same code")
         XCTAssertEqual(Model.expiresText(581), "Expires in 9:41")
         XCTAssertEqual(HubPairCLIStreamer.args, ["hub", "pair", "--json", "--stream"])
+        XCTAssertEqual(
+            Model.relayMoveWarning("Work Mac"),
+            "Linking this iPhone moves Work Mac to Relay. "
+                + "iPhones linked over iCloud without Relay lose their connection until they subscribe."
+        )
+        for blank in ["", "  "] {
+            XCTAssertEqual(
+                Model.relayMoveWarning(blank),
+                "Linking this iPhone moves this Mac to Relay. "
+                    + "iPhones linked over iCloud without Relay lose their connection until they subscribe.",
+                "a hub status without a name: \"\(blank)\""
+            )
+        }
+    }
+
+    /// #2191 Task 4 contract: the hub prints a new `sas` line when the phone's
+    /// request changes its code or `moves_to_relay`, and reprints the current
+    /// one before it waits for another answer (`code_changed`, an ambiguous
+    /// yes). Every `sas` line means "answer this one": the latest is shown,
+    /// also after Link, and each answer carries that line's code and
+    /// `moves_to_relay` and `request` (the final Task 4 contract).
+    func testEverySASLineAsksAndTheAnswerCarriesWhatWasShown() async throws {
+        let streamer = FakePairStreamer()
+        let model = Model(streamer: streamer, macName: "Work Mac", now: { self.start }, sleep: { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+        })
+        await model.start()
+        let session = try XCTUnwrap(streamer.sessions.first)
+        let first = #"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827","moves_to_relay":false,"request":"0123456789abcdef"}"#
+        let second = #"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"1093","moves_to_relay":true,"request":"fedcba9876543210"}"#
+        let firstYes = #"{"code":"4827","confirm":true,"moves_to_relay":false,"request":"0123456789abcdef"}"#
+        let secondYes = #"{"code":"1093","confirm":true,"moves_to_relay":true,"request":"fedcba9876543210"}"#
+
+        model.receive(first)
+        XCTAssertEqual(model.step, .sas(code: "4827", phone: "Phone A"))
+        XCTAssertNil(model.relayMoveWarning)
+
+        // A changed request before the answer: the new code and warning replace the shown ones.
+        model.receive(second)
+        XCTAssertEqual(model.step, .sas(code: "1093", phone: "Phone A"))
+        XCTAssertEqual(model.relayMoveWarning, Model.relayMoveWarning("Work Mac"))
+
+        // An identical reprint while asking changes nothing and sends nothing.
+        model.receive(second)
+        XCTAssertEqual(model.step, .sas(code: "1093", phone: "Phone A"))
+        XCTAssertEqual(model.relayMoveWarning, Model.relayMoveWarning("Work Mac"))
+        XCTAssertTrue(session.sent.isEmpty)
+
+        await model.confirm(true)
+        XCTAssertEqual(session.sent, [secondYes], "the answer names the line on screen")
+        XCTAssertEqual(model.step, .waiting)
+        await model.confirm(true)
+        XCTAssertEqual(session.sent.count, 1, "a second press while waiting sends nothing")
+
+        // An identical reprint after Link (an ambiguous yes): asked again with
+        // the same values; the next answer goes out, nothing is lost.
+        model.receive(second)
+        XCTAssertEqual(model.step, .sas(code: "1093", phone: "Phone A"))
+        XCTAssertEqual(model.relayMoveWarning, Model.relayMoveWarning("Work Mac"))
+        await model.confirm(true)
+        XCTAssertEqual(session.sent, [secondYes, secondYes])
+
+        // The request changed after Link (code_changed): the new line asks
+        // again with its own values. Not a failure.
+        model.receive(first)
+        XCTAssertEqual(model.step, .sas(code: "4827", phone: "Phone A"))
+        XCTAssertNil(model.relayMoveWarning, "the newest line moves nothing")
+        await model.confirm(true)
+        XCTAssertEqual(session.sent, [secondYes, secondYes, firstYes])
+
+        model.receive(second)
+        await model.confirm(false)
+        XCTAssertEqual(
+            session.sent.last, #"{"code":"1093","confirm":false,"moves_to_relay":true,"request":"fedcba9876543210"}"#,
+            "a no carries them too"
+        )
+
+        // A name-only change is no replacement: the new name shows, the same request is answered.
+        model.receive(first.replacingOccurrences(of: "Phone A", with: "Phone A (renamed)"))
+        XCTAssertEqual(model.step, .sas(code: "4827", phone: "Phone A (renamed)"))
+        await model.confirm(true)
+        XCTAssertEqual(session.sent.last, firstYes)
+
+        model.receive(#"{"event":"linked","device_id":"AAAA0001"}"#)
+        XCTAssertEqual(model.step, .linked("Phone A (renamed)"))
+        XCTAssertNil(model.relayMoveWarning)
+    }
+
+    /// Q6 (#2191): the `sas` line's `moves_to_relay` decides the warning; an
+    /// older CLI without the key warns nothing, and every later step clears it.
+    func testTheRelayLinkWarningShowsOnlyWithICloudPhones() async throws {
+        let streamer = FakePairStreamer()
+        let clock = Clock(start)
+        let model = Model(streamer: streamer, macName: "Work Mac", now: { clock.now }, sleep: { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+        })
+        let warning = "Linking this iPhone moves Work Mac to Relay. "
+            + "iPhones linked over iCloud without Relay lose their connection until they subscribe."
+        let sas = #"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827""#
+        XCTAssertNil(model.relayMoveWarning)
+
+        model.receive(sas + #","moves_to_relay":true}"#)
+        XCTAssertEqual(model.relayMoveWarning, warning)
+        model.receive(#"{"event":"linked","device_id":"AAAA0001"}"#)
+        XCTAssertNil(model.relayMoveWarning, "linked clears it")
+
+        model.receive(sas + #","moves_to_relay":true}"#)
+        model.receive(#"{"event":"refused","reason":"not_confirmed"}"#)
+        XCTAssertNil(model.relayMoveWarning, "refused clears it")
+
+        model.receive(sas + #","moves_to_relay":false}"#)
+        XCTAssertNil(model.relayMoveWarning)
+        model.receive(sas + "}")
+        XCTAssertNil(model.relayMoveWarning, "an older CLI without the key")
+
+        model.receive(sas + #","moves_to_relay":true}"#)
+        XCTAssertEqual(model.relayMoveWarning, warning)
+        model.markConfirmed()
+        XCTAssertEqual(model.step, .waiting)
+        XCTAssertNil(model.relayMoveWarning, "the busy step after Link warns nothing")
+
+        model.receive(sas + #","moves_to_relay":true}"#)
+        model.streamEnded("The hub is not running.")
+        XCTAssertNil(model.relayMoveWarning, "a failure clears it")
+
+        model.receive(sas + #","moves_to_relay":true}"#)
+        await model.start()
+        XCTAssertNil(model.relayMoveWarning, "a new code clears it")
     }
 
     func testTheQRImageScansBackToTheLinkURL() throws {

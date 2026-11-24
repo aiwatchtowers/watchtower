@@ -217,6 +217,48 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertNil(model.pairing)
     }
 
+    /// F7 (#2191, ask #1813): a Mac whose iCloud is unusable keeps Link when
+    /// the hub has a relay (the hub issues a Relay code); without one it stays off.
+    func testLinkStaysOnWithoutICloudOnlyWithARelay() async {
+        XCTAssertTrue(Model.accountAllowsLinking(transport: "cloudkit", account: "no_account", hasRelay: true))
+        XCTAssertTrue(Model.accountAllowsLinking(transport: "cloudkit", account: "restricted", hasRelay: true))
+        XCTAssertFalse(Model.accountAllowsLinking(transport: "cloudkit", account: "no_account", hasRelay: false))
+        let cloud = #""cloudkit":{"account":"no_account","throttled_since":"","signed":true}"#
+        let paused = #"{"state":"paused","reason":"no_icloud","transport":"cloudkit","name":"Work Mac","#
+
+        cli.status(paused + cloud + #","relay":{"state":"connected"}}"#)
+        cli.phones("[]")
+        let withRelay = makeModel()
+        await withRelay.load()
+        XCTAssertTrue(withRelay.canLink, "a relay links without iCloud")
+        withRelay.linkPhone()
+        XCTAssertNotNil(withRelay.pairing)
+
+        cli.status(paused + cloud + "}")
+        cli.phones("[]")
+        let withoutRelay = makeModel()
+        await withoutRelay.load()
+        XCTAssertFalse(withoutRelay.canLink, "no relay, no iCloud: no code")
+
+        cli.status(#"{"state":"paused","reason":"stopping","transport":"cloudkit","relay":{"state":"connected"}}"#)
+        cli.phones("[]")
+        let otherPause = makeModel()
+        await otherPause.load()
+        XCTAssertFalse(otherPause.canLink, "only the iCloud pause keeps Link")
+    }
+
+    /// The pairing sheet names the Mac in the Relay warning (#2191).
+    func testThePairingSheetKnowsTheMacName() async {
+        cli.status(#"{"state":"running","transport":"cloudkit","name":"Work Mac"}"#)
+        cli.phones("[]")
+        let model = makeModel()
+        await model.load()
+        model.linkPhone()
+        let sheet = model.pairing
+        sheet?.receive(#"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827","moves_to_relay":true}"#)
+        XCTAssertEqual(sheet?.relayMoveWarning, MobilePairingModel.relayMoveWarning("Work Mac"))
+    }
+
     /// Reads give up after 15 s and writes after 30 s, so a hung call never
     /// leaves the tab loading or a row busy.
     func testEveryCallHasATimeout() async {
