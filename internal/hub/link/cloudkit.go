@@ -207,6 +207,11 @@ type ckState struct {
 	// close lands (writeLink) and by the next CloudKit code, whose own close
 	// it is.
 	closeAtStop bool
+	// linkOpenTried: an open of the public link was asked for (setLink) and
+	// the writer has not settled on closed since. Unlike the sweep mark,
+	// which a sweep can clear while an issue reopens the link behind it, it
+	// follows the writer itself.
+	linkOpenTried bool
 	// sharing: what the last issue left (SharingAvailable/Unavailable), ""
 	// before any.
 	sharing string
@@ -479,6 +484,9 @@ func (c *Center) setLink(ctx context.Context, s transport.Shares, open bool, rea
 		return false, nil
 	}
 	c.ck.linkWanted = open
+	if open {
+		c.ck.linkOpenTried = true
+	}
 	if !open {
 		c.ck.closeWaiters++
 		c.ck.closeReason = reason
@@ -543,7 +551,7 @@ func (c *Center) writeLink(ctx context.Context, s transport.Shares, done chan st
 				// Settled on closed with no open wanted: a replaced code's
 				// link no longer needs the stop's close. A close that lands
 				// while an open is wanted again does not count.
-				c.ck.closeAtStop = false
+				c.ck.closeAtStop, c.ck.linkOpenTried = false, false
 			}
 			break
 		}
@@ -674,25 +682,20 @@ func (c *Center) SkipStartClose() {
 // public URLs do not outlive the hub; the participants' sweep is left to the
 // next start's close (the sweep mark stays). A CloudKit code a relay code
 // replaced counts as on screen until a close of its link lands
-// (closeAtStop), its retries spent or not — when an open was tried for it
-// (the sweep mark). Nothing, and no share call, otherwise: a failed close of
-// a used code is left to the next start.
+// (closeAtStop), its retries spent or not — when an open of the link was
+// tried and the writer has not settled on closed since (linkOpenTried, not
+// the sweep mark, which a sweep can clear behind a reopen). Nothing, and no
+// share call, otherwise: a failed close of a used code is left to the next
+// start.
 func (c *Center) CloseOnStop(ctx context.Context, s transport.Shares) error {
 	c.ck.mu.Lock()
-	open, replaced := c.ck.open != nil, c.ck.closeAtStop
+	open := c.ck.open != nil
+	replaced := c.ck.closeAtStop && c.ck.linkOpenTried
 	c.ck.mu.Unlock()
 	switch {
 	case open:
 		return c.CloseLink(ctx, s, CloseSheetClosed)
 	case replaced:
-		// Only a link an open was tried for: the sweep mark is set before any
-		// open (openPublicLink), and cleared only once the link was closed.
-		if pending, err := c.sweepPending(); err == nil && !pending {
-			c.ck.mu.Lock()
-			c.ck.closeAtStop = false
-			c.ck.mu.Unlock()
-			return nil
-		}
 		if _, err := c.setLink(ctx, s, false, CloseSheetClosed, closeScope{}); err != nil {
 			return fmt.Errorf("link: closing a replaced code's public link: %w", err)
 		}
@@ -843,9 +846,13 @@ func (c *Center) SweepShares(ctx context.Context, s transport.Shares) error {
 }
 
 // retryLinkClose retries a failed public-link close while the sweep is
-// still pending, after each of linkCloseRetryDelays.
+// still pending or an open is not yet closed (linkOpenTried), after each of
+// linkCloseRetryDelays.
 func (c *Center) retryLinkClose(ctx context.Context, s transport.Shares, now time.Time) error {
-	if pending, err := c.sweepPending(); err == nil && !pending {
+	c.ck.mu.Lock()
+	openTried := c.ck.linkOpenTried
+	c.ck.mu.Unlock()
+	if pending, err := c.sweepPending(); err == nil && !pending && !openTried {
 		c.ck.mu.Lock()
 		c.ck.linkCloseAt = time.Time{}
 		c.ck.mu.Unlock()

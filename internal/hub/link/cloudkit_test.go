@@ -1703,6 +1703,34 @@ func TestTheStopClosesAReplacedLinkReopenedBehindALandedClose(t *testing.T) {
 	}
 }
 
+// An account change's sweep can clear the sweep mark while an issue reopens
+// the link behind it (the issue marks, the sweep snapshots, closes, the issue
+// opens, the sweep clears the unchanged epoch). The stop and the pass's
+// retry still close a replaced code's link: they follow the writer, not the
+// mark.
+func TestTheStopClosesAReplacedLinkWhoseSweepMarkWasCleared(t *testing.T) {
+	for _, stop := range []bool{true, false} {
+		r := newCKRig(t)
+		r.issueCK()
+		if err := r.st.SetMeta(MetaShareSweepPending, "0"); err != nil { // the race's outcome
+			t.Fatal(err)
+		}
+		r.issue()
+		var err error
+		if stop {
+			err = r.c.CloseOnStop(r.ctx, r.s)
+		} else {
+			err = r.c.SweepShares(r.ctx, r.s)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.s.isOpen() {
+			t.Errorf("stop %v: the replaced code's link stayed open", stop)
+		}
+	}
+}
+
 // A replaced CloudKit code whose shares never opened (no sweep mark: the
 // open was never tried) makes the stop no share call.
 func TestTheStopMakesNoShareCallForAReplacedCodeThatNeverOpened(t *testing.T) {

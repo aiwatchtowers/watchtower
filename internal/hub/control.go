@@ -302,6 +302,9 @@ type pairListener struct {
 	queue   chan ControlAnswer // guarded by supervisor.pairMu for sends and close
 	mu      sync.Mutex
 	codes   map[string]string
+	// qrSeen: the stream has received a qr. Until then it is shown no SAS
+	// and records none: a phone pairing under an earlier code is not its.
+	qrSeen bool
 }
 
 func (p *pairListener) code(device string) (string, bool) {
@@ -317,7 +320,8 @@ const pairQueue = 64
 
 // broadcast hands a pairing event to every pairing stream without waiting
 // on any of them: a stream whose queue is full is dropped, the others get
-// every event.
+// every event — but a SAS only once the stream received a qr (qrSeen), and
+// a ShownOnly event only where that phone's SAS was shown.
 func (s *supervisor) broadcast(ev link.PairEvent) {
 	a := ControlAnswer{Event: ev.Kind, OK: true, URL: ev.URL, DeviceID: ev.DeviceID, Name: ev.Name, Code: ev.Code, Reason: ev.Reason}
 	if !ev.ExpiresAt.IsZero() {
@@ -326,20 +330,31 @@ func (s *supervisor) broadcast(ev link.PairEvent) {
 	}
 	s.pairMu.Lock()
 	defer s.pairMu.Unlock()
-	if ev.Kind == link.EventSAS {
+	var to func(*pairListener) bool
+	switch {
+	case ev.Kind == link.EventQR:
 		for p := range s.pairs {
 			p.mu.Lock()
-			p.codes[strings.ToUpper(ev.DeviceID)] = ev.Code
+			p.qrSeen = true
 			p.mu.Unlock()
 		}
-	}
-	var shown func(*pairListener) bool
-	if ev.ShownOnly {
+	case ev.Kind == link.EventSAS:
+		shownTo := map[*pairListener]bool{}
+		for p := range s.pairs {
+			p.mu.Lock()
+			if p.qrSeen {
+				p.codes[strings.ToUpper(ev.DeviceID)] = ev.Code
+				shownTo[p] = true
+			}
+			p.mu.Unlock()
+		}
+		to = func(p *pairListener) bool { return shownTo[p] }
+	case ev.ShownOnly:
 		// Only the streams that showed this phone's SAS: another stream (one
 		// with no phone bound yet, say) would end at the refusal.
-		shown = func(p *pairListener) bool { _, ok := p.code(ev.DeviceID); return ok }
+		to = func(p *pairListener) bool { _, ok := p.code(ev.DeviceID); return ok }
 	}
-	sendIf(s.pairs, a, "pairing", shown)
+	sendIf(s.pairs, a, "pairing", to)
 	// Desktop's watch hears of the step, never its URL or code.
 	sendAll(s.watches, ControlAnswer{Event: EventPair, OK: true, Pair: ev.Kind, DeviceID: ev.DeviceID}, "desktop watch")
 }
@@ -356,7 +371,8 @@ func (s *supervisor) notifyDesktop(a ControlAnswer) {
 // queue is full is dropped, the others get every event.
 func sendAll(set map[*pairListener]bool, a ControlAnswer, what string) { sendIf(set, a, what, nil) }
 
-// sendIf is sendAll for the streams to reports (nil: every stream).
+// sendIf is sendAll limited to the streams for which to returns true (every
+// stream when to is nil).
 func sendIf(set map[*pairListener]bool, a ControlAnswer, what string, to func(*pairListener) bool) {
 	for p := range set {
 		if to != nil && !to(p) {

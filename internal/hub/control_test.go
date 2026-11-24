@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/hub/secure"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/wire"
 )
 
 // watchLines connects to r's control socket, asks for desktop_watch and
@@ -119,6 +120,32 @@ func TestDesktopWatchHearsPairStepsWithoutCodes(t *testing.T) {
 	}
 	if status.Event != EventStatus || status.State != StateRunning {
 		t.Errorf("status event = %+v", status)
+	}
+}
+
+// A pairing stream that has not received its first qr is shown no SAS and
+// records none: an earlier code's phone pairing while it waits for its own
+// code is not its phone, so that phone's shown-only refusal never reaches it
+// (a stream bound by that SAS would end at it). After its qr it is shown the
+// next SAS and that phone's refusal.
+func TestAStreamBeforeItsQRIsShownNoSAS(t *testing.T) {
+	early := &pairListener{queue: make(chan ControlAnswer, 8), codes: map[string]string{}}
+	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{early: true}, watches: map[*pairListener]bool{}}
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "AAAA", Code: "1234"})
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedExpiredCode, ShownOnly: true})
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/l"})
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "BBBB", Code: "5678"})
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "BBBB", Reason: wire.RefusedExpiredCode, ShownOnly: true})
+	var got []string
+	for len(early.queue) > 0 {
+		a := <-early.queue
+		got = append(got, a.Event+":"+a.DeviceID)
+	}
+	if want := []string{"qr:", "sas:BBBB", "refused:BBBB"}; !slices.Equal(got, want) {
+		t.Fatalf("events %v, want %v", got, want)
+	}
+	if _, ok := early.code("AAAA"); ok {
+		t.Error("the SAS before the qr was recorded")
 	}
 }
 
