@@ -126,7 +126,8 @@ type hubRuntime struct {
 	bridgeStop func()
 	// relDown: the relay is not connected yet (a desktop host connects it
 	// in the link upkeep, so an unreachable relay never holds CloudKit up).
-	relDown bool
+	// Written by the worker, read by the pair's relay-code fallback too.
+	relDown atomic.Bool
 	pub     *slices.Publisher
 	wiring  *wiring // nil without a database
 	// chatPush sends the chat_answer pushes (chat_turn_watch.go); set once
@@ -183,6 +184,20 @@ type hubRuntime struct {
 	storedContact time.Time
 	// ckAccount: the iCloud account the bridge last reported (desktop_facts.go).
 	ckAccount transport.Account
+	// ckReadFail is the class of the last failed account read and
+	// ckReadLogged the class the log last named, both of the current run of
+	// failures ("" = the last read answered, or nothing logged; worker only,
+	// desktop_facts.go).
+	ckReadFail, ckReadLogged string
+	// ckLaunchSeen is the bridge's launch generation the last houseEvery
+	// tick saw, and ckLaunchSettled whether the tick before it saw the same:
+	// that launch has had at least one whole houseEvery interval to serve
+	// its socket (worker only, desktop_facts.go).
+	ckLaunchSeen    uint64
+	ckLaunchSettled bool
+	// startedAt is when this runtime was built (Options.Clock): the start
+	// of the bridge's startup grace (iCloudStarting).
+	startedAt time.Time
 
 	// ckHoldMu orders the iCloud holds (icloud.go): ckHeld while the account
 	// cannot be used, ckPubHeld while that also holds the publisher and the
@@ -279,6 +294,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		sup: s, st: st, mode: mode, name: name, id: id, watched: map[string]bool{}, subRetry: map[string]*subRetry{},
 		passKick: make(chan struct{}, 1), linkKick: make(chan struct{}, 1), houseKick: make(chan struct{}, 1),
 		soonKick: make(chan struct{}, 1), readersFailLog: logreason.NewLimiter(logreason.RepeatEvery, time.Now),
+		startedAt: s.o.Clock(),
 	}
 	ok := false
 	defer func() {
@@ -792,6 +808,7 @@ func (h *hubRuntime) work(ctx context.Context) {
 		case <-h.houseKick:
 			h.housekeeping(ctx)
 		case <-house.C:
+			h.noteBridgeLaunch() // only the ticker's runs are spaced houseEvery apart
 			h.housekeeping(ctx)
 		}
 	}
@@ -1049,7 +1066,7 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 	}
 	vouched := h.relayVouched()
 	h.syncReaders(ctx, rt, vouched)
-	if zw, ok := rt.(zoneWatcher); ok && !h.relDown {
+	if zw, ok := rt.(zoneWatcher); ok && !h.relDown.Load() {
 		h.watchZones(ctx, zw)
 	}
 	if !vouched && h.acct != nil && h.phoneLinked() {
@@ -1203,10 +1220,24 @@ func (h *hubRuntime) slotState(ctx context.Context) (settled bool, slotted strin
 type subRetry struct {
 	fails int
 	next  time.Time
+	// logged: the streak's refusal was logged (an expected one is not,
+	// expectedRefusal; a later failure of another kind then is, once).
+	logged bool
 }
 
 // maxSubBackoff caps the wait between attempts to subscribe a refused zone.
 const maxSubBackoff = houseEvery
+
+// expectedRefusal: the relay closing a zone (FORBIDDEN, ErrZoneForbidden)
+// or refusing an unadmitted hub (HUB_NOT_VOUCHED) while no phone holds the
+// hub in a slot (vouched false) is what it does by design, not news — a
+// desktop host on CloudKit whose phones never used the relay sees it at
+// every start (#2192). The same refusal while vouched, a rejected hub key
+// (UNAUTHENTICATED: plain ErrForbidden), attestation and any other failure
+// are logged.
+func expectedRefusal(err error, vouched bool) bool {
+	return !vouched && (errors.Is(err, transport.ErrZoneForbidden) || errors.Is(err, transport.ErrNotVouched))
+}
 
 // zoneKind names a zone in a log line (never its id).
 func zoneKind(zone, data string) string {
@@ -1223,7 +1254,8 @@ func zoneKind(zone, data string) string {
 // watchZones subscribes the hub's zones not subscribed yet. The relay
 // refuses them (FORBIDDEN) until a phone holds the hub in a slot: a refused
 // zone waits linkEvery, doubling up to maxSubBackoff, and is logged once
-// until it succeeds; the hub becoming vouched (SLOT_ADDED, or a poll that
+// until it succeeds (a refusal by design while the hub is unvouched is not
+// logged, expectedRefusal); the hub becoming vouched (SLOT_ADDED, or a poll that
 // sees a slot) clears the waits. A phone newly admitted while the hub was
 // already vouched (retryZonesNow: a new admission stamp, SLOT_ADDED) makes
 // the refused zones due now, keeping their failure count: a phone that
@@ -1236,12 +1268,12 @@ func zoneKind(zone, data string) string {
 // watched but says nothing of reach, so it never clears an outage the event
 // lane noted.
 func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
+	vouched := h.relayVouched()
 	if _, ok := h.relayT().(relayAdmission); ok {
-		v := h.relayVouched()
-		if v && !h.wasVouched {
+		if vouched && !h.wasVouched {
 			clear(h.subRetry)
 		}
-		h.wasVouched = v
+		h.wasVouched = vouched
 	}
 	if h.zonesDue.Swap(false) {
 		for _, r := range h.subRetry {
@@ -1267,6 +1299,9 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 			if r == nil {
 				r = &subRetry{}
 				h.subRetry[z] = r
+			}
+			if !r.logged && !expectedRefusal(err, vouched) {
+				r.logged = true
 				log.Printf("hub: the %s not subscribed (%s): retried with backoff", zoneKind(z, h.data), errClass(err))
 			}
 			r.fails++
@@ -1341,16 +1376,48 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 }
 
 // forwardPairEvents hands the link center's pairing narration to the
-// control socket's pairing streams.
+// control socket's pairing streams; a sas event gains MovesToRelay here,
+// read on this goroutine, outside the supervisor's pairMu.
 func (h *hubRuntime) forwardPairEvents(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case ev := <-h.center.Events():
+			if ev.Kind == link.EventSAS {
+				ev.MovesToRelay = h.movesToRelay(ev)
+			}
 			h.sup.broadcast(ev)
 		}
 	}
+}
+
+// movesToRelay is the sas line's moves_to_relay (#2191, Q6): the phone
+// paired through a Relay pairing slot, the hub runs on iCloud, and another
+// linked phone has an iCloud route, which the move to Relay cuts off. A
+// host without a switcher never moves. A failed route read answers true,
+// past the plan's "false on any read error" (#2191 review): the Mac then
+// warns when unsure, never stays silent before a move that cuts phones
+// off. The answer is fixed at the sas: a transport switch between the sas
+// and the owner's confirm can leave the line stale (a known limit). A
+// replacement request that keeps its 4-digit code but flips the value is
+// refused only when the confirm names the moves_to_relay it answered
+// (ControlRequest.MovesToRelay); a confirm without it is not checked.
+func (h *hubRuntime) movesToRelay(ev link.PairEvent) bool {
+	if !ev.OverRelay || h.sw == nil || !h.sw.IsActive(transport.KindCloudKit) {
+		return false
+	}
+	routes, err := h.st.ICloudRoutes()
+	if err != nil {
+		return true
+	}
+	self := strings.ToLower(ev.DeviceID)
+	for id, icloud := range routes {
+		if icloud && id != self {
+			return true
+		}
+	}
+	return false
 }
 
 // stop ends the goroutines; with keep set it then deletes from the data

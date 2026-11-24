@@ -29,6 +29,13 @@ type slotRelay struct {
 	admitted bool
 	acct     *relayv1.AccountState
 	tries    map[string]int
+	refusal  error // what a refusal answers (nil = transport.ErrZoneForbidden)
+}
+
+func (s *slotRelay) refuseWith(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refusal = err
 }
 
 func (s *slotRelay) WatchZone(_ context.Context, zone string) error {
@@ -36,7 +43,10 @@ func (s *slotRelay) WatchZone(_ context.Context, zone string) error {
 	defer s.mu.Unlock()
 	s.tries[zone]++
 	if !s.admitted {
-		return transport.ErrForbidden
+		if s.refusal != nil {
+			return s.refusal
+		}
+		return transport.ErrZoneForbidden
 	}
 	return nil
 }

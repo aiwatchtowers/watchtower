@@ -258,7 +258,10 @@ func phoneIDs(st *relayv1.AccountState) []string {
 }
 
 // markAdmitted stamps relay_admitted_at on the linked phones the relay
-// lists as holding the hub in a slot.
+// lists as holding the hub in a slot. A phone newly stamped (newly listed)
+// also asks the switcher for its relay-link check at once: a phone that
+// linked over a Relay pairing slot is listed only after its promote, and
+// its paying answer then moves a CloudKit hub to the relay now.
 func (h *hubRuntime) markAdmitted(relayIDs []string) {
 	if len(relayIDs) == 0 {
 		return
@@ -272,6 +275,9 @@ func (h *hubRuntime) markAdmitted(relayIDs []string) {
 		log.Printf("hub: the relay admitted the hub for %d linked phone(s)", n)
 		h.retryZonesNow()
 		h.sup.poke()
+		if h.sw != nil {
+			h.sw.RelayLinkSoon()
+		}
 	}
 }
 

@@ -71,6 +71,10 @@ func (b fakeBridge) Run(ctx context.Context) error {
 
 func (b fakeBridge) Running() bool { return b.up.Load() }
 
+func (fakeBridge) Launches() uint64 { return 0 }
+
+func (fakeBridge) LastLaunch() time.Time { return time.Time{} }
+
 // bridgedFake is the CloudKit fake behind a bridge: a delete fails while no
 // bridge process runs (as the real client's, whose socket the bridge serves).
 type bridgedFake struct {

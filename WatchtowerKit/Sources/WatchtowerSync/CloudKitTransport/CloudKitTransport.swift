@@ -92,6 +92,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// Number of CloudKit account changes that forced a local reset. Read via
     /// `await transport.accountResetCount` (the hub surfaces it for diagnostics).
     public internal(set) var accountResetCount = 0
+    /// Data-zone polls that ran to the zone's current token (`pull()`): a pull skipped by a throttle or the unlink, or
+    /// cut short by one, returns normally and adds nothing. The phone's link flow reads it around a fetch (#2189).
+    public internal(set) var dataZonePollsCompleted = 0
+    /// The same for the relay zone (the mailbox): the link flow's completion fetch needs both (#2189).
+    public internal(set) var relayZonePollsCompleted = 0
     /// Fired after an account-change reset so an owner (the desktop hub) can
     /// wipe its own derived state. Set before `start()` via `setAccountResetHandler`.
     var accountResetHandler: (@Sendable () -> Void)?
@@ -118,6 +123,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// The batch last handed to the engine: what a request-level
     /// `.limitExceeded` (which names no record) is about.
     var lastBuiltBatch: (id: Int, size: Int, saves: [(name: String, zone: CloudZoneID)])?
+    /// `throttledUntil` when the last batch was built: a send's success clears only that throttle
+    /// (`clearThrottle(ifStill:)`), never a newer one another request set while it was in flight.
+    var throttleAtLastBatch: Date?
     var batchSerial = 0
     /// The batch a `.limitExceeded` was already applied to — the same
     /// failure can arrive thrown and per record; it shrinks once.

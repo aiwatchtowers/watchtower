@@ -263,20 +263,39 @@ struct RelayRefusedRecord: Codable, Equatable, Sendable {
     }
 }
 
+/// Where the link flow read its keybox (#2189).
+enum KeyboxSource: String, Codable, Sendable {
+    /// The server's copy of the keybox record, by name (`LinkHost.serverKeybox`).
+    case server
+    /// The replica's copy after one fetch (`LinkHost.fetchKeybox`).
+    case replica
+}
+
 /// A link written to the Mac and not answered yet (spec §2.3 step 5). Kept
 /// across a kill, so a relaunch resumes the wait for what is left of it.
 struct PendingLink: Codable, Equatable, Sendable {
     let link: LinkRecord
     /// The end of the 60 s grant wait, on the phone's clock.
     let deadline: Date
-    /// This phone's grant as the replica held it just before the device
-    /// record was written: an earlier answer (a refusal of another code) is
-    /// not this scan's.
+    /// This phone's grant just before the device record was written, as
+    /// `baselineSource` held it: an earlier answer (a refusal of another
+    /// code) is not this scan's.
     let baseline: DeviceGrant?
+    /// The baseline was a keybox this phone could not open (#2189: a re-pair over a keybox sealed to a key it no
+    /// longer has): the fingerprint of its sealed bytes, `baseline` nil. Absent in an older build's value.
+    let baselineFingerprint: String?
     /// `baseline` was read (nil then means no grant). false while the sync
     /// stack restarts, before the device record is written; a value saved
-    /// by an older build reads false.
+    /// by an older build reads false, and so does one whose `baselineSource`
+    /// does not decode (a newer build's source: never guessed).
     let baselineCaptured: Bool
+    /// Where `baseline` was read (#2189): every read of the wait, a resumed one included, goes to the same source,
+    /// so the server's copy and the replica's are never compared. nil in a value an older build saved: the replica.
+    let baselineSource: KeyboxSource?
+    /// The hello was saved (directly, or queued on the engine) after the baseline (#2189). A resume of a captured
+    /// link without it sends the hello again (an unchanged re-send is a no-op on the Mac). A value an older build
+    /// saved reads true: it wrote the hello right after the baseline.
+    var helloSent: Bool
     /// The scanned code's `iat`, on the Mac's clock (mobile E2E review M-3):
     /// a `linked` keybox decided before it is an older link, not this scan's
     /// confirmation. nil in a value an older build saved.
@@ -295,12 +314,18 @@ struct PendingLink: Codable, Equatable, Sendable {
         baselineCaptured: Bool,
         issuedAt: Date? = nil,
         relaySlot: String? = nil,
-        relaySlotExpiresAt: Date? = nil
+        relaySlotExpiresAt: Date? = nil,
+        baselineSource: KeyboxSource? = nil,
+        helloSent: Bool = true,
+        baselineFingerprint: String? = nil
     ) {
+        self.baselineFingerprint = baselineFingerprint
         self.link = link
         self.deadline = deadline
         self.baseline = baseline
         self.baselineCaptured = baselineCaptured
+        self.baselineSource = baselineSource
+        self.helloSent = helloSent
         self.issuedAt = issuedAt
         self.relaySlot = relaySlot
         self.relaySlotExpiresAt = relaySlotExpiresAt
@@ -311,11 +336,43 @@ struct PendingLink: Codable, Equatable, Sendable {
         link = try container.decode(LinkRecord.self, forKey: .link)
         deadline = try container.decode(Date.self, forKey: .deadline)
         baseline = try container.decodeIfPresent(DeviceGrant.self, forKey: .baseline)
-        baselineCaptured = try container.decodeIfPresent(Bool.self, forKey: .baselineCaptured) ?? false
+        baselineFingerprint = try container.decodeIfPresent(String.self, forKey: .baselineFingerprint)
+        let captured = try container.decodeIfPresent(Bool.self, forKey: .baselineCaptured) ?? false
+        do {
+            baselineSource = try container.decodeIfPresent(KeyboxSource.self, forKey: .baselineSource)
+            baselineCaptured = captured
+        } catch {
+            // A source this build does not know: no wait can read it, so the link offers a new scan.
+            baselineSource = nil
+            baselineCaptured = false
+        }
+        helloSent = try container.decodeIfPresent(Bool.self, forKey: .helloSent) ?? true
         issuedAt = try container.decodeIfPresent(Date.self, forKey: .issuedAt)
         relaySlot = try container.decodeIfPresent(String.self, forKey: .relaySlot)
         relaySlotExpiresAt = try container.decodeIfPresent(Date.self, forKey: .relaySlotExpiresAt)
         linkedAt = try container.decodeIfPresent(Date.self, forKey: .linkedAt)
+    }
+}
+
+/// The baseline as the link flow compares it (#2189).
+enum KeyboxBaseline: Equatable {
+    /// No keybox before the hello.
+    case none
+    case grant(DeviceGrant)
+    /// One this phone could not open: only its fingerprint.
+    case opaque(String)
+}
+
+extension PendingLink {
+    var keyboxBaseline: KeyboxBaseline {
+        if let baselineFingerprint { return .opaque(baselineFingerprint) }
+        return baseline.map(KeyboxBaseline.grant) ?? .none
+    }
+
+    /// An opened grant answers only when it differs from the baseline; any grant that opens differs from an opaque one.
+    func differsFromBaseline(_ grant: DeviceGrant) -> Bool {
+        if case .grant(let base) = keyboxBaseline { return grant != base }
+        return true
     }
 }
 

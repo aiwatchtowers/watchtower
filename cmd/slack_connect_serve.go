@@ -167,7 +167,7 @@ func serveSlackConnect(ctx context.Context, cfg *config.Config, database *db.DB,
 		}
 	}
 	company := companyConnectHandler(ln.Addr().String(), emitCompany, s.links, s.logger)
-	shutdown := serveSlackConnectListener(ln, s.reg, events, stop, company)
+	shutdown := serveSlackConnectListener(ln, s.reg, events, stop, company, deps.connState)
 	// The app is gone (stdin EOF): nobody answers a page any more.
 	defer shutdown(true)
 	// Runs before the listener's shutdown above (defers run last-first):

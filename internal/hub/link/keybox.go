@@ -25,6 +25,25 @@ import (
 // refusal and no keys. ErrNoRequest when nothing waits (it was refused,
 // unlinked or swept first).
 func (c *Center) Confirm(device, code string, ok bool) error {
+	_, err := c.ConfirmRequest(device, code, "", ok)
+	return err
+}
+
+// ConfirmLinked is Confirm that also reports whether this answer linked the
+// phone (a refusal, an expired or used code and a repeat of a confirm that
+// already linked it report false).
+func (c *Center) ConfirmLinked(device, code string, ok bool) (linked bool, err error) {
+	return c.ConfirmRequest(device, code, "", ok)
+}
+
+// ConfirmRequest is Confirm bound to the request the owner was shown:
+// requestID, when set, is that request's RequestID, and an answer — a yes
+// or a no — on a waiting request with another one (a replacement, even one
+// that drew the same code) is ErrCodeChanged and changes nothing, decided
+// in the same transaction that links or refuses. Without it a no refuses
+// whichever request waits, as Confirm does. linked reports whether this
+// answer linked the phone (ConfirmLinked).
+func (c *Center) ConfirmRequest(device, code, requestID string, ok bool) (linked bool, err error) {
 	c.mu.Lock()
 	defer c.unlock()
 	now := c.now()
@@ -32,10 +51,9 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 		request pendingDevice
 		reason  string
 		others  []pendingDevice
-		linked  bool
 		asks    bool
 	)
-	err := c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+	err = c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
 		p, found, err := pendingTx(tx, device)
 		if err != nil {
 			return err
@@ -44,6 +62,11 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 			return ErrNoRequest
 		}
 		request = p
+		if requestID != "" && RequestID(p.confirmNonce) != requestID {
+			// Another request than the one answered, a yes or a no: a
+			// stale window's decline refuses nothing newer.
+			return ErrCodeChanged
+		}
 		if ok && p.sas != code {
 			return ErrCodeChanged
 		}
@@ -60,11 +83,17 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 			reason = why
 			return refusePending(tx, p, reason, now)
 		case decisionUsedByThisDevice:
-			_, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID)
-			return err
+			if _, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID); err != nil {
+				return err
+			}
+			return state.MarkRelaySlotRequestTx(tx, p.deviceID, "", false)
 		case decisionValid:
 		}
 		if err := linkPending(tx, p, now); err != nil {
+			return err
+		}
+		// Linked through a pairing slot only when this request came from one.
+		if err := state.ConfirmRelaySlotLinkTx(tx, p.deviceID, p.linkNonce); err != nil {
 			return err
 		}
 		linked = true
@@ -85,31 +114,32 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 		return nil
 	})
 	if errors.Is(err, ErrNoRequest) {
-		return err
+		return false, err
 	}
 	if errors.Is(err, ErrCodeChanged) {
 		log.Printf("hub link: link request of %s changed before Link: kept for a fresh decision", request.deviceID)
-		return err
+		return false, err
 	}
 	if err != nil {
-		return fmt.Errorf("link: confirming a request: %w", err)
+		return false, fmt.Errorf("link: confirming a request: %w", err)
 	}
 	switch {
 	case linked:
 		log.Printf("hub link: linked phone %s, %d other requests refused", request.deviceID, len(others))
-		c.emit(PairEvent{Kind: EventLinked, DeviceID: request.deviceID, Name: request.name})
+		c.emit(PairEvent{Kind: EventLinked, DeviceID: request.deviceID, Name: request.name, Nonce: request.linkNonce})
 		if asks {
 			c.typingAsks = append(c.typingAsks, TypingAsk{DeviceID: strings.ToUpper(request.deviceID), Name: displayName(request.name)})
 		}
 		for _, o := range others {
-			c.emit(PairEvent{Kind: EventRefused, DeviceID: o.deviceID, Name: o.name, Reason: wire.RefusedUsedCode})
+			c.emit(PairEvent{Kind: EventRefused, DeviceID: o.deviceID, Name: o.name, Reason: wire.RefusedUsedCode,
+				Nonce: o.linkNonce})
 		}
 		c.changed()
 	case reason != "":
 		log.Printf("hub link: link request of %s refused (%s)", request.deviceID, reason)
 		c.refusedEvent(request, reason)
 	}
-	return nil
+	return linked, nil
 }
 
 // linkPending links p in tx (the Swift linkDevice + the key columns): the
