@@ -3,6 +3,7 @@ package hub
 import (
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -279,6 +280,51 @@ func TestRelayPairingOnADesktopWithoutICloudSwitches(t *testing.T) {
 		s := onRelayBy(t, r, phone, pairOverSlot(t, r, c, phone), kicked)
 		if s.Reason != "" {
 			t.Fatalf("still %s/%s on the relay", s.State, s.Reason)
+		}
+		zone := transport.DataZone(s.RelayDeviceID)
+		eventually(t, "the heartbeat in the relay data zone", func() bool {
+			return slices.Contains(liveRecords(t, r.fake, zone), "heartbeat")
+		})
+	})
+}
+
+// Review Focus: the iCloud account dies after a CloudKit code that offers
+// Relay was shown and before the switch. The phone still links over the
+// slot, and the switch to Relay completes with CloudKit held: once
+// switchedTo re-runs applyICloudHold on the new active transport, the
+// publisher's iCloud hold lifts (it publishes the heartbeat on the relay)
+// while CloudKit's own side stays held. The account lists the phone paying
+// before the owner's Link, so the confirm's kick alone runs the check.
+func TestRelayPairingWhenICloudDiesAfterTheCodeSwitches(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		var rt atomic.Pointer[hubRuntime]
+		r, ck, c := startPairDesk(t, transport.KindCloudKit, holdUpkeep, func(o *Options) {
+			o.started = func(h *hubRuntime) { rt.Store(h) }
+		})
+		lp, phone := slotCode(t, r, c)
+		if lp.Transport != wire.TransportCloudKit || !slices.Contains(lp.Transports, wire.TransportRelay) {
+			t.Fatalf("want a CloudKit code that offers Relay, got %q %v", lp.Transport, lp.Transports)
+		}
+		ck.acct.Store(transport.AccountNoAccount)
+		r.cycles(1)
+		r.waitState(StatePaused, ReasonNoICloud)
+		h := rt.Load()
+		if !h.ckPubHeld.Load() {
+			t.Fatal("the publisher is not held while CloudKit is active without iCloud")
+		}
+		r.fake.SetAccountState(account(phone, true))
+		s := onRelayBy(t, r, phone, pairOverSlot(t, r, c, phone), kicked)
+		if s.Reason != "" {
+			t.Fatalf("still %s/%s on the relay", s.State, s.Reason)
+		}
+		if h.ckPubHeld.Load() {
+			t.Fatal("the publisher's iCloud hold did not lift on the relay")
+		}
+		h.ckHoldMu.Lock()
+		held := h.ckHeld
+		h.ckHoldMu.Unlock()
+		if !held {
+			t.Fatal("CloudKit's side is no longer held without iCloud")
 		}
 		zone := transport.DataZone(s.RelayDeviceID)
 		eventually(t, "the heartbeat in the relay data zone", func() bool {
