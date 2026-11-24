@@ -130,8 +130,8 @@ final class MobilePairingModel: Identifiable {
     @ObservationIgnored private var countdown: Task<Void, Never>?
     @ObservationIgnored private var expiresAt: Date?
     @ObservationIgnored private var phone = ""
-    /// The `request` of the last answer sent, while its outcome is awaited.
-    @ObservationIgnored private var answeredRequest = ""
+    /// The question of the last answer sent, while its outcome is awaited.
+    @ObservationIgnored private var answered: Question?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var closed = false
 
@@ -157,7 +157,7 @@ final class MobilePairingModel: Identifiable {
         qrImage = nil
         phone = ""
         question = nil
-        answeredRequest = ""
+        answered = nil
         relayMoveWarning = nil
         guard let streamer else {
             step = .failed(CLIRunnerError.binaryNotFound.localizedDescription)
@@ -195,7 +195,7 @@ final class MobilePairingModel: Identifiable {
     func confirm(_ ok: Bool, answering shown: Question) {
         guard case .sas = step, question == shown, let session else { return }
         session.send(Self.answerLine(confirm: ok, shown))
-        answeredRequest = shown.request
+        answered = shown
         markConfirmed()
     }
 
@@ -290,13 +290,13 @@ final class MobilePairingModel: Identifiable {
         case "sas":
             // The latest line is current: a new line replaces the code and the
             // warning, and after an answer it asks again (`code_changed`, or a
-            // yes the CLI could not bind). A reprint of the request already
-            // answered keeps waiting: that answer is still on its way.
+            // yes the CLI could not bind). A reprint of exactly the question
+            // already answered (same code, move and non-empty request) keeps
+            // waiting: that answer is still on its way.
             phone = line.name ?? ""
-            let request = line.request ?? ""
-            if case .waiting = step, !request.isEmpty, request == answeredRequest { return }
+            let asked = Question(code: line.code ?? "", movesToRelay: line.movesToRelay == true, request: line.request ?? "")
+            if case .waiting = step, !asked.request.isEmpty, asked == answered { return }
             countdown?.cancel()
-            let asked = Question(code: line.code ?? "", movesToRelay: line.movesToRelay == true, request: request)
             question = asked
             relayMoveWarning = asked.movesToRelay ? Self.relayMoveWarning(macName) : nil
             step = .sas(code: asked.code, phone: phone)

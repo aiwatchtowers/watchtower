@@ -280,6 +280,41 @@ final class MobilePairingModelTests: XCTestCase {
         XCTAssertNil(model.relayMoveWarning)
     }
 
+    /// Only a reprint of exactly the answered question keeps waiting: a new
+    /// code or a changed warning under the same request id asks again.
+    func testAChangedLineUnderTheAnsweredRequestAsksAgain() async throws {
+        let streamer = FakePairStreamer()
+        let model = Model(streamer: streamer, macName: "Work Mac", now: { self.start }, sleep: { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+        })
+        await model.start()
+        let session = try XCTUnwrap(streamer.sessions.first)
+        func line(_ code: String, moves: Bool) -> String {
+            #"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"\#(code)","moves_to_relay":\#(moves),"request":"0123456789abcdef"}"#
+        }
+
+        model.receive(line("4827", moves: false))
+        model.confirm(true, answering: try XCTUnwrap(model.question))
+        model.receive(line("4827", moves: false))
+        XCTAssertEqual(model.step, .waiting, "the same question: keep waiting")
+
+        model.receive(line("5310", moves: false))
+        XCTAssertEqual(model.step, .sas(code: "5310", phone: "Phone A"), "a new code under the same id asks again")
+        XCTAssertNil(model.relayMoveWarning)
+        model.confirm(true, answering: try XCTUnwrap(model.question))
+        XCTAssertEqual(model.step, .waiting)
+
+        model.receive(line("5310", moves: true))
+        XCTAssertEqual(model.step, .sas(code: "5310", phone: "Phone A"), "a changed move under the same id asks again")
+        XCTAssertEqual(model.relayMoveWarning, Model.relayMoveWarning("Work Mac"))
+        model.confirm(true, answering: try XCTUnwrap(model.question))
+        XCTAssertEqual(session.sent, [
+            #"{"code":"4827","confirm":true,"moves_to_relay":false,"request":"0123456789abcdef"}"#,
+            #"{"code":"5310","confirm":true,"moves_to_relay":false,"request":"0123456789abcdef"}"#,
+            #"{"code":"5310","confirm":true,"moves_to_relay":true,"request":"0123456789abcdef"}"#
+        ])
+    }
+
     /// A new CLI on an older hub prints `"request":""`. The answer stays a
     /// valid line with an empty `request`; a reprint after it asks again (no
     /// id ties it to the answer), and the CLI's "out of date" failure shows
