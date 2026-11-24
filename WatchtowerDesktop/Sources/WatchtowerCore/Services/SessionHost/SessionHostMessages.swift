@@ -335,12 +335,28 @@ package struct SessionHostDeliveryEvent: Codable, Equatable, Sendable {
     /// With `leftTyped`: the line shares the prompt with other text not
     /// submitted, so the owner's Return sends them together.
     package let besideText: Bool
+    /// With `leftTyped`: the delivery's request id (the requester's own, so
+    /// the app tells its own line from another client's by it). nil from a
+    /// host before it.
+    package let id: String?
+    /// With `leftTyped`: whether the line left typed ends in `\`. nil from a
+    /// host before it: unknown, read as possible.
+    package let endsInBackslash: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
-    package init(row: Int64, run: String, kind: Kind, besideText: Bool = false) {
+    package init(
+        row: Int64,
+        run: String,
+        kind: Kind,
+        besideText: Bool = false,
+        id: String? = nil,
+        endsInBackslash: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
+    ) {
         self.row = row
         self.run = run
         self.kind = kind
         self.besideText = besideText
+        self.id = id
+        self.endsInBackslash = endsInBackslash
     }
 
     package init(from decoder: any Decoder) throws {
@@ -349,11 +365,14 @@ package struct SessionHostDeliveryEvent: Codable, Equatable, Sendable {
         run = try container.decode(String.self, forKey: .run)
         kind = try container.decode(Kind.self, forKey: .kind)
         besideText = try container.decodeIfPresent(Bool.self, forKey: .besideText) ?? false
+        id = try container.decodeIfPresent(String.self, forKey: .id)
+        endsInBackslash = try container.decodeIfPresent(Bool.self, forKey: .endsInBackslash)
     }
 
     enum CodingKeys: String, CodingKey {
-        case row, run, kind
+        case row, run, kind, id
         case besideText = "beside_text"
+        case endsInBackslash = "ends_in_backslash"
     }
 }
 

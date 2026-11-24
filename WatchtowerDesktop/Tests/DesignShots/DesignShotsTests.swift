@@ -109,6 +109,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(WorkchatHighlightShotFixtures.shots)
     }
 
+    /// The held line's caption and actions on the built bubble (#2201 T7), beside mockups 08 and 09.
+    func testWorkchatHeldLineShotsRender() throws {
+        try renderShots(WorkchatHeldLineShotFixtures.shots)
+    }
+
     /// The same states on the built views (#2065), `workchat-agents-real-NN-…` beside each mockup.
     func testWorkchatAgentsShotsRender() throws {
         try renderShots(WorkchatAgentsShotFixtures.shots)

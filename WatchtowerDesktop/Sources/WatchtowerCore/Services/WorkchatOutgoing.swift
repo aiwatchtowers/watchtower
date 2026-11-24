@@ -19,6 +19,17 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
         case notSent
     }
 
+    /// Why a queued line waits: the reason its check held it
+    /// (`SessionControl.LineHold`) — the spec's hold captions (§6.3).
+    package enum HoldReason: Equatable, Sendable {
+        /// A permission prompt is up: the owner answers it in the terminal.
+        case needsApproval
+        /// The agent works, or turns to the line just submitted.
+        case agentBusy
+        /// The terminal prompt holds text not submitted.
+        case promptHasText
+    }
+
     package let id: UUID
     /// What goes to the terminal: the typed text with its paste tokens expanded, then the attachment paths.
     package let text: String
@@ -35,6 +46,13 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     /// Submitted while the agent worked: the agent reads it at its next
     /// step, so its echo can come long after delivery (no `echoWindow`).
     package var sentWhileBusy: Bool
+    /// Why it waits while `queued`; nil: not known (another line goes first,
+    /// or no check said yet).
+    package var holdReason: HoldReason?
+    /// When the owner's Send together tried the line beside the prompt's text:
+    /// the transcript records that text and the line as one owner entry ending
+    /// in the line, dated at or after this.
+    package var sentTogetherAt: Date?
 
     package init(
         id: UUID,
@@ -60,17 +78,37 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     /// bubble shows the send time. `working`: the session's agent works now;
     /// `holdsUntilIdle`: a queued line waits for the agent to stop
     /// (`WorkchatModel.holdsUntilIdle`), otherwise only for a prompt, the
-    /// owner's typing or the settle after the previous line.
+    /// owner's typing or the settle after the previous line. A queued line's
+    /// `holdReason` says why it waits (its actions go on a row of their own).
     package static func caption(
-        state: State, working: Bool, holdsUntilIdle: Bool, sentWhileBusy: Bool = false
+        state: State,
+        working: Bool,
+        holdsUntilIdle: Bool,
+        sentWhileBusy: Bool = false,
+        holdReason: HoldReason? = nil
     ) -> String? {
         switch state {
+        case .queued where holdReason != nil: holdCaption(holdReason, working: working, holdsUntilIdle: holdsUntilIdle)
         case .sending: "Sending…"
         case .queued: holdsUntilIdle ? "Queued · sends when the agent stops ·" : "Queued · sends in a moment ·"
         case .typed: "Typed into the terminal, not sent: press Return there ·"
         case .copied: "Copied to the clipboard: the terminal does not accept pasted text ·"
         case .notSent: "Not sent: the session ended"
         case .sent: sentWhileBusy && working ? "Queued · the agent reads it at its next step" : nil
+        }
+    }
+
+    /// A held line's actions (spec §6.3): Send together for one held for the
+    /// prompt's text, Cancel for any queued line.
+    package static let sendTogether = "Send together"
+    package static let cancel = "Cancel"
+
+    private static func holdCaption(_ reason: HoldReason?, working: Bool, holdsUntilIdle: Bool) -> String? {
+        switch reason {
+        case .needsApproval?: "Waiting: answer the permission prompt in the terminal"
+        case .agentBusy?: working && holdsUntilIdle ? "Queued · sends when the agent stops" : "Queued · sends in a moment"
+        case .promptHasText?: "Waiting: the terminal prompt holds text"
+        case nil: nil
         }
     }
 
@@ -81,13 +119,48 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     /// The feed's owner entry for this line: same text with whitespace collapsed
     /// (a "/name args" line equals the parser's slash entry), dated at or after sentAt.
     /// Matched on `text`, the expanded line the transcript records (#2065 §6), not on the tokenized `typedText`.
+    /// A line sent together with the prompt's text matches an entry from its Send together on that ends with
+    /// it (one with only files: an entry that holds one of its paths whole, or an image marker when it sent an image).
     package static func matches(_ entry: SessionFeedEntry, line: Self) -> Bool {
         guard entry.kind == "owner", let at = entry.at, at >= line.sentAt else { return false }
-        if line.attachmentPaths.isEmpty { return collapsed(entry.text) == collapsed(line.text) }
         // Claude Code records a pasted image path as "[Image #N]"; the feed
         // may also show "[image]". A path comes back quoted or not.
-        return withoutImageMarkers(withoutPaths(entry.text, line.attachmentPaths))
-            == withoutImageMarkers(withoutPaths(line.text, line.attachmentPaths))
+        let (recorded, sent) = line.attachmentPaths.isEmpty
+            ? (collapsed(entry.text), collapsed(line.text))
+            : (withoutImageMarkers(withoutPaths(entry.text, line.attachmentPaths)),
+               withoutImageMarkers(withoutPaths(line.text, line.attachmentPaths)))
+        guard let together = line.sentTogetherAt else { return recorded == sent }
+        guard at >= together else { return false }
+        return sent.isEmpty ? holdsFile(of: line, in: entry.text) : recorded.hasSuffix(sent)
+    }
+
+    /// Whether `text` holds one of the line's paths as a whole token (quoted or not, bounded by whitespace, a
+    /// quote or the ends), or — when the line sent an image — an image marker.
+    private static func holdsFile(of line: Self, in text: String) -> Bool {
+        if line.attachmentPaths.contains(where: { holdsToken(text, path: $0) }) { return true }
+        guard line.attachmentPaths.contains(where: isImagePath),
+              let imageMarker else { return false }
+        return imageMarker.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    private static func holdsToken(_ text: String, path: String) -> Bool {
+        let bound: (Character) -> Bool = { $0.isWhitespace || $0 == "\"" || $0 == "'" }
+        for form in Set([quoted(path), "\"\(path)\"", path]) {
+            var from = text.startIndex
+            while let found = text.range(of: form, range: from..<text.endIndex) {
+                let before = found.lowerBound == text.startIndex || bound(text[text.index(before: found.lowerBound)])
+                let after = found.upperBound == text.endIndex || bound(text[found.upperBound])
+                if before, after { return true }
+                from = text.index(after: found.lowerBound)
+            }
+        }
+        return false
+    }
+
+    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "bmp"]
+
+    private static func isImagePath(_ path: String) -> Bool {
+        imageExtensions.contains((path as NSString).pathExtension.lowercased())
     }
 
     /// A path as it goes into a line: one with a space, a double quote or a backslash in double quotes, with `\`

@@ -104,19 +104,4 @@ final class DraftModelFixtureTests: XCTestCase {
         draft.feed([0x09], profile: .claude, dialog: false)
         XCTAssertEqual(draft.runCapacity, 0, "an inexact key keeps no buffer")
     }
-
-    /// The app's own clear (Task 7's `clear_first`) empties any draft, an
-    /// inexact one and a pending `\` included.
-    func testClearedByAppEmptiesAnyDraft() {
-        var draft = DraftModel()
-        draft.feed(Array("ab\\".utf8), profile: .claude, dialog: false)
-        draft.feed([0x1B, 0x5B, 0x44], profile: .claude, dialog: false)
-        XCTAssertTrue(draft.holdsText)
-
-        draft.clearedByApp()
-
-        XCTAssertEqual(draft, DraftModel())
-        XCTAssertFalse(draft.holdsText)
-        XCTAssertEqual(draft.feed([0x0D], profile: .claude, dialog: false), .submit, "no `\\` left pending")
-    }
 }

@@ -30,6 +30,11 @@ final class FakeHostDelivery {
     var write: ([UInt8]) -> Void = { _ in }
     /// The host's delivery events to the attached pane.
     var event: (SessionHostDeliveryEvent) -> Void = { _ in }
+    /// Holds each `left_typed` event back (`deferredEvents`) until the test
+    /// sends it (`sendDeferredEvents`): the event and the requester's reply
+    /// travel on different connections, so the reply may come first.
+    var defersLeftTyped = false
+    private(set) var deferredEvents: [SessionHostDeliveryEvent] = []
     /// Whether a permission dialog is up (the host's PromptHint): the
     /// owner's keys then change nothing.
     var dialog: () -> Bool = { false }
@@ -88,8 +93,13 @@ final class FakeHostDelivery {
     /// Whether the owner's non-submitting keys feed the draft model.
     var tracksDrafts = false
 
+    /// Runs as each request reaches the host, before anything is typed (an
+    /// owner's key landing meanwhile).
+    var onRequest: (() -> Void)?
+
     func deliver(_ line: SessionDeliverLine, check: @escaping @MainActor () async -> DeliverCheckReply) async -> DeliverOutcome {
         lines.append(line)
+        onRequest?()
         if let forced { return forced }
         guard bracketedPaste() else { return .noPasteMode }
         // A line in its pause holds the prompt too (the host's pending Return).
@@ -109,7 +119,7 @@ final class FakeHostDelivery {
         // A Return after a `\` would be a line break: such a line stays typed.
         guard line.submitIf, !besideText, !endsInBackslash else {
             if pausing > 0 { textDuringPause = true }
-            return leaveTyped(besideText: besideText)
+            return leaveTyped(line, besideText: besideText, endsInBackslash: endsInBackslash)
         }
         pausing += 1
         textDuringPause = false
@@ -121,12 +131,12 @@ final class FakeHostDelivery {
         guard run == started else { return .noSession }
         if ownerReturnedInPause {
             // The owner's Return sent it, unless the re-check cannot vouch.
-            guard reply.fresh, !reply.answersDialog else { return leaveTyped(besideText: false) }
+            guard reply.fresh, !reply.answersDialog else { return leaveTyped(line, besideText: false) }
             send(.submitted)
             return .submitted
         }
         guard reply.fresh, reply.canSubmit, !reply.answersDialog, !textDuringPause else {
-            return leaveTyped(besideText: textDuringPause)
+            return leaveTyped(line, besideText: textDuringPause)
         }
         write([0x0D])
         draft = DraftModel()
@@ -146,14 +156,26 @@ final class FakeHostDelivery {
         }
     }
 
-    private func leaveTyped(besideText: Bool) -> DeliverOutcome {
+    /// Sends the `left_typed` events held back (`defersLeftTyped`), in order.
+    func sendDeferredEvents() {
+        let held = deferredEvents
+        deferredEvents = []
+        held.forEach(event)
+    }
+
+    /// Leaves `line` typed: its `left_typed` names the request and says
+    /// whether the line ends in `\` (a line with a pause never does).
+    private func leaveTyped(_ line: SessionDeliverLine, besideText: Bool, endsInBackslash: Bool = false) -> DeliverOutcome {
         leftTyped = true
         draft.markInexact()
-        send(.leftTyped, besideText: besideText)
+        let typedEvent = SessionHostDeliveryEvent(
+            row: 0, run: "", kind: .leftTyped, besideText: besideText, id: line.id, endsInBackslash: endsInBackslash
+        )
+        if defersLeftTyped { deferredEvents.append(typedEvent) } else { event(typedEvent) }
         return .typed
     }
 
-    private func send(_ kind: SessionHostDeliveryEvent.Kind, besideText: Bool = false) {
-        event(SessionHostDeliveryEvent(row: 0, run: "", kind: kind, besideText: besideText))
+    private func send(_ kind: SessionHostDeliveryEvent.Kind) {
+        event(SessionHostDeliveryEvent(row: 0, run: "", kind: kind))
     }
 }

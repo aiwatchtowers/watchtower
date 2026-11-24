@@ -26,7 +26,7 @@ import (
 // wrapped draft), Esc, Tab, a line break (Option+Return `ESC CR` too), a
 // multi-line paste, a paste with an escape in its text, the owner's Ctrl+C (it interrupts a working turn and
 // keeps the text, spec C11) and any key under a profile without ExactDraft —
-// makes it inexact: from then on only a submit (or the app's clear) empties
+// makes it inexact: from then on only a submit empties
 // it. An inexact draft, an open paste and a partial escape sequence always
 // hold text, so an unknown prompt holds a line as before (PROJ-16, PROJ-23).
 type draftModel struct {
@@ -81,10 +81,6 @@ const (
 func (d *draftModel) holdsText() bool {
 	return d.count > 0 || d.inexact || d.inPaste || d.esc != ""
 }
-
-// clearedByApp is the app's own clear of the prompt (Task 7's clear_first):
-// empty and exact, whatever the draft was.
-func (d *draftModel) clearedByApp() { *d = draftModel{} }
 
 // appPasted is a delivery's own line pasted at the cursor, ending in `\`
 // or not: the character before the cursor is then the line's last, and the

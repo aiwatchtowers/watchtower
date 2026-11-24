@@ -62,6 +62,83 @@ final class WorkchatOutgoingTests: XCTestCase {
         XCTAssertFalse(WorkchatOutgoing.matches(undated, line: sent), "no time, no match")
     }
 
+    /// Fix round 1: a line sent together with the prompt's text matches the one
+    /// owner entry that records both, ending in the line; another line does not.
+    func testALineSentTogetherMatchesTheEntryEndingInIt() {
+        var sent = line("Run the  linter")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("fix the Run the linter"), line: sent))
+        sent.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the Run the linter"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix theRun the linter"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("Run the linter"), line: sent), "alone, if the text was gone")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Run the linter later"), line: sent))
+    }
+
+    /// Fix round 2 (codex N3): the suffix match counts only entries from the Send
+    /// together on — a short queued "look" claims no earlier "take a look".
+    func testASentTogetherMatchIsBoundedByItsAttempt() {
+        var sent = line("look")
+        sent.sentTogetherAt = sentAt.addingTimeInterval(60)
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("take a look", after: 30), line: sent), "before the click")
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("take a look", after: 61), line: sent))
+    }
+
+    /// Fix round 2 (codex N2): a line of files only, sent together, matches the
+    /// entry that holds one of its paths or an image marker.
+    func testAFilesOnlyLineSentTogetherMatchesItsPathOrMarker() {
+        var sent = WorkchatOutgoing(
+            id: UUID(), text: "/x/1.png", sentAt: sentAt, state: .typed, typedText: "", attachmentPaths: ["/x/1.png"]
+        )
+        sent.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the /x/1.png"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the [Image #1]"), line: sent))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("fix the"), line: sent), "no file in it")
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the \"/x/1.png\""), line: sent), "quoted")
+    }
+
+    /// Fix round 3 (codex M1): the path must be a whole token, and an image
+    /// marker counts only for a line that sent an image.
+    func testAFilesOnlyLineSentTogetherNeedsItsWholePath() {
+        var pdf = WorkchatOutgoing(
+            id: UUID(), text: "/tmp/report.pdf", sentAt: sentAt, state: .typed, typedText: "",
+            attachmentPaths: ["/tmp/report.pdf"]
+        )
+        pdf.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("review /tmp/report.pdf"), line: pdf))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("review /tmp/report.pdf now"), line: pdf))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("review /tmp/report.pdf.bak"), line: pdf), "a longer path")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("review x/tmp/report.pdf"), line: pdf))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("look at [image]"), line: pdf), "no image was sent")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("look at [Image #1]"), line: pdf))
+
+        var spaced = WorkchatOutgoing(
+            id: UUID(), text: "\"/x/a b.png\"", sentAt: sentAt, state: .typed, typedText: "",
+            attachmentPaths: ["/x/a b.png"]
+        )
+        spaced.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("see \"/x/a b.png\""), line: spaced))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("see [image]"), line: spaced), "an image was sent")
+    }
+
+    /// Spec §6.3: a queued line's caption says why it waits; the hold reason
+    /// counts only while it is queued.
+    func testHoldCaptionsSayWhyTheLineWaits() {
+        func caption(_ reason: WorkchatOutgoing.HoldReason, working: Bool = false, holds: Bool = false) -> String? {
+            WorkchatOutgoing.caption(state: .queued, working: working, holdsUntilIdle: holds, holdReason: reason)
+        }
+        XCTAssertEqual(caption(.needsApproval), "Waiting: answer the permission prompt in the terminal")
+        XCTAssertEqual(caption(.agentBusy), "Queued · sends in a moment")
+        XCTAssertEqual(caption(.agentBusy, working: true), "Queued · sends in a moment", "an agent that takes the line")
+        XCTAssertEqual(caption(.agentBusy, working: true, holds: true), "Queued · sends when the agent stops")
+        XCTAssertEqual(caption(.promptHasText), "Waiting: the terminal prompt holds text")
+        XCTAssertEqual(caption(.promptHasText, working: true), "Waiting: the terminal prompt holds text")
+        XCTAssertEqual(WorkchatOutgoing.caption(state: .typed, working: false, holdsUntilIdle: false,
+                                                holdReason: .promptHasText),
+                       "Typed into the terminal, not sent: press Return there ·", "only a queued line")
+        XCTAssertEqual(WorkchatOutgoing.sendTogether, "Send together")
+        XCTAssertEqual(WorkchatOutgoing.cancel, "Cancel")
+    }
+
     /// Each state's caption under the line (#2065 moved them out of the view):
     /// nil where the bubble shows the send time.
     func testCaptionStrings() {
