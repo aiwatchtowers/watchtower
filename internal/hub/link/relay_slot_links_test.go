@@ -143,3 +143,30 @@ func TestACorruptSlotRowIsReplacedByTheNextWrite(t *testing.T) {
 	r.confirmLinked(a)
 	r.wantSlotLinked(a, true)
 }
+
+// Every code this Mac issues, relay or CloudKit, says it moves itself to
+// Relay when a paying phone links over a slot (the phone's route rule reads
+// relay_switch).
+func TestEveryCodeSaysTheMacMovesToRelay(t *testing.T) {
+	r := newCKRig(t)
+	relay, relayURL, err := r.c.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, ckURL, err := r.c.IssueCloudKit(r.ctx, r.s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		p   wire.LinkPayload
+		url string
+	}{"relay": {relay, relayURL}, "cloudkit": {ck, ckURL}} {
+		parsed, err := wire.ParseLinkURL(c.url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !c.p.RelaySwitch || !parsed.RelaySwitch {
+			t.Errorf("%s code: relay_switch %v, parsed %v", name, c.p.RelaySwitch, parsed.RelaySwitch)
+		}
+	}
+}

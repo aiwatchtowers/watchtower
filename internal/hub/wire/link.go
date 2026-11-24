@@ -31,6 +31,16 @@ var (
 // LinkPayload is the QR link code `watchtower://link?d=<base64url(JSON)>`.
 // `container` and `owner_user` are optional in v4 (a headless host has
 // neither); the CKShare URLs are absent for a hub without CloudKit.
+//
+// `relay_switch` (optional, true or absent) says the Mac moves itself to
+// Relay once a paying phone links over a Relay pairing slot (#2191): a phone
+// may then take a CloudKit code that also lists "relay" over Relay. Older
+// Macs never send it. It is unsigned, like every field here: `hub_sig` is the
+// hub's signing public key, not a signature over the payload. The code is
+// read off the owner's own screen and the SAS check binds the link to the
+// hub's keys; this field only steers the phone's route choice, and the Mac
+// still moves only on its own account read and pairing-slot record, so a
+// forged value can cost a route, never a key or a switch.
 type LinkPayload struct {
 	V             int      `json:"v"`
 	Container     string   `json:"container,omitempty"`
@@ -48,6 +58,7 @@ type LinkPayload struct {
 	RelayDeviceID string   `json:"relay_device_id,omitempty"`
 	RelayAuthPub  string   `json:"relay_auth_pub,omitempty"`
 	Transports    []string `json:"transports,omitempty"`
+	RelaySwitch   bool     `json:"relay_switch,omitempty"`
 }
 
 // Keys the Kit's decoder reads (after the version) in its order: the two hub

@@ -1255,18 +1255,24 @@ func TestCloudKitLinkingMatchesTheSwiftHub(t *testing.T) {
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	var want []string
-	for _, c := range fixture.LinkPayload {
-		if c.Name == "v4_desktop" {
-			for k := range c.Expect {
-				want = append(want, k)
+	keysOf := func(name string) []string {
+		var keys []string
+		for _, c := range fixture.LinkPayload {
+			if c.Name == name {
+				for k := range c.Expect {
+					keys = append(keys, k)
+				}
 			}
 		}
+		slices.Sort(keys)
+		return keys
 	}
-	slices.Sort(want)
-	if len(want) == 0 || !slices.Equal(got, want) {
-		t.Errorf("QR keys %v, the fixture's v4_desktop %v", got, want)
+	// The Mac's codes carry relay_switch (#2191): the fixture's
+	// v4_desktop_relay_switch, which is v4_desktop plus that key.
+	if issued := keysOf("v4_desktop_relay_switch"); len(issued) == 0 || !slices.Equal(got, issued) {
+		t.Errorf("QR keys %v, the fixture's v4_desktop_relay_switch %v", got, issued)
 	}
+	want := keysOf("v4_desktop")
 
 	// Every key of a v3 LinkPayload is there, and the container is the Kit's.
 	kitKeys := []string{"container", "data_share", "exp", "hub_id", "hub_kx", "hub_sig", "iat", "mac_name", "nonce", "owner_user", "relay_share", "v"}
