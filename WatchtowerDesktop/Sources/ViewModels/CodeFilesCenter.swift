@@ -314,13 +314,14 @@ final class CodeFilesCenter {
 
     /// The workbench was deleted: every root of it stops being watched, its
     /// main roots' streams too (review round 4). None comes back, so none is
-    /// kept as retired (#2386).
+    /// kept as retired, and its indexes go now (#2386).
     func retireWorkbenchRoots(workbenchID: Int64) {
         for root in watched where root.workbenchID == workbenchID {
             unwatchRoot(root)
             dropRootViews(root)
         }
         retiredRoots = retiredRoots.filter { $0.workbenchID != workbenchID }
+        codeIndex?.releaseWorkbench(workbenchID)
     }
 
     private func retire(_ root: CodeRoot) {

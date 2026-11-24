@@ -169,10 +169,11 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     }
 
     /// The text before `index`, back to whitespace or a quote, is a word with no `/` (the owner's text the path was
-    /// pasted straight after).
+    /// pasted straight after) — not a path's own head: `~`, `~user`, `.`, `..` or a `$` variable (fix round 1).
     private static func gluedToWord(_ text: String, before index: String.Index) -> Bool {
-        let head = text[..<index].reversed().prefix { !$0.isWhitespace && $0 != "\"" && $0 != "'" }
-        return !head.isEmpty && !head.contains("/")
+        let head = String(text[..<index].reversed().prefix { !$0.isWhitespace && $0 != "\"" && $0 != "'" }.reversed())
+        guard let first = head.first, !head.contains("/") else { return false }
+        return first != "~" && first != "$" && !head.allSatisfy { $0 == "." }
     }
 
     /// `index` is the end, whitespace or a quote, once any closing punctuation is skipped.

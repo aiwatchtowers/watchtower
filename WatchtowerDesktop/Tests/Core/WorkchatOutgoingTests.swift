@@ -107,6 +107,11 @@ final class WorkchatOutgoingTests: XCTestCase {
         pdf.sentTogetherAt = sentAt
         XCTAssertTrue(WorkchatOutgoing.matches(owner("review/tmp/report.pdf"), line: pdf), "pasted right after the text")
         XCTAssertFalse(WorkchatOutgoing.matches(owner("open /var/tmp/report.pdf"), line: pdf), "another absolute path")
+        // #2386 fix round 1: a path head without a `/` is still a path, not the owner's word.
+        for other in ["open ~/tmp/report.pdf", "open ./tmp/report.pdf", "open ../tmp/report.pdf",
+                      "open $HOME/tmp/report.pdf", "open ${TMP}/tmp/report.pdf", "open ~acme/tmp/report.pdf"] {
+            XCTAssertFalse(WorkchatOutgoing.matches(owner(other), line: pdf), other)
+        }
         XCTAssertFalse(WorkchatOutgoing.matches(owner("open \"/tmp/report.pdf draft\""), line: pdf),
                        "the start of a longer quoted name")
         XCTAssertFalse(WorkchatOutgoing.matches(owner("open '/tmp/report.pdf draft'"), line: pdf))

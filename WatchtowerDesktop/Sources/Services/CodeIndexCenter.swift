@@ -114,12 +114,15 @@ final class CodeIndexCenter {
         sessions[root] = session
         session.shownCount += 1
         session.hiddenSince = nil
-        switch session.index.state {
-        case .idle, .failed:
-            guard session.run == nil else { return }
-            session.fullPending = true
-        case .indexing, .ready:
-            if rescan { session.fullPending = true }
+        // A first show or one after a failure runs in full once no run is in
+        // flight; a rescan whatever the state (fix round 1).
+        if rescan {
+            queueFullRun(session)
+        } else if session.run == nil {
+            switch session.index.state {
+            case .idle, .failed: session.fullPending = true
+            case .indexing, .ready: break
+            }
         }
         // A first show, one after a failure, or one after the rules file
         // changed while the root was hidden.
@@ -129,6 +132,12 @@ final class CodeIndexCenter {
     /// Whether another full run waits behind the root's current one (tests).
     func fullRunPending(root: CodeRoot) -> Bool {
         sessions[root]?.fullPending == true
+    }
+
+    /// Whether changed paths wait out the root's debounce (tests).
+    func debouncePending(root: CodeRoot) -> Bool {
+        guard let session = sessions[root] else { return false }
+        return session.debounceTask != nil || !session.debouncing.isEmpty
     }
 
     func markHidden(root: CodeRoot) {
@@ -144,10 +153,7 @@ final class CodeIndexCenter {
     func applyWatcherBatch(_ batch: FolderWatcher.Batch, root: CodeRoot) {
         guard let session = sessions[root] else { return }
         if batch.mustRescan {
-            session.debounceTask?.cancel()
-            session.debounceTask = nil
-            session.debouncing = []
-            session.fullPending = true
+            queueFullRun(session)
             startNextRun(session)
             return
         }
@@ -164,6 +170,23 @@ final class CodeIndexCenter {
             session.queued.formUnion(session.debouncing)
             session.debouncing = []
             startNextRun(session)
+        }
+    }
+
+    /// A full run waits (started by `startNextRun` once none is in flight):
+    /// it covers every change still waiting out the debounce, so those go.
+    private func queueFullRun(_ session: CodeIndexSession) {
+        session.debounceTask?.cancel()
+        session.debounceTask = nil
+        session.debouncing = []
+        session.fullPending = true
+    }
+
+    /// The workbench was deleted: its indexes go now, not after `idleTTL` —
+    /// a new workbench may get its id (fix round 1).
+    func releaseWorkbench(_ workbenchID: Int64) {
+        for root in Set(sessions.keys).union(indexes.keys) where root.workbenchID == workbenchID {
+            releaseIndex(root)
         }
     }
 

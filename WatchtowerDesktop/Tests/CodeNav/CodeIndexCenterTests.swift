@@ -398,6 +398,57 @@ final class CodeIndexCenterTests: XCTestCase {
         XCTAssertTrue(again, "full runs: \(stub.fullRuns)")
     }
 
+    /// #2386 fix round 1: a rescan asked at the show is kept whatever the index's state — a failed index with a
+    /// run still in flight runs in full after it.
+    func testAShowTimeRescanIsKeptForAFailedIndexWithARunInFlight() async {
+        let center = makeCenter(["STUB_FULL_DELAY": "30"])
+        center.markShown(root: root(7))
+        let started = await eventually { self.stub.fullRuns == 1 }
+        XCTAssertTrue(started)
+        center.index(for: root(7)).state = .failed("an update failed")
+        center.markHidden(root: root(7))
+        center.markShown(root: root(7), rescan: true)
+        XCTAssertTrue(center.fullRunPending(root: root(7)))
+    }
+
+    /// #2386 fix round 1: a show-time rescan covers the changes waiting out the debounce (as a mustRescan batch
+    /// does); a batch arriving after it debounces as usual.
+    func testAShowTimeRescanDropsTheWaitingDebounce() async {
+        let debounceClock = HandMovedDebounceClock()
+        let center = makeCenter(debounceClock: debounceClock)
+        let worktree = CodeRoot(workbenchID: 7, worktree: folder)
+        center.markShown(root: worktree)
+        let index = center.index(for: worktree)
+        let ready = await eventually { index.state == .ready }
+        XCTAssertTrue(ready)
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["lib/a.swift"]), root: worktree)
+        XCTAssertTrue(center.debouncePending(root: worktree))
+        center.markHidden(root: worktree)
+        center.markShown(root: worktree, rescan: true)
+        XCTAssertFalse(center.debouncePending(root: worktree), "the rescan covers it")
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["lib/sub/b.swift"]), root: worktree)
+        XCTAssertTrue(center.debouncePending(root: worktree), "a later batch still waits its turn")
+    }
+
+    /// #2386 fix round 1: a deleted workbench's indexes go at once — its id may come back for a new workbench.
+    func testADeletedWorkbenchsIndexIsReleased() async {
+        let center = makeCenter()
+        let files = CodeFilesCenter(
+            defaults: UserDefaults(suiteName: "CodeIndexCenterTests-\(UUID().uuidString)") ?? .standard,
+            gitRead: { _ in .noRepository }, watchesFolders: false
+        )
+        files.codeIndex = center
+        files.startWatching(root(7))
+        files.startWatching(root(8))
+        let index = center.index(for: root(7))
+        let other = center.index(for: root(8))
+        let ready = await eventually { index.state == .ready && other.state == .ready }
+        XCTAssertTrue(ready)
+        files.retireWorkbenchRoots(workbenchID: 7)
+        XCTAssertFalse(center.index(for: root(7)) === index, "released")
+        XCTAssertTrue(center.index(for: root(8)) === other, "another workbench's stays")
+    }
+
     /// #2386 (codex #3): a restored folder whose index was released meanwhile gets one full run — the first show's
     /// covers it; no second one is queued behind it.
     func testARestoredFolderWithAReleasedIndexRunsOnce() async {
