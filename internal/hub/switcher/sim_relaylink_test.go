@@ -3,6 +3,7 @@ package switcher_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -10,21 +11,48 @@ import (
 	"time"
 
 	"watchtower/internal/hub/hubtest"
+	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
 )
 
 // relayPhone links a phone over a pairing slot a minute from now (after
-// relay_link_since): it has a relay id and no iCloud route, and reads the
-// relay. pays is what the account lists for it.
+// relay_link_since): it has a relay id and no iCloud route, the link center
+// recorded it as linked through a slot, and it reads the relay. pays is what
+// the account lists for it.
 func (w *world) relayPhone(pays bool) *hubtest.Phone {
 	w.t.Helper()
 	w.advance(time.Minute)
 	ph := w.addPhone(pays)
 	w.route(ph, false)
+	w.slotLinked(ph)
 	w.onRelay(ph)
 	return ph
+}
+
+// slotLinked records ph in hub_meta relay_slot_links as the link center's
+// confirm of a request that came through a pairing slot does.
+func (w *world) slotLinked(ph *hubtest.Phone) {
+	w.t.Helper()
+	var row struct {
+		Linked []string `json:"linked"`
+	}
+	if raw, ok, err := w.st.Meta(state.MetaRelaySlotLinks); err != nil {
+		w.t.Fatal(err)
+	} else if ok {
+		if err := json.Unmarshal([]byte(raw), &row); err != nil {
+			w.t.Fatal(err)
+		}
+	}
+	row.Linked = append(row.Linked, strings.ToUpper(ph.ID().String()))
+	b, err := json.Marshal(row)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	if err := w.st.SetMeta(state.MetaRelaySlotLinks, string(b)); err != nil {
+		w.t.Fatal(err)
+	}
 }
 
 // relayLinkCheck is the runtime's RelayLinkSoon and the Run that follows it:
@@ -362,9 +390,66 @@ func TestRelayLinkICloudLinkedPhoneIsNoCandidate(t *testing.T) {
 		w.advance(time.Minute)
 		a := w.addPhone(true)
 		w.route(a, true)
+		w.slotLinked(a) // even with a slot mark
 		w.relayLinkCheck()
 		w.wantReads(0)
 		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// The codex case: a private CloudKit link whose owner could not be read
+// carries no iCloud user, like a slot link, and has a relay id the account
+// lists as paying. Without the link center's slot record it is no candidate.
+func TestRelayLinkACloudKitLinkWithAnEmptyOwnerIsNoCandidate(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		w.advance(time.Minute)
+		w.addPhone(true) // no route, a relay id, paying; never through a slot
+		w.relayLinkCheck()
+		w.wantReads(0)
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// A relay_slot_links row that cannot be decoded reads as no candidate (the
+// store class is logged), and the check works again once it is whole.
+func TestRelayLinkACorruptSlotRowIsNoCandidate(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		r := w.relayPhone(true)
+		good, _, err := w.st.Meta(state.MetaRelaySlotLinks)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.st.SetMeta(state.MetaRelaySlotLinks, "{"); err != nil {
+			t.Fatal(err)
+		}
+		w.relayLinkCheck()
+		w.wantReads(0)
+		w.wantActive(transport.KindCloudKit)
+		if err := w.st.SetMeta(state.MetaRelaySlotLinks, good); err != nil {
+			t.Fatal(err)
+		}
+		w.relayLinkCheck()
+		w.wantActive(transport.KindRelay)
+		w.wantSwitchedBy(r)
+	})
+}
+
+// A slot mark that goes during the account read (the phone re-linked over
+// CloudKit meanwhile) is checked again at the accept: nothing moves.
+func TestRelayLinkASlotMarkGoneDuringTheReadMovesNothing(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		w.relayPhone(true)
+		w.accountReadHook(func() {
+			if err := w.st.DeleteMeta(state.MetaRelaySlotLinks); err != nil {
+				t.Error(err)
+			}
+		})
+		w.relayLinkCheck()
+		w.wantReads(1)
+		w.wantActive(transport.KindCloudKit)
+		if w.sw.Pending() {
+			t.Fatal("a switch by a phone no longer slot-linked is pending")
+		}
 	})
 }
 

@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"watchtower/internal/hub/secure"
+	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 )
 
@@ -62,15 +63,18 @@ func (c *Center) HandleHello(zone, wireName string, env []byte) (Pending, error)
 	if err != nil {
 		return Pending{}, err
 	}
-	return c.decideHello(opened, "")
+	return c.decideHello(opened, "", true)
 }
 
 // decideHello is HandleHello after the hello opened: user is the iCloud
 // user the request is bound to on CloudKit ("" elsewhere), kept with it so
-// the participant sweep spares a linked shared phone's user. A code an
+// the participant sweep spares a linked shared phone's user. slot is true
+// for a hello read from a relay pairing slot (HandleHello): a saved request
+// is marked so in hub_meta relay_slot_links (state.MarkRelaySlotRequestTx),
+// one from CloudKit clears that mark. A code an
 // answering CloudKit close retired reads that close's refusal (retired),
 // not expired_code.
-func (c *Center) decideHello(opened openedHello, user string) (Pending, error) {
+func (c *Center) decideHello(opened openedHello, user string, slot bool) (Pending, error) {
 	c.mu.Lock()
 	defer c.unlock()
 	payload := opened.hello.Device
@@ -127,6 +131,9 @@ func (c *Center) decideHello(opened openedHello, user string) (Pending, error) {
 			out.Unanswered = !answered
 			return err
 		case pendingSaved:
+			if err := state.MarkRelaySlotRequestTx(tx, opened.device, opened.code.nonce, slot); err != nil {
+				return err
+			}
 		}
 		out.Code, waiting = sas, true
 		return nil
@@ -499,8 +506,11 @@ func refusePending(tx *sql.Tx, p pendingDevice, reason string, now time.Time) er
 	if err := saveRefusal(tx, p, reason, now); err != nil {
 		return err
 	}
-	_, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID)
-	return err
+	if _, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID); err != nil {
+		return err
+	}
+	// Only the request's slot mark: a linked phone's own link stays.
+	return state.MarkRelaySlotRequestTx(tx, p.deviceID, "", false)
 }
 
 // saveRefusal upserts the phone's one refusal row with the key its keybox is

@@ -51,10 +51,14 @@ func (s *Switcher) markRelayLinkSince() {
 }
 
 // relayLinkCandidates are the linked phones that may move a CloudKit hub to
-// the relay, in devices order (linked_at, device_id): each has a relay id, no
-// iCloud route (it linked through a pairing slot) and linked after both the
-// last switch and relay_link_since, so a later decision wins and a link from
-// before the update never counts. An unset relay_link_since means none.
+// the relay, in devices order (linked_at, device_id): each was confirmed
+// through a relay pairing slot (hub_meta relay_slot_links, written by the
+// link center: an empty iCloud user alone cannot tell a slot link from a
+// CloudKit link whose owner was unreadable), has a relay id and no iCloud
+// route, and linked after both the last switch and relay_link_since, so a
+// later decision wins and a link from before the update never counts. An
+// unset relay_link_since means none; an unreadable or undecodable
+// relay_slot_links is an error (logged as store, no candidate).
 //
 // A relay_link_since in the future (the Mac's clock ran ahead when it was
 // written) is pulled back to now, never forward. Known limit: a phone linked
@@ -90,9 +94,13 @@ func (s *Switcher) relayLinkCandidates(now time.Time) ([]state.Device, error) {
 	if err != nil {
 		return nil, err
 	}
+	slot, err := s.c.Store.RelaySlotLinked()
+	if err != nil {
+		return nil, err
+	}
 	var out []state.Device
 	for _, d := range devices {
-		if d.RelayDeviceID != "" && !routes[strings.ToLower(d.ID)] && d.LinkedAt.After(after) {
+		if slot[strings.ToUpper(d.ID)] && d.RelayDeviceID != "" && !routes[strings.ToLower(d.ID)] && d.LinkedAt.After(after) {
 			out = append(out, d)
 		}
 	}
@@ -236,8 +244,12 @@ func (s *Switcher) acceptRelayLink(d state.Device, now time.Time) (accepted, def
 }
 
 // stillRelayLinkTx reports whether d's row is the link the candidate was
-// read from and it came after the last switch.
+// read from, still marked as linked through a pairing slot, and it came after
+// the last switch.
 func stillRelayLinkTx(tx *sql.Tx, d state.Device) (bool, error) {
+	if slot, err := state.RelaySlotLinkedTx(tx, d.ID); err != nil || !slot {
+		return false, err
+	}
 	devices, err := state.DevicesTx(tx)
 	if err != nil {
 		return false, err
