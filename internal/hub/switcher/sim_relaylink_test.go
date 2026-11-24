@@ -1,0 +1,439 @@
+package switcher_test
+
+import (
+	"errors"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"watchtower/internal/hub/hubtest"
+	"watchtower/internal/hub/switcher"
+	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/wire"
+)
+
+// relayPhone links a phone over a pairing slot a minute from now (after
+// relay_link_since): it has a relay id and no iCloud route, and reads the
+// relay. pays is what the account lists for it.
+func (w *world) relayPhone(pays bool) *hubtest.Phone {
+	w.t.Helper()
+	w.advance(time.Minute)
+	ph := w.addPhone(pays)
+	w.route(ph, false)
+	w.onRelay(ph)
+	return ph
+}
+
+// relayLinkCheck is the runtime's RelayLinkSoon and the Run that follows it:
+// one PollOther, then a Step.
+func (w *world) relayLinkCheck() {
+	w.t.Helper()
+	w.sw.RelayLinkSoon()
+	w.sw.PollOther(w.ctx)
+	if err := w.sw.Step(w.ctx); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+// accountReads is how many AccountPhones reads were made.
+func (w *world) accountReads() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.reads
+}
+
+func (w *world) wantReads(n int) {
+	w.t.Helper()
+	if got := w.accountReads(); got != n {
+		w.t.Fatalf("%d account reads, want %d", got, n)
+	}
+}
+
+func (w *world) wantSwitchedBy(ph *hubtest.Phone) {
+	w.t.Helper()
+	if _, by, ok, err := w.sw.SwitchedAt(); err != nil || !ok || by != ph.ID().String() {
+		w.t.Fatalf("switched_by %q %v %v, want %s", by, ok, err, ph.ID())
+	}
+}
+
+func TestRelayLinkedPayingPhoneMovesTheHubToRelay(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		w.wantActive(transport.KindCloudKit)
+		r := w.relayPhone(true)
+		w.relayLinkCheck()
+		w.wantActive(transport.KindRelay)
+		w.wantSwitchedBy(r)
+	})
+}
+
+// Q5: a phone linked over a pairing slot before the build that carries the
+// check never moves the Mac by itself; relay_link_since is written once.
+func TestRelayLinkBeforeTheUpdateIsNoCandidate(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		start := w.clock()
+		want := strconv.FormatFloat(float64(start.UnixNano())/1e9, 'f', -1, 64)
+		if v, ok, err := w.st.Meta(switcher.MetaRelayLinkSince); err != nil || !ok || v != want {
+			t.Fatalf("relay_link_since %q %v %v, want %q", v, ok, err, want)
+		}
+		// The phone linked while the earlier build ran: the new build's first
+		// start comes after it.
+		w.relayPhone(true)
+		if err := w.st.DeleteMeta(switcher.MetaRelayLinkSince); err != nil {
+			t.Fatal(err)
+		}
+		w.advance(time.Hour)
+		w.rebuild(nil)
+		since, _, err := w.st.Meta(switcher.MetaRelayLinkSince)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.relayLinkCheck()
+		w.advance(switcher.NoPayerPoll)
+		w.sw.PollOther(w.ctx)
+		w.wantActive(transport.KindCloudKit)
+		w.wantReads(0)
+		// A restart never rewrites it.
+		w.advance(time.Hour)
+		w.rebuild(nil)
+		if v, _, _ := w.st.Meta(switcher.MetaRelayLinkSince); v != since {
+			t.Fatalf("relay_link_since %q after a restart, want %q", v, since)
+		}
+		w.relayLinkCheck()
+		w.wantActive(transport.KindCloudKit)
+		w.wantReads(0)
+	})
+}
+
+// F9: a read that failed, was not made afresh, hung past the old-side
+// timeout or does not list the phone moves nothing; every next RelayLinkSoon
+// reads again and a paying answer then moves the hub.
+func TestRelayLinkWaitsOnAnUnknownRead(t *testing.T) {
+	for _, how := range []string{"error", "not_fresh", "hang", "not_listed"} {
+		t.Run(how, func(t *testing.T) {
+			eachFlavourFor(t, hangingIf(how == "hang"), func(t *testing.T, w *world) {
+				r := w.relayPhone(true)
+				set := func(on bool) {
+					w.mu.Lock()
+					defer w.mu.Unlock()
+					switch how {
+					case "error":
+						w.payErr = nil
+						if on {
+							w.payErr = errors.New("relay unreachable")
+						}
+					case "not_fresh":
+						w.notFresh = on
+					case "hang":
+						w.payHang = on
+					case "not_listed":
+						w.gone = map[string]bool{strings.ToUpper(r.ID().String()): on}
+					}
+				}
+				set(true)
+				w.relayLinkCheck()
+				w.wantActive(transport.KindCloudKit)
+				w.wantReads(1)
+				w.relayLinkCheck()
+				w.wantActive(transport.KindCloudKit)
+				w.wantReads(2)
+				set(false)
+				w.relayLinkCheck()
+				w.wantReads(3)
+				w.wantActive(transport.KindRelay)
+				w.wantSwitchedBy(r)
+			})
+		})
+	}
+}
+
+// F5: listed as not paying moves nothing; the candidate stays, so a renewal
+// moves the hub later.
+func TestRelayLinkNotPayingStays(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		r := w.relayPhone(false)
+		w.relayLinkCheck()
+		w.wantActive(transport.KindCloudKit)
+		w.wantReads(1)
+		w.setPaying(r, true)
+		w.relayLinkCheck()
+		w.wantActive(transport.KindRelay)
+		w.wantSwitchedBy(r)
+	})
+}
+
+// F6/F10: a switch after the phone linked (here a person's move back to
+// iCloud) is the later decision: the phone is no candidate any more.
+func TestRelayLinkAfterALaterSwitchIsNoCandidate(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := w.addPhone(true)
+		w.route(a, true)
+		r := w.relayPhone(false)
+		w.advance(time.Minute)
+		w.moveTo(a, wire.TransportRelay)
+		w.advance(time.Minute)
+		w.moveTo(a, wire.TransportCloudKit)
+		w.advance(switcher.AntiFlap)
+		w.setPaying(r, true)
+		n := w.accountReads()
+		w.relayLinkCheck()
+		w.advance(switcher.NoPayerPoll)
+		w.sw.PollOther(w.ctx)
+		w.wantReads(n)
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// F10: within AntiFlap of the last switch the check reads paying, accept
+// answers too_soon, nothing is sent to any phone, and the check tries again
+// once the wait is over, without waiting out NoPayerPoll and without a kick.
+// A RelayLinkSoon during the wait does not bypass it.
+func TestRelayLinkRespectsAntiFlap(t *testing.T) {
+	for _, kick := range []bool{false, true} {
+		t.Run("kick_in_the_wait="+strconv.FormatBool(kick), func(t *testing.T) {
+			eachFlavour(t, func(t *testing.T, w *world) { relayLinkAntiFlap(t, w, kick) })
+		})
+	}
+}
+
+func relayLinkAntiFlap(t *testing.T, w *world, kick bool) {
+	{
+		a := w.addPhone(true)
+		w.route(a, true)
+		w.moveTo(a, wire.TransportRelay)
+		w.moveTo(a, wire.TransportCloudKit) // switched_at = now
+		w.advance(time.Minute)
+		r := w.relayPhone(true) // two minutes after the switch
+		for _, ph := range []*hubtest.Phone{a, r} {
+			if _, err := ph.Sync(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		aCtl, rCtl := len(a.Controls), len(r.Controls)
+		e := w.epoch()
+		n := w.accountReads()
+
+		w.relayLinkCheck()
+		w.wantReads(n + 1)
+		w.wantActive(transport.KindCloudKit)
+		if w.sw.Pending() {
+			t.Fatal("a too_soon left a switch pending")
+		}
+		retry := switcher.AntiFlap - 2*time.Minute
+		if retry >= switcher.NoPayerPoll {
+			t.Fatalf("the retry %v must come before NoPayerPoll", retry)
+		}
+		w.advance(retry - time.Second)
+		if kick {
+			w.relayLinkCheck() // a kick inside the wait reads nothing
+		}
+		w.settle(a, r)
+		w.wantReads(n + 1)
+		w.wantActive(transport.KindCloudKit)
+		if len(a.Controls) != aCtl || len(r.Controls) != rCtl || w.epoch() != e {
+			t.Fatalf("controls a %d→%d, r %d→%d, epoch %d→%d: something was sent", aCtl, len(a.Controls), rCtl, len(r.Controls), e, w.epoch())
+		}
+
+		w.advance(time.Second)
+		w.sw.PollOther(w.ctx) // no kick
+		if err := w.sw.Step(w.ctx); err != nil {
+			t.Fatal(err)
+		}
+		w.wantReads(n + 2)
+		w.wantActive(transport.KindRelay)
+		w.wantSwitchedBy(r)
+	}
+}
+
+// F10: the check reads nothing while a switch is pending or an ask waits for
+// the Step; once the Step decided it, the next check reads.
+func TestRelayLinkSkipsWhilePendingOrAsked(t *testing.T) {
+	t.Run("pending", func(t *testing.T) {
+		eachFlavour(t, func(t *testing.T, w *world) {
+			w.relayPhone(true)
+			w.sw.RelayLinkSoon()
+			w.sw.PollOther(w.ctx) // accepted, not carried out yet
+			w.wantReads(1)
+			if !w.sw.Pending() {
+				t.Fatal("no switch pending")
+			}
+			w.sw.RelayLinkSoon()
+			w.sw.PollOther(w.ctx)
+			w.wantReads(1)
+			if err := w.sw.Step(w.ctx); err != nil {
+				t.Fatal(err)
+			}
+			w.wantActive(transport.KindRelay)
+		})
+	})
+	t.Run("asked", func(t *testing.T) {
+		eachFlavour(t, func(t *testing.T, w *world) {
+			a := w.addPhone(false)
+			w.route(a, true)
+			r := w.relayPhone(true)
+			w.ask(a, wire.TransportRelay)
+			if _, err := w.sw.ActiveProcessor().Pass(w.ctx); err != nil {
+				t.Fatal(err)
+			}
+			w.sw.RelayLinkSoon()
+			w.sw.PollOther(w.ctx)
+			w.wantReads(0)
+			if err := w.sw.Step(w.ctx); err != nil { // a does not pay: refused
+				t.Fatal(err)
+			}
+			w.wantActive(transport.KindCloudKit)
+			w.wantReads(0)
+			w.sw.PollOther(w.ctx) // the RelayLinkSoon still stands
+			w.wantReads(1)
+			if err := w.sw.Step(w.ctx); err != nil {
+				t.Fatal(err)
+			}
+			w.wantActive(transport.KindRelay)
+			w.wantSwitchedBy(r)
+		})
+	})
+}
+
+// F4: a crash after the confirm, and a crash after the accept before the
+// Step: one switch, one rotation.
+func TestRelayLinkSurvivesRestart(t *testing.T) {
+	t.Run("after_confirm", func(t *testing.T) {
+		eachFlavour(t, func(t *testing.T, w *world) {
+			r := w.relayPhone(false)
+			w.sw.PollOther(w.ctx) // the first check after the start reads
+			w.wantReads(1)
+			w.setPaying(r, true)
+			w.sw.PollOther(w.ctx) // inside NoPayerPoll, no kick: no read
+			w.wantReads(1)
+			w.rebuild(nil)
+			w.sw.PollOther(w.ctx) // no kick: the first check after the start
+			if err := w.sw.Step(w.ctx); err != nil {
+				t.Fatal(err)
+			}
+			w.wantReads(2)
+			w.wantActive(transport.KindRelay)
+			w.wantSwitchedBy(r)
+		})
+	})
+	t.Run("after_accept", func(t *testing.T) {
+		eachFlavour(t, func(t *testing.T, w *world) {
+			r := w.relayPhone(true)
+			e := w.epoch()
+			w.sw.PollOther(w.ctx) // accepted; the crash comes before the Step
+			if !w.sw.Pending() {
+				t.Fatal("no switch pending")
+			}
+			w.rebuild(nil)
+			if err := w.sw.Step(w.ctx); err != nil {
+				t.Fatal(err)
+			}
+			w.wantActive(transport.KindRelay)
+			w.wantSwitchedBy(r)
+			if w.epoch() != e+1 {
+				t.Fatalf("epoch %d, want one rotation from %d", w.epoch(), e)
+			}
+			n := w.accountReads()
+			w.relayLinkCheck()
+			w.wantReads(n)
+			if w.epoch() != e+1 {
+				t.Fatalf("epoch %d after another check, want %d", w.epoch(), e+1)
+			}
+		})
+	})
+}
+
+// A phone linked over iCloud (it has an iCloud route) is no candidate, even
+// when it pays and linked after relay_link_since: it can follow the hub
+// wherever it runs, so its link moves nothing.
+func TestRelayLinkICloudLinkedPhoneIsNoCandidate(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		w.advance(time.Minute)
+		a := w.addPhone(true)
+		w.route(a, true)
+		w.relayLinkCheck()
+		w.wantReads(0)
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// F8: two relay-linked paying phones move the hub once, by the first linked.
+func TestTwoRelayLinksSwitchOnce(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		r1 := w.relayPhone(true)
+		w.relayPhone(true)
+		e := w.epoch()
+		w.relayLinkCheck()
+		w.wantActive(transport.KindRelay)
+		w.wantSwitchedBy(r1)
+		if w.epoch() != e+1 {
+			t.Fatalf("epoch %d, want one rotation from %d", w.epoch(), e)
+		}
+		n := w.accountReads()
+		w.relayLinkCheck()
+		w.wantReads(n)
+		if w.epoch() != e+1 {
+			t.Fatalf("epoch %d after another check, want %d", w.epoch(), e+1)
+		}
+	})
+}
+
+// F11: a phone unlinked before the check is no candidate.
+func TestRelayLinkUnlinkedPhoneIsNoCandidate(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		r := w.relayPhone(true)
+		if err := w.center.Unlink(r.ID().String()); err != nil {
+			t.Fatal(err)
+		}
+		w.relayLinkCheck()
+		w.wantReads(0)
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// F5 on a Mac that stays up for days: without a kick, at most one read per
+// NoPayerPoll, never one per OtherPoll.
+func TestRelayLinkReadsAtMostOncePerPollWithoutAKick(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		w.relayPhone(false)
+		for range 10 {
+			w.advance(switcher.OtherPoll)
+			w.sw.PollOther(w.ctx)
+		}
+		w.wantReads(1)
+		w.advance(switcher.NoPayerPoll)
+		w.sw.PollOther(w.ctx)
+		w.wantReads(2)
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// §3: the Mac's other phones hear of the move as on any switch to the relay.
+func TestRelayLinkSwitchNoticesOtherPhones(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		unordered, ordered, payer := w.addPhone(false), w.addPhone(false), w.addPhone(true)
+		for _, ph := range []*hubtest.Phone{unordered, ordered, payer} {
+			w.route(ph, true)
+		}
+		w.act(ordered)
+		w.settle(unordered, ordered, payer) // ordered is ordered now
+		r := w.relayPhone(true)
+		w.relayLinkCheck()
+		w.wantActive(transport.KindRelay)
+		w.wantSwitchedBy(r)
+		w.settle(unordered, ordered, payer, r)
+		if n := count(ordered, wire.ControlHubOnRelay); n != 1 {
+			t.Fatalf("%d hub_on_relay for the ordered free phone", n)
+		}
+		for name, ph := range map[string]*hubtest.Phone{"unordered": unordered, "payer": payer} {
+			got := switched(ph)
+			if len(got) != 1 || *got[0].Target != wire.TransportRelay {
+				t.Fatalf("%s: transport_switched %+v", name, got)
+			}
+		}
+		w.follow(payer)
+		w.settle(payer, r)
+		if m, ok := w.marker(payer, w.relay, ""); !ok || *m.Target != wire.TransportRelay {
+			t.Fatalf("relay marker %+v %v", m, ok)
+		}
+	})
+}
