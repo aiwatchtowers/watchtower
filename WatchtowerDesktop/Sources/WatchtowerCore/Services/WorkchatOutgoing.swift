@@ -49,6 +49,9 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     /// Why it waits while `queued`; nil: not known (another line goes first,
     /// or no check said yet).
     package var holdReason: HoldReason?
+    /// Sent together with the prompt's text (Send together): the transcript
+    /// records that text and the line as one owner entry ending in the line.
+    package var sentTogether = false
 
     package init(
         id: UUID,
@@ -115,13 +118,16 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     /// The feed's owner entry for this line: same text with whitespace collapsed
     /// (a "/name args" line equals the parser's slash entry), dated at or after sentAt.
     /// Matched on `text`, the expanded line the transcript records (#2065 §6), not on the tokenized `typedText`.
+    /// A line sent together with the prompt's text matches an entry that ends with it.
     package static func matches(_ entry: SessionFeedEntry, line: Self) -> Bool {
         guard entry.kind == "owner", let at = entry.at, at >= line.sentAt else { return false }
-        if line.attachmentPaths.isEmpty { return collapsed(entry.text) == collapsed(line.text) }
         // Claude Code records a pasted image path as "[Image #N]"; the feed
         // may also show "[image]". A path comes back quoted or not.
-        return withoutImageMarkers(withoutPaths(entry.text, line.attachmentPaths))
-            == withoutImageMarkers(withoutPaths(line.text, line.attachmentPaths))
+        let (recorded, sent) = line.attachmentPaths.isEmpty
+            ? (collapsed(entry.text), collapsed(line.text))
+            : (withoutImageMarkers(withoutPaths(entry.text, line.attachmentPaths)),
+               withoutImageMarkers(withoutPaths(line.text, line.attachmentPaths)))
+        return line.sentTogether ? !sent.isEmpty && recorded.hasSuffix(sent) : recorded == sent
     }
 
     /// A path as it goes into a line: one with a space, a double quote or a backslash in double quotes, with `\`

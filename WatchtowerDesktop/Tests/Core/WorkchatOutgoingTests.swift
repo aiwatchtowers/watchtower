@@ -62,6 +62,18 @@ final class WorkchatOutgoingTests: XCTestCase {
         XCTAssertFalse(WorkchatOutgoing.matches(undated, line: sent), "no time, no match")
     }
 
+    /// Fix round 1: a line sent together with the prompt's text matches the one
+    /// owner entry that records both, ending in the line; another line does not.
+    func testALineSentTogetherMatchesTheEntryEndingInIt() {
+        var sent = line("Run the  linter")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("fix the Run the linter"), line: sent))
+        sent.sentTogether = true
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the Run the linter"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix theRun the linter"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("Run the linter"), line: sent), "alone, if the text was gone")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Run the linter later"), line: sent))
+    }
+
     /// Spec §6.3: a queued line's caption says why it waits; the hold reason
     /// counts only while it is queued.
     func testHoldCaptionsSayWhyTheLineWaits() {

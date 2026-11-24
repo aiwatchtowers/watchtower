@@ -92,6 +92,8 @@ final class WorkchatModel {
     /// The session's terminal prompt line as its screen shows it (`TerminalCenter.promptPreview`):
     /// shown under a line held for the prompt's text, never read to decide anything.
     @ObservationIgnored private let promptPreview: (Int64) -> String?
+    /// The reason each line's gate last held it (`holdReason`).
+    @ObservationIgnored private var gateHolds: [UUID: SessionControl.LineHold] = [:]
     /// The session's agent; nil for a shell or a kind not known yet.
     var agent: AgentKind? { kind()?.agent }
     /// Feed entries that stood for a line already: one echo, one line.
@@ -198,29 +200,28 @@ final class WorkchatModel {
         outgoing.append(WorkchatOutgoing(
             id: id, text: text, sentAt: now(), state: .sending, typedText: typed, attachmentPaths: paths
         ))
-        await go(id, text: text, besideText: false)
+        let delivery = await lineDelivery.deliverLine(
+            text, key: .workchat(id), sessionID: sessionID, gate: gate(id, besideText: false)
+        ) { [weak self] event in
+            switch event {
+            case .awaitingApproval: self?.setHoldReason(id, .needsApproval)
+            case let .tried(delivery): self?.settle(id, delivery)
+            }
+        }
+        settle(id, delivery)
     }
 
-    /// One delivery of the line `id` through `SessionLineDelivery`, held and retried
-    /// there; its check's hold reason goes on the bubble. `besideText`: the prompt's
-    /// text does not hold it (Send together) — the host types it beside that text,
-    /// without a Return, and the owner's one Return sends both (`sharedPrompts`).
-    private func go(_ id: UUID, text: String, besideText: Bool) async {
-        let delivery = await lineDelivery.deliverLine(
-            text, key: .workchat(id), sessionID: sessionID,
-            gate: { [weak self, weak control] in
-                // Read at each try: a held line goes once the kind is known.
-                Self.gate((self?.holdsUntilIdle ?? true) ? control?.lineCheck($0) : control?.workchatLineCheck($0),
-                          besideText: besideText)
-            },
-            onHeldEvent: { [weak self] event in
-                switch event {
-                case .awaitingApproval: self?.setHoldReason(id, .needsApproval)
-                case let .tried(delivery): self?.settle(id, delivery)
-                }
-            }
-        )
-        settle(id, delivery)
+    /// The line `id`'s gate, read at each try (a held line goes once the kind is
+    /// known); the reason it holds is kept for the bubble (`gateHolds`). `besideText`:
+    /// the prompt's text does not hold it (Send together).
+    private func gate(_ id: UUID, besideText: Bool) -> SessionLineDelivery.Gate {
+        { [weak self, weak control] sessionID in
+            let check = (self?.holdsUntilIdle ?? true)
+                ? control?.lineCheck(sessionID) : control?.workchatLineCheck(sessionID)
+            let answer = Self.gate(check, besideText: besideText)
+            if answer == .hold, case let .hold(reason)? = check { self?.gateHolds[id] = reason }
+            return answer
+        }
     }
 
     private func setHoldReason(_ id: UUID, _ reason: WorkchatOutgoing.HoldReason?) {
@@ -228,15 +229,19 @@ final class WorkchatModel {
         outgoing[index].holdReason = reason
     }
 
-    /// Why a held line waits, by the session's check now (the one that held it,
-    /// or the permission prompt read before it); nil when it would go (a
-    /// failed state read held it).
-    private func holdReason() -> WorkchatOutgoing.HoldReason? {
-        switch holdsUntilIdle ? control.lineCheck(sessionID) : control.workchatLineCheck(sessionID) {
-        case .hold(.needsApproval): .needsApproval
-        case .hold(.agentBusy): .agentBusy
-        case .hold(.promptHasText): .promptHasText
-        case .go, .sessionGone: nil
+    /// Why the line's last try was held, from that try (`SessionLineDelivery.holdCause`
+    /// and its gate's reason); nil when not known — a failed state read held it.
+    private func holdReason(_ id: UUID) -> WorkchatOutgoing.HoldReason? {
+        switch lineDelivery.holdCause(.workchat(id)) {
+        case .needsApproval?: .needsApproval
+        case .gate?:
+            switch gateHolds[id] {
+            case .needsApproval?: .needsApproval
+            case .agentBusy?: .agentBusy
+            case .promptHasText?: .promptHasText
+            case nil: nil
+            }
+        case .stateReadFailed?, nil: nil
         }
     }
 
@@ -250,17 +255,22 @@ final class WorkchatModel {
     }
 
     /// Send together (spec §6.3): a line held for the prompt's text goes now,
-    /// typed beside that text without a Return — the owner's Return in the
-    /// terminal sends both. Every other hold (a permission prompt, a busy
-    /// agent) still holds it.
+    /// typed beside that text — the owner's Return in the terminal sends both
+    /// (the host adds its own Return only into a prompt it finds empty). Every
+    /// other hold (a permission prompt, a busy agent) still holds it. The held entry is tried again at its place and only into the run it was
+    /// held for (`SessionLineDelivery.retryHeld`): a run that changed since makes
+    /// it not sent, its text back in the field.
     func sendTogether(_ id: UUID) async {
-        guard let line = outgoing.first(where: { $0.id == id }), line.state == .queued,
-              line.holdReason == .promptHasText,
-              !lineDelivery.dropHeld(sessionID: sessionID, where: { $0 == .workchat(id) }).isEmpty,
-              let index = outgoing.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = outgoing.firstIndex(where: { $0.id == id }), outgoing[index].state == .queued,
+              outgoing[index].holdReason == .promptHasText,
+              lineDelivery.heldKeys(sessionID: sessionID).contains(.workchat(id)) else { return }
         outgoing[index].state = .sending
         outgoing[index].holdReason = nil
-        await go(id, text: line.text, besideText: true)
+        outgoing[index].sentTogether = true
+        let delivery = await lineDelivery.retryHeld(
+            sessionID: sessionID, key: .workchat(id), gate: gate(id, besideText: true)
+        )
+        settle(id, delivery ?? .queued)
     }
 
     // MARK: - Attachments
@@ -566,7 +576,8 @@ final class WorkchatModel {
         }
         outgoing[index].state = state
         // A line behind another (`.queued`) or on its way has no reason of its own.
-        outgoing[index].holdReason = delivery == .held ? holdReason() : nil
+        outgoing[index].holdReason = delivery == .held ? holdReason(id) : nil
+        gateHolds[id] = nil
         if state == .sent, !holdsUntilIdle { outgoing[index].sentWhileBusy = control.isWorking(sessionID) }
         switch state {
         case .sent, .typed, .copied:

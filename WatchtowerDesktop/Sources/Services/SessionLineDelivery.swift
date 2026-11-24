@@ -62,6 +62,16 @@ final class SessionLineDelivery {
         case watchmanCorrection(Int64)
     }
 
+    /// Why a line's last try held it (`holdCause`).
+    enum HoldCause: Equatable {
+        /// The state read before the paste failed: the reason is not known.
+        case stateReadFailed
+        /// The session waits on a permission prompt.
+        case needsApproval
+        /// The line's own gate held it.
+        case gate
+    }
+
     /// What became of a held line when the held lines were tried again.
     enum HeldEvent: Equatable {
         /// Its session still waits on a permission prompt: not tried.
@@ -119,6 +129,8 @@ final class SessionLineDelivery {
     private var retriesStarted = 0
     /// When a line was last submitted into each session.
     private var lastSubmit: [Int64: Date] = [:]
+    /// Why each line's last try was held (`.held`); gone once a try is not.
+    private var holdCauses: [LineKey: HoldCause] = [:]
     /// The spec review lines' own order per session: a round's findings
     /// line and a thread's question go one at a time, in filing order.
     private(set) lazy var specReviewLines = SpecReviewLineOrder { [weak self] line, key, sessionID in
@@ -233,6 +245,27 @@ final class SessionLineDelivery {
         lastSubmit[sessionID]
     }
 
+    /// Why the line `key`'s last try was held; nil when it was not.
+    func holdCause(_ key: LineKey) -> HoldCause? { holdCauses[key] }
+
+    /// Tries the held line `key` now under `gate` in place of its own (kept for
+    /// its later tries), at its own turn and only into the run it was held for:
+    /// its run ended or changed since, `.noSession`. nil when it is not held (gone,
+    /// or its retry under way). No `onEvent` is sent: the caller has the result.
+    func retryHeld(sessionID: Int64, key: LineKey, gate: @escaping Gate) async -> Delivery? {
+        guard var held = queues[sessionID]?.first(where: { $0.key == key }) else { return nil }
+        held.gate = gate
+        removeHeldLine(held)
+        let sameRun = terminalCenter?.runs[sessionID] == held.run
+        if !sameRun { holdCauses[key] = nil }
+        let delivery = sameRun ? await deliver(held.line, key: key, sessionID: sessionID, gate: gate) : .noSession
+        if delivery == .held || delivery == .queued {
+            held.behindAnother = delivery == .queued
+            queueHeldLine(held)
+        }
+        return delivery
+    }
+
     /// The keys of a session's held and queued lines.
     func heldKeys(sessionID: Int64) -> Set<LineKey> {
         Set((queues[sessionID] ?? []).map(\.key))
@@ -243,6 +276,7 @@ final class SessionLineDelivery {
     @discardableResult
     func dropHeld(sessionID: Int64, where include: (LineKey) -> Bool) -> [LineKey] {
         let dropped = (queues[sessionID] ?? []).filter { include($0.key) }
+        for line in dropped { holdCauses[line.key] = nil }
         queues[sessionID]?.removeAll { include($0.key) }
         if queues[sessionID]?.isEmpty == true { queues[sessionID] = nil }
         return dropped.map(\.key)
@@ -257,6 +291,7 @@ final class SessionLineDelivery {
         // Taken before any wait, so an overlapping call never sends it twice.
         removeHeldLine(held)
         let sameRun = terminalCenter?.runs[held.sessionID] == held.run
+        if !sameRun { holdCauses[held.key] = nil }
         let delivery = sameRun
             ? await deliver(held.line, key: held.key, sessionID: held.sessionID, gate: held.gate) : .noSession
         if delivery == .held || delivery == .queued {
@@ -281,6 +316,7 @@ final class SessionLineDelivery {
     /// the line is copied, never typed. A line's `gate` that holds it holds
     /// it before the paste.
     private func deliver(_ line: String, key: LineKey, sessionID: Int64, gate: Gate?) async -> Delivery {
+        holdCauses[key] = nil
         guard let center = terminalCenter, center.liveIDs.contains(sessionID),
               let run = center.runs[sessionID] else { return .noSession }
         guard !delivering.contains(sessionID) else { return .queued }
@@ -304,6 +340,7 @@ final class SessionLineDelivery {
         if !fresh || needsApproval(sessionID) {
             NSLog("%@: session %lld: %@ held — %@", key.logSource, sessionID, key.logNoun,
                   fresh ? "permission prompt (needsApproval)" : "state read failed")
+            holdCauses[key] = fresh ? .needsApproval : .stateReadFailed
             return .held
         }
         switch gate?(sessionID) ?? .go {
@@ -311,6 +348,7 @@ final class SessionLineDelivery {
             break
         case .hold:
             NSLog("%@: session %lld: %@ held — its own condition", key.logSource, sessionID, key.logNoun)
+            holdCauses[key] = .gate
             return .held
         case .drop:
             NSLog("%@: session %lld: %@ dropped — it is over", key.logSource, sessionID, key.logNoun)
@@ -442,7 +480,7 @@ private struct HeldLine {
     /// The session's process run (`TerminalCenter.runs`) when the line was
     /// held; it never goes into a later run (that run's brief has it).
     let run: Int?
-    let gate: SessionLineDelivery.Gate?
+    var gate: SessionLineDelivery.Gate?
     /// Its last try found another line going to the session (`.queued`):
     /// that line's end tries it again.
     var behindAnother: Bool

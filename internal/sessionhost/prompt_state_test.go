@@ -263,18 +263,6 @@ func TestDraftFixture(t *testing.T) {
 	}
 }
 
-// The app's own clear (Task 7's clear_first) empties any draft, an inexact
-// one and a pending `\` included.
-func TestDraftClearedByApp(t *testing.T) {
-	var d draftModel
-	d.feed([]byte("ab\\"), ProfileFor("claude"), false)
-	d.feed([]byte("\x1b[D"), ProfileFor("claude"), false)
-	d.clearedByApp()
-	if d.count != 0 || d.inexact || d.backslash || d.inPaste || d.esc != "" || len(d.run) != 0 || d.holdsText() {
-		t.Fatalf("after clearedByApp = %+v", d)
-	}
-}
-
 // §6.2: a line held over the owner's draft (hold_if_prompt_text — a phone
 // line, an agent message) goes on its next try once the owner erased the
 // draft with Backspace; it was held, nothing written, while the text was

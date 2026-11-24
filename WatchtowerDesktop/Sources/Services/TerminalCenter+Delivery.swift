@@ -142,21 +142,21 @@ extension TerminalCenter {
     func deliveryEvent(_ sessionID: Int64, _ event: SessionHostDeliveryEvent) {
         switch event.kind {
         case .pasted:
-            if pastedKeys[sessionID] == nil { pastedKeys[sessionID] = ownerKeys[sessionID, default: 0] }
             clipboardHints.remove(sessionID)
             dropPasteHint(sessionID)
         case .leftTyped:
             if event.id == nil {
-                // A host before the id: no event will name the app's lines.
+                // A host before the id: no event will name the app's lines. A reply still to
+                // come for one of them then misses `ownLines` and reads as another client's
+                // line (`\` unknown): a false hold at worst, never a false empty.
                 ownLines = ownLines.filter { $0.value.sessionID != sessionID || !$0.value.applied }
             }
             lineLeftTyped(sessionID, id: event.id, endsInBackslash: event.endsInBackslash)
-            pastedKeys[sessionID] = nil
             if event.besideText { sharedPrompts.insert(sessionID) }
             // An ask's answer shows its own bar (`answerHints`).
             if answerHints[sessionID] == nil { pasteHints.insert(sessionID) }
         case .submitted:
-            pastedKeys[sessionID] = nil
+            break
         }
     }
 
@@ -206,7 +206,6 @@ extension TerminalCenter {
     func clearPromptDraft(_ sessionID: Int64) {
         drafts[sessionID] = nil
         sharedPrompts.remove(sessionID)
-        pastedKeys[sessionID] = nil
         ownLines = ownLines.filter { $0.value.sessionID != sessionID }
     }
 
@@ -226,12 +225,15 @@ extension TerminalCenter {
     /// The host left a line typed, or may have (`DraftModel.hostLeftTyped`), from its
     /// `left_typed` event or, for the app's own line (`id` in `ownLines`), its reply: the first
     /// of the two applies it, the second nothing, in either order. `endsInBackslash`: the line's
-    /// own (nil, a host before the flag: unknown). An owner's key since the line's delivery
-    /// began (the app's own) or since its `pasted` event (another client's; none known: any)
-    /// may have landed after the paste, and the mirror read it without the line before the
-    /// cursor: the `\` is then unknown too. Unknown reads as a `\` (a Return holds).
+    /// own (nil, a host before the flag: unknown). An owner's key since the app's own line
+    /// began may have landed after the paste, and the mirror read it without the line before
+    /// the cursor: the `\` is then unknown too. Another client's line always leaves it unknown:
+    /// the Mac cannot order the owner's keys against a paste it did not ask for (a key the host
+    /// read after that paste may reach the mirror before the `pasted` event does). Unknown reads
+    /// as a `\` (a Return holds). Known limit: a key the Mac fed just before its own line's
+    /// request but the host read after the paste counts as before it.
     func lineLeftTyped(_ sessionID: Int64, id: String?, endsInBackslash: Bool?) { // swiftlint:disable:this discouraged_optional_boolean
-        let anchor: Int?
+        var fresh = false
         if let id, var own = ownLines[id] {
             guard !own.applied else {
                 ownLines[id] = nil
@@ -239,11 +241,8 @@ extension TerminalCenter {
             }
             own.applied = true
             ownLines[id] = own
-            anchor = own.keysAtStart
-        } else {
-            anchor = pastedKeys[sessionID]
+            fresh = own.keysAtStart == ownerKeys[sessionID, default: 0]
         }
-        let fresh = anchor == ownerKeys[sessionID, default: 0]
         drafts[sessionID, default: DraftModel()].hostLeftTyped(endingInBackslash: !fresh || (endsInBackslash ?? true))
     }
 
@@ -295,10 +294,12 @@ extension TerminalCenter {
     /// The session's terminal prompt line as its screen shows it now (the
     /// cursor's row, the prompt box's borders dropped), for the Workchat's
     /// held line (spec 2026-11-24-workchat-polish §6.3). Display only: the
-    /// prompt state is the draft model's. nil without a terminal or a line.
+    /// prompt state is the draft model's. nil without a terminal or a line, or
+    /// while the owner has scrolled the terminal back.
     func promptPreview(sessionID: Int64) -> String? {
-        guard let view = processes[sessionID]?.view as? PalettedTerminalView else { return nil }
-        return Self.promptPreview(row: view.cursorRowText())
+        guard let view = processes[sessionID]?.view as? PalettedTerminalView,
+              let row = view.cursorRowText() else { return nil }
+        return Self.promptPreview(row: row)
     }
 
     /// `row` without the prompt box's borders and the spaces around them.
@@ -310,10 +311,12 @@ extension TerminalCenter {
 }
 
 extension PalettedTerminalView {
-    /// The text of the cursor's screen row.
-    func cursorRowText() -> String {
+    /// The text of the cursor's screen row; nil while the view is scrolled back
+    /// (`getLine` reads the rows shown, the cursor's row is the live screen's).
+    func cursorRowText() -> String? {
+        guard !canScroll || scrollPosition >= 1 else { return nil }
         let terminal = getTerminal()
-        guard let line = terminal.getLine(row: terminal.getCursorLocation().y) else { return "" }
+        guard let line = terminal.getLine(row: terminal.getCursorLocation().y) else { return nil }
         return (0..<line.count).reduce(into: "") { text, col in
             let cell = line[col]
             if cell.getCharacter() != "\u{0}" { text.append(terminal.getCharacter(for: cell)) }

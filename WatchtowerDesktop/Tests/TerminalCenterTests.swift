@@ -1300,19 +1300,21 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertTrue(center.promptHoldsText(s.id))
     }
 
-    /// T6 carried item 0a': another client's line left typed while the app's
-    /// own delivery is in flight. Its event carries its `\`: the mirror
-    /// applies it (no owner key since its `pasted`), so the owner's Return
-    /// after `z\` is a line break. A line of another client's not ending in
-    /// `\` lets the owner's Return submit.
-    func testAnotherClientsLineDuringOurDeliveryCarriesItsBackslash() async throws {
-        for (foreign, holds) in [("z\\", true), ("z", false)] {
+    /// T6 carried item 0a' (fix round 1, codex P2): another client's line left
+    /// typed while the app's own delivery is in flight. The Mac cannot order the
+    /// owner's keys against a paste it did not ask for (a Backspace the host
+    /// read after the hub's paste may reach the mirror before its `pasted`
+    /// event), so the line's `\` stays unknown whatever its flag says — even
+    /// with no key at all here: the owner's first Return holds, the next one
+    /// submits.
+    func testAnotherClientsLineLeavesItsBackslashUnknown() async throws {
+        for foreign in ["z\\", "z"] {
             let center = makeCenter()
             let s = try row()
             center.start(s, fresh: true)
             let session = try XCTUnwrap(sessions.last)
             session.host.event = { [weak session] event in
-                if event.kind == .pasted, event.id == nil, session?.host.lines.count == 1 {
+                if event.kind == .pasted, session?.host.lines.count == 1 {
                     session?.onDeliveryEvent?(SessionHostDeliveryEvent(row: 0, run: "", kind: .pasted))
                     session?.onDeliveryEvent?(SessionHostDeliveryEvent(
                         row: 0, run: "", kind: .leftTyped, id: "d1", endsInBackslash: foreign.hasSuffix("\\")
@@ -1325,7 +1327,9 @@ final class TerminalCenterTests: XCTestCase {
 
             XCTAssertEqual(delivery, .pasted)
             session.onOwnerInput?([0x0D])
-            XCTAssertEqual(center.promptHoldsText(s.id), holds, "another client's \(foreign)")
+            XCTAssertTrue(center.promptHoldsText(s.id), "another client's \(foreign): the `\\` is unknown")
+            session.onOwnerInput?([0x0D])
+            XCTAssertFalse(center.promptHoldsText(s.id), "the second Return submits")
         }
     }
 
@@ -1385,6 +1389,21 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertTrue(sessions[0].host.lines[0].id.hasPrefix("mac-"), "the app names its own requests")
     }
 
+    /// Fix round 1 (codex P2): the prompt preview is the cursor's row of the
+    /// live screen; while the owner has scrolled the terminal back the rows
+    /// shown are history, so there is none.
+    func testCursorRowTextIsTheLiveScreensAndNoneWhenScrolledBack() throws {
+        let view = PalettedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let history = (1...80).map { "line \($0)\r\n" }.joined()
+        view.feedOutput(Array((history + "> look at the window").utf8)[...])
+
+        XCTAssertEqual(view.cursorRowText(), "> look at the window")
+        view.scrollUp(lines: 10)
+        XCTAssertNil(view.cursorRowText(), "scrolled back: the shown rows are history")
+        view.scroll(toPosition: 1)
+        XCTAssertEqual(view.cursorRowText(), "> look at the window")
+    }
+
     /// T6 carried item 0d: closing a session drops its key count and the
     /// app's lines still waiting for their event.
     func testCloseForgetsTheMirrorsBookkeeping() async throws {
@@ -1401,7 +1420,6 @@ final class TerminalCenterTests: XCTestCase {
 
         XCTAssertNil(center.ownerKeys[s.id])
         XCTAssertTrue(center.ownLines.isEmpty)
-        XCTAssertNil(center.pastedKeys[s.id])
     }
 
     /// Review round 4: a line the host left typed beside the owner's `a\`

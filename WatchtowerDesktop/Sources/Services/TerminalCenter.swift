@@ -205,9 +205,6 @@ final class TerminalCenter {
     /// The app's own v2 deliveries, by request id, until both their `left_typed`
     /// event and their reply are in, or they end otherwise (`OwnLine`).
     @ObservationIgnored var ownLines: [String: OwnLine] = [:]
-    /// `ownerKeys` at the session's first `pasted` event since its last `left_typed` or
-    /// `submitted`: keys since may have reached another client's line (`lineLeftTyped`).
-    @ObservationIgnored var pastedKeys: [Int64: Int] = [:]
     /// Sessions whose prompt holds a line the host left without its Return
     /// next to other text not submitted (its `left_typed` event with
     /// `beside_text`, board #380). The pane's "press Return" bar says the

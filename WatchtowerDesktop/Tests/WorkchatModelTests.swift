@@ -20,6 +20,8 @@ final class WorkchatModelTests: XCTestCase {
     private var statuses: [Int64: SessionAgentStatus] = [:]
     private var clock: LinkTestClock!
     private var workbenchID: Int64 = 0
+    /// The row `liveSession` made last.
+    private var lastRow: TerminalSession?
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
@@ -159,6 +161,7 @@ final class WorkchatModelTests: XCTestCase {
             ))
         }
         workbenchID = try XCTUnwrap(session.projectID)
+        lastRow = session
         // A Codex session needs its binary to start; the permission read
         // does not care whether it runs.
         guard kind == .claude else { return session.id }
@@ -657,6 +660,89 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertTrue(center.sharedPrompts.contains(session), "the pane says one Return sends both")
         processes[0].onOwnerInput?([0x0D])
         XCTAssertFalse(center.promptHoldsText(session), "the owner's one Return sent them")
+    }
+
+    /// Fix round 1 (codex P1): Send together keeps the held line's run. A
+    /// relaunch between the hold and the click starts another run: the line
+    /// is not sent, its text back in the field, nothing typed into the new run.
+    func testSendTogetherAfterARelaunchIsNotSent() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        processes[0].onOwnerInput?(Array("fix the".utf8))
+        let model = try makeModel(session)
+        model.draft = "Run the linter"
+        await model.send()
+        let id = try XCTUnwrap(model.outgoing.first?.id)
+        XCTAssertEqual(model.outgoing.first?.holdReason, .promptHasText)
+
+        processes[0].onExit?(0)
+        center.start(try XCTUnwrap(lastRow), fresh: false)
+        XCTAssertTrue(center.liveIDs.contains(session))
+        await model.sendTogether(id)
+
+        XCTAssertEqual(model.outgoing.first?.state, .notSent)
+        XCTAssertEqual(model.draft, "Run the linter", "back in the field")
+        XCTAssertFalse(typedText.contains("Run the linter"), "never typed into the new run")
+        XCTAssertTrue(delivery.heldKeys(sessionID: session).isEmpty)
+    }
+
+    /// Fix round 1 (codex P2): the transcript records the prompt's text and the
+    /// line sent together as one owner entry; it is the line's echo.
+    func testSendTogetherEchoIsTheCombinedEntry() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        processes[0].host.tracksDrafts = true
+        processes[0].onOwnerInput?(Array("fix the".utf8))
+        let model = try makeModel(session)
+        model.draft = "Run the linter"
+        await model.send()
+        let id = try XCTUnwrap(model.outgoing.first?.id)
+        await model.sendTogether(id)
+        XCTAssertEqual(model.outgoing.first?.state, .typed)
+
+        model.reconcile(with: [owner("fix theRun the linter", after: 3)])
+
+        XCTAssertTrue(model.outgoing.isEmpty, "the combined entry is its echo")
+    }
+
+    /// Fix round 1 (codex P2): the hold reason is the try's own. A failed state
+    /// read holds the line for no known reason — the generic caption, no Send
+    /// together — even while the prompt holds text.
+    func testAFailedStateReadGivesNoHoldReason() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        processes[0].onOwnerInput?(Array("fix the".utf8))
+        delivery.refreshStates = { false }
+        let model = try makeModel(session)
+        model.draft = "Run the linter"
+        await model.send()
+        let id = try XCTUnwrap(model.outgoing.first?.id)
+
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+        XCTAssertNil(model.outgoing.first?.holdReason)
+        await model.sendTogether(id)
+        XCTAssertEqual(model.outgoing.first?.state, .queued, "no Send together for an unknown hold")
+        XCTAssertFalse(typedText.contains("Run the linter"))
+    }
+
+    /// Fix round 1 (claude minor 6): an agent that holds lines until idle and
+    /// works holds the line as busy.
+    func testAWorkingHoldUntilIdleAgentGivesAgentBusy() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let clock = try XCTUnwrap(clock)
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { .codex }, now: { clock.now }
+        )
+        model.draft = "After this turn"
+
+        await model.send()
+
+        let line = try XCTUnwrap(model.outgoing.first)
+        XCTAssertEqual(line.holdReason, .agentBusy)
+        XCTAssertEqual(WorkchatOutgoing.caption(state: line.state, working: true, holdsUntilIdle: model.holdsUntilIdle,
+                                                holdReason: line.holdReason),
+                       "Queued · sends when the agent stops")
     }
 
     /// Send together is only for a line held for the prompt's text: a line
