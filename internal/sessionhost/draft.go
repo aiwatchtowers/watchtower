@@ -151,6 +151,14 @@ func (d *draftModel) feed(b []byte, prof Profile, dialog bool) draftKey {
 // changed the text: false for Shift+Tab and while the sequence is open. An
 // ESC ending its write is the Esc key until a later write goes on with it.
 func (d *draftModel) escapeByte(c byte, last bool) bool {
+	if d.esc != "" && c == 0x1B {
+		// A new sequence abandons the pending one (a bracketed paste's
+		// start must never be read as its tail): what the program made of
+		// the abandoned bytes is unknown.
+		d.esc = ""
+		d.backslash = true
+		d.setInexact()
+	}
 	if d.esc == "" {
 		d.esc = "\x1b"
 		if last {

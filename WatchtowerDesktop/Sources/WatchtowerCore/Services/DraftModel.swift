@@ -158,6 +158,14 @@ package struct DraftModel: Equatable, Sendable {
     /// for Shift+Tab and while the sequence is open. An ESC ending its write
     /// is the Esc key until a later write goes on with it.
     private mutating func escapeByte(_ byte: UInt8, last: Bool) -> Bool {
+        if !esc.isEmpty, byte == 0x1B {
+            // A new sequence abandons the pending one (a bracketed paste's
+            // start must never be read as its tail): what the program made
+            // of the abandoned bytes is unknown.
+            esc = []
+            backslash = true
+            setInexact()
+        }
         if esc.isEmpty {
             esc = [0x1B]
             if last {

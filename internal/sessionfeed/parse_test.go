@@ -535,3 +535,29 @@ func TestNoticeTask_UsageWithoutNumbersIsNoTask(t *testing.T) {
 	require.Len(t, res.Entries, 1)
 	assert.Nil(t, res.Entries[0].Task)
 }
+
+// Fix round 2 (codex P2): two notifications Claude Code joined into one
+// message (userText joins text blocks with a newline) are siblings: the first
+// keeps only its own children, never the second's.
+func TestNoticeTask_SiblingNotificationsAreNotMerged(t *testing.T) {
+	first := "<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent \"A\" finished</summary>\n<result>done A</result>\n</task-notification>"
+	second := "<task-notification>\n<task-id>b2</task-id>\n<status>failed</status>\n<summary>Agent \"B\" failed</summary>\n<result>done B</result>\n</task-notification>"
+	res := parseStr(t, userBlocks("n1", map[string]any{"type": "text", "text": first}, map[string]any{"type": "text", "text": second}), 0)
+	require.NotEmpty(t, res.Entries)
+	e := res.Entries[0]
+	require.NotNil(t, e.Task)
+	assert.Equal(t, "a1", e.Task.TaskID)
+	assert.Equal(t, "done A", e.Task.Result)
+	assert.Equal(t, `Agent "A" finished`, e.Title)
+	assert.NotContains(t, e.Text, "b2")
+}
+
+// Fix round 2 (codex P3): an unparsed notice's summary that quotes its own
+// close tag before prose is kept whole as the title.
+func TestNoticeTask_RecoveredSummaryQuotingItsCloseTag(t *testing.T) {
+	n := "<task-notification>\n<task-id>a1</task-id>\n<summary>Agent \"handle </summary> tags\" finished</summary>\n<result>partial"
+	res := parseStr(t, join(userStr("n1", n)), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Nil(t, res.Entries[0].Task)
+	assert.Equal(t, `Agent "handle </summary> tags" finished`, res.Entries[0].Title)
+}
