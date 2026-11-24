@@ -423,6 +423,51 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(model.relaySlots.macs, ["m1", "m2", "m3"])
     }
 
+    /// Another Apple ID and a code without share URLs cannot link over iCloud: full slots, at the route check or at
+    /// `open_pairing`, show the slots screen rather than `.cannotShare` (review round 3).
+    func testFullSlotsForAnotherAppleIDWithoutSharesShowTheSlotsScreen() async throws {
+        container.userRecordNameValue = "_someone-else"
+        relay.slots = ["m1", "m2", "m3"]
+        let model = makeModel()
+
+        await model.open(iCloudCode().url())
+        XCTAssertEqual(model.phase, .slotsFull(macName: "Work Mac"))
+
+        model.dismiss()
+        relay.slots = []
+        relay.fail("open", with: HostedRelayPairing.Refusal.slotsFull(macs: ["m1", "m2", "m3"]))
+        await model.open(iCloudCode().url())
+        XCTAssertEqual(model.phase, .slotsFull(macName: "Work Mac"))
+        XCTAssertTrue(container.accepted.isEmpty, "no share accepted")
+    }
+
+    /// A rescan of a saved link to this Mac (no grant to read, so a re-pair) that stops at the slots screen leaves
+    /// that link as it was when the screen closes: it ends only once a pairing slot opens (review round 3).
+    func testARescanStoppedAtTheSlotsScreenKeepsTheSavedLink() async throws {
+        relay.slots = ["m1", "m2", "m3"]
+        container.status = .noAccount
+        let payload = iCloudCode()
+        host.seed(LinkRecord(
+            hubID: hub, macName: "Work Mac", scope: .private, ownerName: owner, userRecordName: owner, nonce: "n",
+            dataShareURL: nil, relayShareURL: nil, deviceID: identity.deviceID, linkedAt: start
+        ))
+        try keyStore.saveHubLink(try ScannedHubKeys(payload).unconfirmedLink.adding(TestPhone.keyboxKeys()))
+        seedRelayRow(otherHub, macName: "Home Mac", relayMac: otherMac)
+        let model = makeModel()
+
+        await model.open(payload.url())
+        XCTAssertEqual(model.phase, .slotsFull(macName: "Work Mac"))
+        model.dismiss()
+        // The same on the plain relay path: a Mac on Relay.
+        await model.open(relayCode(otherHub, macName: "Home Mac", by: otherMac).url())
+        XCTAssertEqual(model.phase, .slotsFull(macName: "Home Mac"))
+        model.dismiss()
+
+        XCTAssertEqual(Set(model.links.map(\.hubID)), [hub, otherHub], "both saved links stay")
+        XCTAssertTrue(try keysHeld(), "the iCloud link's keys stay")
+        XCTAssertTrue(host.farewells.isEmpty)
+    }
+
     /// The route check saw a free slot, then another device took the last one: `open_pairing` answers slots full. A Mac
     /// on iCloud links over iCloud while iCloud is usable, and shows the slots screen otherwise (review round 2).
     func testSlotsFullAtOpenFallsBackToICloudOnlyWhileICloudIsUsable() async throws {

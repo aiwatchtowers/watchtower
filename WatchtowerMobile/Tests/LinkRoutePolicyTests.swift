@@ -116,54 +116,109 @@ final class LinkRoutePolicyTests: XCTestCase {
         XCTAssertEqual(iCloudAsks, 1, "iCloud is asked only on full slots")
     }
 
-    /// A cancelled caller stops waiting at once and reads "not entitled" (review round 2).
+    /// A cancelled caller stops waiting at once and reads "not entitled"; the shared read goes on (review rounds 2, 3).
     func testACancelledEntitlementWaitIsNotEntitled() async {
-        let waiting = Task {
-            await LinkRoutePolicy.bounded({
-                try? await Task.sleep(for: .seconds(3600))
-                return true
-            }, timeout: {
-                try? await Task.sleep(for: .seconds(3600))
-            })
+        let readGate = Gate()
+        let shared = SharedEntitlementRead(clock: FakeLinkClock(now: now)) {
+            await readGate.wait()
+            return true
         }
+        let (registered, signal) = AsyncStream<Void>.makeStream()
+        let timeoutGate = Gate()
+        let waiting = Task {
+            await shared {
+                signal.yield()
+                await timeoutGate.wait()
+            }
+        }
+        var signals = registered.makeAsyncIterator()
+        _ = await signals.next()
+
         waiting.cancel()
         let answer = await waiting.value
+
         XCTAssertFalse(answer)
+        XCTAssertEqual(shared.waiting, 0, "the cancelled caller left")
+        XCTAssertEqual(shared.readsStarted, 1)
+        readGate.open()
     }
 
-    /// Scans while a read hangs share it: one StoreKit read, however many callers (review round 2).
+    /// A caller already cancelled starts no read (review round 3).
+    func testAnAlreadyCancelledCallerStartsNoRead() async {
+        let shared = SharedEntitlementRead(clock: FakeLinkClock(now: now)) { true }
+        let answer = await Task { () -> Bool in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await shared {}
+        }.value
+        XCTAssertFalse(answer)
+        XCTAssertEqual(shared.readsStarted, 0)
+    }
+
+    /// Scans while a read hangs share it: one StoreKit read, however many callers. A caller that times out leaves
+    /// (no waiter kept), and its leaving never cancels the shared read (review rounds 2, 3).
     func testScansWhileAReadHangsShareIt() async {
-        let gate = AsyncStream<Void>.makeStream()
-        let reads = ReadCount()
-        let shared = SharedEntitlementRead {
-            reads.add()
-            for await _ in gate.stream {}
-            return true
+        let readGate = Gate()
+        let shared = SharedEntitlementRead(clock: FakeLinkClock(now: now)) {
+            await readGate.wait()
+            return !Task.isCancelled
         }
-        let first = shared.start()
-        let second = shared.start()
-        XCTAssertEqual(first, second, "the second scan waits on the read in flight")
-        let bounded = await LinkRoutePolicy.bounded({ await shared() }, timeout: {})
-        XCTAssertFalse(bounded, "each caller's own bound still applies")
-        gate.continuation.finish()
-        let answer = await first.value
-        XCTAssertTrue(answer)
-        XCTAssertEqual(reads.count, 1)
-        _ = await shared.start().value
-        XCTAssertEqual(reads.count, 2, "a read after the last one finished starts anew")
+        let (registered, signal) = AsyncStream<Void>.makeStream()
+        let firstTimeout = Gate()
+        let secondTimeout = Gate()
+        let first = Task {
+            await shared {
+                signal.yield()
+                await firstTimeout.wait()
+            }
+        }
+        let second = Task {
+            await shared {
+                signal.yield()
+                await secondTimeout.wait()
+            }
+        }
+        var signals = registered.makeAsyncIterator()
+        _ = await signals.next()
+        _ = await signals.next()
+        XCTAssertEqual(shared.readsStarted, 1, "the second scan waits on the read in flight")
+        XCTAssertEqual(shared.waiting, 2)
+
+        firstTimeout.open()
+        let timedOut = await first.value
+        XCTAssertFalse(timedOut, "each caller's own bound applies")
+        XCTAssertEqual(shared.waiting, 1, "the timed-out caller left")
+
+        readGate.open()
+        let answered = await second.value
+        XCTAssertTrue(answered, "no caller cancelled the read")
+        XCTAssertEqual(shared.waiting, 0)
+        XCTAssertEqual(shared.readsStarted, 1)
     }
 
-    /// The entitlement read is bounded: a read that outlasts the bound is "not entitled", one that answers first wins.
-    func testASlowEntitlementReadCountsAsNotEntitled() async {
-        let hung = await LinkRoutePolicy.bounded({
-            try? await Task.sleep(for: .seconds(3600))
-            return true
-        }, timeout: {})
-        XCTAssertFalse(hung)
-        let answered = await LinkRoutePolicy.bounded({ true }, timeout: {
-            try? await Task.sleep(for: .seconds(3600))
-        })
-        XCTAssertTrue(answered)
+    /// A read older than its age limit is abandoned: the next caller starts a new one and gets its answer (review
+    /// round 3).
+    func testAHungReadPastItsAgeIsReplaced() async {
+        let clock = FakeLinkClock(now: now)
+        let reads = ReadCount()
+        let oldGate = Gate()
+        let shared = SharedEntitlementRead(maxAge: 60, clock: clock) {
+            guard reads.add() == 1 else { return true }
+            await oldGate.wait()
+            return false
+        }
+        let early = await shared {}
+        XCTAssertFalse(early)
+        clock.advance(by: 30)
+        _ = await shared {}
+        XCTAssertEqual(shared.readsStarted, 1, "a read younger than its limit is shared")
+
+        clock.advance(by: 31)
+        let timeoutGate = Gate()
+        let fresh = await shared { await timeoutGate.wait() }
+
+        XCTAssertTrue(fresh, "the new read's answer")
+        XCTAssertEqual(shared.readsStarted, 2)
+        oldGate.open()
     }
 
     func testAnUnknownPayingAnswerWithAnEntitlementIsRelayUnreachable() async {
@@ -310,9 +365,24 @@ private final class ReadCount: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
 
-    var count: Int { lock.withLock { value } }
+    /// Counts one read; its number.
+    func add() -> Int {
+        lock.withLock {
+            value += 1
+            return value
+        }
+    }
+}
 
-    func add() {
-        lock.withLock { value += 1 }
+/// A gate a fake waits on until the test opens it. Never opened, it waits until its task is cancelled. One waiter.
+private final class Gate: Sendable {
+    private let pair = AsyncStream<Void>.makeStream()
+
+    func wait() async {
+        for await _ in pair.stream {}
+    }
+
+    func open() {
+        pair.continuation.finish()
     }
 }

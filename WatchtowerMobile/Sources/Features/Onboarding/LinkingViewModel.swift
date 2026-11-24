@@ -256,16 +256,15 @@ final class LinkingViewModel {
         let route = await LinkRoutePolicy.route(
             payload, relay: relay.availability,
             entitled: { [relay] in await relay.holdsRelayEntitlement() },
-            iCloudUsable: { [access] in await access.availability() == .available },
+            iCloudUsable: { await self.canLinkOverICloud(payload) },
             account: { [relay] in await LinkRoutePolicy.account { try await relay.accountState() } }
         )
         switch route {
         case let .refuse(failure):
             phase = .failed(failure)
         case let .relay(mac, authPub):
-            if let row = row(payload.hubID), !ending.contains(row.hubID) {
-                report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
-            }
+            // A saved link to this Mac ends only once the pairing slot is open (`connectRelay`): a refused slot, or
+            // the slots screen closed without a removal, leaves it as it was.
             await connectRelay(RelayCode(payload: payload, mac: mac, authPub: authPub, hubKeys: hubKeys))
         case .cloudKit:
             await connectICloud(payload, hubKeys: hubKeys)
@@ -291,15 +290,27 @@ final class LinkingViewModel {
             phase = .failed(.iCloud(error.localizedDescription))
             return
         }
-        // A saved link to this Mac whose keybox does not say "linked" (a
-        // missed removal, an absent keybox) or that the Mac removed (frozen):
-        // a re-pair. That link ends first, its keys with it, reporting what
-        // its removal lost, so a refused or unanswered re-pair leaves no row
-        // whose keys open nothing. Other hubs are untouched.
-        if let row = row(payload.hubID), !ending.contains(row.hubID) {
-            report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
-        }
+        await endRepairedLink(payload.hubID)
         await connect(payload, ownerUser: ownerUser, hubKeys: hubKeys, userRecordName: userRecordName)
+    }
+
+    /// A saved link to this Mac whose keybox does not say "linked" (a
+    /// missed removal, an absent keybox) or that the Mac removed (frozen):
+    /// a re-pair. That link ends before the new one writes anything, its keys
+    /// with it, reporting what its removal lost, so a refused or unanswered
+    /// re-pair leaves no row whose keys open nothing. Other hubs are untouched.
+    private func endRepairedLink(_ hubID: String) async {
+        guard let row = row(hubID), !ending.contains(row.hubID) else { return }
+        report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
+    }
+
+    /// Whether `payload` can link over iCloud now, by `connectICloud`'s and `connect`'s own preconditions: an iCloud
+    /// account, then the Mac's owner (the private database) or, for another Apple ID, both share URLs.
+    private func canLinkOverICloud(_ payload: LinkPayload) async -> Bool {
+        guard let ownerUser = payload.ownerUser, await access.availability() == .available,
+              let userRecordName = try? await access.identity() else { return false }
+        return userRecordName == ownerUser
+            || (payload.dataShare.flatMap(URL.init(string:)) != nil && payload.relayShare.flatMap(URL.init(string:)) != nil)
     }
 
     /// The scanned code and its hub keys; nil with the failure shown when the code cannot be used.
@@ -1602,6 +1613,7 @@ extension LinkingViewModel {
             await openRefused(error, code: code)
             return
         }
+        await endRepairedLink(payload.hubID)
         let deviceKeys: DeviceIdentityKeys
         let relayDeviceID: String
         do {
@@ -1672,7 +1684,7 @@ extension LinkingViewModel {
         let iCloudHub = payload.offersCloudKit && !LinkRoutePolicy.hubOnRelay(payload)
         switch error as? HostedRelayPairing.Refusal {
         case let .slotsFull(macs):
-            if iCloudHub, await access.availability() == .available {
+            if iCloudHub, await canLinkOverICloud(payload) {
                 await connectICloud(payload, hubKeys: code.hubKeys)
                 return
             }

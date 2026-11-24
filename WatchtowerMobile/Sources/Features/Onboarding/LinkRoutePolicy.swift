@@ -33,9 +33,6 @@ typealias RelayAccountAnswer = (paying: Bool, macs: [String])
 /// An iCloud link to a Mac on Relay would only ever receive `hub_on_relay`, so a hub on Relay is never linked over
 /// iCloud.
 enum LinkRoutePolicy {
-    /// How long the device's entitlement read may take before it counts as "not entitled".
-    static let entitlementBound = Duration.seconds(5)
-
     /// `decide` with a paying answer that carries no slots (the route tests).
     static func decide(
         _ code: LinkPayload,
@@ -121,100 +118,132 @@ enum LinkRoutePolicy {
             return .failure(.unreachable)
         }
     }
-
-    /// `read`, or false once `timeout` returns first or the caller is cancelled. The read is left to finish on its own
-    /// (StoreKit's reads do not stop on a cancel), so a hung read never holds the scan.
-    static func bounded(_ read: @escaping @Sendable () async -> Bool, timeout: @escaping @Sendable () async -> Void) async -> Bool {
-        let race = FirstAnswer()
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                race.wait(continuation)
-                race.add(Task { race.answer(await read()) })
-                race.add(Task {
-                    await timeout()
-                    race.answer(false)
-                })
-            }
-        } onCancel: {
-            race.answer(false)
-        }
-    }
 }
 
-/// One entitlement read shared by every caller while it runs (`HostedRelayLinkOps`): a hung StoreKit read is never
-/// started again by a later scan, and each caller bounds its own wait (`LinkRoutePolicy.bounded`).
+/// The device's Relay entitlement read (StoreKit), shared by every scan while it runs. Each caller waits under its
+/// own bound and leaves when it times out or is cancelled; the read itself is never cancelled by a caller. A read
+/// older than `maxAge` (on `clock`'s uptime) is abandoned: the next caller starts a new one, and the old one's answer is
+/// dropped. So a hung StoreKit read neither piles up waiters nor makes the phone "not entitled" for the session.
 final class SharedEntitlementRead: @unchecked Sendable {
-    private let read: @Sendable () async -> Bool
-    private let lock = NSLock()
-    private var running: (id: UInt64, task: Task<Bool, Never>)?
-    private var started: UInt64 = 0
+    /// How long one caller waits for the read before it counts as "not entitled".
+    static let bound = Duration.seconds(5)
+    /// How old a read in flight may get before a caller starts a new one.
+    static let maxAge: TimeInterval = 60
 
-    init(_ read: @escaping @Sendable () async -> Bool) {
+    private struct Waiter {
+        let continuation: CheckedContinuation<Bool, Never>
+        var timeout: Task<Void, Never>?
+    }
+
+    private let read: @Sendable () async -> Bool
+    private let clock: any LinkClock
+    private let maxAge: TimeInterval
+    private let lock = NSLock()
+    private var running: (id: UInt64, startedAt: TimeInterval)?
+    private var reads: UInt64 = 0
+    private var waiters: [UInt64: Waiter] = [:]
+    /// Callers that have an id and have not registered yet, and those of them already cancelled.
+    private var unregistered: Set<UInt64> = []
+    private var cancelledEarly: Set<UInt64> = []
+    private var lastWaiter: UInt64 = 0
+
+    init(
+        maxAge: TimeInterval = SharedEntitlementRead.maxAge,
+        clock: any LinkClock,
+        read: @escaping @Sendable () async -> Bool
+    ) {
+        self.maxAge = maxAge
+        self.clock = clock
         self.read = read
     }
 
-    /// The read in flight, or a new one when none is.
-    func start() -> Task<Bool, Never> {
+    /// Reads started so far.
+    var readsStarted: Int { lock.withLock { Int(reads) } }
+    /// Callers waiting now.
+    var waiting: Int { lock.withLock { waiters.count } }
+
+    /// The read's answer; false once `timeout` returns first or the caller is cancelled. A caller already cancelled
+    /// starts nothing.
+    func callAsFunction(timeout: @escaping @Sendable () async -> Void = { try? await Task.sleep(for: bound) }) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        let id = lock.withLock {
+            lastWaiter += 1
+            unregistered.insert(lastWaiter)
+            return lastWaiter
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard register(id, continuation) else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                startIfNeeded()
+                attach(Task {
+                    await timeout()
+                    self.leave(id)
+                }, to: id)
+            }
+        } onCancel: {
+            leave(id)
+        }
+    }
+
+    private func register(_ id: UInt64, _ continuation: CheckedContinuation<Bool, Never>) -> Bool {
         lock.withLock {
-            if let running { return running.task }
-            started += 1
-            let id = started
-            let task = Task { [read] in
-                let value = await read()
-                self.finished(id)
-                return value
-            }
-            running = (id, task)
-            return task
+            unregistered.remove(id)
+            guard cancelledEarly.remove(id) == nil else { return false }
+            waiters[id] = Waiter(continuation: continuation)
+            return true
         }
     }
 
-    func callAsFunction() async -> Bool {
-        await start().value
-    }
-
-    private func finished(_ id: UInt64) {
-        lock.withLock { if running?.id == id { running = nil } }
-    }
-}
-
-/// The first answer of `LinkRoutePolicy.bounded`'s two tasks (or the caller's cancel); the other task is cancelled.
-private final class FirstAnswer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Bool, Never>?
-    private var tasks: [Task<Void, Never>] = []
-    private var done = false
-    private var result = false
-
-    /// Resumes at once when the answer came first (a caller cancelled before it waited).
-    func wait(_ continuation: CheckedContinuation<Bool, Never>) {
-        let (answered, value) = lock.withLock {
-            if !done { self.continuation = continuation }
-            return (done, result)
+    private func attach(_ timeout: Task<Void, Never>, to id: UInt64) {
+        let answered = lock.withLock {
+            guard waiters[id] != nil else { return true }
+            waiters[id]?.timeout = timeout
+            return false
         }
-        if answered { continuation.resume(returning: value) }
+        if answered { timeout.cancel() }
     }
 
-    func add(_ task: Task<Void, Never>) {
-        let late = lock.withLock {
-            if !done { tasks.append(task) }
-            return done
+    /// The caller `id` stops waiting: "not entitled". A cancel that lands before the caller registered is kept, so
+    /// its registration answers at once.
+    private func leave(_ id: UInt64) {
+        let waiter: Waiter? = lock.withLock {
+            if let waiter = waiters.removeValue(forKey: id) { return waiter }
+            if unregistered.contains(id) { cancelledEarly.insert(id) }
+            return nil
         }
-        if late { task.cancel() }
+        waiter?.timeout?.cancel()
+        waiter?.continuation.resume(returning: false)
     }
 
-    func answer(_ value: Bool) {
-        let (waiter, others): (CheckedContinuation<Bool, Never>?, [Task<Void, Never>]) = lock.withLock {
-            guard !done else { return (nil, []) }
-            done = true
-            result = value
-            defer {
-                continuation = nil
-                tasks = []
-            }
-            return (continuation, tasks)
+    private func startIfNeeded() {
+        let id: UInt64? = lock.withLock {
+            let now = clock.uptime()
+            if let running, now - running.startedAt < maxAge { return nil }
+            reads += 1
+            running = (reads, now)
+            return reads
         }
-        waiter?.resume(returning: value)
-        for task in others { task.cancel() }
+        guard let id else { return }
+        Task { [read] in
+            let value = await read()
+            self.finish(id, value)
+        }
+    }
+
+    /// The read `id` answered: every caller waiting gets `value`, unless a newer read replaced it.
+    private func finish(_ id: UInt64, _ value: Bool) {
+        let answered: [Waiter] = lock.withLock {
+            guard running?.id == id else { return [] }
+            running = nil
+            defer { waiters = [:] }
+            return Array(waiters.values)
+        }
+        for waiter in answered {
+            waiter.timeout?.cancel()
+            waiter.continuation.resume(returning: value)
+        }
     }
 }

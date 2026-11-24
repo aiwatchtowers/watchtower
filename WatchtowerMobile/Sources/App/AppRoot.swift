@@ -251,8 +251,8 @@ final class AppRoot {
         )
         let relayConfig = RelayConfig.from(bundle: .main)
         let productID = relayConfig.productID
-        // One StoreKit read at a time, however many scans wait on it.
-        let entitlementRead = SharedEntitlementRead {
+        // One StoreKit read at a time, however many scans wait on it; each scan waits at most `SharedEntitlementRead.bound`.
+        let entitlementRead = SharedEntitlementRead(clock: SystemLinkClock()) {
             guard let productID else { return false }
             return await StoreKitRelayStore.holdsCurrentEntitlement(productID: productID, now: Date())
         }
