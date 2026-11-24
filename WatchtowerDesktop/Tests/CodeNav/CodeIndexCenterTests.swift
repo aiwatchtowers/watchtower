@@ -304,7 +304,8 @@ final class CodeIndexCenterTests: XCTestCase {
     /// FILES closed, the centre's batches reach this index, and a duplicate base name joining the index turns a bare
     /// file name plain — no longer coloured, and a click on it opens nothing.
     func testAWorkchatHoldTurnsABareNamePlainWhenADuplicateAppearsWithFilesClosed() async throws {
-        let center = makeCenter(["STUB_FILES": "lib/a.swift"])
+        let debounceClock = HandMovedDebounceClock()
+        let center = makeCenter(["STUB_FILES": "lib/a.swift"], debounceClock: debounceClock)
         let files = CodeFilesCenter(
             defaults: UserDefaults(suiteName: "CodeIndexCenterTests-\(UUID().uuidString)") ?? .standard,
             gitRead: { _ in .noRepository }, watchesFolders: false
@@ -328,6 +329,8 @@ final class CodeIndexCenterTests: XCTestCase {
 
         try "x\n".write(to: folder.appendingPathComponent("lib/sub/a.swift"), atomically: true, encoding: .utf8)
         files.handle(FolderWatcher.Batch(paths: ["lib/sub/a.swift"]), root: root(7))
+        await debounceClock.untilSleeps(1)
+        debounceClock.advance(by: .milliseconds(300))
         let joined = await eventually { index.files.contains("lib/sub/a.swift") }
         XCTAssertTrue(joined, "files: \(index.files)")
         _ = resolves()
@@ -340,6 +343,31 @@ final class CodeIndexCenterTests: XCTestCase {
             index: .init(files: { index.files }, revision: { index.filesRevision })
         )
         XCTAssertEqual(click, .nothing)
+    }
+
+    /// A bench folder retired and then back on the bench (round 4): held again, its index runs in full, so a
+    /// file list kept within the idle time is not trusted.
+    func testARestoredFolderRunsItsIndexAgain() async {
+        let center = makeCenter()
+        let files = CodeFilesCenter(
+            defaults: UserDefaults(suiteName: "CodeIndexCenterTests-\(UUID().uuidString)") ?? .standard,
+            gitRead: { _ in .noRepository }, watchesFolders: false
+        )
+        files.codeIndex = center
+        let hub = WorkbenchFolder(id: 5, workbenchID: 7, folderPath: folder.path, position: 1, name: "hub")
+        let removed = WorkbenchFolder(id: 5, workbenchID: 7, folderPath: folder.path, position: 1,
+                                      removedAt: "2026-11-24T00:00:00Z", name: "hub")
+        let hubRoot = CodeRoot(folder: hub, homeFolderID: 3)
+        let lease = WorkchatIndexLease()
+        lease.hold(hubRoot, in: files)
+        defer { lease.release() }
+        let index = center.index(for: hubRoot)
+        let ready = await eventually { index.state == .ready }
+        XCTAssertTrue(ready)
+        files.retireRootsOffTheBench([7: BenchFolders(folders: [removed], homeID: 3)])
+        lease.hold(hubRoot, in: files)
+        let again = await eventually { self.stub.fullRuns == 2 && index.state == .ready }
+        XCTAssertTrue(again, "full runs: \(stub.fullRuns)")
     }
 
     // MARK: Rules file (spec §6.5)

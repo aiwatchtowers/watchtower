@@ -126,6 +126,9 @@ final class CodeFilesCenter {
     /// watched and indexed as for a shown one, but a hold alone never runs
     /// `git status` (#2201 T2 review round 3).
     @ObservationIgnored private var holds: [CodeRoot: Int] = [:]
+    /// Roots retired with their bench folder or workbench: shown or held
+    /// again, their buffers and index read the disk afresh (round 4).
+    @ObservationIgnored private var retiredRoots: Set<CodeRoot> = []
     @ObservationIgnored private var gitRunning: Set<CodeRoot> = []
     @ObservationIgnored private var gitPending: Set<CodeRoot> = []
     @ObservationIgnored private var gitLastRun: [CodeRoot: ContinuousClock.Instant] = [:]
@@ -239,7 +242,10 @@ final class CodeFilesCenter {
         let isNew = watched.insert(root).inserted
         // A worktree root is not watched while hidden: what changed
         // meanwhile is read again now.
-        if isNew, !root.isMain { rescanRoot(root) }
+        if isNew, !root.isMain || retiredRoots.contains(root) { rescanRoot(root) }
+        // A folder back on the bench: its index may still be within its idle
+        // time and would keep the old file list.
+        if retiredRoots.remove(root) != nil { codeIndex?.applyWatcherBatch(FolderWatcher.Batch(mustRescan: true), root: root) }
         if watchesFolders, isNew || watchers[root] == nil {
             let watcher = FolderWatcher(root: root.folder, hidden: CodeFileTree.hiddenNames) { [weak self] batch in
                 self?.receive(batch, root: root)
@@ -288,9 +294,22 @@ final class CodeFilesCenter {
         for root in watched {
             guard let folderID = root.folderID, let bench = all[root.workbenchID] else { continue }
             if let folder = bench.folder(folderID), !folder.isRemoved { continue }
-            unwatchRoot(root)
-            dropRootViews(root)
+            retire(root)
         }
+    }
+
+    /// The workbench was deleted: every root of it stops being watched, its
+    /// main roots' streams too (review round 4).
+    func retireWorkbenchRoots(workbenchID: Int64) {
+        for root in watched where root.workbenchID == workbenchID {
+            retire(root)
+        }
+    }
+
+    private func retire(_ root: CodeRoot) {
+        unwatchRoot(root)
+        dropRootViews(root)
+        retiredRoots.insert(root)
     }
 
     /// The view model is being replaced (`WorkbenchesViewModel.stop`):

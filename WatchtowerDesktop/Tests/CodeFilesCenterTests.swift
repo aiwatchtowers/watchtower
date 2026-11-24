@@ -515,6 +515,44 @@ final class CodeFilesCenterTests: XCTestCase {
         XCTAssertTrue(center.isWatching(root), "the home root stays")
     }
 
+    /// A retired folder back on the bench (same row, same root, round 4): its buffers read the disk again when it
+    /// is shown, and a Workchat still holding it holds it again.
+    func testARestoredFolderIsReadAfreshAndReheld() throws {
+        let hubFolder = folder.appendingPathComponent("hub")
+        try FileManager.default.createDirectory(at: hubFolder, withIntermediateDirectories: true)
+        try "v1\n".write(to: hubFolder.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        let hub = WorkbenchFolder(id: 5, workbenchID: project.id, folderPath: hubFolder.path, position: 1, name: "hub")
+        let home = WorkbenchFolder(id: 3, workbenchID: project.id, folderPath: folder.path, position: 0, name: "acme")
+        let removed = WorkbenchFolder(id: 5, workbenchID: project.id, folderPath: hubFolder.path, position: 1,
+                                      removedAt: "2026-11-24T00:00:00Z", name: "hub")
+        let hubRoot = CodeRoot(folder: hub, homeFolderID: 3)
+        let center = makeCenter()
+        let lease = WorkchatIndexLease()
+        lease.hold(hubRoot, in: center)
+        let buffer = center.buffer(for: hubRoot, relPath: "a.txt")
+        buffer.loadIfNeeded()
+        center.retireRootsOffTheBench([project.id: BenchFolders(folders: [home, removed], homeID: 3)])
+        XCTAssertFalse(center.isWatching(hubRoot))
+        try "v2\n".write(to: hubFolder.appendingPathComponent("a.txt"), atomically: false, encoding: .utf8)
+
+        lease.hold(hubRoot, in: center)
+        XCTAssertTrue(center.isWatching(hubRoot), "the lease holds the restored root again")
+        XCTAssertEqual(buffer.text, "v2\n", "the buffer read the disk afresh")
+        lease.release()
+        XCTAssertTrue(center.isWatching(hubRoot), "a main root's stream stays while hidden")
+    }
+
+    /// A deleted workbench: every root of it stops being watched, the main root's stream too (round 4).
+    func testADeletedWorkbenchsRootsAreRetired() {
+        let center = makeCenter()
+        let other = Workbench(row: Row(["id": 8, "name": "acme", "folder_path": folder.path])).mainCodeRoot
+        center.startWatching(root)
+        center.startWatching(other)
+        center.retireWorkbenchRoots(workbenchID: project.id)
+        XCTAssertFalse(center.isWatching(root))
+        XCTAssertTrue(center.isWatching(other), "another workbench stays")
+    }
+
     func testAMovedWorkbenchFolderDropsTheOldMainRootsWatchAndTree() throws {
         let moved = FileManager.default.temporaryDirectory.appendingPathComponent("center-moved-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: moved, withIntermediateDirectories: true)

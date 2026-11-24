@@ -13,6 +13,9 @@ struct SessionChatView: View {
     let vm: WorkbenchesViewModel
     let sessionID: Int64
     let projectID: Int64
+    /// The workspace pane this chat is shown in: its own Workchat pane, or Branch review's (`.changes`) for the
+    /// review's Author chat. A path click opens Files beside it (review round 4).
+    let hostPane: WorkspacePane
     /// Each new value puts the keyboard in the composer (Branch review's Ask agent).
     var composerFocus: UUID?
     /// The composer takes the keyboard as it is made.
@@ -50,12 +53,14 @@ struct SessionChatView: View {
         vm: WorkbenchesViewModel,
         sessionID: Int64,
         projectID: Int64,
+        hostPane: WorkspacePane? = nil,
         composerFocus: UUID? = nil,
         composerAutoFocus: Bool = false
     ) {
         self.vm = vm
         self.sessionID = sessionID
         self.projectID = projectID
+        self.hostPane = hostPane ?? .sessionChat(sessionID)
         self.composerFocus = composerFocus
         self.composerAutoFocus = composerAutoFocus
         // An autoclosure, run once per pane (the pane is keyed by session):
@@ -205,6 +210,8 @@ struct SessionChatView: View {
             highlights.cancelPendingClick()
             indexLease.hold(root, in: vm.codeFiles)
         }
+        // A bench folder restored after it was retired: its root is held (watched and indexed) again.
+        .onChange(of: vm.benchFolders[projectID]) { _, _ in indexLease.hold(sessionCodeRoot, in: vm.codeFiles) }
         .onDisappear {
             highlights.cancelPendingClick()
             indexLease.release()
@@ -462,7 +469,7 @@ struct SessionChatView: View {
         let indexView = index.map { index in
             WorkchatHighlights.IndexView(files: { index.files }, revision: { index.filesRevision })
         } ?? .none
-        let (highlights, vm, sessionID) = (highlights, vm, sessionID)
+        let (highlights, vm, hostPane) = (highlights, vm, hostPane)
         return WorkchatHighlightHandlers(
             open: { span, messageID in
                 highlights.click(span, messageID: messageID, root: root, index: indexView) { action in
@@ -473,7 +480,13 @@ struct SessionChatView: View {
                         WorkchatFeed.copy(text)
                         copiedNotice = WorkchatHighlights.copiedNotice(text)
                     case let .openFile(file, root):
-                        await vm.openSessionFile(file, root: root, pane: .sessionChat(sessionID))
+                        // The click is looked up again once the unsent edits are pulled (review round 4); an open
+                        // given up while the chat is still here beeps, never a silent no-op.
+                        let opened = await vm.openSessionFile(file, root: root, pane: hostPane) {
+                            await highlights.action(for: span, messageID: messageID, root: root, index: indexView)
+                                == .openFile(file, root)
+                        }
+                        if !opened, !Task.isCancelled { NSSound.beep() }
                     case .nothing:
                         NSSound.beep()
                     }

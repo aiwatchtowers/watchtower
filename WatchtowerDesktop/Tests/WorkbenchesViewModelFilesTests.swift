@@ -93,9 +93,56 @@ final class WorkbenchesViewModelFilesTests: XCTestCase {
         var single = WorkspaceLayout.default
         single.primary = .sessionChat(3)
         vm.setLayout(single, projectID: project.id)
-        await vm.openSessionFile("a.go", root: project.mainCodeRoot, pane: .sessionChat(2))
+        let opened = await vm.openSessionFile("a.go", root: project.mainCodeRoot, pane: .sessionChat(2))
+        XCTAssertFalse(opened, "given up: the view beeps")
         XCTAssertEqual(vm.layout(projectID: project.id), single)
         XCTAssertEqual(vm.codeFiles.tabs(for: project.mainCodeRoot).paths, [])
+    }
+
+    /// Branch review's Author chat lives in the `.changes` pane (round 4): a path clicked there opens Files beside
+    /// the review in a split, and in its place on a single pane — never nothing.
+    func testAPathClickedInTheReviewsAuthorChatOpensBesideTheReview() async throws {
+        let (vm, project) = try await vmWithProject()
+        let chat = ReviewAgentChat(vm: vm, projectID: project.id, sessionID: 2)
+        XCTAssertEqual(chat.pane, .changes(2))
+        var split = WorkspaceLayout.default
+        split.primary = .changes(2)
+        split.secondary = .sessionChat(3)
+        vm.setLayout(split, projectID: project.id)
+        let opened = await vm.openSessionFile("a.go", root: project.mainCodeRoot, pane: chat.pane)
+        XCTAssertTrue(opened)
+        XCTAssertEqual(Set(vm.layout(projectID: project.id).visiblePanes), [.files, .changes(2)])
+        XCTAssertEqual(vm.codeFiles.tabs(for: project.mainCodeRoot).paths, ["a.go"])
+
+        var single = WorkspaceLayout.default
+        single.primary = .changes(2)
+        vm.setLayout(single, projectID: project.id)
+        let again = await vm.openSessionFile("b.go", root: project.mainCodeRoot, pane: chat.pane)
+        XCTAssertTrue(again)
+        XCTAssertTrue(vm.layout(projectID: project.id).isShowing(.files))
+    }
+
+    /// The click is checked again after the unsent edits are pulled (the pull may suspend while the index changes,
+    /// round 4): a click no longer valid then opens nothing.
+    func testAPathClickIsCheckedAgainAfterThePull() async throws {
+        let (vm, project) = try await vmWithProject()
+        var single = WorkspaceLayout.default
+        single.primary = .sessionChat(2)
+        vm.setLayout(single, projectID: project.id)
+        let root = project.mainCodeRoot
+        let buffer = vm.codeFiles.buffer(for: root, relPath: "b.go")
+        buffer.loadIfNeeded()
+        let page = PendingPage(edits: [CodeEditorPendingEdit(id: buffer.id, text: "package typed\n", base: 0)])
+        vm.codeFiles.register(page, for: root)
+        var checks: [Bool] = []
+        let opened = await vm.openSessionFile("a.go", root: root, pane: .sessionChat(2)) {
+            checks.append(page.edits.isEmpty)
+            return false
+        }
+        XCTAssertFalse(opened)
+        XCTAssertEqual(checks, [true], "checked once, after the pull")
+        XCTAssertEqual(vm.codeFiles.tabs(for: root).paths, [])
+        XCTAssertEqual(vm.layout(projectID: project.id), single)
     }
 
     /// A bench folder removed from its bench stops being watched once the folders are read again (review round 3).

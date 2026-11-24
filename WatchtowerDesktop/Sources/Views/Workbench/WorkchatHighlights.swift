@@ -52,8 +52,9 @@ final class WorkchatHighlights {
     @ObservationIgnored private var inFlight: [Key: Task<Void, Never>] = [:]
     /// The newest ask per key while its lookup runs: it runs again for it when it lands.
     @ObservationIgnored private var newest: [Key: Ask] = [:]
-    /// The disk and index lookup (`file(_:in:indexFiles:)`); tests stub it.
-    @ObservationIgnored var lookUp: @Sendable (String, CodeRoot, [String]) -> String? = { path, root, files in
+    /// The disk and index lookup (`file(_:in:indexFiles:)`), run off the main actor; tests stub it (async, so a
+    /// test can hold a lookup without blocking a thread).
+    @ObservationIgnored var lookUp: @Sendable (String, CodeRoot, [String]) async -> String? = { path, root, files in
         WorkchatHighlights.file(path, in: root, indexFiles: files)
     }
 
@@ -84,7 +85,7 @@ final class WorkchatHighlights {
     private func start(_ key: Key, _ ask: Ask) {
         let lookUp = lookUp
         inFlight[key] = Task { [weak self] in
-            let file = await Task.detached(priority: .utility) { lookUp(key.path, key.root, ask.indexFiles) }.value
+            let file = await Task.detached(priority: .utility) { await lookUp(key.path, key.root, ask.indexFiles) }.value
             guard let self else { return }
             inFlight[key] = nil
             answers[key] = Answer(file: file, stamp: ask.stamp)
@@ -120,9 +121,10 @@ final class WorkchatHighlights {
     static let clickLookupAttempts = 3
 
     /// Off the main actor for a path (the base-name scan reads the whole file list); the click's action runs when
-    /// it lands, still keyed by message, path and root. The lookup reads a snapshot of the index: if the index's
-    /// revision moved meanwhile (a duplicate may have joined), the answer is stale and the path is looked up again
-    /// (review round 3). A miss is written back only over the answer the click read, never over a newer one.
+    /// it lands, still keyed by message, path and root. A bare name's lookup reads a snapshot of the index: if the
+    /// index's revision moved meanwhile (a duplicate may have joined), the answer is stale and the name is looked up
+    /// again (review round 3). A path with a `/` never reads the index, so no index change makes it stale (round
+    /// 4). A miss is written back only over the answer the click read, never over a newer one.
     func action(
         for span: AgentTextHighlights.Span, messageID: Int64, root: CodeRoot?, index: IndexView
     ) async -> Action {
@@ -135,11 +137,11 @@ final class WorkchatHighlights {
             guard let answer = answers[key], answer.file != nil else { return .nothing }
             let (path, bare, lookUp) = (span.text, !span.text.contains("/"), lookUp)
             for _ in 0 ..< Self.clickLookupAttempts {
-                let revision = index.revision()
+                let revision = bare ? index.revision() : 0
                 let files = bare ? index.files() : []
-                let file = await Task.detached(priority: .userInitiated) { lookUp(path, root, files) }.value
+                let file = await Task.detached(priority: .userInitiated) { await lookUp(path, root, files) }.value
                 if Task.isCancelled { return .nothing }
-                guard index.revision() == revision else { continue }
+                if bare, index.revision() != revision { continue }
                 if let file { return .openFile(file, root) }
                 if answers[key]?.stamp == answer.stamp {
                     answers[key] = Answer(file: nil, stamp: answer.stamp)
@@ -181,6 +183,9 @@ final class WorkchatHighlights {
     func clickFinished() async {
         await pendingClick?.value
     }
+
+    /// The click in flight (tests keep its handle to await it after it is cancelled).
+    var pendingClickTask: Task<Void, Never>? { pendingClick }
 
     /// The regular file `path` names in `root`, relative to it: a path with a `/` (absolute inside the root, or
     /// relative) as written; a bare name by a unique base-name hit in the root's index (`indexFiles`, relative paths).
@@ -225,7 +230,9 @@ final class WorkchatIndexLease {
     /// Holds `root` in `files` (nil: none), letting go of the one held before. A root the centre does not count
     /// (a worktree gone before it showed) is not held, and a later call tries again.
     func hold(_ root: CodeRoot?, in files: CodeFilesCenter) {
-        guard root != held || self.files !== files else { return }
+        // The same root still watched in the same centre: nothing to do. One retired meanwhile (its folder left
+        // the bench and came back) is held again.
+        if root == held, self.files === files, root.map(files.isWatching) ?? true { return }
         release()
         guard let root, files.startHolding(root) else { return }
         held = root

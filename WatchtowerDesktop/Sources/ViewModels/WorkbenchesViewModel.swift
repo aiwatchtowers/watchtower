@@ -891,6 +891,7 @@ final class WorkbenchesViewModel {
             terminalSessions[id] = nil
             sessionPlaces.forgetWorkbench(id)
             codeFiles.forgetRemovedBuffers(workbenchID: id)
+            codeFiles.retireWorkbenchRoots(workbenchID: id)
             askLinkTasks.removeValue(forKey: id)?.task.cancel()
             onWorkbenchRemoved?(id)
             // Deleted elsewhere (CLI): never leave its id selected.

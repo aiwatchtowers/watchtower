@@ -286,18 +286,14 @@ final class SessionChatViewTests: XCTestCase {
         XCTAssertEqual(state.values.filter { $0 == "asked" }.count, 3, "the resolve, the stale click lookup, the retry")
     }
 
-    /// A click's miss lands only over the answer it read: a newer hit that landed meanwhile stands.
+    /// A click's miss lands only over the answer it read: a newer hit that landed meanwhile stands. The click's
+    /// lookup is held on a continuation the test resumes — no thread is blocked, nothing polls.
     func testALateClickMissLeavesANewerAnswer() async {
         let highlights = WorkchatHighlights()
         let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
-        let gate = DispatchSemaphore(value: 0)
-        let log = LockedLog()
+        let held = HeldLookup()
         highlights.lookUp = { path, _, files in
-            if files == ["GATE"] {
-                log.append("click")
-                gate.wait()
-                return nil
-            }
+            if files == ["GATE"] { return await held.hold() }
             return WorkchatHighlights.uniqueBaseName(path, in: files)
         }
         XCTAssertFalse(highlights.resolves("T.swift", messageID: 1, root: root, epoch: 0, revision: 0,
@@ -307,47 +303,57 @@ final class SessionChatViewTests: XCTestCase {
             await highlights.action(for: span("T.swift", .path), messageID: 1, root: root,
                                     index: .init(files: { ["GATE"] }, revision: { 0 }))
         }
-        let started = await eventually { log.contains("click") }
-        XCTAssertTrue(started)
+        await held.untilStarted()
         XCTAssertTrue(highlights.resolves("T.swift", messageID: 1, root: root, epoch: 1, revision: 0,
                                           indexFiles: ["S/T.swift"]))
         await highlights.lookupsFinished()
-        gate.signal()
+        held.resume(with: nil)
         let clicked = await click.value
         XCTAssertEqual(clicked, .nothing)
         XCTAssertTrue(highlights.resolves("T.swift", messageID: 1, root: root, epoch: 1, revision: 0,
                                           indexFiles: ["S/T.swift"]), "the newer hit stands")
     }
 
-    /// A click whose chat leaves (or whose root changes) while its lookup runs does nothing when it lands.
+    /// A path with a `/` never reads the index: index changes during its click lookup never make it stale (round 4).
+    func testAnExplicitPathClickIgnoresIndexChanges() async {
+        let highlights = WorkchatHighlights()
+        let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
+        highlights.lookUp = { path, _, _ in path }
+        _ = highlights.resolves("a/b.go", messageID: 1, root: root, epoch: 0, revision: 0, indexFiles: [])
+        await highlights.lookupsFinished()
+        var revision = 0
+        let index = WorkchatHighlights.IndexView(files: { ["x"] }, revision: {
+            revision += 1
+            return revision
+        })
+        let click = await highlights.action(for: span("a/b.go", .path), messageID: 1, root: root, index: index)
+        XCTAssertEqual(click, .openFile("a/b.go", root))
+        XCTAssertEqual(revision, 0, "the index is never read")
+    }
+
+    /// A click whose chat leaves (or whose root changes) while its lookup runs does nothing when it lands. The
+    /// cancel comes from the index read the click makes right after its lookup — deterministic, no waiting.
     func testACancelledClickNeverActs() async {
         let highlights = WorkchatHighlights()
         let root = CodeRoot(workbenchID: 1, worktree: URL(fileURLWithPath: "/tmp/wt-a"))
-        let gate = DispatchSemaphore(value: 0)
-        let log = LockedLog()
-        highlights.lookUp = { path, _, files in
-            if log.contains("resolved") {
-                log.append("click")
-                gate.wait()
-            }
-            return WorkchatHighlights.uniqueBaseName(path, in: files)
-        }
+        highlights.lookUp = { path, _, files in WorkchatHighlights.uniqueBaseName(path, in: files) }
         _ = highlights.resolves("T.swift", messageID: 1, root: root, epoch: 0, revision: 0, indexFiles: ["S/T.swift"])
         await highlights.lookupsFinished()
-        log.append("resolved")
         var performed: [WorkchatHighlights.Action] = []
-        highlights.click(span("T.swift", .path), messageID: 1, root: root,
-                         index: .init(files: { ["S/T.swift"] }, revision: { 0 })) { performed.append($0) }
-        let started = await eventually { log.contains("click") }
-        XCTAssertTrue(started)
-        highlights.cancelPendingClick()
-        gate.signal()
-        await highlights.clickFinished()
+        var reads = 0
+        let leaving = WorkchatHighlights.IndexView(files: { ["S/T.swift"] }, revision: {
+            reads += 1
+            if reads == 2 { highlights.cancelPendingClick() } // the chat leaves as the lookup lands
+            return 0
+        })
+        highlights.click(span("T.swift", .path), messageID: 1, root: root, index: leaving) { performed.append($0) }
+        let first = highlights.pendingClickTask
+        await first?.value
+        XCTAssertEqual(reads, 2)
         XCTAssertEqual(performed, [], "the chat left: nothing opens")
 
         highlights.click(span("T.swift", .path), messageID: 1, root: root,
                          index: .init(files: { ["S/T.swift"] }, revision: { 0 })) { performed.append($0) }
-        gate.signal()
         await highlights.clickFinished()
         XCTAssertEqual(performed, [.openFile("S/T.swift", root)], "a click left alone acts")
     }
@@ -651,6 +657,32 @@ final class SessionChatViewTests: XCTestCase {
 }
 
 /// A thread-safe list a `@Sendable` stub appends to.
+/// One lookup held until the test resumes it; `untilStarted` returns once it is held. No clock, no blocked thread.
+private final class HeldLookup: @unchecked Sendable {
+    private let lock = NSLock()
+    private var held: CheckedContinuation<String?, Never>?
+    private let started = StateSignal()
+
+    func hold() async -> String? {
+        await withCheckedContinuation { continuation in
+            lock.withLock { held = continuation }
+            started.changed()
+        }
+    }
+
+    func untilStarted() async {
+        await started.until { [self] in lock.withLock { held != nil } }
+    }
+
+    func resume(with file: String?) {
+        let continuation = lock.withLock { () -> CheckedContinuation<String?, Never>? in
+            defer { held = nil }
+            return held
+        }
+        continuation?.resume(returning: file)
+    }
+}
+
 private final class LockedLog: @unchecked Sendable {
     private let lock = NSLock()
     private var items: [String] = []
