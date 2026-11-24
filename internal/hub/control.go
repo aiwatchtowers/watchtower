@@ -148,7 +148,11 @@ type ControlRequest struct {
 	// MovesToRelay (confirm, optional) is the moves_to_relay the owner was
 	// shown: a yes is refused code_changed when the stream's latest sas for
 	// the phone says otherwise (a replacement that kept its code).
-	MovesToRelay *bool           `json:"moves_to_relay,omitempty"`
+	MovesToRelay *bool `json:"moves_to_relay,omitempty"`
+	// Request (confirm, optional) is the request id of the sas line the
+	// owner answered: a yes is refused code_changed, inside the link's own
+	// transaction, when the phone's waiting request is another one.
+	Request      string          `json:"request,omitempty"`
 	Upload       string          `json:"upload,omitempty"`
 	TranscriptID *int64          `json:"transcript_id,omitempty"`
 	ErrorClass   string          `json:"error_class,omitempty"`
@@ -182,6 +186,8 @@ type ControlAnswer struct {
 	// MovesToRelay (a sas event): confirming the phone moves the hub from
 	// iCloud to Relay and cuts off iCloud phones (hubRuntime.movesToRelay).
 	MovesToRelay bool `json:"moves_to_relay,omitempty"`
+	// Request (a sas event) names the waiting request (link.RequestID).
+	Request string `json:"request,omitempty"`
 	// At is when a desktop heartbeat was written; UploadID, Status and
 	// TranscriptID a recording job after a claim or finish; AudioPath the
 	// claimed job's audio file (claim only: Desktop never derives it).
@@ -337,7 +343,7 @@ const pairQueue = 64
 // every event.
 func (s *supervisor) broadcast(ev link.PairEvent) {
 	a := ControlAnswer{Event: ev.Kind, OK: true, URL: ev.URL, DeviceID: ev.DeviceID, Name: ev.Name, Code: ev.Code, Reason: ev.Reason,
-		MovesToRelay: ev.MovesToRelay}
+		MovesToRelay: ev.MovesToRelay, Request: ev.Request}
 	if !ev.ExpiresAt.IsZero() {
 		at := ev.ExpiresAt
 		a.ExpiresAt = &at
@@ -861,7 +867,11 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 				return ControlAnswer{Error: ErrClassCodeChanged}
 			}
 		}
-		if err := h.center.Confirm(r.Device, code, r.Confirm); err != nil {
+		request := ""
+		if r.Confirm {
+			request = r.Request
+		}
+		if err := h.center.ConfirmRequest(r.Device, code, request, r.Confirm); err != nil {
 			return ControlAnswer{Error: LinkErrClass(err)}
 		}
 		h.afterConfirm(r.Device)

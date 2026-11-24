@@ -1549,3 +1549,46 @@ func TestASASOverAPairingSlotSaysOverRelay(t *testing.T) {
 		})
 	}
 }
+
+// #2191 review: a confirm names the request the owner was shown. A
+// replacement keeps its device id but draws a new confirm nonce, so the
+// old request id is refused code_changed even with the code the request
+// shows now (a replacement that drew the same code), and the current one
+// links.
+func TestAConfirmForAReplacedRequestIDIsCodeChanged(t *testing.T) {
+	r := newRig(t)
+	code := r.issue()
+	_, sig, _ := ed25519.GenerateKey(rand.Reader)
+	first, second := phoneWith(t, sig), phoneWith(t, sig)
+	old := r.handle(first, code.Nonce)
+	current := r.handle(second, code.Nonce)
+	if old.Request == "" || current.Request == "" || old.Request == current.Request {
+		t.Fatalf("request ids: %q then %q", old.Request, current.Request)
+	}
+	if ev := sasEventFor(t, r.c, current.Code); ev.Request != current.Request {
+		t.Fatalf("the sas event's request %q, want %q", ev.Request, current.Request)
+	}
+	device := second.id.String()
+	if err := r.c.ConfirmRequest(device, current.Code, old.Request, true); !errors.Is(err, ErrCodeChanged) {
+		t.Fatalf("a yes for the replaced request: %v", err)
+	}
+	if r.linked(second) {
+		t.Fatal("linked a request the owner was not shown")
+	}
+	if err := r.c.ConfirmRequest(device, current.Code, current.Request, true); err != nil {
+		t.Fatal(err)
+	}
+	if !r.linked(second) {
+		t.Fatal("not linked on the current request")
+	}
+}
+
+// sasEventFor drains c's events up to the sas showing code.
+func sasEventFor(t *testing.T, c *Center, code string) PairEvent {
+	t.Helper()
+	for {
+		if ev := sasEvent(t, c); ev.Code == code {
+			return ev
+		}
+	}
+}

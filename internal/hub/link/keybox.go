@@ -25,6 +25,14 @@ import (
 // refusal and no keys. ErrNoRequest when nothing waits (it was refused,
 // unlinked or swept first).
 func (c *Center) Confirm(device, code string, ok bool) error {
+	return c.ConfirmRequest(device, code, "", ok)
+}
+
+// ConfirmRequest is Confirm bound to the request the owner was shown:
+// request, when set, is that request's RequestID, and a yes on a waiting
+// request with another one (a replacement, even one that drew the same
+// code) is ErrCodeChanged, decided in the same transaction that links.
+func (c *Center) ConfirmRequest(device, code, requestID string, ok bool) error {
 	c.mu.Lock()
 	defer c.unlock()
 	now := c.now()
@@ -44,7 +52,7 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 			return ErrNoRequest
 		}
 		request = p
-		if ok && p.sas != code {
+		if ok && (p.sas != code || requestID != "" && RequestID(p.confirmNonce) != requestID) {
 			return ErrCodeChanged
 		}
 		if !ok {

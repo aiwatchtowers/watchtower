@@ -34,6 +34,7 @@ type PairEvent struct {
 	Name         string
 	Code         string
 	Reason       string
+	Request      string // sas: the waiting request's RequestID
 	OverRelay    bool
 	MovesToRelay bool
 }

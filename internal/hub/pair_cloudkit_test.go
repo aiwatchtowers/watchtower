@@ -379,8 +379,15 @@ func TestAConfirmForAStaleCodeIsRefused(t *testing.T) {
 		if a.Error != ErrClassCodeChanged {
 			t.Fatalf("a yes for another moves_to_relay: %+v", a)
 		}
+		// The code holds but the request named is not the one waiting.
+		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code,
+			Request: "0000000000000000"})
+		if sas.Request == "" || a.Error != ErrClassCodeChanged {
+			t.Fatalf("a yes for another request (sas request %q): %+v", sas.Request, a)
+		}
 		shown := sas.MovesToRelay
-		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code, MovesToRelay: &shown})
+		a = confirmAnswer(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true, Code: sas.Code,
+			MovesToRelay: &shown, Request: sas.Request})
 		if !a.OK {
 			t.Fatalf("a yes for the code shown: %+v", a)
 		}
