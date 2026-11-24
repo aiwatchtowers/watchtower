@@ -30,7 +30,7 @@ A colleague who installs Watchtower at a company that already ran **Set up for m
 | D4 | The Slack-address block is always shown under the code field, not behind a disclosure | Agent's call following D2; owner confirms in this review |
 | D5 | The address is not stored | Agent's call (one-time use, nothing to clean up); owner confirms in this review |
 | D6 | No "Invite a colleague" button in this change; a separate target if wanted | Agent's call — the owner did not answer when it was offered; owner confirms in this review |
-| D7 | Only `<sub>.slack.com` addresses; Enterprise Grid org addresses are refused with the caption | Agent's call — `/apps/manage` on a Grid org address is untested |
+| D7 | Only `<sub>.slack.com` addresses; an Enterprise Grid org address (`<sub>.enterprise.slack.com`) gets its own caption pointing to the workspace address | Agent's call — `/apps/manage` on a Grid org address is untested |
 | D8 | The link stays first in About only if a test publish shows it clickable on the Marketplace page; otherwise the code leads | Agent's call; the spikes did not click the link |
 
 ## Goals
@@ -77,7 +77,7 @@ invalid address:
 ```
 
 - The block is always shown under the code field (D4), headed "No code? Find it in Slack" at caption size.
-- **Slack address** field (`.kit`), placeholder `acme.slack.com`. Accepted: `acme`, `acme.slack.com`, `https://acme.slack.com/…` (any path, trailing slash), any case, surrounding spaces, `http://` input. Normalised to `<sub>.slack.com`, `<sub>` = one label of `[a-z0-9-]` (D7). Empty → button disabled, no caption. Anything else → caption "Enter your Slack address, like acme.slack.com", button disabled.
+- **Slack address** field (`.kit`), placeholder `acme.slack.com`. Accepted: `acme`, `acme.slack.com`, `https://acme.slack.com/…` (any path, trailing slash), any case, surrounding spaces, `http://` input. Normalised to `<sub>.slack.com`, `<sub>` = one label of `[a-z0-9-]` (D7). Empty → button disabled, no caption. `<sub>.enterprise.slack.com` → caption "That is your organization's address. Enter your workspace's, like acme.slack.com — it is in Slack's workspace menu.", button disabled. Anything else → caption "Enter your Slack address, like acme.slack.com", button disabled.
 - **Open Slack apps** (`.kitSecondary`) opens `https://<sub>.slack.com/apps/manage` through `@Environment(\.openURL)` (the pattern `CompanyAccountGroups` uses). Watchtower fetches nothing.
 - The steps and the fallback line are static text; the fallback covers not signed in, the app missing from the list, and no access (ask the admin). The address is not stored (D5).
 - Pure functions in `WatchtowerCore`: `SlackAddress.normalize(_:) -> String?` and `SlackAddress.appsURL(_:) -> URL`. Tests: each accepted form, uppercase, trailing slash and path, inner space (refused), empty, `slack.com` alone, `acme.enterprise.slack.com` (refused), a foreign host, `http://` input → `https://` URL.
@@ -101,9 +101,9 @@ Company code
 <code>
 ```
 
-followed by the existing disclosures (`slackmanifest`). Steps are numbered when rendered from a list, so a cut step leaves no gap. Under the `long_description` cap only the install step is cut; the link and the code are never cut (the bundle is capped at 3,000 characters, so the link, the code and the steps fit the 4,000 cap). Plain text with blank lines.
+followed by the existing disclosures (`slackmanifest`). Steps are numbered when rendered from a list, so a cut step leaves no gap. Both the link and the code carry the whole bundle (up to 3,000 characters each), so both cannot always fit the 4,000 cap. Cut order under the cap, as today: the install step first, then the second way in (the code while the link leads; the link when the code leads, D8); the leading way in is never cut. When the code is cut, step 3 reads "Click this link: <link>" with no fallback sentence and the **Company code** block is absent; when the link is cut, step 3 reads "Paste the code below in Watchtower → Connections → Company code." A typical bundle (Slack + Google + Atlassian) is well under half the cap per copy, so both normally fit. Plain text with blank lines.
 
-Acceptance check on a test publish (the plan's last task, run by the owner): the link on the Marketplace page is clickable and opens Watchtower; the code copies whole; any markup renders. If the link is not clickable, the code block moves above step 3 and step 3 becomes "Paste the code below in …" (D8). `aboutLeadsWithCode` is removed either way; the order follows the check. `about_test.go` covers the full text, the cut text (install step dropped, steps renumbered), and the cap never cutting the link or the code.
+Acceptance check on a test publish (the plan's last task, run by the owner): the link on the Marketplace page is clickable and opens Watchtower; the code copies whole; any markup renders. If the link is not clickable, the code block moves above step 3 and step 3 becomes "Paste the code below in …" (D8). `aboutLeadsWithCode` is removed either way; the order follows the check. `about_test.go` covers: the full text; a bundle that needs the install step cut (steps renumbered, no gap); a 3,000-character bundle (the leading way in kept whole, the second dropped, step 3 worded for the one left); the leading way in never cut.
 
 Existing companies get the new layout on the admin's next **Publish** / `slack app link`; no migration.
 
