@@ -14,10 +14,10 @@ Board: #2201. Approved design: [`docs/design/mockups/workchat-polish/`](../../de
 | D6 | A line held because the terminal prompt "has text" must go once the owner erased it; when text really is there, say so and offer a way out | owner, conversation 2026-11-24; ask #1747 |
 | C1 | Highlighting covers `#N` refs, commit hashes, file paths, commands; verdict words and durations are not coloured | author's call, from D3 (v2 dropped them) |
 | C2 | Highlighting is Workchat-only (a `ChatFeedContext` flag); the AI chat and the phone are unchanged in v1 | author's call |
-| C3 | The prompt-empty fix is a per-agent "draft length" model in both twins (Mac `TerminalCenter`, Go `sessionhost.promptState`), not screen scraping | author's call, §6.2 |
-| C4 | "Clear and send" only while the agent is idle; while it works only "Send together" and Cancel | author's call, §6.3 (Ctrl+C interrupts a working agent) |
+| C3 | The prompt-empty fix is a per-agent "draft length" model in both twins (Mac `TerminalCenter`, Go `sessionhost.promptState`, test fake `FakeHostDelivery`), not screen scraping. **Narrower than the v2 mockup's "read the line off the screen":** an erase releases the line when it was a Backspace or Ctrl+U erase of a draft typed straight (no cursor keys); after cursor or word-edit keys the line stays held as today, and the hold caption's actions are the way out | author's call, §6.1 — the owner confirms it by approving this spec |
+| C4 | "Clear and send" is one Ctrl+C (the v2 mockup said Ctrl+U: in Claude Code Ctrl+U only clears the current line before the cursor, Ctrl+C clears the whole input), offered only while the agent is idle; while it works only "Send together" and Cancel | author's call, §6.3 (Ctrl+C interrupts a working agent) |
 | C5 | The expanded steps list stays above the live line (as today), not below it as the HTML drew | author's call, mock shots |
-| C6 | A pasted screenshot is an inline `Image #N` token (the #2065 paste tokens), not the HTML's thumbnail chip; only Finder files are chips | author's call, mock shots |
+| C6 | A pasted screenshot is an inline `Image #N` token (the #2065 paste tokens), not the HTML's thumbnail chip; only Finder files are chips | owner's earlier D7 of `2026-11-19-workchat-agents-and-progress-design.md` ("pastes go inline as tokens, as in Claude Code"); the v2 chip contradicted it |
 | C7 | The Workchat error bar becomes quiet too (glyph, grey text, quiet Retry; no orange box), and the loading state reads "Reading the session…" | author's call, D3 applied to the screen's other states |
 | C8 | `#N` refs are also coloured in the agent-finished row's title | author's call, matches the approved HTML |
 
@@ -51,8 +51,9 @@ forever after the owner typed into the terminal prompt and erased it.
    an image token, Finder-copied files as file chips, long text as a text token. The
    paperclip menu gains "Paste from clipboard", titled by what the clipboard holds
    (screenshot / N files / text) and disabled when it holds nothing usable.
-5. **No stuck line** (D6, C3, C4). Erasing the prompt text in the terminal releases a
-   held line. A line held by real prompt text shows why and the text itself, with
+5. **No stuck line** (D6, C3, C4). Erasing the prompt text in the terminal with
+   Backspace or Ctrl+U (no cursor keys before it) releases a held line; after cursor or
+   word-edit keys the line stays held as today and its caption offers the way out. A line held by real prompt text shows why and the text itself, with
    "Clear and send" (idle only), "Send together" and Cancel.
 
 ## Non-goals
@@ -94,7 +95,8 @@ forever after the owner typed into the terminal prompt and erased it.
     (checked lazily, cached per message).
   - `command`: inline code whose first word is in a small allow-list (`make go swift git
     gh xcodebuild npm ./scripts/…`).
-- Colours: a new DesignKit token `SyntaxTint` (`ref` = `Color.accentColor`, `hash` =
+- Colours: a new token `SyntaxTint` in `WatchtowerKit/Sources/WatchtowerDesign/` (re-exported by
+  `DesignKit`), its values pinned in `WatchtowerKit/Tests/WatchtowerDesignTests/TokenTests.swift` (`ref` = `Color.accentColor`, `hash` =
   `.purple`, `path` = `.orange`, `command` = `.green`), each at opacity 0.7, foreground
   only — no background, no weight (D3); the style guide's token table gains the
   `SyntaxTint` line. Light and dark checked in the shots.
@@ -161,18 +163,33 @@ host holds the same line for `hold_if_prompt_text`.
    `DraftModel { count: Int, exact: Bool }` per run, fed by the same key decoder:
    - printable runes and a bracketed paste add their rune count;
    - Backspace subtracts 1 (floor 0) while `exact`;
+   - Ctrl+U while `exact` and the draft holds no line break sets `{0, true}` (the cursor
+     is at the end, so it clears the whole line);
    - a submitting Return, and Ctrl+C on a non-empty draft while the agent is idle (Claude
      Code clears the input), set `{0, true}`;
-   - any cursor or word-edit key (arrows, Home/End, Ctrl+A/E/W/K/U, Option+Backspace,
-     Esc) sets `exact = false`: from then on only a submit or a clear empties it.
+   - any other cursor or word-edit key (arrows, Home/End, Ctrl+A/E/W/K, Ctrl+U on a
+     multi-line draft, Option+Backspace, Esc) sets `exact = false`: from then on only a
+     submit or a clear empties it.
+   - Input while a permission dialog is up (`inputAnswersDialog` on the Mac, the host's
+     dialog state in Go) changes nothing, as today — the dialog's y/n never counts as
+     draft text.
    - `holdsText` = `count > 0 || !exact` (so an unknown state holds, as today).
    A delivery's own paste and "left typed" set `exact = false` as today's flag does.
    Agents whose profile is not Claude Code keep `exact = false` after any key (today's
-   behaviour).
-2. **Re-check on change.** A held Workchat line re-runs `workchatLineCheck` when the
-   draft model changes (today it waits for the next state tick).
-3. **Hold caption and actions (C4).** `WorkchatOutgoing.caption` gets a `promptHasText`
-   reason: "Waiting: the terminal prompt holds text", plus the prompt's last line when the
+   behaviour). Three copies implement the rule and change together, from one shared
+   table of key cases: `internal/sessionhost/prompt.go` (`promptState`, the authority),
+   `TerminalCenter.ownerInput` (the Mac mirror) and the test fake
+   `WatchtowerDesktop/Tests/FakeHostDelivery.swift` (its boolean `draft` becomes the
+   model, so the Desktop delivery tests check the new rule).
+2. **Re-check on change.** Every line held for `promptHasText` re-runs its check when
+   the draft model changes (today it waits for the next state tick): the Workchat's
+   `workchatLineCheck`, and `SessionLineDelivery`'s `lineCheck` for ask answers and the
+   other Mac deliveries. The host re-tries its own held phone and agent-message lines on
+   the same change.
+3. **Hold caption and actions (C4).** `WorkchatOutgoing.caption` takes the hold reason
+   and says it for each: `needsApproval` → "Waiting: answer the permission prompt in the
+   terminal", `agentBusy` (a line just submitted) → "Queued · sends in a moment", and
+   `promptHasText` → "Waiting: the terminal prompt holds text", plus the prompt's last line when the
    Mac terminal buffer can show it (read-only display, never a decision). Actions:
    - **Clear and send** (idle only): one Ctrl+C into the session, wait for the next
      prompt redraw (≤ 1 s, else give up and leave the line held), then the line.
@@ -221,7 +238,10 @@ the pane's presentation, with tests.
 | Finished row presentation (ok/failed/command, meta strings) | T3 | `AgentFinishedPresentationTests` |
 | ⌘V screenshot and Finder files through the menu path | T4 | `PastingTextViewTests` via `sendAction` + `validateUserInterfaceItem` |
 | Paperclip "Paste …" item title/disabled | T4 | `WorkchatComposerTests` |
-| Draft model: erase releases, cursor keys hold, submit/clear empty | T5 | Go `prompt_state_test`, Swift `TerminalCenterPromptDraftTests` (same table) |
+| Draft model: erase releases, cursor keys hold, submit/clear empty, dialog input ignored | T5 | Go `prompt_state_test`, Swift `TerminalCenterPromptDraftTests`, `FakeHostDelivery` (one shared case table) |
+| Held ask answers re-check on draft change | T6 | `SessionLineDeliveryTests` |
+| Hold captions per reason | T6 | `WorkchatOutgoingTests` |
+| `SyntaxTint` values | T2 | `TokenTests` (`make kit-test FILTER=TokenTests`) |
 | Held line re-checks on draft change; caption and actions | T6 | `WorkchatModelTests`, `WorkchatOutgoingTests` |
 | Clear and send refuses when working, gives up after 1 s | T6 | `WorkchatModelTests` with fake control/clock |
 | Quiet error bar and loading copy (C7) | T1 | `SessionChatViewTests` (strings, Retry) |
@@ -245,7 +265,10 @@ compared against these after the build.
 
 ## Inventory touched
 
-- FEED-03 (session-feed): additive `task` key on event entries — inventory text gains it.
+- FEED-03 (session-feed): **a contract change the owner approves with this spec:** an
+  additive optional `task` object on event entries (no key renamed or removed); the
+  inventory text and `TestSessionFeedJSON_PinnedKeys` gain it, with a change-log line
+  naming this spec's ask.
 - PROJ-16 / PROJ-23 (workbench): the "prompt holds text" input is now the draft model;
   no guard relaxed — an unknown state still holds; the new guard covers the erased draft.
 
