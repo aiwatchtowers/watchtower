@@ -16,6 +16,10 @@ Board: #2201. Approved design: [`docs/design/mockups/workchat-polish/`](../../de
 | C2 | Highlighting is Workchat-only (a `ChatFeedContext` flag); the AI chat and the phone are unchanged in v1 | author's call |
 | C3 | The prompt-empty fix is a per-agent "draft length" model in both twins (Mac `TerminalCenter`, Go `sessionhost.promptState`), not screen scraping | author's call, §6.2 |
 | C4 | "Clear and send" only while the agent is idle; while it works only "Send together" and Cancel | author's call, §6.3 (Ctrl+C interrupts a working agent) |
+| C5 | The expanded steps list stays above the live line (as today), not below it as the HTML drew | author's call, mock shots |
+| C6 | A pasted screenshot is an inline `Image #N` token (the #2065 paste tokens), not the HTML's thumbnail chip; only Finder files are chips | author's call, mock shots |
+| C7 | The Workchat error bar becomes quiet too (glyph, grey text, quiet Retry; no orange box), and the loading state reads "Reading the session…" | author's call, D3 applied to the screen's other states |
+| C8 | `#N` refs are also coloured in the agent-finished row's title | author's call, matches the approved HTML |
 
 ## Intent
 
@@ -58,6 +62,7 @@ forever after the owner typed into the terminal prompt and erased it.
 - No screen reading of the terminal (C3).
 - Steps stay current-turn only (as in the 2026-11-19 spec).
 
+
 ## Design
 
 ### §1 Quiet steps
@@ -90,9 +95,9 @@ forever after the owner typed into the terminal prompt and erased it.
   - `command`: inline code whose first word is in a small allow-list (`make go swift git
     gh xcodebuild npm ./scripts/…`).
 - Colours: a new DesignKit token `SyntaxTint` (`ref` = `Color.accentColor`, `hash` =
-  `.purple`, `path` = `.orange`, `command` = `.green`), each at the style guide's muted
-  text opacity, foreground only — no background, no weight (D3). Light and dark checked
-  in the shots.
+  `.purple`, `path` = `.orange`, `command` = `.green`), each at opacity 0.7, foreground
+  only — no background, no weight (D3); the style guide's token table gains the
+  `SyntaxTint` line. Light and dark checked in the shots.
 - Actions: `ref` → `WorkbenchesViewModel.showTargetOnBoard`; `hash` → copy, with the
   existing "Copied" toast; `path` → `openFile(_:root:preview:)`. Hover shows a pointing
   hand and an underline only on hover.
@@ -111,9 +116,11 @@ forever after the owner typed into the terminal prompt and erased it.
   review).
 - When `result` is the boilerplate and the feed has the subagent's handback for the same
   `tool_use_id`, the CLI fills `result` with the handback's first paragraph.
-- Swift: `SessionFeedEntry.task`; `AgentFinishedPresentation` builds the title, the meta
-  line (`finished · 9 tools · 43.5k tokens · 1m 29s`; failed → `failed · …`; command →
-  `exit 0 · 12s`) and the status tone; `SessionChatRow.eventLine` draws it when `task`
+- Swift: `SessionFeedEntry.task`; `AgentFinishedPresentation` builds the title (agent:
+  its description, `#N` coloured per C8; command: "Background command · <summary>"), the
+  meta line (`finished · 9 tools · 43.5k tokens · 1m 29s`; failed → `failed · 2 tools ·
+  1.2k tokens · 12s`; command → `exit 0 · 3m 34s`) and the status tone (✓ success, ✕
+  failure through `Tone`, glyph only, caption size for a command); `SessionChatRow.eventLine` draws it when `task`
   is set, else today's line (teammate messages unchanged).
 - Open output opens the file in the code viewer read-only when it is under the session's
   temp dir, else reveals it in Finder; Details shows the ids as `.caption2 .tertiary`.
@@ -173,6 +180,13 @@ host holds the same line for `hold_if_prompt_text`.
      pasted after the draft with one Return.
    - **Cancel**: as today.
 
+### §7 Quiet error and loading (C7)
+
+`SessionChatView.errorBar` loses its orange fill: an `exclamationmark.triangle` glyph in
+`Tone` warning, the message in `.secondary`, Retry as a quiet text button. The loading
+state shows "Reading the session…" in `.tertiary` with a small spinner. Both strings in
+the pane's presentation, with tests.
+
 ## Failure and races
 
 - **Writers of the prompt state.** The owner (keys in the terminal, either client), the
@@ -217,6 +231,7 @@ All strings in presentation models (`WorkchatLivePresentation`,
 
 ## Mockups (DesignShotCatalog)
 
+Committed PNGs: [`docs/design/mockups/workchat-polish/shots/`](../../design/mockups/workchat-polish/shots/).
 Rendered by `DesignShotsTests/testWorkchatPolishMockShotsRender`
 (`DesignShotFixtures+WorkchatPolishMock.swift`), light and dark:
 01 steps collapsed (working), 02 steps expanded, 03 steps narrow, 04 agent text with
@@ -235,5 +250,4 @@ compared against these after the build.
 
 ## Left to the builder
 
-SF Symbols for the status glyphs, the exact muted opacity of `SyntaxTint` (from the
-style guide), the `command` allow-list beyond the listed words.
+SF Symbols for the status glyphs, the `command` allow-list beyond the listed words.
