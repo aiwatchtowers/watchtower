@@ -29,8 +29,6 @@ final class AskExplainTests: XCTestCase {
         XCTAssertEqual(AskExplainCopy.entryHelp, "Ask the assistant to explain this question")
         XCTAssertEqual(AskExplainCopy.back, "Back to question")
         XCTAssertEqual(AskExplainCopy.placeholder, "Ask about this question…")
-        XCTAssertEqual(AskExplainCopy.explaining, "Explaining…")
-        XCTAssertEqual(AskExplainCopy.queued, "Waiting — other chats are answering.")
         XCTAssertEqual(AskExplainCopy.errorPrefix, "Couldn't explain:")
         XCTAssertEqual(AskExplainCopy.retry, "Retry")
         XCTAssertEqual(AskExplainCopy.emptyHint, "The assistant explains; it never changes anything.")
@@ -123,18 +121,5 @@ final class AskExplainTests: XCTestCase {
         XCTAssertTrue(AskExplainPresentation.escapeLeavesChat(composerFocused: true, draft: ""))
         XCTAssertTrue(AskExplainPresentation.escapeLeavesChat(composerFocused: true, draft: " \n"), "blank is empty")
         XCTAssertFalse(AskExplainPresentation.escapeLeavesChat(composerFocused: true, draft: "text"))
-    }
-
-    /// Before a reply has any words: queued behind other chats, or the
-    /// explanation on its way; nothing once text shows or nothing runs.
-    func testWaitingLine() {
-        XCTAssertEqual(AskExplainPresentation.waitingLine(isQueued: true, isBusy: true, showsText: false),
-                       AskExplainCopy.queued)
-        XCTAssertEqual(AskExplainPresentation.waitingLine(isQueued: false, isBusy: true, showsText: false),
-                       AskExplainCopy.explaining)
-        XCTAssertNil(AskExplainPresentation.waitingLine(isQueued: false, isBusy: true, showsText: true))
-        XCTAssertNil(AskExplainPresentation.waitingLine(isQueued: true, isBusy: true, showsText: true),
-                     "a queued follow-up shows in the feed and the composer")
-        XCTAssertNil(AskExplainPresentation.waitingLine(isQueued: false, isBusy: false, showsText: false))
     }
 }

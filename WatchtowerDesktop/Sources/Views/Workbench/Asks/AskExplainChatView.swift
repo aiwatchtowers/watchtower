@@ -36,8 +36,9 @@ struct AskExplainChatView: View {
                 VStack(alignment: .leading, spacing: Spacing.regular) {
                     EmbeddedChatRows(engine: engine)
                         .padding(.horizontal, Spacing.medium)
-                    AskExplainWaitingLine(engine: engine)
-                    if let error { AskExplainErrorRow(message: error, onRetry: onRetry) }
+                    if let failure = error ?? Self.startFailure(engine) {
+                        AskExplainErrorRow(message: failure, onRetry: onRetry)
+                    }
                 }
                 .padding(.vertical, Spacing.regular)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -48,6 +49,14 @@ struct AskExplainChatView: View {
             EmbeddedChatComposer(engine: engine, placeholder: AskExplainCopy.placeholder, density: .compact,
                                  onEscape: Self.composerEscape(engine: engine, onBack: onBack), autoFocus: true)
         }
+    }
+
+    /// A first turn that failed before its reply row existed (the CLI
+    /// exited early): no row carries it or offers Retry, so the chat does.
+    /// A failure after a reply row keeps the feed's own card.
+    static func startFailure(_ engine: EmbeddedChatEngine) -> String? {
+        guard engine.messages.isEmpty, !engine.isBusy else { return nil }
+        return engine.bannerError
     }
 
     /// The composer's Esc (it reaches only a focused composer): back to the
@@ -61,7 +70,7 @@ struct AskExplainChatView: View {
 }
 
 /// The drawer's chat layer: the chat once its engine is in the center,
-/// before that the strip with the wait or the open's failure. It makes the
+/// before that the strip (with the open's failure, if any). It makes the
 /// engine again when the center let an idle one go (`.task`, never the body).
 struct AskExplainPane: View {
     let asks: OwnerAsksViewModel
@@ -75,14 +84,10 @@ struct AskExplainPane: View {
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     AskExplainStrip(title: ask.title, onBack: onBack)
-                    Group {
-                        if let error = asks.explainErrors[ask.id] {
-                            AskExplainErrorRow(message: error, onRetry: retry)
-                        } else {
-                            AskExplainStatusLine(text: AskExplainCopy.explaining)
-                        }
+                    if let error = asks.explainErrors[ask.id] {
+                        AskExplainErrorRow(message: error, onRetry: retry)
+                            .padding(.vertical, Spacing.regular)
                     }
-                    .padding(.vertical, Spacing.regular)
                     Spacer(minLength: 0)
                 }
             }
@@ -93,8 +98,6 @@ struct AskExplainPane: View {
     @ViewBuilder
     private func chat(_ engine: EmbeddedChatEngine) -> some View {
         let view = AskExplainChatView(ask: ask, engine: engine, error: asks.explainErrors[ask.id], onRetry: retry, onBack: onBack)
-            // The composer is made with the keyboard.
-            .onAppear { asks.explainComposerTookFocus(ask.id) }
         if let chats = asks.chats {
             view.embeddedChatVisibility(engine.spec.key, in: chats)
         } else {
@@ -129,30 +132,6 @@ private struct AskExplainStrip: View {
         .padding(.horizontal, Spacing.medium)
         .padding(.vertical, Spacing.small)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// Queued behind other chats, or the explanation on its way, until the
-/// reply's first words: its own view, so only it re-reads a streaming turn.
-private struct AskExplainWaitingLine: View {
-    let engine: EmbeddedChatEngine
-
-    var body: some View {
-        let showsText = !(engine.liveTurn?.text.isEmpty ?? true) || engine.messages.contains { !$0.message.text.isEmpty }
-        if let line = AskExplainPresentation.waitingLine(isQueued: engine.isQueued, isBusy: engine.isBusy, showsText: showsText) {
-            AskExplainStatusLine(text: line)
-        }
-    }
-}
-
-private struct AskExplainStatusLine: View {
-    let text: String
-
-    var body: some View {
-        Label(text, systemImage: text == AskExplainCopy.queued ? "hourglass" : "ellipsis")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, Spacing.medium)
     }
 }
 

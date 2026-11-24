@@ -6,8 +6,6 @@ package enum AskExplainCopy {
     package static let entryHelp = "Ask the assistant to explain this question"
     package static let back = "Back to question"
     package static let placeholder = "Ask about this question…"
-    package static let explaining = "Explaining…"
-    package static let queued = "Waiting — other chats are answering."
     package static let errorPrefix = "Couldn't explain:"
     package static let retry = "Retry"
     package static let emptyHint = "The assistant explains; it never changes anything."
@@ -40,13 +38,5 @@ package enum AskExplainPresentation {
     /// one; any other reaches the drawer's key catcher.
     package static func escapeLeavesChat(composerFocused: Bool, draft: String) -> Bool {
         !composerFocused || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    /// The line the feed shows while a turn has no words on screen yet:
-    /// waiting for a free slot, or the explanation on its way. nil once any
-    /// text shows (a follow-up's own rows say it) or nothing runs.
-    package static func waitingLine(isQueued: Bool, isBusy: Bool, showsText: Bool) -> String? {
-        guard isBusy, !showsText else { return nil }
-        return isQueued ? AskExplainCopy.queued : AskExplainCopy.explaining
     }
 }

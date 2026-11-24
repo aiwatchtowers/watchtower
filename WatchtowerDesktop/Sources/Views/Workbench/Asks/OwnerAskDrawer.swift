@@ -237,17 +237,14 @@ struct OwnerAskDrawer: View {
             fieldFocus = nil
             commentStep = nil
         }
-        // The chat opened: no field of the question keeps a focus request.
-        .onChange(of: asks.explainWantsComposerFocus(ask.id)) { _, wants in
-            if wants { fieldFocus = nil }
-        }
     }
 
     /// The key catcher's Esc while the chat is shown: it reaches the catcher
-    /// only when the composer does not have the keyboard.
+    /// only when the composer does not have the keyboard, so the draft does
+    /// not matter.
     private func escapeFromExplain(_ press: OwnerAskKeyMap.Press) -> Bool {
         guard asks.drawerKeysActive.contains(ask.projectID), !press.otherModifiers, !press.isRepeat,
-              AskExplainPresentation.escapeLeavesChat(composerFocused: false, draft: asks.explainEngine(for: ask)?.draft ?? "")
+              AskExplainPresentation.escapeLeavesChat(composerFocused: false, draft: "")
         else { return false }
         closeExplain()
         return true

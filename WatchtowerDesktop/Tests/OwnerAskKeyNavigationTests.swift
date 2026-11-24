@@ -722,38 +722,9 @@ final class OwnerAskKeyNavigationTests: XCTestCase {
         XCTAssertEqual(answered, 1)
     }
 
-    /// ⌘[ stays the Workbench menu's Back to Workbenches under the chat.
-    func testCommandBracketNotTakenWhileExplaining() async throws {
-        let id = try await insert("question", payload: Self.twoQuestions)
-        let vm = activeDrawer(try makeVM())
-        let ask = try await loaded(vm, id)
-        let ai = await explaining(vm, ask)
-        defer { ai.finish() }
-        let bracket = OwnerAskKeyMap.Press(characters: "[", keyCode: 0x21, shift: false, otherModifiers: true, isRepeat: false)
-        XCTAssertFalse(drawerKeys(vm, ask, CursorBox()).press(bracket))
-    }
-
-    /// Opening the chat asks the drawer to drop its field focus until the
-    /// composer has the keyboard: no key reaches the hidden note field.
-    func testOpeningMovesFocusToComposer() async throws {
-        let id = try await insert("question", payload: Self.twoQuestions)
-        let vm = activeDrawer(try makeVM())
-        let ask = try await loaded(vm, id)
-        XCTAssertFalse(vm.asks.explainWantsComposerFocus(id))
-        let ai = await explaining(vm, ask)
-        defer { ai.finish() }
-        XCTAssertTrue(vm.asks.explainWantsComposerFocus(id))
-        vm.asks.explainComposerTookFocus(id)
-        XCTAssertFalse(vm.asks.explainWantsComposerFocus(id))
-
-        await vm.asks.openExplain(ask)
-        XCTAssertTrue(vm.asks.explainWantsComposerFocus(id), "each open moves the keyboard")
-        vm.asks.closeExplain(id)
-        XCTAssertFalse(vm.asks.explainWantsComposerFocus(id), "Back drops the request")
-    }
-
-    /// The question's picks and note draft are as they were after the chat.
-    func testQuestionStateSurvivesChat() async throws {
+    /// The question's picks and note draft in the view model are as they
+    /// were after the chat.
+    func testViewModelDraftsSurviveChat() async throws {
         let id = try await insert("question", payload: Self.twoQuestions)
         let vm = activeDrawer(try makeVM())
         let ask = try await loaded(vm, id)

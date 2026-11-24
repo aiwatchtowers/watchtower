@@ -49,6 +49,47 @@ final class AskExplainViewTests: XCTestCase {
         await engine.finished()
     }
 
+    /// A first turn whose CLI exits before the reply row exists leaves only
+    /// the engine's banner: the chat shows it with Retry, and Retry (an
+    /// open) starts the first turn again on the empty history.
+    func testFirstTurnFailingBeforeStartOffersRetry() async throws {
+        struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
+        let ask = try fx.insertAsk()
+        fx.ai.persistStartError = EarlyExit()
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await engine.finished()
+        XCTAssertTrue(engine.messages.isEmpty, "no reply row")
+        XCTAssertNil(fx.vm.explainErrors[ask.id])
+        let failure = try XCTUnwrap(AskExplainChatView.startFailure(engine))
+        XCTAssertTrue(failure.contains("the CLI exited"), failure)
+
+        fx.ai.persistStartError = nil
+        await fx.vm.openExplain(ask)
+        await engine.started()
+        XCTAssertEqual(fx.hiddenTurns.count, 2, "Retry starts the first turn again")
+        XCTAssertNil(AskExplainChatView.startFailure(engine), "nothing while it runs")
+        fx.ai.emit(.text("It decides."), .done)
+        fx.ai.finish()
+        await waitForCondition { !engine.isBusy }
+        await engine.finished()
+        XCTAssertNil(AskExplainChatView.startFailure(engine))
+    }
+
+    /// A failure after the reply row exists keeps the feed's own card.
+    func testFailureWithAReplyRowKeepsTheFeedCard() async throws {
+        let ask = try fx.insertAsk()
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await engine.started()
+        fx.ai.emit(.error("Not logged in"), .done)
+        fx.ai.finish()
+        await waitForCondition { !engine.isBusy }
+        await engine.finished()
+        XCTAssertFalse(engine.messages.isEmpty)
+        XCTAssertNil(AskExplainChatView.startFailure(engine))
+    }
+
     func testEntryHiddenOnReviewAsk() throws {
         let review = try fx.insertAsk(kind: "review")
         XCTAssertEqual(height(AskExplainEntry(ask: review, hasCLI: true) {}), 0)
