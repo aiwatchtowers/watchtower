@@ -733,18 +733,23 @@ final class LinkingViewModel {
     }
 
     /// A read of a wait whose hello may not have landed (codex review, #2189), before it is answered. A waiting
-    /// keybox naming this scan's code proves the hello landed: marked sent, nothing resent. An answer that differs
-    /// from the baseline (a refusal, a link) is the Mac's to this scan: nothing resent, so a refusal given while the
-    /// phone was off is honoured, not replaced by a new request and code. No keybox, or the baseline unchanged (or a
-    /// waiting keybox of another code), proves no answer: the hello is sent again. An unavailable read never gets
-    /// here, so it never resends. nil when the resend failed (the link failed, or the app was killed).
+    /// keybox naming this scan's code proves the hello landed: marked sent, nothing resent. An answer `answer` acts on
+    /// (a refusal that differs from the baseline, a link with keys decided after the code) is the Mac's to this scan:
+    /// nothing resent, so a refusal given while the phone was off is honoured, not replaced by a new request and code.
+    /// Anything else proves no answer (no keybox, the baseline unchanged, a waiting keybox of another code, and a
+    /// changed grant that answers nothing: revoked, linked without keys, linked before the code): the hello is sent
+    /// again. An unavailable read never gets here, so it never resends. nil when the resend failed (the link failed,
+    /// or the app was killed).
     private func settleUnsentHello(
         _ keybox: Keybox?, pending: PendingLink, code: PairingCode, resend: HelloResend
     ) async -> PendingLink? {
-        if let grant = keybox?.grant {
-            let waiting = grant.awaitingConfirmation == true && grant.linkRefused == nil
-            if waiting, grant.linkCodeTag == code.linkCodeTag { return markHelloSent(pending) }
-            if grant != pending.baseline, !waiting { return pending }
+        if let keybox {
+            let grant = keybox.grant
+            if grant.awaitingConfirmation == true, grant.linkRefused == nil, grant.linkCodeTag == code.linkCodeTag {
+                return markHelloSent(pending)
+            }
+            let refused = grant.linkRefused != nil && grant != pending.baseline
+            if refused || (Self.answersAsLinked(grant, pending) && keybox.keys != nil) { return pending }
         }
         return await resend(pending)
     }

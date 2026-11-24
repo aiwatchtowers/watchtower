@@ -278,4 +278,22 @@ final class CloudKitTransportPollTests: XCTestCase {
         XCTAssertEqual(completed, 1)
         XCTAssertTrue(unlinked)
     }
+
+    /// The refetch after an expired token keeps a throttle another request set while it ran.
+    func testARefetchKeepsAThrottleSetDuringIt() async throws {
+        let engine = FakeSyncEngine(fetchErrors: [CKError(.changeTokenExpired)])
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine) { _ in
+            try? await Task.sleep(for: .seconds(3_600))
+        }
+        engine.onNextFetch {
+            // The first fetch throws the expired token; the refetch is the next one.
+            engine.onNextFetch { _ = await transport.applyThrottle(from: [CKError(.zoneBusy)]) }
+        }
+
+        try await transport.pull()
+
+        XCTAssertEqual(engine.fetchCount, 2, "the fetch and its refetch")
+        let throttled = await transport.throttledUntil
+        XCTAssertNotNil(throttled, "the refetch's success did not clear it")
+    }
 }

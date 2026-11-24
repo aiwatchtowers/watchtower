@@ -54,14 +54,26 @@ extension CloudKitTransport {
                 tries += 1
                 if tries > 1 { try self.checkDirectCallAllowed() }
                 self.energy?.record(.sendBatch)
-                let (saves, _) = try await database.modify(saving: [ck], deleting: [])
-                _ = try saves[ck.recordID]?.get()
+                do {
+                    let (saves, _) = try await database.modify(saving: [ck], deleting: [])
+                    _ = try saves[ck.recordID]?.get()
+                } catch let error as CKError where error.code == .partialFailure {
+                    // The record's own error, so a wrapped `serverRecordChanged` still takes the retry over the copy.
+                    throw (error.partialErrorsByItemID?[ck.recordID] as? CKError) ?? error
+                }
             }
         } catch let error as CKError {
             applyDirectCallFailure(error, recordID: CKRecord.ID(recordName: record.recordName, zoneID: zones.zoneID(for: record.zone)))
             throw error
         }
         clearThrottle(ifStill: throttleAtStart)
+    }
+
+    /// CloudKit asked this transport to wait (`throttledUntil` not reached yet): a pull or a direct call now sends
+    /// nothing.
+    public var isThrottled: Bool {
+        guard let throttledUntil else { return false }
+        return now() < throttledUntil
     }
 
     private func checkDirectCallAllowed() throws {

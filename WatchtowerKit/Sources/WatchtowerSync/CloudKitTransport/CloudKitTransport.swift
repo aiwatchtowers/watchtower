@@ -121,6 +121,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// The batch last handed to the engine: what a request-level
     /// `.limitExceeded` (which names no record) is about.
     var lastBuiltBatch: (id: Int, size: Int, saves: [(name: String, zone: CloudZoneID)])?
+    /// `throttledUntil` when the last batch was built: a send's success clears only that throttle
+    /// (`clearThrottle(ifStill:)`), never a newer one another request set while it was in flight.
+    var throttleAtLastBatch: Date?
     var batchSerial = 0
     /// The batch a `.limitExceeded` was already applied to — the same
     /// failure can arrive thrown and per record; it shrinks once.

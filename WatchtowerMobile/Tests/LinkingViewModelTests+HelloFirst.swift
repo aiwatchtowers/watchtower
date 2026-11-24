@@ -355,6 +355,37 @@ extension LinkingViewModelTests {
         await flow.value
     }
 
+    /// A re-pair whose baseline was the old link; on resume the server shows that link revoked. A changed grant that
+    /// answers nothing is no answer to this scan: the hello is sent again, and this scan's link then completes.
+    func testARevokedKeyboxOnResumeResendsTheHello() async throws {
+        try keyStore.saveHubLink(try ScannedHubKeys(code()).unconfirmedLink)
+        let record = linkRecordForResume()
+        let oldLink = DeviceGrant(
+            deviceID: TestE2E.deviceID.uuidString, hubID: helloAcme, name: "iPhone", scope: .private, linked: true,
+            linkedAt: start.addingTimeInterval(-86_400), typingAllowed: false, startSessionsAllowed: true
+        )
+        LinkStore(defaults: defaults).pending = PendingLink(
+            link: record, deadline: start.addingTimeInterval(60), baseline: oldLink, baselineCaptured: true,
+            issuedAt: start.addingTimeInterval(-10), baselineSource: .server, helloSent: false
+        )
+        let revoked = DeviceGrant(
+            deviceID: TestE2E.deviceID.uuidString, hubID: helloAcme, name: "iPhone", scope: .private, linked: false,
+            typingAllowed: false, startSessionsAllowed: true, decidedAt: start.addingTimeInterval(-5), revoked: true
+        )
+        let linkedGrant = grantMaker
+        host.mac = { writes in
+            writes.contains { $0.linkNonce == record.nonce } ? linkedGrant(helloAcme, true, nil) : revoked
+        }
+        let model = makeModel()
+
+        await model.resumePendingLink()
+
+        XCTAssertEqual(host.directSaves, [helloAcme], "the hello, sent again")
+        let writes = try await host.deviceWrites()
+        XCTAssertEqual(writes.map(\.linkNonce), [record.nonce])
+        XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
+    }
+
     /// A first read that is unavailable never resends; a later read that proves no answer does.
     func testAnUnavailableReadNeverResends() async throws {
         let payload = code()
@@ -478,6 +509,21 @@ extension LinkingViewModelTests {
             "the data zone polled, then the relay zone's zoneNotFound unlinked the transport")
         XCTAssertTrue(
             HubSession.linkFetchCompleted(refreshed: true, pollsBefore: nil, pollsAfter: nil, unlinked: false), "off CloudKit")
+    }
+
+    /// A fetch that joined a pull already past the data zone moves no count: one more fetch is judged, unless the
+    /// transport is throttled or unlinked (then the first one stands, unavailable).
+    func testALinkFetchThatMovedNoPollTriesOneMorePull() {
+        XCTAssertTrue(HubSession.linkFetchNeedsSecondPull(
+            refreshed: true, pollsBefore: 2, pollsAfter: 2, unlinked: false, throttled: false))
+        XCTAssertFalse(HubSession.linkFetchNeedsSecondPull(
+            refreshed: true, pollsBefore: 2, pollsAfter: 3, unlinked: false, throttled: false), "it read the zone")
+        XCTAssertFalse(HubSession.linkFetchNeedsSecondPull(
+            refreshed: true, pollsBefore: 2, pollsAfter: 2, unlinked: false, throttled: true), "throttled")
+        XCTAssertFalse(HubSession.linkFetchNeedsSecondPull(
+            refreshed: true, pollsBefore: 2, pollsAfter: 2, unlinked: true, throttled: false), "unlinked")
+        XCTAssertFalse(HubSession.linkFetchNeedsSecondPull(
+            refreshed: false, pollsBefore: 2, pollsAfter: 2, unlinked: false, throttled: false), "the fetch failed")
     }
 
     // MARK: The session's mapping of a read

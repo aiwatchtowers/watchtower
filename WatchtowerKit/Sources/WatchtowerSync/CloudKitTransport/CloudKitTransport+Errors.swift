@@ -122,10 +122,11 @@ extension CloudKitTransport {
         await resend()
     }
 
-    /// A request that began when `throttledUntil` was `throttleAtStart` succeeded: the throttling stretch ends, unless
-    /// another request (the engine's, a direct call's) installed a newer throttle while this one ran.
+    /// A request that began when `throttledUntil` was `throttleAtStart` succeeded: the throttling stretch and its
+    /// backoff end, unless another request (the engine's, a direct call's) installed a newer throttle while this one
+    /// ran. A throttle that elapsed meanwhile (nil now) is no newer one: the stretch ends too.
     func clearThrottle(ifStill throttleAtStart: Date?) {
-        guard throttledUntil == throttleAtStart else { return }
+        guard throttledUntil == nil || throttledUntil == throttleAtStart else { return }
         clearThrottle()
     }
 

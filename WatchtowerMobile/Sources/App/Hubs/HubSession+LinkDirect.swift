@@ -44,14 +44,35 @@ extension HubSession {
     /// On CloudKit a pull skipped by a throttle or the unlink, or cut short, returns normally and `refresh` counts it
     /// as no data, and a later zone's `zoneNotFound` unlinks the transport and returns normally too; so the data
     /// zone's completed polls are compared around it, and the transport must not be unlinked after it
-    /// (`linkFetchCompleted`).
+    /// (`linkFetchCompleted`). A fetch that joined a pull already past the data zone (the launch's) moves no count
+    /// although nothing went wrong: when the transport is neither throttled nor unlinked, one more fetch (a new pull)
+    /// is judged instead (`linkFetchNeedsSecondPull`).
     func refreshForLink() async -> Bool {
-        let cloud = directCloud?.cloud
-        let before = await cloud?.dataZonePollsCompleted
+        guard let cloud = directCloud?.cloud else { return await refresh(.link) }
+        var outcome = await linkFetch(cloud)
+        if Self.linkFetchNeedsSecondPull(
+            refreshed: outcome.refreshed, pollsBefore: outcome.before, pollsAfter: outcome.after,
+            unlinked: outcome.unlinked, throttled: await cloud.isThrottled
+        ) {
+            outcome = await linkFetch(cloud)
+        }
+        return Self.linkFetchCompleted(
+            refreshed: outcome.refreshed, pollsBefore: outcome.before, pollsAfter: outcome.after, unlinked: outcome.unlinked)
+    }
+
+    /// One `refresh(.link)` with the data zone's completed polls around it and the unlink after it.
+    private func linkFetch(_ cloud: CloudKitTransport) async -> (refreshed: Bool, before: Int, after: Int, unlinked: Bool) {
+        let before = await cloud.dataZonePollsCompleted
         let refreshed = await refresh(.link)
-        let after = await cloud?.dataZonePollsCompleted
-        let unlinked = await cloud?.isUnlinked ?? false
-        return Self.linkFetchCompleted(refreshed: refreshed, pollsBefore: before, pollsAfter: after, unlinked: unlinked)
+        return (refreshed, before, await cloud.dataZonePollsCompleted, await cloud.isUnlinked)
+    }
+
+    /// A fetch that succeeded but moved no data-zone poll, on a transport neither throttled nor unlinked: it joined a
+    /// pull already past the data zone, so one more fetch is worth judging.
+    static func linkFetchNeedsSecondPull(
+        refreshed: Bool, pollsBefore: Int, pollsAfter: Int, unlinked: Bool, throttled: Bool
+    ) -> Bool {
+        refreshed && pollsAfter == pollsBefore && !unlinked && !throttled
     }
 
     /// A fetch that succeeded, left the transport linked and, on CloudKit (the poll counts given), polled the data zone

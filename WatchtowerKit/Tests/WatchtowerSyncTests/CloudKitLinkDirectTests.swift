@@ -149,6 +149,8 @@ final class CloudKitLinkDirectTests: XCTestCase {
     ) async {
         let fetches = database.fetches.count
         let calls = database.calls.count
+        let throttled = await transport.isThrottled
+        XCTAssertTrue(throttled, "isThrottled: \(what)", file: file, line: line)
         do {
             _ = try await transport.serverRecord(named: "keybox-DEVICE", in: .data)
             XCTFail("expected throttled: \(what)", file: file, line: line)
@@ -217,5 +219,74 @@ final class CloudKitLinkDirectTests: XCTestCase {
         XCTAssertEqual(database.calls.count, 3, "fresh; then fresh refused, and once over the server copy")
         XCTAssertEqual(database.calls.first?.saves.first?.recordID.zoneID, zones.zoneID(for: .relay))
         XCTAssertFalse(try store.isPending(recordName: "hello-DEVICE", zone: .relay), "never in the engine's queue")
+    }
+
+    /// `modify` may wrap the record's `serverRecordChanged` in a `partialFailure`: the save still retries once over
+    /// the server copy.
+    func testAWrappedConflictStillRetriesOverTheServersCopy() async throws {
+        let (transport, database, _) = try make()
+        let server = database.seed(CloudKitTransport.ckRecord(
+            from: record("hello-DEVICE", zone: .relay, payload: "old"), in: zones.zoneID(for: .relay), systemFields: nil))
+        let id = server.recordID
+        database.callFailures = [CKError(.partialFailure, userInfo: [CKPartialErrorsByItemIDKey: [
+            id: CKError(.serverRecordChanged, userInfo: [CKRecordChangedErrorServerRecordKey: server])
+        ]])]
+
+        try await transport.saveDirectly(record("hello-DEVICE", zone: .relay, payload: "new"))
+
+        XCTAssertEqual(database.calls.count, 2, "the wrapped conflict, then the retry over the copy")
+        XCTAssertEqual(database.record(named: "hello-DEVICE")?.encryptedValues["payload"] as? Data, Data("new".utf8))
+    }
+
+    /// A throttle that elapsed during a direct call (nil now) is no newer throttle: the call's success ends the
+    /// stretch and its backoff.
+    func testASuccessEndsAThrottleThatElapsedDuringIt() async throws {
+        let gate = SleepGate()
+        let store = try TransportStore.inMemory()
+        let database = FakeConditionalDatabase()
+        let transport = CloudKitTransport.conditionalTesting(store: store, database: database) { _ in await gate.wait() }
+        // A throttle whose deadline is already here: the call goes out, while its retry has not run yet.
+        _ = await transport.applyThrottle(from: [CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 0.0])])
+        let since = await transport.throttledSince
+        XCTAssertNotNil(since)
+        database.duringRequest = {
+            await gate.open()
+            while await transport.throttledUntil != nil { await Task.yield() }
+        }
+
+        _ = try await transport.serverRecord(named: "keybox-DEVICE", in: .data)
+
+        let after = await transport.throttledSince
+        XCTAssertNil(after, "the stretch ended")
+    }
+
+    /// An engine send's success keeps a throttle another request set while the batch was in flight.
+    func testASendSuccessKeepsANewerThrottle() async throws {
+        let (transport, _, _) = try make()
+        _ = await transport.applyThrottle(from: [CKError(.zoneBusy)])
+        let saved = CloudKitTransport.ckRecord(
+            from: record("action-1", zone: .relay, payload: "x"), in: zones.zoneID(for: .relay), systemFields: nil)
+
+        await transport.handleSentChanges(saved: [saved], deleted: [], failedSaves: [], failedDeletes: [:])
+
+        let throttled = await transport.throttledUntil
+        XCTAssertNotNil(throttled, "set after the batch was built: kept")
+    }
+}
+
+/// A sleep the test ends: every `wait()` returns once `open()` was called.
+actor SleepGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
     }
 }
