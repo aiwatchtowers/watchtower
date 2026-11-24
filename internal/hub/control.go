@@ -969,13 +969,14 @@ func (h *hubRuntime) confirm(r ControlRequest, pl *pairListener) ControlAnswer {
 		r.MovesToRelay != nil && *r.MovesToRelay != shown.movesToRelay {
 		return ControlAnswer{Error: ErrClassCodeChanged}
 	}
-	if err := h.center.ConfirmRequest(r.Device, shown.code, shown.request, r.Confirm); err != nil {
+	linked, err := h.center.ConfirmRequest(r.Device, shown.code, shown.request, r.Confirm)
+	if err != nil {
 		if errors.Is(err, link.ErrCodeChanged) && !h.waitsOnStream(pl, r.Device) {
 			return ControlAnswer{Error: ErrClassNoRequest}
 		}
 		return ControlAnswer{Error: LinkErrClass(err)}
 	}
-	h.afterConfirm(r.Device)
+	h.afterConfirm(r.Device, linked)
 	if r.Confirm {
 		// The code is used (afterConfirm closes it CloseUsed) or was
 		// expired or used meanwhile: the stream's end closes nothing.

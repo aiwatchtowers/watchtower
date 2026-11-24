@@ -100,12 +100,47 @@ func TestRelayLinkedPayingPhoneMovesTheHubToRelay(t *testing.T) {
 	})
 }
 
+// sinceStamp is relay_link_since as a start at now writes it: the second
+// before now's whole second.
+func sinceStamp(now time.Time) string {
+	return strconv.FormatFloat(float64(now.Truncate(time.Second).Add(-time.Second).UnixNano())/1e9, 'f', -1, 64)
+}
+
+// A phone confirmed in the same second as the build's first start counts:
+// the link center truncates linked_at to the second, so relay_link_since
+// sits a second before the start's whole second.
+func TestRelayLinkInTheStartSecondIsACandidate(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		if err := w.st.DeleteMeta(switcher.MetaRelayLinkSince); err != nil {
+			t.Fatal(err)
+		}
+		w.advance(400 * time.Millisecond)
+		w.rebuild(nil) // the first start of the build, mid-second
+		ph := w.addPhone(true)
+		w.route(ph, false)
+		w.slotLinked(ph)
+		w.onRelay(ph)
+		// The link center's linked_at: the confirm's whole second.
+		linked := float64(w.clock().Truncate(time.Second).UnixNano()) / 1e9
+		err := w.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+			_, err := tx.Exec(`UPDATE devices SET linked_at = ? WHERE device_id = ?`, linked, ph.Device().ID)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.relayLinkCheck()
+		w.wantActive(transport.KindRelay)
+		w.wantSwitchedBy(ph)
+	})
+}
+
 // Q5: a phone linked over a pairing slot before the build that carries the
 // check never moves the Mac by itself; relay_link_since is written once.
 func TestRelayLinkBeforeTheUpdateIsNoCandidate(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
 		start := w.clock()
-		want := strconv.FormatFloat(float64(start.UnixNano())/1e9, 'f', -1, 64)
+		want := sinceStamp(start)
 		if v, ok, err := w.st.Meta(switcher.MetaRelayLinkSince); err != nil || !ok || v != want {
 			t.Fatalf("relay_link_since %q %v %v, want %q", v, ok, err, want)
 		}
@@ -224,6 +259,41 @@ func TestRelayLinkAfterALaterSwitchIsNoCandidate(t *testing.T) {
 		w.sw.PollOther(w.ctx)
 		w.wantReads(n)
 		w.wantActive(transport.KindCloudKit)
+	})
+}
+
+// A slot link confirmed in the same second as a recorded switch counts: the
+// link center truncates linked_at to the second, so the switched_at floor is
+// compared at the second too (relayLinkSince).
+func TestRelayLinkInTheSwitchSecondIsACandidate(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		a := w.addPhone(true)
+		w.route(a, true)
+		w.advance(time.Minute)
+		w.moveTo(a, wire.TransportRelay)
+		w.advance(time.Minute + 400*time.Millisecond)
+		w.moveTo(a, wire.TransportCloudKit)
+		at, _, ok, err := w.sw.SwitchedAt()
+		if err != nil || !ok {
+			t.Fatalf("switched_at %v %v", ok, err)
+		}
+		r := w.addPhone(true)
+		w.route(r, false)
+		w.slotLinked(r)
+		w.onRelay(r)
+		// The link center's linked_at: the switch's whole second.
+		linked := float64(at.Truncate(time.Second).UnixNano()) / 1e9
+		err = w.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+			_, err := tx.Exec(`UPDATE devices SET linked_at = ? WHERE device_id = ?`, linked, r.Device().ID)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.advance(switcher.AntiFlap)
+		w.relayLinkCheck()
+		w.wantActive(transport.KindRelay)
+		w.wantSwitchedBy(r)
 	})
 }
 
@@ -665,7 +735,8 @@ func TestRelayLinkUnreadableSinceMovesNothing(t *testing.T) {
 }
 
 // A relay_link_since stamped while the Mac's clock ran ahead is pulled back
-// to now at the next check, so a phone that links afterwards counts.
+// to the second before now at the next check, so a phone that links
+// afterwards counts.
 func TestRelayLinkSinceInTheFutureIsPulledBack(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
 		now := w.clock()
@@ -674,9 +745,9 @@ func TestRelayLinkSinceInTheFutureIsPulledBack(t *testing.T) {
 			t.Fatal(err)
 		}
 		w.relayLinkCheck() // no candidate yet; the stamp comes back to now
-		want := strconv.FormatFloat(float64(now.UnixNano())/1e9, 'f', -1, 64)
+		want := sinceStamp(now)
 		if v, _, _ := w.st.Meta(switcher.MetaRelayLinkSince); v != want {
-			t.Fatalf("relay_link_since %q, want %q (now)", v, want)
+			t.Fatalf("relay_link_since %q, want %q (the second before now)", v, want)
 		}
 		r := w.relayPhone(true) // a minute later, still before the old stamp
 		w.relayLinkCheck()

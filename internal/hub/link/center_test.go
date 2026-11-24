@@ -1578,19 +1578,19 @@ func TestAConfirmForAReplacedRequestIDIsCodeChanged(t *testing.T) {
 	}
 	device := second.id.String()
 	// A stale window's no names the old request: it refuses nothing newer.
-	if err := r.c.ConfirmRequest(device, "", old.Request, false); !errors.Is(err, ErrCodeChanged) {
+	if _, err := r.c.ConfirmRequest(device, "", old.Request, false); !errors.Is(err, ErrCodeChanged) {
 		t.Fatalf("a no for the replaced request: %v", err)
 	}
 	if pending, err := r.c.PendingLinks(); err != nil || len(pending) != 1 {
 		t.Fatalf("a stale no refused the waiting request: %+v, %v", pending, err)
 	}
-	if err := r.c.ConfirmRequest(device, current.Code, old.Request, true); !errors.Is(err, ErrCodeChanged) {
+	if _, err := r.c.ConfirmRequest(device, current.Code, old.Request, true); !errors.Is(err, ErrCodeChanged) {
 		t.Fatalf("a yes for the replaced request: %v", err)
 	}
 	if r.linked(second) {
 		t.Fatal("linked a request the owner was not shown")
 	}
-	if err := r.c.ConfirmRequest(device, current.Code, current.Request, true); err != nil {
+	if _, err := r.c.ConfirmRequest(device, current.Code, current.Request, true); err != nil {
 		t.Fatal(err)
 	}
 	if !r.linked(second) {
@@ -1611,7 +1611,7 @@ func TestANoRefusesTheRequestItNamesOrTheOneWaiting(t *testing.T) {
 			if named {
 				request = waiting.Request
 			}
-			if err := r.c.ConfirmRequest(p.id.String(), "", request, false); err != nil {
+			if _, err := r.c.ConfirmRequest(p.id.String(), "", request, false); err != nil {
 				t.Fatal(err)
 			}
 			if pending, err := r.c.PendingLinks(); err != nil || len(pending) != 0 {

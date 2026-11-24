@@ -34,16 +34,30 @@ func (s *Switcher) RelayLinkSoon() {
 	s.Kick()
 }
 
-// markRelayLinkSince writes hub_meta.relay_link_since at the first start of
-// a build that carries the relay-link check. Its writers are this (only when
-// unset) and relayLinkCandidates (only ever back to now, when the stamp lies
-// in the future). A failure never stops the hub: it is logged (class only)
+// relayLinkSince is the relay_link_since stamp for a start at now: the
+// second before now's whole second. The link center writes linked_at
+// truncated to the second and a candidate's linked_at must come strictly
+// after the stamp, so a link confirmed in the same second as the start
+// counts (its linked_at is now's whole second). The same floor applies to
+// switched_at (relayLinkCandidates, stillRelayLinkTx): a slot link confirmed
+// in the second of a recorded switch counts. Widening by up to a second lets
+// no link from before the update in: a candidate also needs
+// relay_slot_links[id] == its link nonce, and only a build with this check
+// writes that record, after it starts.
+func relayLinkSince(now time.Time) time.Time {
+	return now.Truncate(time.Second).Add(-time.Second)
+}
+
+// markRelayLinkSince writes hub_meta.relay_link_since (relayLinkSince) at
+// the first start of a build that carries the relay-link check. Its writers
+// are this (only when unset) and relayLinkCandidates (only ever back to
+// relayLinkSince(now), when the stamp lies in the future). A failure never stops the hub: it is logged (class only)
 // and leaves the key unset, which means no candidate, the check off until a
 // later start writes it.
 func (s *Switcher) markRelayLinkSince() {
 	_, ok, err := s.c.Store.Meta(MetaRelayLinkSince)
 	if err == nil && !ok {
-		err = s.c.Store.SetMeta(MetaRelayLinkSince, stamp(s.now()))
+		err = s.c.Store.SetMeta(MetaRelayLinkSince, stamp(relayLinkSince(s.now())))
 	}
 	if err != nil {
 		log.Printf("hub: a phone linked over Relay: switch waits (store)")
@@ -63,7 +77,7 @@ func (s *Switcher) markRelayLinkSince() {
 // relay_slot_links is an error (logged as store, no candidate).
 //
 // A relay_link_since in the future (the Mac's clock ran ahead when it was
-// written) is pulled back to now, never forward. Known limit: a phone linked
+// written) is pulled back to relayLinkSince(now), never forward. Known limit: a phone linked
 // before the update while the clock ran ahead may carry a linked_at later
 // than a relay_link_since written after the clock was corrected, and counts.
 func (s *Switcher) relayLinkCandidates(now time.Time) ([]state.Device, error) {
@@ -76,17 +90,17 @@ func (s *Switcher) relayLinkCandidates(now time.Time) ([]state.Device, error) {
 		return nil, fmt.Errorf("switcher: unreadable %s: %w", MetaRelayLinkSince, err)
 	}
 	if after.After(now) {
-		if err := s.c.Store.SetMeta(MetaRelayLinkSince, stamp(now)); err != nil {
+		after = relayLinkSince(now)
+		if err := s.c.Store.SetMeta(MetaRelayLinkSince, stamp(after)); err != nil {
 			return nil, err
 		}
-		after = now
 	}
 	switchedAt, _, switched, err := s.SwitchedAt()
 	if err != nil {
 		return nil, err
 	}
-	if switched && switchedAt.After(after) {
-		after = switchedAt
+	if floor := relayLinkSince(switchedAt); switched && floor.After(after) {
+		after = floor
 	}
 	devices, err := s.c.Store.Devices()
 	if err != nil {
@@ -274,5 +288,5 @@ func stillRelayLinkTx(tx *sql.Tx, d state.Device) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("switcher: unreadable %s: %w", MetaSwitchedAt, err)
 	}
-	return d.LinkedAt.After(at), nil
+	return d.LinkedAt.After(relayLinkSince(at)), nil
 }
