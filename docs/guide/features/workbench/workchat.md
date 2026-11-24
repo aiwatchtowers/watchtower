@@ -123,7 +123,7 @@ Subagents never show in the conversation. The agents button above the field (two
 
 The button shows the working count, a dimmed **✓ N** when only finished agents remain, and **?** when the agent state is unavailable, which is not the same as none running. It stays while there are finished agents. Done is collapsed while agents work and opens by itself when none do; your own choice wins until you quit.
 
-While the agent works, the steps of this turn show above the line, newest at the bottom: tool, summary and time. The line then reads **This turn · N steps**. Click the line, or press ⌥↓ in the field, to hide or show the list; Workchat remembers your choice for that pane. The list goes away when the turn ends or a permission card shows.
+While the agent works, the line reads **This turn · N steps** with the step that runs now and its time. Click the line, or press ⌥↓ in the field, to show the newest six steps above it (older ones are counted as "N earlier steps"); the list starts closed, and Workchat remembers your choice for that pane. The list goes away when the turn ends or a permission card shows.
 
 ## When it's empty or wrong
 

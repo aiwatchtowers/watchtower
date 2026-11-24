@@ -28,10 +28,10 @@ final class SessionChatViewTests: XCTestCase {
             }
         }
         XCTAssertTrue(toggle(), "a fresh list toggles")
-        XCTAssertFalse(memory.stepsOpen("session-1"))
+        XCTAssertTrue(memory.stepsOpen("session-1"), "closed by default: the toggle opens it")
         now = observed + WorkchatLivePresentation.staleAfter
         XCTAssertFalse(toggle(), "stale now: the key moves the caret")
-        XCTAssertFalse(memory.stepsOpen("session-1"), "the hidden list's state is untouched")
+        XCTAssertTrue(memory.stepsOpen("session-1"), "the hidden list's state is untouched")
     }
 
     func testRowEqualityIgnoresClosures() {
@@ -231,6 +231,31 @@ final class SessionChatViewTests: XCTestCase {
     private func marker(_ id: String) -> String {
         #"{"id":"\#(id)","kind":"subagent","at":"2026-10-16T10:00:00Z","text":"","conversation":"main","#
             + #""subagent":{"tool_use_id":"\#(id)","agent_id":"a","type":"general","description":"d","status":"finished"}}"#
+    }
+
+    func testLoadingTextAndRetryTitle() {
+        XCTAssertEqual(SessionChatPresentation.loadingText, "Reading the session…")
+        XCTAssertEqual(SessionChatPresentation.retryTitle, "Retry")
+    }
+
+    func testErrorStrings() {
+        XCTAssertEqual(SessionChatPresentation.errorTitle, "Couldn’t read the session feed")
+        XCTAssertEqual(SessionChatPresentation.errorDetail("  The session host did not answer. "), "The session host did not answer.")
+        XCTAssertNil(SessionChatPresentation.errorDetail(nil))
+        XCTAssertNil(SessionChatPresentation.errorDetail("  "))
+    }
+
+    /// The spinner shows until the first feed read; a turn ending (`clearActivity`) must not bring it back.
+    func testLoadingStaysOffAfterClearActivity() async {
+        let runner = PageRunner([page([agent("e90")], before: nil)])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        XCTAssertTrue(SessionChatView.showsLoading(feedLoaded: store.feedLoaded, error: store.error, runnerMissing: false))
+        await store.refresh()
+        XCTAssertFalse(SessionChatView.showsLoading(feedLoaded: store.feedLoaded, error: store.error, runnerMissing: false))
+        store.clearActivity()
+        XCTAssertFalse(store.liveLoaded)
+        XCTAssertFalse(SessionChatView.showsLoading(feedLoaded: store.feedLoaded, error: store.error, runnerMissing: false))
+        XCTAssertFalse(SessionChatView.showsLoading(feedLoaded: false, error: "boom", runnerMissing: false))
     }
 
     func testPermanentRefusalLeavesNoDeadRetry() async {

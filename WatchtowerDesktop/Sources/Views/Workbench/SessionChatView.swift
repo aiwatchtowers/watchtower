@@ -123,8 +123,16 @@ struct SessionChatView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if store.runnerMissing {
+        let emptyShown = path.stack.last == nil && Self.showsEmptyState(
+            dialogEmpty: dialogEntries.isEmpty,
+            nothingPending: (workchat?.outgoing.isEmpty ?? true) && permission == nil && openAsks.isEmpty,
+            hasEarlierPage: store.hasEarlierPage)
+        // An empty pane whose read failed shows the centred error block instead of a bar.
+        let errorBlock = emptyShown && (store.error != nil || store.runnerMissing)
+        return VStack(spacing: 0) {
+            if errorBlock {
+                EmptyView()
+            } else if store.runnerMissing {
                 errorBar(WorkbenchesViewModel.cliMissingMessage, retry: nil)
             } else if path.isRoot, let error = store.error {
                 errorBar(error) { Task { await store.poller.refresh() } }
@@ -136,10 +144,7 @@ struct SessionChatView: View {
             }
             if let subagent = path.stack.last {
                 subagentScreen(subagent)
-            } else if Self.showsEmptyState(
-                dialogEmpty: dialogEntries.isEmpty,
-                nothingPending: (workchat?.outgoing.isEmpty ?? true) && permission == nil && openAsks.isEmpty,
-                hasEarlierPage: store.hasEarlierPage) {
+            } else if emptyShown {
                 emptyState
             } else {
                 feed
@@ -578,30 +583,84 @@ struct SessionChatView: View {
         windowHasEarlier || (hasEarlierPage && !pageFailed)
     }
 
+    /// The first read is not back: a spinner, not "No messages yet". Keyed on the feed's
+    /// read, which `clearActivity()` (a turn ending) never resets.
+    static func showsLoading(feedLoaded: Bool, error: String?, runnerMissing: Bool) -> Bool {
+        !feedLoaded && error == nil && !runnerMissing
+    }
+
     @ViewBuilder
     private var emptyState: some View {
-        if store.error == nil && !store.runnerMissing {
+        if Self.showsLoading(feedLoaded: store.feedLoaded, error: store.error, runnerMissing: store.runnerMissing) {
+            SessionChatLoadingView()
+        } else if store.error == nil && !store.runnerMissing {
             Text("No messages yet")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // The empty state's paint: once the first read is back and found nothing.
                 .task(id: store.liveLoaded) { if store.liveLoaded { store.openTrace?.mark(.paint) } }
+        } else if store.runnerMissing {
+            SessionChatErrorBlock(detail: WorkbenchesViewModel.cliMissingMessage, retry: nil)
         } else {
-            Spacer()
+            SessionChatErrorBlock(detail: store.error) { Task { await store.poller.refresh() } }
         }
     }
 
     private func errorBar(_ message: String, retry: (() -> Void)?) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text(message).font(.callout).lineLimit(3).textSelection(.enabled)
-            Spacer(minLength: 4)
+        SessionChatErrorBar(message: message, retry: retry)
+    }
+}
+
+/// The pane's first-read state (#2201 spec §7): a small spinner over the text, centred.
+struct SessionChatLoadingView: View {
+    var body: some View {
+        VStack(spacing: Spacing.regular) {
+            ProgressView().controlSize(.small)
+            Text(SessionChatPresentation.loadingText).font(.caption).foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// The pane's error bar: no fill, a warning glyph, grey text, a quiet Retry.
+struct SessionChatErrorBar: View {
+    let message: String
+    let retry: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: Spacing.regular) {
+            Image(systemName: "exclamationmark.triangle").foregroundStyle(Tone.warning)
+            Text(message).font(.callout).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+            Spacer(minLength: Spacing.small)
             if let retry {
-                Button("Retry", action: retry)
+                Button(SessionChatPresentation.retryTitle, action: retry).buttonStyle(KitQuietButtonStyle(label: .secondary))
             }
         }
-        .padding(8)
-        .background(Color.orange.opacity(0.1))
+        .padding(Spacing.regular)
+    }
+}
+
+/// The pane's first-read failure (#2201 spec §7, mock 12): centred, no fill: a warning glyph and
+/// the title in grey, the store's message below in the quietest grey, a quiet Retry.
+struct SessionChatErrorBlock: View {
+    let detail: String?
+    let retry: (() -> Void)?
+
+    var body: some View {
+        VStack(spacing: Spacing.regular) {
+            HStack(spacing: Spacing.compact) {
+                Image(systemName: "exclamationmark.triangle").foregroundStyle(Tone.warning)
+                Text(SessionChatPresentation.errorTitle).foregroundStyle(.secondary)
+            }
+            if let detail = SessionChatPresentation.errorDetail(detail) {
+                Text(detail).font(.caption).foregroundStyle(.tertiary).lineLimit(3).textSelection(.enabled)
+            }
+            if let retry {
+                Button(SessionChatPresentation.retryTitle, action: retry).buttonStyle(KitQuietButtonStyle(label: .secondary))
+            }
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

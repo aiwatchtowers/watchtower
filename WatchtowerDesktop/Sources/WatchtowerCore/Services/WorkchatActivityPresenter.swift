@@ -66,4 +66,37 @@ package enum WorkchatActivityPresenter {
         default: tool.hasPrefix("mcp__") ? "powerplug" : "gearshape"
         }
     }
+
+    /// The label for a step the live list shows: the host's summary, or, when it
+    /// only repeats the tool name, plain words (`SendMessage` → "Message", an MCP
+    /// call → its tool name with spaces). The host's MCP summary is `tool · server`
+    /// (Claude) or the full `mcp__server__tool` name (Codex).
+    package static func label(forTool tool: String, summary: String) -> String {
+        let bare = summary.isEmpty || summary == tool
+        switch tool {
+        case "SendMessage": return bare ? "Message" : "Message to \(summary)"
+        case "TodoWrite": return "Update the task list"
+        case "TaskOutput": return "Read a background task's output"
+        default: break
+        }
+        if let call = mcpCall(tool) {
+            // Only the host's two fallbacks are rewritten: the bare tool name, `tool · server`
+            // (Claude) or the full `mcp__server__tool` (Codex). Any other summary is the owner's text.
+            if bare || summary == tool || summary == "\(call.name) · \(call.server)" {
+                return call.name.replacingOccurrences(of: "_", with: " ")
+            }
+            return summary
+        }
+        if summary.hasPrefix("mcp__"), let call = mcpCall(summary) {
+            return call.name.replacingOccurrences(of: "_", with: " ")
+        }
+        return bare ? tool : summary
+    }
+
+    private static func mcpCall(_ raw: String) -> (server: String, name: String)? {
+        guard let rest = raw.hasPrefix("mcp__") ? Optional(raw.dropFirst(5)) : nil,
+              let split = rest.range(of: "__") else { return nil }
+        let name = String(rest[split.upperBound...])
+        return name.isEmpty ? nil : (String(rest[..<split.lowerBound]), name)
+    }
 }

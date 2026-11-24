@@ -29,8 +29,19 @@ enum WorkchatAgentsShotFixtures {
         shot("11-idle", .idleDone),
         shot("12-ended", .endedDone),
         shot("13-send-while-working", .typingWhileWorking),
-        shot("14-paste-tokens", .pasteTokens)
+        shot("14-paste-tokens", .pasteTokens),
+        paneShot("15-pane-loading", height: 360) { AnyView(SessionChatLoadingView()) },
+        paneShot("16-pane-error", height: 360) {
+            AnyView(SessionChatErrorBlock(detail: "The session host did not answer.", retry: noop))
+        }
     ]
+
+    private static func noop() {}
+
+    /// A pane state drawn by the built view alone, on the window background.
+    private static func paneShot(_ name: String, height: CGFloat, view: @escaping @MainActor () -> AnyView) -> DesignShot {
+        DesignShot(name: "workchat-agents-real-\(name)", size: NSSize(width: 720, height: height)) { view() }
+    }
 
     private static func shot(_ name: String, _ mock: WorkchatAgentsMock, width: CGFloat = 720, height: CGFloat = 480) -> DesignShot {
         DesignShot(name: "workchat-agents-real-\(name)", size: NSSize(width: width, height: height)) {
@@ -136,8 +147,8 @@ struct WorkchatAgentsRealShot: View {
     init(mock: WorkchatAgentsMock) {
         self.mock = mock
         let memory = WorkchatPaneMemory()
-        // The steps list opens by default (C1); the mock's closed frames are the owner's toggle.
-        if !mock.stepsOpen { memory.toggleSteps(WorkchatAgentsShotFixtures.paneKey) }
+        // The steps list is closed by default (#2201 §1); the mock's open frames are the owner's toggle.
+        if mock.stepsOpen { memory.toggleSteps(WorkchatAgentsShotFixtures.paneKey) }
         // Done follows the production default (collapsed while agents work, open when none do or their status is
         // unknown); only frame 02 is the owner expanding it while agents work.
         if case .agents(doneOpen: true) = mock.list, !mock.working.isEmpty {
