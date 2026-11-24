@@ -77,18 +77,22 @@ final class CodeCLIProcessTests: XCTestCase {
     }
 
     func testTerminateKillsTheWholeGroupAndReaps() async throws {
-        let pidFile = stub.directory.appendingPathComponent("child.pid")
-        let process = try shell("sleep 30 & echo $! > '\(pidFile.path)'; wait")
-        // A failure before `terminateGroup` still reaps the group.
-        let group = process.pid
-        addTeardownBlock { killpg(group, SIGKILL) }
-        // `echo $! > file` creates the file before it writes the pid, so wait for the pid itself.
-        func writtenPID() -> pid_t? {
-            let text = (try? String(contentsOf: pidFile, encoding: .utf8)) ?? ""
-            return pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        let process = try shell("sleep 30 & echo $!; wait")
+        // A failure before `terminateGroup` still kills and reaps the group;
+        // after a pass this signals nobody (the process knows it was reaped).
+        addTeardownBlock {
+            process.terminateGroup()
+            _ = await process.exitStatus
         }
-        _ = await eventually { writtenPID() != nil }
-        let child = try XCTUnwrap(writtenPID())
+        // The pid arrives as stdout's first line; a shell that dies first
+        // ends the stream, so the unwrap fails instead of the test hanging.
+        var printed = Data()
+        for await chunk in process.output {
+            printed += chunk
+            if printed.contains(UInt8(ascii: "\n")) { break }
+        }
+        let line = String(bytes: printed, encoding: .utf8) ?? ""
+        let child = try XCTUnwrap(pid_t(line.trimmingCharacters(in: .whitespacesAndNewlines)))
         XCTAssertEqual(getpgid(child), process.pid, "the child shares the CLI's own group")
         XCTAssertNotEqual(process.pid, getpgrp(), "never Watchtower's group")
         process.terminateGroup()
