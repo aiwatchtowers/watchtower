@@ -35,6 +35,10 @@ var (
 	taskChildRe   = regexp.MustCompile(`(?s)<([A-Za-z][\w-]*)>(.*?)</[A-Za-z][\w-]*>`)
 	mateOpenRe    = regexp.MustCompile(`(?s)^<teammate-message\b([^>]*)>`)
 	mateSummaryRe = regexp.MustCompile(`summary="([^"]*)"`)
+	taskTokensRe  = regexp.MustCompile(`<subagent_tokens>\s*(\d+)\s*</subagent_tokens>`)
+	taskUsesRe    = regexp.MustCompile(`<tool_uses>\s*(\d+)\s*</tool_uses>`)
+	taskDurRe     = regexp.MustCompile(`<duration_ms>\s*(\d+)\s*</duration_ms>`)
+	taskExitRe    = regexp.MustCompile(`\(exit code (-?\d+)\)`)
 	cmdArgsRe     = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
 )
 
@@ -354,14 +358,21 @@ func noticeEntry(uuid, text string) Entry {
 		e.EventType = EventTask
 		var lines []string
 		inner := strings.TrimSuffix(strings.TrimPrefix(text, "<task-notification>"), "</task-notification>")
+		kids := map[string]string{}
 		for _, m := range taskChildRe.FindAllStringSubmatch(inner, -1) {
 			v := strings.TrimSpace(m[2])
+			if _, dup := kids[m[1]]; !dup {
+				kids[m[1]] = v
+			}
 			lines = append(lines, m[1]+": "+v)
 			if m[1] == "summary" && e.Title == "" {
 				e.Title = v
 			}
 		}
 		e.Text = strings.Join(lines, "\n")
+		if strings.HasSuffix(strings.TrimSpace(text), "</task-notification>") && len(kids) > 0 {
+			e.Task = taskRef(kids, inner)
+		}
 	} else {
 		e.EventType = EventTeammate
 		body := strings.TrimPrefix(text, "<teammate-message")
@@ -384,6 +395,49 @@ func noticeEntry(uuid, text string) Entry {
 		e.Title = string(r[:maxEventTitleRunes])
 	}
 	return e
+}
+
+// taskReportBoilerplate starts the result of a notification whose agent
+// report was delivered as a separate message; it says nothing itself.
+var taskReportBoilerplate = []string{
+	"This agent's report was delivered to you as a message",
+	"This agent\u2019s report was delivered to you as a message",
+}
+
+// taskRef builds the structured task from a notification's top-level children
+// (kids, first occurrence wins) and its inner text (for the nested usage).
+func taskRef(kids map[string]string, inner string) *TaskRef {
+	t := &TaskRef{
+		TaskID: kids["task-id"], ToolUseID: kids["tool-use-id"], Status: kids["status"],
+		Summary: kids["summary"], Result: kids["result"], OutputFile: kids["output-file"],
+		Kind:       "agent",
+		Tokens:     firstInt(taskTokensRe, inner),
+		ToolUses:   firstInt(taskUsesRe, inner),
+		DurationMS: firstInt(taskDurRe, inner),
+	}
+	for _, b := range taskReportBoilerplate {
+		if strings.HasPrefix(t.Result, b) {
+			t.Result = ""
+		}
+	}
+	if strings.HasPrefix(t.Summary, "Background command") {
+		t.Kind = "command"
+		if m := taskExitRe.FindStringSubmatch(t.Summary); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil {
+				t.ExitCode = &n
+			}
+		}
+	}
+	return t
+}
+
+func firstInt(re *regexp.Regexp, s string) int {
+	if m := re.FindStringSubmatch(s); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 func firstGroup(re *regexp.Regexp, s string) string {

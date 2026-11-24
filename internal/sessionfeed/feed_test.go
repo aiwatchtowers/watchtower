@@ -235,3 +235,22 @@ func TestFindSubagent_SidecarOnlyMarker(t *testing.T) {
 	_, _, err = FindSubagent([]Conversation{a}, "tu-missing")
 	assert.ErrorContains(t, err, "not found")
 }
+
+func TestBuild_TaskResultFromHandback(t *testing.T) {
+	dir := t.TempDir()
+	notice := "<task-notification>\n<task-id>t1</task-id>\n<tool-use-id>tu1</tool-use-id>\n<status>completed</status>\n<summary>Agent \"A\" finished</summary>\n<result>This agent's report was delivered to you as a message from \"t1\".</result>\n</task-notification>"
+	call := assistantRec("a1", "m1", agentCall("tu1", "Explore", "look"))
+	result := `{"type":"user","uuid":"r1","timestamp":"2026-10-01T10:00:07Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"First paragraph.\n\nSecond paragraph."}]}}` + "\n"
+	a := writeConv(t, dir, "A", join(userStr("u1", "go"), call, result, userStr("n1", notice)))
+	writeSub(t, filepath.Join(dir, "A"), "ag1", `{"toolUseId":"tu1","finished":true}`, "")
+	f, err := Build([]Conversation{a}, nil, nil)
+	require.NoError(t, err)
+	var task *TaskRef
+	for _, e := range f.Entries {
+		if e.Task != nil {
+			task = e.Task
+		}
+	}
+	require.NotNil(t, task)
+	assert.Equal(t, "First paragraph.", task.Result)
+}

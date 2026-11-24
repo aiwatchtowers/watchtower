@@ -89,6 +89,7 @@ type sessionFeedEntryJSON struct {
 	EventType    string                   `json:"event_type,omitempty"`
 	Subagent     *sessionfeed.SubagentRef `json:"subagent,omitempty"`
 	Peer         *sessionfeed.PeerRef     `json:"peer,omitempty"`
+	Task         *sessionfeed.TaskRef     `json:"task,omitempty"`
 }
 
 func toSessionFeedEntries(es []sessionfeed.Entry) []sessionFeedEntryJSON {
@@ -96,7 +97,7 @@ func toSessionFeedEntries(es []sessionfeed.Entry) []sessionFeedEntryJSON {
 	for _, e := range es {
 		out = append(out, sessionFeedEntryJSON{
 			ID: e.ID, Kind: e.Kind, At: e.At, Text: e.Text, Conversation: e.Conversation,
-			AskID: e.AskID, Title: e.Title, Via: e.Via, EventType: e.EventType, Subagent: e.Subagent, Peer: e.Peer,
+			AskID: e.AskID, Title: e.Title, Via: e.Via, EventType: e.EventType, Subagent: e.Subagent, Peer: e.Peer, Task: e.Task,
 		})
 	}
 	return out

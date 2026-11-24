@@ -104,6 +104,7 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 			continue
 		}
 		ResolveSubagents(strings.TrimSuffix(c.Path, ".jsonl"), res.Entries)
+		fillTaskResults(res.Entries)
 		addSubagents(res.Entries, true)
 		addSubagents(subagentMarkers(c), false)
 		if read && start == 0 {
@@ -117,6 +118,37 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 	}
 	fillAskAnswers(feed.Entries, asks)
 	return feed, nil
+}
+
+// maxTaskResultRunes caps a task result taken from a subagent report.
+const maxTaskResultRunes = 600
+
+// fillTaskResults gives a task notification with no result of its own the
+// first paragraph of the report of the subagent marker (same entries) that it
+// names by tool_use_id.
+func fillTaskResults(entries []Entry) {
+	reports := map[string]string{}
+	for _, e := range entries {
+		if e.Kind == KindSubagent && e.Subagent != nil && e.Subagent.ParentReport != "" {
+			reports[e.Subagent.ToolUseID] = e.Subagent.ParentReport
+		}
+	}
+	for i := range entries {
+		t := entries[i].Task
+		if t == nil || t.Result != "" || t.ToolUseID == "" {
+			continue
+		}
+		rep, ok := reports[t.ToolUseID]
+		if !ok {
+			continue
+		}
+		para, _, _ := strings.Cut(strings.TrimSpace(rep), "\n\n")
+		if r := []rune(strings.TrimSpace(para)); len(r) > maxTaskResultRunes {
+			t.Result = string(r[:maxTaskResultRunes])
+		} else {
+			t.Result = string(r)
+		}
+	}
 }
 
 // cursorIndex is the index of the conversation the cursor points into, or -1.
