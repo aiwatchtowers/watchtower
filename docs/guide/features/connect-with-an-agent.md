@@ -83,6 +83,8 @@ action: nav:connections
 
 **"Still not connected."** after **Check again**. Chrome still has no signed-in Claude extension. Check that the extension is signed in with the same claude.ai account as Claude on your Mac, restart Chrome, and press **Check again**, or press **Continue without the browser**.
 
+**"Couldn't check the browser — try again."** Chrome gave no answer within a minute, so the check stopped. Press **Check again**. If it happens on **Start**, the assistant simply goes on in words.
+
 **An account needs attention.** The assistant doesn't reconnect existing accounts; use **Reconnect** or **Re-login** as in [An account needs attention](../troubleshooting/account-needs-attention.md).
 
 ## Related
