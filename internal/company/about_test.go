@@ -3,11 +3,11 @@ package company
 import (
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/slackapp"
 	"watchtower/internal/slackmanifest"
 )
 
@@ -15,45 +15,67 @@ func TestConnectLink(t *testing.T) {
 	assert.Equal(t, "http://127.0.0.1:18551/company/connect?b=eyJ2IjoxfQ", ConnectLink("eyJ2IjoxfQ"))
 }
 
-func TestAboutText_LinkLeadsThenCode(t *testing.T) {
-	require.False(t, aboutLeadsWithCode, "S1.2 default: the link leads")
+// fullAboutText is the uncut About layout, spelled out so a change to the
+// wording shows up as a test diff.
+func fullAboutText(company, link, code string) string {
+	return "Watchtower for " + company + "\n\n" +
+		"How to connect\n" +
+		"1. Open Watchtower.\n" +
+		"2. Click this link: " + link + "\n" +
+		"   If it does not open, paste the code below in Watchtower → Connections → Company code.\n\n" +
+		"Company code\n" +
+		code + "\n\n" +
+		"No Watchtower yet? Download it: " + slackapp.ReleasePage
+}
+
+func TestAboutText_FullLayout(t *testing.T) {
 	link := ConnectLink("eyJ2IjoxfQ")
-	text := AboutText("Acme", link, "eyJ2IjoxfQ")
-	lines := strings.Split(text, "\n")
-	require.Len(t, lines, 3)
-	assert.Equal(t, "Watchtower for Acme — connect: "+link, lines[0])
-	assert.Contains(t, lines[1], "Connect code: eyJ2IjoxfQ")
-	assert.Contains(t, lines[2], "No Watchtower yet?")
+	assert.Equal(t, fullAboutText("Acme", link, "eyJ2IjoxfQ"), AboutText("Acme", link, "eyJ2IjoxfQ"))
 }
 
-func TestAboutText_DropsTheCodeBeforeTheCap(t *testing.T) {
-	wire := strings.Repeat("A", 1800) // a bundle near the wire cap: link + code + disclosures > 4000
-	link := ConnectLink(wire)
-	text := AboutText("Acme", link, wire)
-	long, err := slackmanifest.Description(text)
-	require.NoError(t, err)
-	assert.LessOrEqual(t, utf8.RuneCountInString(long), slackmanifest.MaxLongDescription)
-	assert.True(t, strings.HasPrefix(text, "Watchtower for Acme — connect: "+link), "the leading way in is never cut")
-	assert.NotContains(t, text, "Connect code:")
-}
-
-func TestAboutText_DropsTheDownloadLineBeforeTheCode(t *testing.T) {
-	keptCodeWithoutTail := false
+func TestAboutText_CutsDownloadFirst(t *testing.T) {
+	keptCodeWithoutDownload := false
 	for n := 1000; n <= 3000; n += 10 {
 		wire := strings.Repeat("A", n)
 		link := ConnectLink(wire)
 		text := AboutText("Acme", link, wire)
-		if strings.HasPrefix(text, "Watchtower for Acme — connect: "+link+"\n") && len(strings.Split(text, "\n")) == 2 {
-			assert.Contains(t, text, "Connect code: "+wire)
-			keptCodeWithoutTail = true
+		if strings.Contains(text, "Company code\n"+wire) &&
+			strings.Contains(text, "1. Open Watchtower.\n2. Click this link: "+link) &&
+			!strings.Contains(text, "No Watchtower yet?") {
+			keptCodeWithoutDownload = true
 		}
 		if strings.Contains(text, "No Watchtower yet?") {
-			assert.Contains(t, text, "Connect code:", "the download line never outlives the code")
+			assert.Contains(t, text, "Company code\n", "the download line never outlives the code (n=%d)", n)
 		}
+	}
+	assert.True(t, keptCodeWithoutDownload, "some size keeps the code and drops only the download line")
+}
+
+func TestAboutText_LargeBundleKeepsTheLinkOnly(t *testing.T) {
+	wire := strings.Repeat("A", 3000)
+	link := ConnectLink(wire)
+	text := AboutText("Acme", link, wire)
+	assert.Equal(t, "Watchtower for Acme\n\nHow to connect\n1. Open Watchtower.\n2. Click this link: "+link, text)
+	_, err := slackmanifest.Description(text)
+	require.NoError(t, err)
+}
+
+func TestAboutText_LinkNeverCut(t *testing.T) {
+	for n := 1000; n <= 3000; n += 10 {
+		wire := strings.Repeat("A", n)
+		link := ConnectLink(wire)
+		text := AboutText("Acme", link, wire)
+		assert.Contains(t, text, "2. Click this link: "+link, n)
 		if n <= 2900 {
 			_, err := slackmanifest.Description(text)
 			assert.NoError(t, err, n)
 		}
 	}
-	assert.True(t, keptCodeWithoutTail, "some size keeps the code and drops only the download line")
+}
+
+func TestAboutText_LongCompanyName(t *testing.T) {
+	name := strings.Repeat("Acmé ", 40)
+	require.Len(t, []rune(name), 200)
+	link := ConnectLink("eyJ2IjoxfQ")
+	assert.Equal(t, fullAboutText(name, link, "eyJ2IjoxfQ"), AboutText(name, link, "eyJ2IjoxfQ"))
 }
