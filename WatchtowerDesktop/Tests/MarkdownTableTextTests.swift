@@ -222,6 +222,28 @@ final class MarkdownTableTextTests: XCTestCase {
 
     private static let wideSentence = "Сказано, что команда переносит запуск на следующую неделю, потому что проверка ещё не закончена и пункт"
 
+    /// A table text's layout, object identity aside: each cell's text,
+    /// its place in the table, its width and padding, its alignment. Two
+    /// builds of one table differ only in their `NSTextTable` object, which
+    /// `NSAttributedString.isEqual` compares (#2392).
+    private static func layout(of text: NSAttributedString) -> [String] {
+        var cells: [String] = []
+        text.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            guard let style = value as? NSParagraphStyle else { return cells.append("no style: \(range)") }
+            let blocks = style.textBlocks.map { block -> String in
+                guard let cell = block as? NSTextTableBlock else { return "\(type(of: block))" }
+                return "r\(cell.startingRow)c\(cell.startingColumn) of \(cell.table.numberOfColumns) "
+                    + "w\(cell.value(for: .width))/\(cell.valueType(for: .width).rawValue) "
+                    + "pad\(cell.width(for: .padding, edge: .minX))/\(cell.width(for: .padding, edge: .maxX))/"
+                    + "\(cell.width(for: .padding, edge: .minY))/\(cell.width(for: .padding, edge: .maxY)) "
+                    + "border\(cell.width(for: .border, edge: .maxY)) valign\(cell.verticalAlignment.rawValue)"
+            }
+            cells.append("\(text.attributedSubstring(from: range).string.debugDescription) \(blocks) "
+                + "align\(style.alignment.rawValue) wrap\(style.lineBreakMode.rawValue)")
+        }
+        return cells
+    }
+
     /// The natural table for no width, zero or a wide one; a narrower
     /// width fills it; a probe never leaves the shown table at its width.
     func testAProbeLeavesTheShownTableAlone() throws {
@@ -235,10 +257,11 @@ final class MarkdownTableTextTests: XCTestCase {
         let narrow = view.fittingSize(width: 400)
         XCTAssertEqual(narrow.width, 400, "a wide table fills the width")
         XCTAssertGreaterThan(narrow.height, natural.height * 2, "its long column wraps")
-        let shown = view.attributedString()
+        let shown = Self.layout(of: view.attributedString())
         XCTAssertEqual(view.fittingSize(width: 0), natural)
+        MarkdownTableText.evictMemos()
         XCTAssertEqual(view.fittingSize(width: 250).width, 250)
-        XCTAssertTrue(view.attributedString().isEqual(to: shown), "the frame's table is back after a probe")
+        XCTAssertEqual(Self.layout(of: view.attributedString()), shown, "the frame's table is back after a probe")
         XCTAssertEqual(view.textContainer?.size.width, 100_000, "the container never wraps the table")
 
         let host = NSHostingView(rootView: MarkdownTableRun(table: try table(Self.wide),
@@ -260,8 +283,14 @@ final class MarkdownTableTextTests: XCTestCase {
             let size = view.fittingSize(width: width)
             XCTAssertEqual(size.width, width, "width \(width)")
             view.setFrameSize(size)
-            XCTAssertTrue(view.attributedString().isEqual(to: MarkdownTableText.attributed(table, links: links, width: width)),
-                          "width \(width): the frame shows the measured table")
+            // NSCache may drop the memo between the frame's layout and
+            // this check (it did under memory pressure, #2392): the table
+            // rebuilt is a new `NSTextTable`, so compare layouts, not
+            // objects.
+            MarkdownTableText.evictMemos()
+            XCTAssertEqual(Self.layout(of: view.attributedString()),
+                           Self.layout(of: MarkdownTableText.attributed(table, links: links, width: width)),
+                           "width \(width): the frame shows the measured table")
             XCTAssertEqual(view.fittingSize(width: size.width), size)
         }
     }
