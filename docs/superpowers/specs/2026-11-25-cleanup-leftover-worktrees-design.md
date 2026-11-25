@@ -1,0 +1,142 @@
+# The automatic cleanup also reaches what it leaves today
+
+**Board:** #2402 · **Amends:** PROJ-18 (`docs/inventory/workbench.md`) · **Builds on:** #2131 (`docs/features/workbench.md`, "Finished sessions clean up on their own")
+
+## Problem
+
+On 2026-11-25 the owner's repository held 99 linked worktrees, 201 GB, under `.claude/worktrees/`, although the hourly automatic cleanup (#2131) ran and logged no failure. It removed branches and kept almost every worktree. Five gaps, read from the code:
+
+1. **Only `finish_session` makes a session a candidate.** `db.FinishedSessionsForCleanup` needs `finished_at`, written only by `finish_session`. A session whose tab was closed, that crashed or that stopped without it is never cleaned up.
+2. **A locked worktree is kept for ever.** W3 (`catchLocked`) keeps it before any other check, so a locked worktree whose branch is long merged stays, and the build prune skips it too (`pruneCatches` includes `catchLocked`). Plan worktrees are locked by rule while a plan runs; nobody unlocks them afterwards. Example: one 14 GB locked worktree whose branch was merged.
+3. **A worktree no finished session owns is never looked at.** The daemon applies session scopes only. Claude Code subagent worktrees (`agent-<hex>`) without a matching subagent record, worktrees older than the session that saw them (`existed_before_session`), those with an unknown birth (`created_unknown`), and those of sessions finished more than 14 days ago are never evaluated again (the first three are settled reasons).
+4. **Any process with its cwd inside keeps the worktree**, language servers included (`gopls`, `sourcekit-lsp`, `clangd`), which an editor or an agent leaves running long after the work ended.
+5. Directories under `.claude/worktrees/` that git no longer lists, and loose files there, are seen by nobody. They held ~2 GB; they are split off to their own low-priority target (see Out of scope).
+
+## Decisions
+
+- Sessions that end without `finish_session` count as ended for the cleanup after 24 h with no activity — ask #1850.
+- Locked worktrees: the build output goes, and the worktree itself goes once its branch is merged into the default branch with commits and nothing else keeps it; this must not slow down builds — ask #1850 (owner's words: "п1 норм, тока оно не должно замедлить сборки").
+- A repository-wide pass covers worktrees no finished session owns — ask #1850.
+- Language servers do not keep a worktree — ask #1850.
+- "Must not slow down builds" is read as: a build folder is removed only from a worktree idle for 3 days with no live session and no blocking process in it, so a build in use or used recently is never thrown away — conversation (this spec; the owner confirms it in the spec review).
+- Orphan directories and loose files under `.claude/worktrees/` are not part of this spec; they get their own target — conversation.
+- Global level: the fix lives in Watchtower's cleanup (`internal/sessioncleanup`, the daemon), not in this repository's rules; project-specific build habits are #2403 — conversation.
+
+## Design
+
+Every removal below still goes through the PROJ-18 catches, re-checked right before it, with no `--force`, no fetch and no signal (`NoTerminate`), exactly as today. What changes is which sessions and worktrees get evaluated, and three catches.
+
+### 1. Ended sessions without `finish_session`
+
+`db.FinishedSessionsForCleanup` becomes `db.EndedSessionsForCleanup`. A row is a candidate when it is an agent row of a workbench, not being deleted, and either:
+
+- `finished_at` is set and within the window (as today), or
+- `finished_at` is NULL, the row has no live run in the session host, and its last activity — the newest of `last_active_at`, `agent_state_at` and `closed_at` — is at least `autoQuiet` (24 h) old and within the window.
+
+The row's **ended-at** is `finished_at`, else that last activity. The window (`autoWindow`, 14 days) and the retry rule (`autoDue`) are measured from ended-at. The session-host live set is already read before each apply (`AutoDeps.Live`); a quiet row that is live there is skipped for this pass, like today's W6.
+
+A quiet row that becomes active again simply moves its last activity forward: the next pass no longer lists it (under 24 h), and W6 keeps its worktree anyway while it reports from inside.
+
+The apply passes `RequireEnded: false` for such a row (it is ended by this rule, not by `finished_at`); everything else about the apply is today's automatic apply.
+
+### 2. The repository pass
+
+After the session applies, each pass runs one **repository pass** per distinct repository of the workbenches' folders (keyed by the git common dir, under the same repository cleanup lock, `TryLock`; busy → next pass).
+
+**Scope.** Linked worktrees whose root is under `<main checkout>/.claude/worktrees/` — the folder Watchtower's placement and Claude Code's `isolation: worktree` both create worktrees in. A worktree anywhere else (one the owner made by hand) is never touched by this pass.
+
+**Skip.** A worktree is skipped (not evaluated) when any of these hold:
+
+- a session working in it (W6's rule: live in the session host, or a not-ended row reporting from inside within 24 h);
+- it is **not idle**: its last activity is less than `idleFor` (3 days) old.
+
+**Last activity of a worktree** is the newest of: the mtimes of its admin dir's `HEAD`, `index` and `logs/HEAD` (`<common dir>/worktrees/<name>/`), the mtime of each regenerable build folder at its root (`.build`, `DerivedData`, `build`), and the newest `terminal_session_worktrees.last_at` of any session for that root. A stat that fails counts as "now" (fail closed: the worktree is not idle).
+
+**Evaluate.** The pass plans the idle worktrees in sweep mode — the catches of the owner's Clean Up sweep (`Request.Sweep`), which already judge a worktree without a session — and then:
+
+- removable → applied by name (the sweep apply already takes named items only), its branch with it when the branch item is removable;
+- kept for a reason the build prune accepts (§4) → its build output is pruned.
+
+At most `sweepBatch` (20) worktrees are applied per repository per pass, oldest activity first; the rest wait for the next pass. The pass shares the pass budget (10 min); when the budget runs out the pass stops, and the next pass starts again from scratch.
+
+The repository pass makes the "settled" reasons of a session scope matter less: a worktree a session will never claim (`existed_before_session`, `created_unknown`, an `agent-*` without a record) is reached here once it is idle.
+
+### 3. Locked worktrees
+
+W3 changes from "locked → keep" to "locked → keep, unless **merged and idle**":
+
+- **merged**: its HEAD branch has at least one commit of its own and is merged into the default branch — the drift check's detection (`workbenchgit`, `OpenRepositoryAgainst`), under which a commit-less branch cut from the base is *not* merged (a freshly cut umbrella stays). A detached HEAD is never merged for this rule;
+- **idle**: last activity (§2) at least `idleFor` old.
+
+When both hold, W3 does not keep it and the other catches decide. If every catch passes, the apply runs `git worktree unlock` and then `git worktree remove` (no `--force`), re-checking every catch right before the unlock. If the remove then fails, the worktree is locked again (`git worktree lock --reason "<the old reason>"`) and kept as `check_failed`.
+
+The same rule applies in a session apply, in the automatic pass and in the owner's Clean Up screen (one catch, one meaning).
+
+### 4. Build prune
+
+- `pruneReasons` gains `locked`: a locked worktree's build output goes even when the worktree stays.
+- `pruneCatches` drops `catchLocked` and gains an **idle** check: a build folder is pruned only from a worktree idle for `idleFor`. This applies to the new paths (a locked worktree, the repository pass). The existing prune at a session's end (#2131, ask #1695) is unchanged.
+- The live-process and session-in-it checks stay in `pruneCatches`, so a build in use is never removed.
+
+### 5. Language servers
+
+A process whose executable's base name is `gopls`, `sourcekit-lsp` or `clangd` no longer keeps a worktree (W5, `catchProcesses`) and is never signalled. Any other process keeps it, as today. The list is a fixed set in code, not configurable.
+
+## Failure modes
+
+| Situation | What happens | Test |
+|---|---|---|
+| Daemon stops (quit, crash, update) mid-pass | The ctx cancels; the current git command finishes or is killed; the next pass re-plans from scratch. A worktree half-removed by `git worktree remove` shows as `prunable` and is pruned by the existing rule. | `TestAutoRun_StoppedMidRepositoryPassReplans` |
+| Unlock succeeded, remove failed | Re-locked with its old reason, kept as `check_failed`. | `TestProj18_LockedMergedRemoveFailureRelocks` |
+| Unlock succeeded, daemon killed before remove or relock | The worktree stays unlocked and merged; the next pass removes it if every catch still passes, or keeps it for the catch that holds. It is never left half-deleted. | `TestProj18_UnlockedByAnInterruptedPassIsReEvaluated` |
+| A session starts in a worktree between plan and remove | Every catch is re-checked right before the unlock and the remove; W6 keeps it. | `TestProj18_SessionStartedBeforeTheRemoveKeepsIt` |
+| A build starts during the prune | A build is a process inside the worktree: the prune re-checks before each folder (existing `PruneRechecksBeforeEachFolder`), and idle no longer holds once `.build` is touched. | `TestProj18_BuildStartedDuringThePruneStops` |
+| The session host cannot be asked for live runs | The session apply skips that row (today); the repository pass skips the whole repository for this pass. | `TestAutoRun_RepositoryPassNeedsLiveRuns` |
+| An activity stat fails | Counts as "now": not idle, not pruned, not removed. | `TestIdle_UnreadableStatIsNotIdle` |
+| Another cleanup holds the repository lock | The repository pass waits for the next pass. | `TestAutoRun_RepositoryPassWaitsForTheLock` |
+
+## Writers of the same data
+
+- **Worktrees and branches** are written by: placement (`worktree create`), agents and their subagents (git), the owner by hand, the Desktop's delete cleanup, the Clean Up screen, the agent's own pre-finish cleanup and this daemon pass. All Watchtower cleanups share the repository cleanup lock, so only one runs at a time. Git itself refuses a remove of a dirty worktree. Agents and the owner take no lock: the guard against them is the re-check right before each removal, plus idle ≥ 3 days. If an agent writes into the worktree after the last re-check, git's own refusal wins (the remove fails and the item is kept). No writer silently loses work.
+- **Worktree locks** are written by agents (`git worktree lock`, plan rule) and by §3. §3 unlocks only right before a remove and re-locks on failure. An agent that locks after the re-check makes git refuse the remove, so the agent wins.
+- **`terminal_sessions.cleanup_at` / `cleanup_result`** are written by the automatic pass and by a session's own cleanup, under the repository lock (today's rule). The repository pass writes no session row; it logs its result line only.
+
+## Contract change (PROJ-18 amendment)
+
+The PROJ-18 Observable gains:
+
+- an ended session also means one quiet for 24 h with no live run;
+- the automatic pass also evaluates idle linked worktrees under `.claude/worktrees/` that no finished session owns, in sweep mode;
+- a locked worktree is kept unless its branch is merged with commits of its own and it is idle for 3 days; then it is unlocked right before its removal and re-locked if the removal fails;
+- a build folder of a kept, locked or unowned worktree is pruned only when the worktree is idle for 3 days;
+- `gopls`, `sourcekit-lsp` and `clangd` do not keep a worktree and are never signalled.
+
+Guard tests:
+
+- `TestProj18_LockedWorktreeIsKept` keeps all its current cases (locked and not merged; locked, merged and active) and gains the new exception as a separate guard, `TestProj18_LockedMergedIdleWorktreeGoes`.
+- `TestProj18_LiveProcessKeepsTheWorktree` is unchanged; `TestProj18_LanguageServerDoesNotKeepTheWorktree` is added.
+- `TestProj18_BuildOfAWorktreeInUseStays` is unchanged; `TestProj18_IdleLockedWorktreeLosesItsBuild` and `TestProj18_RecentBuildStays` are added.
+- `TestProj18_AutoCleanupOfAResumedSessionRemovesNothing` is unchanged and gains a case for a quiet row that became active again.
+- New: `TestProj18_QuietSessionIsCleanedUp`, `TestProj18_LiveQuietSessionIsSkipped`, `TestProj18_RepositoryPassStaysUnderClaudeWorktrees`, `TestProj18_RepositoryPassSkipsActiveWorktrees`, `TestProj18_RepositoryPassRemovesAnUnownedMergedWorktree`, `TestProj18_CommitlessLockedBranchStays`.
+
+No existing guard is relaxed: every current case keeps its assertion.
+
+## Promises → tasks → tests
+
+| Promise | Task | Test |
+|---|---|---|
+| Quiet sessions are cleaned up (§1) | 1 | `TestProj18_QuietSessionIsCleanedUp`, `TestProj18_LiveQuietSessionIsSkipped`, `TestEndedSessionsForCleanup_*` (db) |
+| Idle detection (§2) | 2 | `TestIdle_*` |
+| Language servers do not keep (§5) | 2 | `TestProj18_LanguageServerDoesNotKeepTheWorktree` |
+| Locked + merged + idle goes, with unlock/relock (§3) | 3 | `TestProj18_LockedMergedIdleWorktreeGoes`, `TestProj18_CommitlessLockedBranchStays`, `TestProj18_LockedMergedRemoveFailureRelocks`, `TestProj18_UnlockedByAnInterruptedPassIsReEvaluated` |
+| Build prune in locked/idle worktrees only (§4) | 3 | `TestProj18_IdleLockedWorktreeLosesItsBuild`, `TestProj18_RecentBuildStays`, `TestProj18_BuildStartedDuringThePruneStops` |
+| Repository pass (§2) | 4 | `TestProj18_RepositoryPass*`, `TestAutoRun_RepositoryPass*`, `TestAutoRun_StoppedMidRepositoryPassReplans` |
+| Contract and docs updated | 5 | `go test ./docs/guide` (if the guide changes), inventory entry reviewed |
+
+Task 5 updates `docs/inventory/workbench.md` (PROJ-18 amendment + changelog line), `docs/features/workbench.md` (the #2131 entry), `docs/features/README.md` summary, and the user guide page on cleanup if it describes what is kept.
+
+## Out of scope
+
+- Directories and loose files under `.claude/worktrees/` that git does not list (~2 GB on 2026-11-25): a separate low-priority target, shown in the Clean Up screen, never removed automatically.
+- How this repository builds (`-trimpath`, copying `.build` into worktrees, per-package build folders): #2403.
+- The Go build cache, Xcode DerivedData outside worktrees and simulators: tools' own caches, not Watchtower's.
