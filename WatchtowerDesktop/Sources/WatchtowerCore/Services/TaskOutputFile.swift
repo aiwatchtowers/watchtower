@@ -57,7 +57,8 @@ package enum TaskOutputFile {
         home.hasPrefix("/") ? (home as NSString).appendingPathComponent(".claude") : nil
     }
 
-    /// Reads `path` for the viewer when it resolves inside the session's temp dir under one of `bases`, or inside
+    /// Reads `path` for the viewer when it resolves inside the session's temp dir under one of `bases` — in the
+    /// project segment named like `projectDir`, so no `projectDir`, no temp read (#2386, as for the subagents) — or inside
     /// `<projectDir>/<session id>/subagents/` when `projectDir` (the directory the feed read the conversation's transcript from) is a
     /// project of `claudeDir`'s `projects` — both compared fully resolved, so a linked `projects` still matches.
     /// First, before `resolve` or any other call touches `path`, it must be spelled under `<base>/claude-<uid>/` of
@@ -85,8 +86,9 @@ package enum TaskOutputFile {
         guard let resolved = resolve(path) else { return .unreadable }
         let subagents = subagentsRoot(projectDir: projectDir, projects: projects, resolve: resolve)
             .map { $0 + [claudeSessionID, "subagents"] }
+        let project = projectDir.flatMap { $0.hasPrefix("/") ? components($0).last : nil }
         let inside = { (file: String) in
-            Self.inside(file, sessionID: claudeSessionID, uid: uid, bases: bases)
+            project.map { Self.inside(file, project: $0, sessionID: claudeSessionID, uid: uid, bases: bases) } == true
                 || subagents.map { root in
                     let parts = components(file)
                     return parts.count > root.count && Array(parts.prefix(root.count)) == root
@@ -114,12 +116,12 @@ package enum TaskOutputFile {
     }
 
     /// `path` sits in `<base>/claude-<uid>/<project>/<sessionID>/…` of a base (both already resolved).
-    private static func inside(_ path: String, sessionID: String, uid: uid_t, bases: [String]) -> Bool {
+    private static func inside(_ path: String, project: String, sessionID: String, uid: uid_t, bases: [String]) -> Bool {
         let parts = components(path)
         return bases.contains { base in
             let root = components(base) + ["claude-\(uid)"]
             return parts.count >= root.count + 3 && Array(parts.prefix(root.count)) == root
-                && parts[root.count + 1] == sessionID
+                && parts[root.count] == project && parts[root.count + 1] == sessionID
         }
     }
 

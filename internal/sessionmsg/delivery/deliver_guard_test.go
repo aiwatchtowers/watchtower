@@ -120,10 +120,12 @@ func TestPreClaimFailuresNeverTouchAClaimedRow(t *testing.T) {
 }
 
 // PROJ-23 under the draft model (spec 2026-11-24-workchat-polish §6, ask
-// #1757): a message is held, nothing pasted, on every try while any of the
-// owner's draft is left (the host's prompt_has_text), always asking the host
-// to hold over text; once the owner erased it the next try delivers it, once.
-// The host's side — an erased draft answers no hold — is
+// #1757), the deliverer's side: while the host answers held over the owner's
+// text (prompt_has_text) the message goes back to queued and is tried again on
+// the next tick; the first try the host does not hold delivers it, once; every
+// try asks the host to hold over text. The host's answers are scripted here
+// (standing in for a draft "ab" erased by two Backspaces): the draft model
+// itself — an erased draft answers no hold — is
 // sessionhost.TestPromptState_ReleaseRetriesHeld.
 func TestProj23_ReleasedPromptDeliversOnNextTry(t *testing.T) {
 	w := newWorld(t)

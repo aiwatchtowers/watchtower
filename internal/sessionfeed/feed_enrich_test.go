@@ -99,3 +99,24 @@ func TestBuild_SidecarReadErrorIsLoggedAndBestEffort(t *testing.T) {
 	assert.Equal(t, "", taskOf(t, f).Result)
 	assert.Contains(t, logged.String(), "agent-ag1.jsonl")
 }
+
+// #2386 N6: a sidecar whose stat fails for a reason other than its absence is
+// an error (logged by the caller), not "no handbacks".
+func TestScanHandbacks_StatErrorIsReported(t *testing.T) {
+	orig := lstatSidecar
+	lstatSidecar = func(string) (os.FileInfo, error) { return nil, os.ErrPermission }
+	t.Cleanup(func() { lstatSidecar = orig })
+	_, err := scanHandbacks(filepath.Join(t.TempDir(), "agent-a.jsonl"))
+	require.ErrorIs(t, err, os.ErrPermission)
+}
+
+// A missing or non-regular sidecar has no handbacks and no error.
+func TestScanHandbacks_MissingOrNotRegularIsQuiet(t *testing.T) {
+	dir := t.TempDir()
+	hbs, err := scanHandbacks(filepath.Join(dir, "missing.jsonl"))
+	require.NoError(t, err)
+	assert.Empty(t, hbs)
+	hbs, err = scanHandbacks(dir)
+	require.NoError(t, err)
+	assert.Empty(t, hbs)
+}
