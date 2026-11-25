@@ -556,7 +556,8 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
     Relay" signal, since an empty iCloud user alone cannot tell a slot link from a CloudKit link whose owner was
     unreadable: JSON `{"v": 2, "linked": {id: devices.link_nonce}, "pending": {id: {"nonce": code nonce, "proven":
     bool}}}`, ids uppercase (`v` since #2387: a row without it, written by the builds between #2191 and #2387 whose
-    marks never proved a relay id, reads as empty and the next write replaces it). Its writers
+    marks never proved a relay id, keeps its pending entries as unproven slot requests, so their route still counts,
+    and loses its linked marks; the next write stores v2 and logs the drop once). Its writers
     are `internal/hub/link` only, each in the transaction of the change, under the center's lock: a saved hello writes or
     clears its pending entry, the confirm promotes a proven entry whose nonce matches the linked request (any other link,
     a CloudKit re-link or an unproven slot link, drops the phone from `linked`), a refusal or expiry drops the pending entry, an unlink both. Every

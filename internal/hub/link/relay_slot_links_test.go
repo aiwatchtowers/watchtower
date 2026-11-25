@@ -122,8 +122,8 @@ func TestOnlyTheRouteChangingReplacesTheRequest(t *testing.T) {
 	r := newCKRig(t)
 	a := newPhone(t)
 	code := r.issue()
-	r.slotHandle(a, code.Nonce) // through a slot
-	r.linkCK(a, code.Nonce)     // the same hello over CloudKit, then Link
+	r.slotHandle(a, code.Nonce)                                     // through a slot
+	r.linkCK(a, code.Nonce, withRelayProof(a.sig, r.kr.HubID(), a)) // the same hello over CloudKit, then Link
 	r.wantSlotLinked(a, false)
 	if r.userOf(a) == "" {
 		t.Fatal("the CloudKit request did not replace the slot one")
@@ -131,7 +131,7 @@ func TestOnlyTheRouteChangingReplacesTheRequest(t *testing.T) {
 
 	b := newPhone(t)
 	code = r.issue()
-	if got, err := r.ckHello(b, code.Nonce); err != nil || got.Code == "" {
+	if got, err := r.ckHello(b, code.Nonce, withRelayProof(b.sig, r.kr.HubID(), b)); err != nil || got.Code == "" {
 		t.Fatalf("CloudKit hello not waiting: %+v %v", got, err)
 	}
 	r.slotHandle(b, code.Nonce) // the same hello through a slot

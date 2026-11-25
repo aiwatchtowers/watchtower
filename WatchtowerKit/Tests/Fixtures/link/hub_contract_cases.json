@@ -885,6 +885,7 @@
     },
     {
       "name": "without_relay_id",
+      "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
       "json": {
         "device": {
           "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
@@ -903,6 +904,7 @@
       },
       "relay_coder": "{\"agreement_key\":\"YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A\",\"device\":{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"link_nonce\":\"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\"},\"signing_key\":\"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A\"}",
       "hub_accepts_relay_id": null,
+      "slot_relay_link": false,
       "kit": {
         "relay_device_id": null
       }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -21,15 +22,20 @@ import (
 // Pending records the route (an entry: the request came through a slot) and
 // the mark apart (#2387): a slot hello is marked (proven) only when its
 // device data proves the relay id the hello names (link's slotRelayIDProof);
-// the route alone, unproven, is what a request replacement and the iCloud
-// user binding compare. Only a proven request is promoted to linked, so an
+// link's savePending compares both with a re-sent hello (same device, code,
+// keys and relay id): a different route or a gained or lost proof replaces
+// the request, so a CloudKit hello after a slot one binds its iCloud user.
+// Only a proven request is promoted to linked, so an
 // unproven claim (an older phone's, or one naming no relay id) never moves
 // the hub to Relay.
 //
-// The row carries its version (v, relaySlotLinksVersion). A row of another
-// version — v1, written without v by the builds between #2191 and #2387,
-// whose marks were never proven — reads as empty and the next write replaces
-// it: losing entries only takes candidates away.
+// The row carries its version (v, relaySlotLinksVersion). A v1 row, written
+// without v by the builds between #2191 and #2387 ({"linked": {id: nonce},
+// "pending": {id: nonce}}), keeps its pending entries as slot requests,
+// unproven (their route still counts), and loses its linked marks, which
+// were never proven (losing them only takes candidates away); the next
+// write stores v2 and logs the drop once. A row of any other version reads
+// as empty.
 //
 // Each entry names the link or request it was written for (the link nonce,
 // the code nonce), and the readers compare it with the row they stand for:
@@ -61,6 +67,8 @@ type relaySlotLinks struct {
 	V       int                    `json:"v"`
 	Linked  map[string]string      `json:"linked,omitempty"`
 	Pending map[string]slotRequest `json:"pending,omitempty"`
+	// droppedV1 is how many linked marks a v1 row lost on read (not stored).
+	droppedV1 int
 }
 
 // slotRequest is a waiting request that came through a pairing slot.
@@ -83,12 +91,37 @@ func readRelaySlotLinks(q querier) (relaySlotLinks, error) {
 	if err := json.Unmarshal([]byte(raw), &version); err != nil {
 		return relaySlotLinks{}, fmt.Errorf("%w: %w", ErrRelaySlotLinksUndecodable, err)
 	}
-	if version.V != relaySlotLinksVersion {
-		return relaySlotLinks{}, nil // a v1 row's marks were never proven
+	switch version.V {
+	case relaySlotLinksVersion:
+	case 0:
+		return readRelaySlotLinksV1(raw)
+	default:
+		return relaySlotLinks{}, nil
 	}
 	var r relaySlotLinks
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
 		return relaySlotLinks{}, fmt.Errorf("%w: %w", ErrRelaySlotLinksUndecodable, err)
+	}
+	return r, nil
+}
+
+// readRelaySlotLinksV1 reads a v1 row: its pending entries as unproven slot
+// requests, its linked marks (never proven) dropped and counted for the
+// writer's one log line.
+func readRelaySlotLinksV1(raw string) (relaySlotLinks, error) {
+	var v1 struct {
+		Linked  map[string]string `json:"linked"`
+		Pending map[string]string `json:"pending"`
+	}
+	if err := json.Unmarshal([]byte(raw), &v1); err != nil {
+		return relaySlotLinks{}, fmt.Errorf("%w: %w", ErrRelaySlotLinksUndecodable, err)
+	}
+	r := relaySlotLinks{V: relaySlotLinksVersion, droppedV1: len(v1.Linked)}
+	for id, nonce := range v1.Pending {
+		if r.Pending == nil {
+			r.Pending = map[string]slotRequest{}
+		}
+		r.Pending[id] = slotRequest{Nonce: nonce}
 	}
 	return r, nil
 }
@@ -201,6 +234,9 @@ func updateRelaySlotLinks(tx *sql.Tx, change func(*relaySlotLinks)) error {
 		r = relaySlotLinks{}
 	} else if err != nil {
 		return err
+	}
+	if r.droppedV1 > 0 {
+		log.Printf("hub state: %s: %d unproven Relay link marks of an older build dropped", MetaRelaySlotLinks, r.droppedV1)
 	}
 	change(&r)
 	linked, err := nonces(tx, `SELECT device_id, link_nonce FROM devices`)
