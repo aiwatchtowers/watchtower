@@ -1327,6 +1327,10 @@ extension AppRoot: TransportFollowerHost {
         await linking.relayUse(for: link)
     }
 
+    func iCloudAccount() async -> String? {
+        await linking.currentAccount()
+    }
+
     func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox? {
         await env.session(hubID)?.openSwitchKeybox(sealed)
     }

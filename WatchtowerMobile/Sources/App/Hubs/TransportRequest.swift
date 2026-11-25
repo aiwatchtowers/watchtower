@@ -170,6 +170,7 @@ final class TransportRequester {
         self.host = host
         self.now = now
         follower.onRequestSwitch = { [weak self] target, reason in await self?.requested(target, reason: reason) }
+        follower.onRequestLeftBehind = { [weak self] controlID in await self?.leftBehind(controlID) }
     }
 
     /// The hub's row.
@@ -472,23 +473,52 @@ final class TransportRequester {
     }
 
     /// Takes an owner's request back, best effort: the queued row and the iCloud copy (whether or not its write was
-    /// saved: a copy a lost commit left would move the Mac later).
-    private func withdraw(_ request: TransportRequestRecord, link: LinkRecord) async {
-        guard !stopped, let host, let session else { return }
+    /// saved: a copy a lost commit left would move the Mac later). true once both are gone (a link with no other route
+    /// has no copy).
+    @discardableResult
+    private func withdraw(_ request: TransportRequestRecord, link: LinkRecord) async -> Bool {
+        guard !stopped, let host, let session else { return false }
+        var withdrawn = true
         do {
             try await session.outbox.withdrawControl(id: request.controlID)
         } catch {
             Self.logger.warning("the queued request was not withdrawn: \(String(describing: type(of: error)), privacy: .public)")
+            withdrawn = false
         }
-        guard let other = link.otherRoute, !stopped, host.followerLink(hubID: hubID) != nil else { return }
-        await withSide(other, host: host, session: session) { secure in
+        guard let other = link.otherRoute else { return withdrawn }
+        guard !stopped, host.followerLink(hubID: hubID) != nil else { return false }
+        let copyGone = await withSide(other, host: host, session: session) { secure in
             do {
                 let wire = try secure.wireName(plain: "c-\(request.controlID)", zone: .relay)
-                _ = try await secure.deleteSealed([ConditionalDelete(recordName: wire, zone: .relay, expect: .none)])
+                let outcomes = try await secure.deleteSealed([ConditionalDelete(recordName: wire, zone: .relay, expect: .none)])
+                // A copy never saved reads as deleted; a refusal (no network, rate limit) leaves it there.
+                guard outcomes.allSatisfy({ $0 == .deleted }) else {
+                    Self.logger.notice("the request's iCloud copy was not withdrawn: refused")
+                    return false
+                }
+                return true
             } catch {
                 Self.logger.notice("the request's iCloud copy was not withdrawn: \(String(describing: type(of: error)), privacy: .public)")
+                return false
             }
         }
+        return withdrawn && copyGone == true
+    }
+
+    /// A move to iCloud left this phone behind (#2381): the open request is withdrawn on the requests' chain, after any
+    /// pass in flight, its queued row and its iCloud copy. The request with `controlID` is read again on the chain (a
+    /// pass may have updated it meanwhile); the record withdrawn is returned once both are gone, so the follower clears
+    /// that one only. nil when it is no longer open or was not withdrawn.
+    private func leftBehind(_ controlID: String) async -> TransportRequestRecord? {
+        let box = WithdrawnBox()
+        _ = await run {
+            // A request closed meanwhile (a lapse's day keeps its iCloud copy on purpose) is left as it is.
+            guard let link = self.link, let request = link.transportRequest, request.isOpen, request.controlID == controlID,
+                  await self.withdraw(request, link: link) else { return .refused(.unavailable) }
+            box.request = request
+            return .underWay
+        }
+        return box.request
     }
 
     // MARK: - The other transport
@@ -526,4 +556,9 @@ final class TransportRequester {
 @MainActor
 private final class OutcomeBox {
     var outcome: TransportRequestOutcome = .underWay
+}
+
+/// The request `leftBehind` withdrew, out of its pass on the chain.
+private final class WithdrawnBox {
+    var request: TransportRequestRecord?
 }

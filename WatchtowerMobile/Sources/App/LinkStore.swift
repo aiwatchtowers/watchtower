@@ -228,6 +228,13 @@ struct LinkRecord: Codable, Equatable, Sendable {
         scope == .shared ? .cloudKit(.shared(ownerName: ownerName)) : .cloudKit(.private)
     }
 
+    /// The iCloud account this link's CloudKit route belongs to: its own, or for a link made over Relay (no
+    /// `userRecordName`) its Mac owner's, the only account it follows to iCloud on (#2381); nil when neither is known.
+    var madeOnAccount: String? {
+        if !userRecordName.isEmpty { return userRecordName }
+        return ownerName.isEmpty ? nil : ownerName
+    }
+
     /// The hub offers CloudKit; an absent list offers it, as in `TransportFollower`'s refusal.
     var offersCloudKit: Bool {
         hubTransports?.contains(TransportKind.cloudKit.rawValue) ?? true
