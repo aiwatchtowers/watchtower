@@ -13,7 +13,12 @@ final class SlackAddressTests: XCTestCase {
             "https://acme.slack.com",
             "https://acme.slack.com/",
             "https://acme.slack.com/marketplace/A0X-watchtower",
-            "http://acme.slack.com/apps"
+            "http://acme.slack.com/apps",
+            "acme.slack.com.",
+            "acme.",
+            "acme.slack.com?redir=1",
+            "https://acme.slack.com#apps",
+            "HTTPS://ACME.SLACK.COM/"
         ]
         for input in accepted {
             XCTAssertEqual(SlackAddress.parse(input), .workspace("acme"), input)
@@ -40,7 +45,32 @@ final class SlackAddressTests: XCTestCase {
             "ac_me",
             "acmé",
             "a.b.slack.com",
-            "https://"
+            "https://",
+            "acme.slack.com:443",
+            "acme..slack.com",
+            "-acme",
+            "acme-"
+        ]
+        for input in refused {
+            XCTAssertEqual(SlackAddress.parse(input), .invalid, input)
+        }
+    }
+
+    /// Slack's own hosts are never a workspace, bare or with `.slack.com`;
+    /// a reserved label in front of `.enterprise.slack.com` is invalid, not
+    /// an organization.
+    func testSlackOwnHostsRefused() {
+        let refused = [
+            "app",
+            "api",
+            "www",
+            "status",
+            "slack",
+            "api.slack.com",
+            "www.slack.com",
+            "status.slack.com",
+            "slack.slack.com",
+            "app.enterprise.slack.com"
         ]
         for input in refused {
             XCTAssertEqual(SlackAddress.parse(input), .invalid, input)
