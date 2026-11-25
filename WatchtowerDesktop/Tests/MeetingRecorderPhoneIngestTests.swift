@@ -99,8 +99,34 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
 
         try Data([0x00]).write(to: phone)
         let desktop = MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: date)
-        XCTAssertEqual(desktop.lastPathComponent, "\(stem)-3.caf",
-                       "the default stays .caf and skips the phone recording's name")
+        XCTAssertEqual(desktop.lastPathComponent, "\(stem)-3.aac",
+                       "the default is the Mac recorder's .aac and skips the phone recording's name")
+    }
+
+    /// Today's `.aac` and the legacy `.caf` / phone `.m4a` share one stem
+    /// space: a name held by any of them is taken for all.
+    func testUniqueRecordingURLTreatsAACAndTheOtherExtensionsAsOneFamily() throws {
+        let date = Date()
+        let stem = MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: date)
+            .deletingPathExtension().lastPathComponent
+
+        let aac = recordingsDir.appendingPathComponent("\(stem).aac")
+        try Data([0x00]).write(to: aac)
+        for ext in ["caf", "m4a"] {
+            XCTAssertEqual(
+                MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: date, fileExtension: ext)
+                    .lastPathComponent,
+                "\(stem)-2.\(ext)", "an existing .aac takes the stem for .\(ext)")
+        }
+        try FileManager.default.removeItem(at: aac)
+
+        for ext in ["caf", "m4a"] {
+            let other = recordingsDir.appendingPathComponent("\(stem).\(ext)")
+            try Data([0x00]).write(to: other)
+            XCTAssertEqual(MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: date).lastPathComponent,
+                           "\(stem)-2.aac", "an existing .\(ext) takes the stem for a new .aac")
+            try FileManager.default.removeItem(at: other)
+        }
     }
 
     // MARK: - Decode

@@ -1422,7 +1422,7 @@ final class MeetingRecorderCenter {
     /// Recovers every recording captured before a crash, once the database is
     /// open (`pendingStore`; without it this does nothing, and AppState calls
     /// it again when the pool opens): each `pending_transcripts` row whose
-    /// `rec_*` audio is still in the recordings directory, plus every `rec_*` `.caf`/`.m4a` with no row and no
+    /// `rec_*` audio is still in the recordings directory, plus every `rec_*` audio file with no row and no
     /// saved transcript — a recording started before the database opened
     /// (Review Focus 3), recovered without its event link. The legacy `rec_*`
     /// sidecars are imported into rows first (`LegacyRecordingSidecarImport`),
