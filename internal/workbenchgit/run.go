@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -185,23 +186,25 @@ func (r *repo) run(ctx context.Context, args ...string) ([]byte, int, error) {
 
 // worktreeLockName is the flock file in the common dir that serializes this
 // repository's worktree registrations across goroutines and Watchtower
-// processes (the daemon's coach publish, a CLI starting a session): `git
-// worktree add` reads every <common dir>/worktrees/* entry and fails on one
-// another add is still writing ("failed to read …/commondir", #2394).
+// processes (the daemon's coach publish and session cleanup, a CLI starting
+// a session): `git worktree add` reads every <common dir>/worktrees/* entry
+// and fails on one another add or remove is still changing ("failed to read
+// …/commondir", #2394).
 const worktreeLockName = "watchtower-worktree.lock"
 
-// lockWorktrees takes that lock, waiting until ctx is done. A lock file that
-// cannot be opened (a read-only .git) is no failure: git then runs
-// unserialized, as before the lock existed.
-func lockWorktrees(ctx context.Context, commonDir string) (func(), error) {
-	unlock, err := fsutil.LockFile(ctx, filepath.Join(commonDir, worktreeLockName))
+// LockWorktrees takes that lock of the repository whose git common dir is
+// commonDir, waiting until ctx is done; every `git worktree add`, `remove`
+// and `prune` Watchtower runs holds it. A lock file that cannot be created
+// (a read-only .git) is no failure: git then runs unserialized, as before
+// the lock existed. Any other locking failure is returned.
+func LockWorktrees(ctx context.Context, commonDir string) (func(), error) {
+	path := filepath.Join(commonDir, worktreeLockName)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, err
-		}
-		return func() {}, nil
+		return func() {}, nil //nolint:nilerr // no lock file can be created: git runs unserialized, as before the lock
 	}
-	return unlock, nil
+	_ = f.Close()
+	return fsutil.LockFile(ctx, path)
 }
 
 // paths is where the folder's repository lives.

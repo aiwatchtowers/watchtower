@@ -102,7 +102,7 @@ func CreateWorktree(ctx context.Context, o Options, req WorktreeRequest) (res Wo
 	if err := ensureExcludeLine(p.commonDir, worktreeExcludeLine); err != nil {
 		res.Warning = clip("adding the exclude line: " + err.Error())
 	}
-	unlock, err := lockWorktrees(ctx, p.commonDir)
+	unlock, err := LockWorktrees(ctx, p.commonDir)
 	if err != nil {
 		res.Error = gitError(err)
 		return res
@@ -240,7 +240,7 @@ func EnsureWorktree(ctx context.Context, o Options, path, branch string) (res Wo
 	// first. `worktree prune` drops every prunable entry, not only ours, which
 	// is acceptable here only because a prunable entry is one whose directory
 	// is already gone: nothing on disk is touched.
-	unlock, err := lockWorktrees(ctx, st.CommonDir)
+	unlock, err := LockWorktrees(ctx, st.CommonDir)
 	if err != nil {
 		res.Error = gitError(err)
 		return res

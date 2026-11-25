@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/gitbin"
+	"watchtower/internal/workbenchgit"
 )
 
 // Result modes.
@@ -442,13 +443,32 @@ func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 	a.unregisterBundles(ctx, root)
 	if a.recheckClear(ctx, it, root, "process in use: ", true) {
 		rctx, cancel := context.WithTimeout(ctx, worktreeRemoveTimeout)
+		unlock, err := a.lockWorktrees(rctx)
+		if err != nil {
+			cancel()
+			a.fail(it, err)
+			return
+		}
 		_, code, err := a.git.run.RunGit(rctx, a.folder, a.git.bin, "worktree", "remove", root)
+		unlock()
 		cancel()
 		a.settleGit(it, code, err)
 	}
 	if !it.Done {
 		a.reregisterBundles(ctx, root)
 	}
+}
+
+// lockWorktrees takes the repository's worktree lock (workbenchgit.LockWorktrees),
+// so the removal never races a session start's or a coach publish's
+// `worktree add` (#2394). A common dir git cannot tell runs unlocked: the
+// removal then fails or succeeds on its own, as before the lock.
+func (a *applier) lockWorktrees(ctx context.Context) (func(), error) {
+	out, err := a.git.output(ctx, a.folder, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return func() {}, nil //nolint:nilerr // no common dir: the removal runs unlocked, as before the lock
+	}
+	return workbenchgit.LockWorktrees(ctx, absFrom(a.folder, strings.TrimSpace(string(out))))
 }
 
 // settleGit records a git removal: done, refused (kept with git's words,

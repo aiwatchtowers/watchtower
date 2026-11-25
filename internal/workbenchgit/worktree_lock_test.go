@@ -73,18 +73,18 @@ func TestWorktreeLock_CreateAndEnsureHoldIt(t *testing.T) {
 // A held lock and a done context: the add is refused, never run unserialized.
 func TestWorktreeLock_WaitEndsWithTheContext(t *testing.T) {
 	dir := newRepo(t)
-	unlock, err := lockWorktrees(context.Background(), filepath.Join(dir, ".git"))
+	unlock, err := LockWorktrees(context.Background(), filepath.Join(dir, ".git"))
 	require.NoError(t, err)
 	defer unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = lockWorktrees(ctx, filepath.Join(dir, ".git"))
+	_, err = LockWorktrees(ctx, filepath.Join(dir, ".git"))
 	require.Error(t, err)
 }
 
 // No lock file can be made (the common dir is missing): git runs as before.
 func TestWorktreeLock_UnopenableLockIsNoFailure(t *testing.T) {
-	unlock, err := lockWorktrees(context.Background(), filepath.Join(t.TempDir(), "missing"))
+	unlock, err := LockWorktrees(context.Background(), filepath.Join(t.TempDir(), "missing"))
 	require.NoError(t, err)
 	unlock()
 }

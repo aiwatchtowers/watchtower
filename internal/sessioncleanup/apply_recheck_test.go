@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"watchtower/internal/fsutil"
 )
 
 // secondOrphanIn is another orphan of root, next to orphanIn's.
@@ -295,5 +297,34 @@ func TestApply_UnreadableStaleBundleIsKept(t *testing.T) {
 	wantResultItem(t, res, "lsreg:"+bundle, ActionKeep, ReasonBundleUnreadable, false)
 	if len(log.list()) != 0 {
 		t.Fatalf("lsregister ran: %v", log.list())
+	}
+}
+
+// The cleanup's `git worktree remove` holds the repository's worktree lock,
+// so it never races a session start's or a coach publish's add (#2394).
+func TestApply_WorktreeRemoveHoldsTheWorktreeLock(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	lock := filepath.Join(f.repo, ".git", "watchtower-worktree.lock")
+	var removes, held int
+	f.git = &loggingGit{log: &opLog{}, before: func(args []string) *gitAnswer {
+		if len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
+			removes++
+			unlock, free, err := fsutil.TryLockFile(lock)
+			if free {
+				unlock()
+			}
+			if err == nil && !free {
+				held++
+			}
+		}
+		return nil
+	}}
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
+	if removes == 0 || held != removes {
+		t.Fatalf("worktree remove ran %d times, %d under the lock", removes, held)
 	}
 }
