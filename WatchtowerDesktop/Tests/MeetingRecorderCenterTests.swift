@@ -528,7 +528,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
 
     func testNotFinalizedStopWithEmptyLivePassFailsWithNotFinalized() async throws {
         // Live was on but heard nothing: the batch path decodes the file and
-        // fails with the decoder's honest message.
+        // fails with the decoder's honest message (a not-finalized CAF).
         let audio = try makeDummyAudioFile()
         defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
 
@@ -552,9 +552,55 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         guard case .failed(let reason) = center.phase else {
             return XCTFail("expected .failed, got \(center.phase)")
         }
-        XCTAssertTrue(reason.contains("not finalized"), "got: \(reason)")
+        XCTAssertEqual(reason, AudioFileDecoderError.notFinalized.localizedDescription)
         XCTAssertEqual(center.pendingAudioURL, audio, "the audio must be kept for recovery")
         XCTAssertEqual(runner.invocations.count, 0)
+    }
+
+    /// The ADTS case through the real decoder: a not-finalized stop whose
+    /// writer flushed nothing leaves a 0-byte `.aac`. With an empty live pass
+    /// the job fails with "contains no audio", never "No speech recognized";
+    /// Retry (the same job) decodes the file again, so once it holds audio
+    /// (a manual rescue) the recording transcribes and saves.
+    func testNotFinalizedStopWithAZeroByteADTSFileFailsHonestlyAndRetryDecodesAgain() async throws {
+        let audio = try AACFixture.writeEmpty(fileExtension: "aac")
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+
+        let recorder = FakeRecorder()
+        recorder.stopError = AudioRecordingError.notFinalized(RecordingResult(audioURL: audio, durationSec: 1))
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        var decodes = 0
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["real speech"])) },
+            decode: { url in decodes += 1; return try AudioFileDecoder.decodePCM16k(url: url) },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        await center.startRecording(eventID: nil, title: "Ad hoc")
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        guard case .failed(let reason) = center.phase else {
+            return XCTFail("expected .failed, got \(center.phase)")
+        }
+        XCTAssertEqual(reason, AudioFileDecoderError.noAudio.localizedDescription)
+        XCTAssertFalse(reason.contains("No speech"), "got: \(reason)")
+        XCTAssertEqual(decodes, 1)
+        XCTAssertEqual(center.pendingAudioURL, audio, "the audio must be kept for recovery")
+        XCTAssertEqual(runner.invocations.count, 0)
+
+        let rescued = try AACFixture.write(durationSec: 1, fileExtension: "aac")
+        defer { try? FileManager.default.removeItem(at: rescued) }
+        try Data(contentsOf: rescued).write(to: audio)
+        await center.retryTranscription(config: singleWindowConfig())
+
+        XCTAssertEqual(decodes, 2, "Retry decodes the file again")
+        XCTAssertEqual(center.phase, .idle, "the rescued recording transcribes and saves")
+        XCTAssertEqual(runner.invocations.count, 1)
     }
 
     func testNotFinalizedStopWhileTheLivePassIsParkedFails() async throws {

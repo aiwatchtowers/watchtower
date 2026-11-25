@@ -141,8 +141,7 @@ final class AudioFileIntegrityTests: XCTestCase {
 
     /// A zero-byte or garbage `.aac` has no readable packet: the header read
     /// fails and the recorder's check fails a stop that wrote frames. The
-    /// decode throws on garbage; a zero-byte file is what a recording with
-    /// no frames leaves (`testDecoderReturnsNoSamplesForAnEmptyADTSFile`).
+    /// decode throws on both (`testDecoderReportsNoAudioForAnEmptyADTSFile`).
     func testEmptyOrGarbageADTSFileFailsHonestly() throws {
         for (name, bytes) in [("empty", Data()), ("garbage", Data("not audio, not adts".utf8))] {
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID().uuidString).aac")
@@ -164,15 +163,22 @@ final class AudioFileIntegrityTests: XCTestCase {
         XCTAssertThrowsError(try AudioFileDecoder.decodePCM16k(url: garbage), "garbage must not decode to silence")
     }
 
-    /// Zero frames written leave a 0-byte `.aac`; like the empty CAF it
-    /// replaces, it decodes to no samples (the job then reports no speech)
-    /// rather than an open error.
-    func testDecoderReturnsNoSamplesForAnEmptyADTSFile() throws {
+    /// A 0-byte `.aac` (zero frames written, or a writer that flushed
+    /// nothing) is not a recording of silence: it fails with `.noAudio`,
+    /// never decodes to no samples, which would read as "No speech
+    /// recognized".
+    func testDecoderReportsNoAudioForAnEmptyADTSFile() throws {
         let url = try AACFixture.writeEmpty(fileExtension: "aac")
         cleanup.append(url)
         let size = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int
         XCTAssertEqual(size, 0, "an ADTS writer closed with nothing written leaves 0 bytes")
-        XCTAssertEqual(try AudioFileDecoder.decodePCM16k(url: url), [])
+        XCTAssertThrowsError(try AudioFileDecoder.decodePCM16k(url: url)) {
+            guard case AudioFileDecoderError.noAudio = $0 else {
+                return XCTFail("expected .noAudio, got \($0)")
+            }
+            XCTAssertEqual($0.localizedDescription,
+                           "The recording file contains no audio — nothing reached the disk. The file is kept for recovery.")
+        }
     }
 
     // MARK: decoder

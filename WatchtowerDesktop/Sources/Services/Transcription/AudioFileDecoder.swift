@@ -13,6 +13,11 @@ enum AudioFileDecoderError: Error, LocalizedError {
     /// error, so the packet boundaries cannot be found by trial — so the
     /// file is kept as it is for a manual rescue.
     case notFinalized
+    /// A 0-byte `.aac`: no audio reached the disk. ADTS has no header, so
+    /// this is what both a capture that wrote no frames and one whose writer
+    /// flushed nothing leave; neither is a recording of silence, so it never
+    /// decodes to "no samples" (which reads as "No speech recognized").
+    case noAudio
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +27,8 @@ enum AudioFileDecoderError: Error, LocalizedError {
             return "Audio conversion failed: \(detail)"
         case .notFinalized:
             return "The recording file is not finalized — its audio could not be read. The file is kept for recovery."
+        case .noAudio:
+            return "The recording file contains no audio — nothing reached the disk. The file is kept for recovery."
         }
     }
 }
@@ -35,7 +42,7 @@ enum AudioFileDecoder {
     /// Sample 0 is the first frame the recorder wrote, in every container:
     /// an ADTS file's encoder priming is skipped (see `adtsPrimingFrames`).
     static func decodePCM16k(url: URL) throws -> [Float] {
-        guard let file = try openForDecode(url: url) else { return [] }
+        let file = try openForDecode(url: url)
         let sourceFormat = file.processingFormat
 
         guard let targetFormat = AVAudioFormat(
@@ -137,13 +144,12 @@ enum AudioFileDecoder {
         }
     }
 
-    /// The file positioned at its first recorded frame, or nil for a 0-byte
-    /// `.aac`: a recording that wrote no frames leaves one (ADTS has no header
-    /// to write), and the empty CAF it replaces decoded to no samples too.
-    private static func openForDecode(url: URL) throws -> AVAudioFile? {
+    /// The file positioned at its first recorded frame. A 0-byte `.aac`
+    /// throws `.noAudio` rather than opening as nothing.
+    private static func openForDecode(url: URL) throws -> AVAudioFile {
         if isZeroByteADTS(url) {
-            log.info("decode: \(url.lastPathComponent, privacy: .public) is empty (0 bytes), no samples")
-            return nil
+            log.error("decode: \(url.lastPathComponent, privacy: .public) is 0 bytes, no audio reached the disk")
+            throw AudioFileDecoderError.noAudio
         }
         let file = try AVAudioFile(forReading: url)
         try rejectUnfinalized(length: file.length, at: url)
