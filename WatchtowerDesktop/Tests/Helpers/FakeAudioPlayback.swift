@@ -10,6 +10,7 @@ final class FakeAudioPlayback: AudioPlayback {
     var currentTime: TimeInterval = 0
     var duration: TimeInterval
     private(set) var isPlaying = false
+    var playbackError: Error?
 
     init(duration: TimeInterval = 10) {
         self.duration = duration

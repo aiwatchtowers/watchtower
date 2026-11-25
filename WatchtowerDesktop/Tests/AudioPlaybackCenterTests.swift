@@ -6,6 +6,7 @@ private final class FakePlayback: AudioPlayback {
     var currentTime: TimeInterval = 0
     var duration: TimeInterval
     private(set) var isPlaying = false
+    var playbackError: Error?
     private(set) var playCalls = 0
     private(set) var stopCalls = 0
 
@@ -174,5 +175,49 @@ final class AudioPlaybackCenterTests: XCTestCase {
         center.refreshProgress()
 
         XCTAssertFalse(center.isPlaying)
+    }
+
+    /// The production player loads its precise duration after creation:
+    /// the center starts at 0 and picks the real one up on the next refresh.
+    func test_refreshProgressPicksUpADurationLoadedAfterPlay() {
+        let fake = FakePlayback(duration: 0)
+        let center = AudioPlaybackCenter { _ in fake }
+        center.play(url: URL(fileURLWithPath: "/tmp/a.aac"), transcriptID: 1)
+        XCTAssertEqual(center.duration, 0)
+
+        fake.duration = 3537.2
+        center.refreshProgress()
+
+        XCTAssertEqual(center.duration, 3537.2)
+    }
+
+    /// A scrub on an idle row starts playback and seeks at once, before the
+    /// duration is known: the seek must not be clamped to 0.
+    func test_seekBeforeTheDurationIsKnownIsNotClampedToZero() {
+        let fake = FakePlayback(duration: 0)
+        let center = AudioPlaybackCenter { _ in fake }
+        center.play(url: URL(fileURLWithPath: "/tmp/a.aac"), transcriptID: 1)
+
+        center.seek(to: 1800)
+        XCTAssertEqual(fake.currentTime, 1800)
+        center.seek(to: -3)
+        XCTAssertEqual(fake.currentTime, 0)
+    }
+
+    /// A file found unplayable after it opened fails its row like a load
+    /// failure: nothing stays active, the error is surfaced.
+    func test_refreshProgressSurfacesAPlaybackErrorFoundLater() {
+        let fake = FakePlayback(duration: 0)
+        let center = AudioPlaybackCenter { _ in fake }
+        center.play(url: URL(fileURLWithPath: "/tmp/bad.aac"), transcriptID: 7)
+
+        fake.playbackError = FakePlaybackError()
+        center.refreshProgress()
+
+        XCTAssertNil(center.activeTranscriptID)
+        XCTAssertFalse(center.isPlaying)
+        XCTAssertEqual(center.failedTranscriptID, 7)
+        XCTAssertEqual(center.errorMessage, "boom")
+        XCTAssertEqual(fake.stopCalls, 1)
     }
 }

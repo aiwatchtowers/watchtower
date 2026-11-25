@@ -14,10 +14,19 @@ extension MeetingRecorderCenter {
         }
     }
 
-    /// Audio extensions of the `rec_*` family: `.caf` from this Mac's own
-    /// recorder, `.m4a` from phone recordings relayed by the mobile hub. Both
-    /// are AVFoundation-readable, so the batch decode path is shared.
-    nonisolated static let recordingAudioExtensions: Set<String> = ["caf", "m4a"]
+    /// The extension this Mac's recorder writes: ADTS AAC, whose packets each
+    /// carry their own header, so a file whose writer was never closed (a
+    /// crash, a leaked writer) still reads up to its last flushed packet.
+    /// Recordings made before it were AAC in CAF (`.caf`), which needs the
+    /// close to write its packet table.
+    nonisolated static let captureAudioExtension = "aac"
+
+    /// Audio extensions of the `rec_*` family: `.aac` from this Mac's own
+    /// recorder, `.caf` from its recorder before the switch to ADTS (kept
+    /// readable for recovery, retry and playback, never renamed), `.m4a` from
+    /// phone recordings relayed by the mobile hub. All are AVFoundation-
+    /// readable, so the batch decode path is shared.
+    nonisolated static let recordingAudioExtensions: Set<String> = ["aac", "caf", "m4a"]
 
     /// Chronological sort key for a `rec_<timestamp>[-N].<ext>` name: the
     /// timestamp, then the collision suffix as a number (absent = the first
@@ -41,8 +50,9 @@ extension MeetingRecorderCenter {
     }
 
     /// `rec_<timestamp>.<fileExtension>`, disambiguated with a `-N` suffix
-    /// while the name is taken: by an audio file of EITHER extension
-    /// (`rec_X.caf` and `rec_X.m4a` would share their pending row), by a
+    /// while the name is taken: by an audio file of ANY family extension
+    /// (`rec_X.aac`, `rec_X.caf` and `rec_X.m4a` would share their pending
+    /// row and sidecars), by a
     /// legacy `.meta` sidecar not imported yet, or when `taken` says so (a
     /// pending row reserving the stem). The timestamp has one-second
     /// resolution, so two recordings started inside the same second would
@@ -54,7 +64,7 @@ extension MeetingRecorderCenter {
     nonisolated static func uniqueRecordingURL(
         in directory: URL,
         date: Date = Date(),
-        fileExtension: String = "caf",
+        fileExtension: String = MeetingRecorderCenter.captureAudioExtension,
         taken: (String) -> Bool = { _ in false }
     ) -> URL {
         let base = "rec_\(timestampComponent(date))"
@@ -79,7 +89,7 @@ extension MeetingRecorderCenter {
 /// Desktop capture (`startRecording`) and a phone ingest
 /// (`reservePhoneRecording`) — pick through `claim`, which checks and claims
 /// under one lock, and hold the claim until their name is backed: the capture
-/// until its start resolves (the recorder has created the `.caf` and the
+/// until its start resolves (the recorder has created the audio file and the
 /// pending row is written, or the start failed), the ingest until its
 /// exclusive row insert resolves. Without it a capture suspended inside
 /// `recorder.start` held a name that nothing on disk or in the database
@@ -96,7 +106,7 @@ final class RecordingNameClaims: @unchecked Sendable {
     func claim(
         in directory: URL,
         date: Date,
-        fileExtension: String = "caf",
+        fileExtension: String = MeetingRecorderCenter.captureAudioExtension,
         taken: (String) -> Bool
     ) -> URL {
         lock.lock()
