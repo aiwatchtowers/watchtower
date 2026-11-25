@@ -142,8 +142,10 @@ final class CompaniesZoneModelTests: XCTestCase {
         model.openCodeField()
         XCTAssertTrue(model.codeFieldOpen)
         model.code = "hello"
+        model.slackAddress = "acme"
         await model.submitCode { _ in Pres.codeInvalid }
         XCTAssertEqual(model.codeError, Pres.codeInvalid)
+        XCTAssertEqual(model.slackAddress, "acme", "a refused code keeps the Slack address")
         XCTAssertTrue(model.codeFieldOpen)
         model.code = "hello2"
         XCTAssertNil(model.codeError, "typing clears the error")
@@ -153,6 +155,7 @@ final class CompaniesZoneModelTests: XCTestCase {
         let (model, _) = model([])
         model.openCodeField()
         model.code = "  abc  "
+        model.slackAddress = "acme"
         var pasted: [String] = []
         await model.submitCode { text in
             pasted.append(text)
@@ -161,6 +164,7 @@ final class CompaniesZoneModelTests: XCTestCase {
         XCTAssertEqual(pasted, ["abc"])
         XCTAssertFalse(model.codeFieldOpen)
         XCTAssertEqual(model.code, "")
+        XCTAssertEqual(model.slackAddress, "", "the one-time Slack address goes with the code")
         XCTAssertNil(model.codeError)
     }
 

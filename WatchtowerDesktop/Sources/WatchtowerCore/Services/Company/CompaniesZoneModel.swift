@@ -150,6 +150,7 @@ package final class CompaniesZoneModel {
         codeError = error
         if error == nil {
             code = ""
+            slackAddress = ""
             codeFieldOpen = false
         }
     }
