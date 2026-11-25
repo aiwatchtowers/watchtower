@@ -1,9 +1,13 @@
 import Foundation
 import AVFoundation
+import os
+import WatchtowerCore
 
 /// The playback surface `AudioPlaybackCenter` and `ClipPlayer` drive, so
 /// both are unit-testable without touching real audio hardware/files. The
-/// production one is `PreciseAudioPlayback`.
+/// production one is `PreciseAudioPlayback`. Main-actor bound, like both
+/// of its callers.
+@MainActor
 protocol AudioPlayback: AnyObject {
     /// Setting it seeks (exactly, in the production player).
     var currentTime: TimeInterval { get set }
@@ -32,6 +36,8 @@ extension AudioPlayback {
 @MainActor
 @Observable
 final class AudioPlaybackCenter {
+    private static let log = Logger(subsystem: Constants.bundleID, category: "playback")
+
     /// The transcript whose audio is loaded (playing or paused). `nil` when idle.
     private(set) var activeTranscriptID: Int64?
     /// The transcript whose most recent `play()` attempt failed to load.
@@ -44,9 +50,9 @@ final class AudioPlaybackCenter {
 
     private var player: AudioPlayback?
     private var timer: Timer?
-    private let playerFactory: (URL) throws -> AudioPlayback
+    private let playerFactory: @MainActor (URL) throws -> AudioPlayback
 
-    init(playerFactory: @escaping (URL) throws -> AudioPlayback = { try PreciseAudioPlayback(url: $0) }) {
+    init(playerFactory: @escaping @MainActor (URL) throws -> AudioPlayback = { try PreciseAudioPlayback(url: $0) }) {
         self.playerFactory = playerFactory
     }
 
@@ -69,6 +75,7 @@ final class AudioPlaybackCenter {
             isPlaying = true
             startTimer()
         } catch {
+            Self.log.error("cannot open \(url.lastPathComponent, privacy: .public): \(Self.describe(error), privacy: .public)")
             player = nil
             activeTranscriptID = nil
             failedTranscriptID = transcriptID
@@ -120,6 +127,7 @@ final class AudioPlaybackCenter {
     func refreshProgress() {
         guard let player else { return }
         if let error = player.playbackError {
+            Self.log.error("playback failed after opening: \(Self.describe(error), privacy: .public)")
             let failed = activeTranscriptID
             stopCurrent()
             failedTranscriptID = failed
@@ -156,5 +164,11 @@ final class AudioPlaybackCenter {
     private func stopTimer() {
         timer?.invalidate()
         timer = nil
+    }
+
+    /// `domain code: description` for the log.
+    nonisolated static func describe(_ error: Error) -> String {
+        let ns = error as NSError
+        return "\(ns.domain) \(ns.code): \(ns.localizedDescription)"
     }
 }

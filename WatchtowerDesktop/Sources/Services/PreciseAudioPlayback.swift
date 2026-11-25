@@ -1,5 +1,7 @@
 import AVFoundation
 import Foundation
+import os
+import WatchtowerCore
 
 /// The production `AudioPlayback`: an `AVPlayer` over an `AVURLAsset` opened
 /// with `AVURLAssetPreferPreciseDurationAndTimingKey`, one code path for every
@@ -13,9 +15,13 @@ import Foundation
 /// `duration` is 0 until the asset's precise duration has loaded (off the
 /// main thread, a fraction of a second on an hour-long file) — callers treat 0
 /// as "not known yet", as they did before a player existed. A file that turns
-/// out unplayable reports it through `playbackError`. Use from the main thread.
+/// out unplayable reports it through `playbackError`.
+@MainActor
 final class PreciseAudioPlayback: AudioPlayback {
-    private let player: AVPlayer
+    private static let log = Logger(subsystem: Constants.bundleID, category: "playback")
+
+    /// Internal for tests (muting it, reading where it really landed).
+    let player: AVPlayer
     /// Internal for tests (posting its end-of-playback notification).
     let item: AVPlayerItem
     private var endObserver: NSObjectProtocol?
@@ -33,12 +39,17 @@ final class PreciseAudioPlayback: AudioPlayback {
     /// for tests, which await it instead of polling.
     private(set) var durationLoad: Task<Void, Never>?
 
-    /// Throws when there is no readable file at `url` (the audio was deleted
-    /// or moved), synchronously, like the `AVAudioPlayer` it replaces; a file
-    /// that exists but cannot be decoded surfaces later in `playbackError`.
+    /// Throws synchronously, like the `AVAudioPlayer` it replaces, when
+    /// there is no file at `url` (`.fileReadNoSuchFile`: the audio was deleted
+    /// or moved) or it cannot be read (`.fileReadNoPermission`); a file that
+    /// exists but cannot be decoded surfaces later in `playbackError`.
     init(url: URL) throws {
-        guard FileManager.default.isReadableFile(atPath: url.path) else {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else {
             throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: url.path])
+        }
+        guard fm.isReadableFile(atPath: url.path) else {
+            throw CocoaError(.fileReadNoPermission, userInfo: [NSFilePathErrorKey: url.path])
         }
         let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         item = AVPlayerItem(asset: asset)
@@ -47,7 +58,7 @@ final class PreciseAudioPlayback: AudioPlayback {
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
         ) { [weak self] _ in
-            self?.reachedEnd = true
+            MainActor.assumeIsolated { self?.reachedEnd = true }
         }
         durationLoad = Task { @MainActor [weak self] in
             do {
@@ -56,7 +67,10 @@ final class PreciseAudioPlayback: AudioPlayback {
                 if time.isNumeric, time.seconds.isFinite, time.seconds > 0 {
                     self.duration = time.seconds
                 }
+            } catch is CancellationError {
+                // `stop()` cancelled the load: not a fault of the file.
             } catch {
+                guard !Task.isCancelled else { return }
                 self?.loadError = error
             }
         }
@@ -88,10 +102,18 @@ final class PreciseAudioPlayback: AudioPlayback {
             seekGeneration += 1
             let generation = seekGeneration
             player.seek(to: CMTime(seconds: target, preferredTimescale: 48_000),
-                        toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                DispatchQueue.main.async {
+                        toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+                Task { @MainActor in
                     guard let self, self.seekGeneration == generation else { return }
                     self.pendingSeek = nil
+                    if !finished {
+                        // Not superseded by a later seek, yet not completed:
+                        // the player stays wherever it was.
+                        Self.log.error("""
+                            seek to \(target, privacy: .public) s did not finish \
+                            (item status \(self.item.status.rawValue, privacy: .public))
+                            """)
+                    }
                 }
             }
         }
