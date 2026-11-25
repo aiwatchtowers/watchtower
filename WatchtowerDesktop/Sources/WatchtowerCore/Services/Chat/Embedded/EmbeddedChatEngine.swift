@@ -95,11 +95,12 @@ package final class EmbeddedChatEngine {
     /// Each tool step's start and end of the running turn, as it streams
     /// (the connect assistant watches the browser's tool results here).
     @ObservationIgnored package var onToolEvent: ((StreamEvent) -> Void)?
-    /// The owner's Stop ended a turn, with its reply row's id — never the
-    /// quit (`finishAsPartial`) or a shutdown, which store the same `partial`
-    /// row. Opt-in: only a surface that must tell the two apart after a
-    /// restart sets it (the "Not clear?" chat, ask #1849).
-    @ObservationIgnored package var onOwnerStop: ((Int64) -> Void)?
+    /// The owner's Stop ended a turn, with its turn id (a random UUID, also
+    /// the reply row's `turn_id`) — never the quit (`finishAsPartial`) or a
+    /// shutdown, which store the same `partial` row. Opt-in: only a surface
+    /// that must tell the two apart after a restart sets it (the "Not
+    /// clear?" chat, ask #1849).
+    @ObservationIgnored package var onOwnerStop: ((String) -> Void)?
     /// The latest failed turn's classified failure (its code survives here,
     /// `TurnOutcome.failed` carries only the text). Set before that turn's
     /// `onTurnFinished`.
@@ -304,7 +305,7 @@ package final class EmbeddedChatEngine {
             return
         }
         guard let current = running else { return }
-        onOwnerStop?(current.turn.messageID)
+        onOwnerStop?(current.turn.turnID)
         running?.stopRequested = true
         endRunningTurn()
     }
@@ -546,7 +547,7 @@ package final class EmbeddedChatEngine {
         if stopBeforeStart {
             // A quit or a shutdown came first: nothing more is sent, and the
             // follow-ups it carried are kept (its process is stopped now).
-            if ownerStopBeforeStart { onOwnerStop?(ids.assistantID) }
+            if ownerStopBeforeStart { onOwnerStop?(turnID) }
             queuedFollowUps.insert(contentsOf: request.carriedFollowUps, at: 0)
             running?.stopRequested = true
             endRunningTurn()

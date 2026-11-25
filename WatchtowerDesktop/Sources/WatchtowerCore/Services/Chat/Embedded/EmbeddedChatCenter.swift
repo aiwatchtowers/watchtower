@@ -87,7 +87,8 @@ package final class EmbeddedChatCenter {
     package func markHidden(_ key: EmbeddedChatKey) {
         let remaining = max(0, (shownCount[key] ?? 0) - 1)
         shownCount[key] = remaining == 0 ? nil : remaining
-        if remaining == 0 { hiddenSince[key] = clock() }
+        // A key with no engine (moved by `adopt`, or released) keeps no clock.
+        if remaining == 0 { hiddenSince[key] = engines[key] == nil ? nil : clock() }
     }
 
     /// Releases idle engines no view has shown for `idleTTL`.

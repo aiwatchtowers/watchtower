@@ -582,6 +582,59 @@ final class AskExplainModelTests: XCTestCase {
         XCTAssertEqual(fx.ai.calls.count, 1)
     }
 
+    /// Two workspaces' databases share one preferences suite: a stop in one
+    /// never takes the Retry from a quit reply in the other, though both
+    /// replies have the same row ids (the marker is the turn's UUID).
+    func testAStopInOneDatabaseKeepsRetryInAnother() async throws {
+        let ask = try fx.insertAsk()
+        await fx.vm.openExplain(ask)
+        let stopped = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await stopped.started()
+        fx.ai.emit(.text("It dec"))
+        await waitForCondition { stopped.liveTurn?.fullText == "It dec" }
+        stopped.stop()
+        await waitForCondition { !stopped.isBusy }
+        await stopped.finished()
+
+        let other = try AskExplainFixture(defaults: fx.defaults)
+        defer { other.cleanup() }
+        let otherAsk = try other.insertAsk()
+        XCTAssertEqual(otherAsk.id, ask.id, "the same ids in a second database")
+        await other.vm.openExplain(otherAsk)
+        let quit = try XCTUnwrap(other.vm.explainEngine(for: otherAsk))
+        await quit.started()
+        other.ai.emit(.text("It dec"))
+        await waitForCondition { quit.liveTurn?.fullText == "It dec" }
+        other.center.finishAllAsPartial()
+        await waitForCondition { !quit.isBusy }
+        await quit.finished()
+        XCTAssertEqual(quit.messages.last?.id, stopped.messages.last?.id, "the same reply row id")
+
+        other.center.release(quit.spec.key)
+        let rebuilt = try XCTUnwrap(other.vm.ensureExplainEngine(otherAsk))
+        XCTAssertTrue(rebuilt.canRetry, "the other database's quit reply still offers Retry")
+    }
+
+    /// Stop pressed while the first turn's rows are still being written:
+    /// the turn ends stopped once they land, and a rebuilt engine offers no
+    /// Retry for it.
+    func testStopBeforeTheTurnStartedOffersNoRetryAfterARebuild() async throws {
+        let ask = try fx.insertAsk()
+        fx.ai.holdPersistStart()
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        XCTAssertTrue(engine.isStarting)
+        engine.stop()
+        fx.ai.releasePersistStart()
+        await waitForCondition { !engine.isBusy }
+        await engine.finished()
+        XCTAssertEqual(try fx.rows(try XCTUnwrap(engine.spec.key.conversationID)).last?.status, "partial")
+
+        fx.center.release(engine.spec.key)
+        let rebuilt = try XCTUnwrap(fx.vm.ensureExplainEngine(ask))
+        XCTAssertFalse(rebuilt.canRetry, "the owner's Stop before the start is remembered too")
+    }
+
     /// The app quit mid-explanation: the rebuilt engine offers Retry.
     func testQuitFirstTurnOffersRetryAfterARebuild() async throws {
         let ask = try fx.insertAsk()

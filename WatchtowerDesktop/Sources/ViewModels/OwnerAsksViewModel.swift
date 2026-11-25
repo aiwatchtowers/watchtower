@@ -841,7 +841,7 @@ final class OwnerAsksViewModel {
         // A kept engine takes the surface read on this open (its prompt
         // follows the ask's target as it is now); its history stays.
         let engine = chats.engine(for: spec)
-        engine.onOwnerStop = { [weak self] messageID in self?.recordExplainStop(messageID) }
+        engine.onOwnerStop = { [weak self] turnID in self?.recordExplainStop(turnID) }
         if kept { return engine }
         offerExplainRetry(engine)
         explainBuilds[ask.id, default: 0] += 1
@@ -852,24 +852,28 @@ final class OwnerAsksViewModel {
     /// reply the owner stopped: Stop and quit store the same `partial` row,
     /// so the stop is remembered here (D12, ask #1849).
     private func offerExplainRetry(_ engine: EmbeddedChatEngine) {
-        if let last = engine.messages.last, stoppedExplainReplies.contains(last.id) { return }
+        if let last = engine.messages.last, stoppedExplainTurns.contains(last.message.turnID) { return }
         engine.offerRetryOfStoredReply(hiddenPrompt: AskExplainPrompt.firstTurn)
     }
 
-    /// The explain replies the owner stopped, newest last, kept across
-    /// launches (only this surface reads them); the oldest go past
-    /// `stoppedExplainRepliesLimit`.
-    private var stoppedExplainReplies: [Int64] {
-        (defaults.array(forKey: Self.stoppedExplainRepliesKey) as? [NSNumber])?.map(\.int64Value) ?? []
+    /// The explain turns the owner stopped, by turn id, newest last, kept
+    /// across launches (only this surface reads them); the oldest go past
+    /// `stoppedExplainRepliesLimit`. A turn id is a random UUID the engine
+    /// gave the turn and wrote into its reply row (`turn_id`), so a marker
+    /// never matches a reply of another workspace's database sharing these
+    /// preferences, nor one of a database recreated since (row ids restart,
+    /// turn ids do not).
+    private var stoppedExplainTurns: [String] {
+        defaults.stringArray(forKey: Self.stoppedExplainRepliesKey) ?? []
     }
 
-    private func recordExplainStop(_ messageID: Int64) {
-        var ids = stoppedExplainReplies.filter { $0 != messageID }
-        ids.append(messageID)
+    private func recordExplainStop(_ turnID: String) {
+        var ids = stoppedExplainTurns.filter { $0 != turnID }
+        ids.append(turnID)
         defaults.set(Array(ids.suffix(Self.stoppedExplainRepliesLimit)), forKey: Self.stoppedExplainRepliesKey)
     }
 
-    static let stoppedExplainRepliesKey = "askExplain.stoppedReplyIDs"
+    static let stoppedExplainRepliesKey = "askExplain.stoppedTurnIDs"
     static let stoppedExplainRepliesLimit = 200
 
     /// The ask's surface: its workbench (gone: no conversation is made), the
@@ -891,8 +895,18 @@ final class OwnerAsksViewModel {
         do {
             conversationID = try await AskExplainSurface.conversationID(ask: ask, dbPool: dbPool, writes: chatWrites)
         } catch {
-            let gone = try? await dbPool.read { try WorkbenchQueries.fetch($0, id: ask.projectID) == nil }
-            if gone == true { throw ExplainWorkbenchGone() }
+            // Refused because the workbench went meanwhile? A failed re-read
+            // keeps the original error (logged; Retry stays).
+            do {
+                if try await dbPool.read({ try WorkbenchQueries.fetch($0, id: ask.projectID) == nil }) {
+                    throw ExplainWorkbenchGone()
+                }
+            } catch let gone as ExplainWorkbenchGone {
+                throw gone
+            } catch {
+                NSLog("OwnerAsksViewModel: re-reading workbench %lld after a failed chat.new: %@",
+                      ask.projectID, error.localizedDescription)
+            }
             throw error
         }
         return AskExplainSurface.spec(ask: ask, conversationID: conversationID, folder: folder,

@@ -46,10 +46,16 @@ struct AskExplainChatView: View {
             // Follows the latest reply as it grows.
             .defaultScrollAnchor(.bottom)
             .frame(maxHeight: .infinity)
-            EmbeddedChatComposer(engine: engine, placeholder: AskExplainCopy.placeholder, density: .compact,
-                                 onEscape: Self.composerEscape(engine: engine, onBack: onBack), autoFocus: true,
-                                 hidesError: Self.composerHidesError(engine))
+            composer
         }
+    }
+
+    /// The composer: compact, Esc back while empty, and no second copy of a
+    /// failure the row above already shows (`composerHidesError`).
+    var composer: EmbeddedChatComposer {
+        EmbeddedChatComposer(engine: engine, placeholder: AskExplainCopy.placeholder, density: .compact,
+                             onEscape: Self.composerEscape(engine: engine, onBack: onBack), autoFocus: true,
+                             hidesError: Self.composerHidesError(engine))
     }
 
     /// The hidden first turn could not start (the CLI exited early): no row
@@ -131,10 +137,16 @@ struct AskExplainPane: View {
         return error.map(Shown.failure) ?? .finding
     }
 
+    /// The chat over `engine`, with the open's error and its Retry when one
+    /// can help.
+    func chatView(_ engine: EmbeddedChatEngine) -> AskExplainChatView {
+        AskExplainChatView(ask: ask, engine: engine, error: asks.explainErrors[ask.id],
+                           onRetry: retryIfItCanHelp, onBack: onBack)
+    }
+
     @ViewBuilder
     private func chat(_ engine: EmbeddedChatEngine) -> some View {
-        let view = AskExplainChatView(ask: ask, engine: engine, error: asks.explainErrors[ask.id],
-                                      onRetry: retryIfItCanHelp, onBack: onBack)
+        let view = chatView(engine)
         if let chats = asks.chats {
             view.embeddedChatVisibility(engine.spec.key, in: chats)
         } else {
@@ -144,7 +156,7 @@ struct AskExplainPane: View {
 
     /// Retry, unless the open failed for good (the workbench is gone): the
     /// line then stays as the final state, Back leaves it.
-    private var retryIfItCanHelp: (() -> Void)? {
+    var retryIfItCanHelp: (() -> Void)? {
         asks.explainOffersRetry(ask.id) ? retry : nil
     }
 

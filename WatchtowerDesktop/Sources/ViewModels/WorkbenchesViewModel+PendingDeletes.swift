@@ -79,6 +79,10 @@ extension WorkbenchesViewModel {
     /// unbound its asks (board #542).
     func commitPendingDeletes(_ entries: [PendingSessionDeletes.Entry]) async {
         guard !entries.isEmpty else { return }
+        // Hidden until the write settled, whichever way (`deletingSessionIDs`).
+        let ids = Set(entries.map(\.sessionID))
+        committingDeletes.formUnion(ids)
+        defer { committingDeletes.subtract(ids) }
         let lists = Self.sessionLists(of: entries)
         let (rows, standalone) = Self.split(entries)
         do {
@@ -138,6 +142,14 @@ extension WorkbenchesViewModel {
         pendingDeletes.discardBatch(workbenchID: workbenchID)
         if pendingDeletes.batch.isEmpty { cancelPendingDeleteWindow() }
         discardAutoCleanup(workbenchID: workbenchID)
+    }
+
+    /// The sessions being deleted as far as the owner can tell: waiting in
+    /// the Undo batch, or past it while their delete write settles. Their
+    /// `delete_requested_at` may not be written yet, so the ask explain
+    /// chat's folder reads them from here (`OwnerAsksViewModel.hiddenSessions`).
+    var deletingSessionIDs: Set<Int64> {
+        pendingDeletes.ids.union(committingDeletes)
     }
 
     /// `rows` without the sessions waiting in the Undo batch.
