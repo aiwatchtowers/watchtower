@@ -152,32 +152,6 @@ final class SessionChatViewTests: XCTestCase {
         XCTAssertNoThrow(try readOnly.find(text: "Yes"), "the questions stay readable")
     }
 
-    /// An owner line that sent a pasted image draws it in its bubble's footer (`ownerFooter`), its path out of the
-    /// text; an image elsewhere is a chip; the agent's line and a plain owner line draw no footer.
-    func testOwnerFooterDrawsTheImagesTheLineSent() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("wt-footer-\(UUID().uuidString)").path
-        let pasted = root + "/7/20261125-101500-1.png"
-        let entries = [
-            SessionFeedEntry(id: "o1", kind: "owner", text: "\(pasted) why"),
-            SessionFeedEntry(id: "a1", kind: "agent", text: "Saved to\n\(pasted)"),
-            SessionFeedEntry(id: "o2", kind: "owner", text: "plain words"),
-            SessionFeedEntry(id: "o3", kind: "owner", text: "the mockup\n/Users/example/Desktop/mockup.png")
-        ]
-        var feed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
-        feed.attachmentsRoot = root
-        let context = feed.context()
-        let footers = feed.messages.map { context.ownerFooter?($0) != nil }
-        XCTAssertEqual(footers, [true, false, false, true])
-
-        let rows = try ChatFeedRows(messages: feed.messages, context: context).inspect()
-        XCTAssertEqual(rows.findAll(WorkchatOwnerImagesView.self).count, 2)
-        XCTAssertEqual(rows.findAll(WorkchatImageThumbnail.self).count, 1, "only the paste is a thumbnail")
-        XCTAssertNoThrow(try rows.find(text: "why"))
-        XCTAssertThrowsError(try rows.find(text: "\(pasted) why"), "the path left the owner's text")
-        XCTAssertNoThrow(try rows.find(text: "mockup.png"), "the external image is a chip with its name")
-        XCTAssertNoThrow(try rows.find(text: "20261125-101500-1.png"), "a paste not on disk is the missing chip")
-    }
-
     /// Spec 2026-11-24-workchat-polish §2 (C2): the Workchat colours the agent's text and hands its clicks and path
     /// lookups to the screen; the AI chat's context leaves the flag off.
     func testWorkchatFeedHighlightsTheAgentsTextAndTheAIChatDoesNot() throws {

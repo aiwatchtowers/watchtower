@@ -34,9 +34,6 @@ struct WorkchatFeed {
     var onHighlight: ((AgentTextHighlights.Span, Int64) -> Void)?
     /// Whether a path in an agent message (by id) is a file of the session's folders: only such a path is coloured.
     var resolvesPath: ((String, Int64) -> Bool)?
-    /// The Workchat's attachments folder (`WorkchatAttachmentStore.root`): only an owner's image there is read for
-    /// its thumbnail; one anywhere else is a chip (`WorkchatOwnerImages`).
-    var attachmentsRoot: String?
 
     /// Puts `text` on the general pasteboard (a row's Copy, a highlighted hash or command).
     static func copy(_ text: String) {
@@ -51,12 +48,7 @@ struct WorkchatFeed {
         return (session, session.flatMap { transcriptDirs[$0] })
     }
 
-    var messages: [ChatFeed.Message] { WorkchatFeedAdapter.messages(entries, ownerSplit: ownerImages) }
-
-    /// An owner line's shown text and images, split once per entry text (`SessionFeedMarkdownCache.ownerImages`).
-    func ownerImages(_ entry: SessionFeedEntry) -> WorkchatOwnerImages {
-        markdown.ownerImages(id: entry.id, text: entry.text, attachmentsRoot: attachmentsRoot)
-    }
+    var messages: [ChatFeed.Message] { WorkchatFeedAdapter.messages(entries) }
 
     /// The entry behind each message id.
     var entriesByMessage: [Int64: SessionFeedEntry] {
@@ -105,11 +97,6 @@ struct WorkchatFeed {
         }
         let (markdown, expanded, toggle) = (markdown, expandedEvents, onToggle)
         let (openArtifact, feed) = (onOpenArtifact, self)
-        context.ownerFooter = { message in
-            guard let entry = byID[message.id], entry.kind == "owner" else { return nil }
-            let images = feed.ownerImages(entry).images
-            return images.isEmpty ? nil : AnyView(WorkchatOwnerImagesView(images: images))
-        }
         context.systemRow = { message in
             guard let entry = byID[message.id] else { return AnyView(EmptyView()) }
             let source = feed.outputSource(entry)

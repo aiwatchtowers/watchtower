@@ -1,102 +1,58 @@
 import Foundation
 
-/// The images in an owner's Workchat line, read off its text for display only: a pasted image goes to the agent as
-/// its saved file's path (`WorkchatOutgoing.quoted`, in place of its `[Image #N]` token), a dropped image file as its
-/// path on a line of its own. The bubble shows each as a thumbnail or a chip and the text without those paths; what
-/// was sent, the feed's entry and the echo match are untouched.
+/// An owner's Workchat line as its bubble shows it: each image path in it reads `[Image #N]`, as the paste token did
+/// in the field. A pasted image goes to the agent as its saved file's path (`WorkchatOutgoing.quoted`, in place of
+/// its `[Image #N]` token), a dropped image file as its path on a line of its own; what was sent, the feed's entry and
+/// the echo match are untouched. Text only: no file is looked at, so no folder asks for permission.
 ///
 /// A path counts when it is absolute, ends in an image extension and stands as a whole token (bare, or in double
-/// quotes with `\"` and `\\` escaped; punctuation around it is the owner's text), and either lies in Watchtower's own
-/// attachments folder (`WorkchatAttachmentStore.root`: a paste, inline or on its own line — the only file whose
-/// contents the bubble reads, as a thumbnail) or stands on a line of its own (a dropped or picked image anywhere
-/// else: a chip with its name, never read nor even looked up, so no folder Watchtower has no access to asks for it).
-/// Any other image path — one named mid-sentence outside the attachments folder — is the owner's prose and stays
-/// text. Pure: no file is touched here.
-package struct WorkchatOwnerImages: Equatable, Sendable {
-    package struct ImageFile: Equatable, Hashable, Sendable {
-        package let path: String
-        /// The attachments folder `path` lies in by its text (nil: anywhere else). The thumbnail reads the file only
-        /// once it has checked, on disk, that nothing below this folder is a symlink (`WorkchatThumbnailCache`).
-        package let attachmentsRoot: String?
-
-        package init(path: String, attachmentsRoot: String?) {
-            self.path = path
-            self.attachmentsRoot = attachmentsRoot
-        }
-
-        /// In the attachments folder: drawn as a thumbnail (a chip when gone, not decodable or reached through a
-        /// symlink). Anywhere else: a chip only, its file never read.
-        package var isAttachment: Bool { attachmentsRoot != nil }
-
-        package var name: String { (path as NSString).lastPathComponent }
-    }
-
-    /// The text to show: the image paths taken out, a line left empty by them dropped, and an image marker line
-    /// (Go's `[image]`, Claude Code's `[Image #N]`) dropped when an image stands for it. Unchanged when no image was
-    /// found.
-    package let text: String
-    /// The images in order of first appearance, each path once.
-    package let images: [ImageFile]
-
+/// quotes with `\"` and `\\` escaped; punctuation around it is the owner's text), and either lies in a
+/// `workchat-attachments` folder (a paste, inline or on its own line) or stands on a line of its own (a dropped or
+/// picked image anywhere else). Any other image path — one named mid-sentence elsewhere — is the owner's prose and
+/// stays as written. The images are numbered from 1 in order of first appearance, a path named twice keeping its
+/// number.
+package enum WorkchatOwnerImages {
     package static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "heic"]
 
-    /// `text` split into what the bubble shows and its images; `attachmentsRoot` is the attachments folder's path
-    /// (nil: none known, so every image is a chip).
-    package static func split(_ text: String, attachmentsRoot: String?) -> Self {
-        guard text.contains("/") else { return Self(text: text, images: []) }
-        var images: [ImageFile] = []
-        var lines: [String] = []
+    /// `text` with its image paths shown as `[Image #N]`, and a line that is only an image marker (Go's `[image]`,
+    /// Claude Code's `[Image #N]`) dropped when an image stands for it. Unchanged when no image was found. For
+    /// Markdown (`markdown`, the feed's bubble) a label that opens a line before a colon is escaped (`\[Image #1]:`),
+    /// so it is not read as a link definition and lost.
+    package static func shown(_ text: String, markdown: Bool = false) -> String {
+        guard text.contains("/") else { return text }
+        var numbers: [String: Int] = [:]
+        var lines: [(text: String, labelled: Bool)] = []
         // A line ending in `\r\n` stands alone the same as one ending in `\n`.
         for line in text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n") {
             let tokens = pathTokens(in: line)
             let alone = tokens.count == 1 && tokens[0].raw == line.trimmingCharacters(in: .whitespaces)
-            let found = tokens.compactMap { token in
-                image(token.path, alone: alone, attachmentsRoot: attachmentsRoot).map { (token, $0) }
-            }
+            let found = tokens.filter { isImage($0.path, alone: alone) }
             guard !found.isEmpty else {
-                lines.append(line)
+                lines.append((line, false))
                 continue
             }
-            for (_, image) in found where !images.contains(where: { $0.path == image.path }) { images.append(image) }
+            for token in found where numbers[token.path] == nil { numbers[token.path] = numbers.count + 1 }
             var kept = line
-            // Paths glued end to end leave as one.
-            var runs: [Range<String.Index>] = []
-            for (token, _) in found {
-                if let last = runs.last, last.upperBound == token.range.lowerBound {
-                    runs[runs.count - 1] = last.lowerBound..<token.range.upperBound
-                } else {
-                    runs.append(token.range)
-                }
+            for (index, token) in found.enumerated().reversed() {
+                // Paths glued end to end (an older build sent two pastes with no space) read as two labels.
+                let glued = index + 1 < found.count && found[index + 1].range.lowerBound == token.range.upperBound
+                kept.replaceSubrange(token.range, with: "[Image #\(numbers[token.path] ?? 0)]" + (glued ? " " : ""))
             }
-            for run in runs.reversed() {
-                let cut = removal(of: run, in: line)
-                kept.replaceSubrange(cut.range, with: cut.joint)
+            if markdown, kept.drop(while: \.isWhitespace).hasPrefix("[Image #"),
+               let close = kept.firstIndex(of: "]"), kept[close...].dropFirst().first == ":" {
+                kept.insert("\\", at: kept.firstIndex(of: "[") ?? kept.startIndex)
             }
-            let tidy = kept.split { $0 == " " || $0 == "\t" }.joined(separator: " ")
-            if !tidy.isEmpty { lines.append(tidy) }
+            lines.append((kept, true))
         }
-        guard !images.isEmpty else { return Self(text: text, images: []) }
-        lines.removeAll { WorkchatOutgoing.isImageMarker($0.trimmingCharacters(in: .whitespaces)) }
-        let shown = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return Self(text: shown, images: images)
+        guard !numbers.isEmpty else { return text }
+        lines.removeAll { !$0.labelled && WorkchatOutgoing.isImageMarker($0.text.trimmingCharacters(in: .whitespaces)) }
+        return lines.map(\.text).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func image(_ path: String, alone: Bool, attachmentsRoot root: String?) -> ImageFile? {
+    private static func isImage(_ path: String, alone: Bool) -> Bool {
         guard path.hasPrefix("/"),
-              imageExtensions.contains((path as NSString).pathExtension.lowercased()) else { return nil }
-        if let root, components(of: path, below: root) != nil { return ImageFile(path: path, attachmentsRoot: root) }
-        return alone ? ImageFile(path: path, attachmentsRoot: nil) : nil
-    }
-
-    /// The components of `path` below `root` by its text alone; nil when it is not under `root`, names `root` itself
-    /// or has a `.` or `..` component, which could lead out of it. Symlinks are not looked at here (no file is
-    /// touched): the read checks them (`WorkchatThumbnailCache`).
-    package static func components(of path: String, below root: String) -> [Substring]? {
-        let folder = root.hasSuffix("/") ? root : root + "/"
-        guard path.hasPrefix(folder) else { return nil }
-        let parts = path.dropFirst(folder.count).split(separator: "/")
-        guard !parts.isEmpty, !parts.contains(where: { $0 == "." || $0 == ".." }) else { return nil }
-        return parts
+              imageExtensions.contains((path as NSString).pathExtension.lowercased()) else { return false }
+        return alone || path.contains("/workchat-attachments/")
     }
 
     private struct Token {
@@ -112,27 +68,6 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
     private static let leads: Set<Character> = ["(", "[", "{", "\"", "'"]
     /// Punctuation that may close after a path and stays text: `see /…/a.png.`, `"/…/a b.png",`, `'/…/a.png'`.
     private static let closers: Set<Character> = [".", ",", ";", ":", "!", "?", ")", "]", "}", "'"]
-    private static let pairs: [Character: Character] = ["(": ")", "[": "]", "{": "}", "'": "'"]
-
-    /// What leaves the line with a path, and what takes its place: the path, the brackets around it when they held
-    /// only it, and the spaces before it when punctuation follows (`see /…/a.png.` reads `see.`); a space otherwise.
-    private static func removal(
-        of range: Range<String.Index>,
-        in line: String
-    ) -> (range: Range<String.Index>, joint: String) {
-        var lower = range.lowerBound
-        var upper = range.upperBound
-        if lower > line.startIndex, upper < line.endIndex,
-           let close = pairs[line[line.index(before: lower)]], line[upper] == close {
-            lower = line.index(before: lower)
-            upper = line.index(after: upper)
-        }
-        guard upper < line.endIndex, closers.contains(line[upper]) else { return (lower..<upper, " ") }
-        while lower > line.startIndex, line[line.index(before: lower)].isWhitespace {
-            lower = line.index(before: lower)
-        }
-        return (lower..<upper, "")
-    }
 
     /// The whole-token absolute paths of one line: bare (`/…` up to whitespace, closing punctuation left out) or
     /// double-quoted with `\"` and `\\` escaped (`"/…"` followed by whitespace, closing punctuation or the end), each

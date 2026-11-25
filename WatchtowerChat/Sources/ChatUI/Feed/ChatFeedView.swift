@@ -72,8 +72,6 @@ public struct ChatFeedContext {
     public var captionView: ((ChatFeed.Message) -> AnyView?)?
     /// What sits in the owner's bubble over the text (Workchat: the ask an answer went to).
     public var ownerHeader: ((ChatFeed.Message) -> AnyView?)?
-    /// What sits in the owner's bubble under the text (Workchat: the thumbnails of the images the line sent).
-    public var ownerFooter: ((ChatFeed.Message) -> AnyView?)?
     /// The newest message when it is drawn outside `messages` (an embedded chat's streaming reply, in the footer); it,
     /// not the last of `messages`, keeps a hover-only actions row shown.
     public var lastMessageID: Int64?
@@ -286,7 +284,6 @@ public struct ChatFeedRows: View {
             ChatMessageRow(message: message, parts: parts, context: partContext(message), rowActions: context.rowActions,
                            isTurnRunning: context.isTurnRunning, caption: context.caption?(message),
                            captionView: context.captionView?(message), ownerHeader: context.ownerHeader?(message),
-                           ownerFooter: context.ownerFooter?(message),
                            isLast: message.id == (context.lastMessageID ?? messages.last?.id))
         case .approvals(let actions):
             VStack(alignment: .leading, spacing: Spacing.regular) {

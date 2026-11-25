@@ -92,10 +92,6 @@ final class TokenTests: XCTestCase {
         )
     }
 
-    func testThumbnail() {
-        XCTAssertEqual([Thumbnail.maxSide, Thumbnail.placeholder], [220, 110])
-    }
-
     func testTracking() {
         XCTAssertEqual(Tracking.caps, 0.6)
     }

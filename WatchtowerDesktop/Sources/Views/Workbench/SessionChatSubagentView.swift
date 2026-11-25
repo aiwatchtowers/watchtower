@@ -18,8 +18,6 @@ struct SessionChatSubagentView: View {
     var parentConversation: String?
     /// This screen's key in `memory` (`"session-<id>/<toolUseID>"`).
     let paneKey: String
-    /// The Workchat's attachments folder (`WorkchatFeed.attachmentsRoot`).
-    var attachmentsRoot: String?
     let memory: WorkchatPaneMemory
     /// The subagent's status in the main feed's subagent list (`store.subagents`).
     let status: () -> String
@@ -124,7 +122,6 @@ struct SessionChatSubagentView: View {
         feed.parentConversation = parentConversation
         feed.onHighlight = highlights.open
         feed.resolvesPath = highlights.resolvesPath
-        feed.attachmentsRoot = attachmentsRoot
         let byID = feed.entriesByMessage
         var context = feed.context()
         context.follow = ChatFeedFollow(conversationID: nil)

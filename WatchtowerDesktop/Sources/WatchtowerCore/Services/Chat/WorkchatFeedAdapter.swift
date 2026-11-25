@@ -11,22 +11,12 @@ package enum WorkchatFeedAdapter {
     /// ChatUI's role of a line that is neither the owner's nor an answer.
     package static let systemRole = "system"
 
-    /// The known entries in order; a kind this build does not know is left out. An owner line's image paths leave its
-    /// text (`WorkchatOwnerImages`, `attachmentsRoot` its attachments folder): the bubble shows them as thumbnails or
-    /// chips.
-    package static func messages(_ entries: [SessionFeedEntry], attachmentsRoot: String? = nil) -> [ChatFeed.Message] {
-        messages(entries) { WorkchatOwnerImages.split($0.text, attachmentsRoot: attachmentsRoot) }
-    }
-
-    /// `messages` with each owner line split by `ownerSplit` (the pane's memo, `SessionFeedMarkdownCache.ownerImages`,
-    /// which the bubble's images read too).
-    package static func messages(
-        _ entries: [SessionFeedEntry],
-        ownerSplit: (SessionFeedEntry) -> WorkchatOwnerImages
-    ) -> [ChatFeed.Message] {
+    /// The known entries in order; a kind this build does not know is left out. An owner line's image paths read
+    /// `[Image #N]`, as in the field (`WorkchatOwnerImages`).
+    package static func messages(_ entries: [SessionFeedEntry]) -> [ChatFeed.Message] {
         entries.compactMap { entry in
             guard let role = role(for: entry.kind) else { return nil }
-            let text = entry.kind == "owner" ? ownerSplit(entry).text : entry.text
+            let text = entry.kind == "owner" ? WorkchatOwnerImages.shown(entry.text, markdown: true) : entry.text
             return ChatFeed.Message(id: messageID(entry.id), role: role, text: text, createdAt: entry.at ?? .distantPast)
         }
     }
