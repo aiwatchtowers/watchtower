@@ -32,6 +32,8 @@
 
 ### Task 1: About text layout (Go)
 
+> **Updated 2026-11-25 (owner, D9 in the spec):** download is a paragraph after the code, not step 1; cut order download → code; exact text in the spec. Task 2: `slackHintTitle` is the D9 heading; `codeInvalid` per the spec.
+
 Depends on: none.
 
 **Files:**

@@ -22,16 +22,17 @@ A colleague who installs Watchtower at a company that already ran **Set up for m
 
 ## Decisions
 
-| # | Decision | Source |
-|---|---|---|
-| D1 | No bot, no DM push, no Home tab, no external redirect — local-first | Owner, chat 2026-11-24; asks #885, #886 dismissed |
-| D2 | When connecting to a company, Watchtower asks for the Slack address and gives instructions to find the app | Owner, chat 2026-11-24 |
-| D3 | The About text gets a better layout | Owner, chat 2026-11-24 |
-| D4 | The Slack-address block is always shown under the code field, not behind a disclosure | Agent's call following D2; owner confirms in this review |
-| D5 | The address is not stored | Agent's call (one-time use, nothing to clean up); owner confirms in this review |
-| D6 | No "Invite a colleague" button in this change; a separate target if wanted | Agent's call — the owner did not answer when it was offered; owner confirms in this review |
-| D7 | Only `<sub>.slack.com` addresses; an Enterprise Grid org address (`<sub>.enterprise.slack.com`) gets its own caption pointing to the workspace address | Agent's call — `/apps/manage` on a Grid org address is untested |
-| D8 | The link stays first in About only if a test publish shows it clickable on the Marketplace page; otherwise the code leads | Agent's call; the spikes did not click the link |
+| # | Decision | Source | If refused | Ask |
+|---|---|---|---|---|
+| D1 | No bot, no DM push, no Home tab, no external redirect — local-first | Owner, chat 2026-11-24 | — (owner's own constraint) | #886 |
+| D2 | When connecting to a company, Watchtower asks for the Slack address and opens the workspace app list with steps to the code | Owner, chat 2026-11-24 | Only a static hint line naming `<your-slack>.slack.com/apps/manage`, no field or button | #894 |
+| D3 | The About text gets a sectioned layout: steps, link, code, download, disclosures | Owner, chat 2026-11-24 and ask #894 | About stays one paragraph as today | #894 |
+| D4 | The Slack-address block is always shown under the code field, not behind a disclosure | Agent's call following D2 | The block sits behind a "No code?" link that expands it | #902 |
+| D5 | The address is not stored | Agent's call (one-time use, nothing to clean up) | Remembered in UserDefaults and prefilled next time | #902 |
+| D6 | No "Invite a colleague" button | Owner, ask #894 ("Инвайт-кнопку не делаем") | A card button copying the app-page link, separate target | #894 |
+| D7 | Only `<sub>.slack.com` addresses; an Enterprise Grid org address (`<sub>.enterprise.slack.com`) is refused with its own caption pointing to the workspace address | Agent's call — `/apps/manage` on a Grid org address is untested (see Failure paths) | Org addresses are accepted and `https://<sub>.enterprise.slack.com/apps/manage` opens as is | #902 |
+| D8 | The link stays first in About only if a test publish shows it clickable on the Marketplace page; otherwise the code leads | Agent's call; the spikes did not click the link | The code leads from the start | #902 |
+| D9 | The block's heading: "No code? Ask a colleague who uses Watchtower, or find Watchtower in your company's Slack:" | Owner, ask #894 | Heading "No code? Find it in Slack" | #894 |
 
 ## Goals
 
@@ -60,7 +61,8 @@ COMPANIES
 ┌───────────────────────────────────────────────────────────┐
 │ [ Company code                                ] [Connect] │
 │                                                           │
-│ No code? Find it in Slack                                 │
+│ No code? Ask a colleague who uses Watchtower, or find     │
+│ Watchtower in your company's Slack:                       │
 │ [ acme.slack.com                   ] [Open Slack apps]    │
 │ 1. Search for Watchtower in the list and open it.         │
 │ 2. Open App Details.                                      │
@@ -76,7 +78,7 @@ invalid address:
 │ Enter your Slack address, like acme.slack.com             │  (caption, Tone.error)
 ```
 
-- The block is always shown under the code field (D4), headed "No code? Find it in Slack" at caption size.
+- The block is always shown under the code field (D4), headed "No code? Ask a colleague who uses Watchtower, or find Watchtower in your company's Slack:" at caption size (D9).
 - **Slack address** field (`.kit`), placeholder `acme.slack.com`. Accepted: `acme`, `acme.slack.com`, `https://acme.slack.com/…` (any path, trailing slash), any case, surrounding spaces, `http://` input. Normalised to `<sub>.slack.com`, `<sub>` = one label of `[a-z0-9-]` (D7). Empty → button disabled, no caption. `<sub>.enterprise.slack.com` → caption "That is your organization's address. Enter your workspace's, like acme.slack.com — it is in Slack's workspace menu.", button disabled. Anything else → caption "Enter your Slack address, like acme.slack.com", button disabled.
 - **Open Slack apps** (`.kitSecondary`) opens `https://<sub>.slack.com/apps/manage` through `@Environment(\.openURL)` (the pattern `CompanyAccountGroups` uses). Watchtower fetches nothing.
 - The steps and the fallback line are static text; the fallback covers not signed in, the app missing from the list, and no access (ask the admin). The address is not stored (D5).
@@ -84,7 +86,24 @@ invalid address:
 - Design shots: three states registered in `DesignShotCatalog` — empty address, valid address, invalid address with the caption.
 - Strings live in `CompanyConnectionsPresentation` (UI strings in English).
 - The block appears wherever the code field is shown (the Companies zone; the field opened from the **Connect…** menu and Jira's empty state reuse `codeField`).
-- `codeInvalid` becomes "That is not a Watchtower company code. Copy it again from your company's Watchtower app page in Slack — see “No code? Find it in Slack” below."
+- `codeInvalid` becomes "That is not a Watchtower company code. Copy it again from your company's Watchtower app page in Slack, or ask a colleague who uses Watchtower."
+
+### Failure paths
+
+Watchtower only opens a URL; it cannot see what the browser shows. So every failure is answered by the static fallback line under the steps, and each case has a defined way out:
+
+| Case | What the person sees | Way out |
+|---|---|---|
+| Browser not signed in to Slack | Slack's sign-in page | Fallback: "Sign in to Slack in this browser and try again." Slack returns to `/apps/manage` after sign-in |
+| Guest account (single/multi-channel) | Slack refuses the app list or shows no internal apps | Fallback: "ask your Slack admin for the Watchtower company code", or the heading's "Ask a colleague who uses Watchtower" |
+| Workspace restricts the app directory to admins | Slack's "no permission" page | Same as guest |
+| Watchtower not in the list (not installed in this workspace, or the wrong workspace) | The list without Watchtower | Fallback: "Not in the list … ask your Slack admin"; the heading's colleague route |
+| Enterprise Grid org address entered | Nothing opens: the button is disabled and the org caption names the workspace address and where to find it (Slack's workspace menu) | Enter the workspace address `<sub>.slack.com`; every Grid workspace has one, so the app list opens there |
+| Address of another company's workspace | That workspace's list, without our app | Same as "not in the list" |
+
+Tests: `SlackAddressTests` pin every input the table depends on (org address refused, workspace accepted); `CompanyConnectionsPresentationTests` pin the fallback line and the heading verbatim; the design shots show the fallback line in every state. What Slack itself renders for a guest or a restricted workspace is outside Watchtower and is not tested; the way out does not depend on it.
+
+Enterprise Grid: `/apps/manage` on an org address is not verified, and no Grid workspace is available to verify it. Refusing the org address (D7) is the safe default: the workspace address is verified (finding 3) and exists for every Grid member. If a Grid company later reports the org address works, accepting it is a one-line change in `SlackAddress.parse`.
 
 ### About text layout (`AboutText`)
 
@@ -92,18 +111,19 @@ invalid address:
 Watchtower for <company>
 
 How to connect
-1. Install Watchtower: <release page>
-2. Open Watchtower.
-3. Click this link: <link>
+1. Open Watchtower.
+2. Click this link: <link>
    If it does not open, paste the code below in Watchtower → Connections → Company code.
 
 Company code
 <code>
+
+No Watchtower yet? Download it: <release page>
 ```
 
-followed by the existing disclosures (`slackmanifest`). Steps are numbered when rendered from a list, so a cut step leaves no gap. Both the link and the code carry the whole bundle (up to 3,000 characters each), so both cannot always fit the 4,000 cap. Cut order under the cap, as today: the install step first, then the second way in (the code while the link leads; the link when the code leads, D8); the leading way in is never cut. When the code is cut, step 3 reads "Click this link: <link>" with no fallback sentence and the **Company code** block is absent; when the link is cut, step 3 reads "Paste the code below in Watchtower → Connections → Company code." A typical bundle (Slack + Google + Atlassian) is well under half the cap per copy, so both normally fit. Plain text with blank lines.
+followed by the existing disclosures (`slackmanifest`). Steps are numbered when rendered from a list, so a cut step leaves no gap. Both the link and the code carry the whole bundle (up to 3,000 characters each), so both cannot always fit the 4,000 cap. Cut order under the cap, as today: the download line first, then the second way in (the code while the link leads; the link when the code leads, D8); the leading way in is never cut. When the code is cut, step 2 reads "Click this link: <link>" with no fallback sentence and the **Company code** block is absent; when the link is cut, step 2 reads "Paste the code below in Watchtower → Connections → Company code." A typical bundle (Slack + Google + Atlassian) is well under half the cap per copy, so both normally fit. Plain text with blank lines.
 
-Acceptance check on a test publish (the plan's last task, run by the owner): the link on the Marketplace page is clickable and opens Watchtower; the code copies whole; any markup renders. If the link is not clickable, the code block moves above step 3 and step 3 becomes "Paste the code below in …" (D8). `aboutLeadsWithCode` is removed either way; the order follows the check. `about_test.go` covers: the full text; a bundle that needs the install step cut (steps renumbered, no gap); a 3,000-character bundle (the leading way in kept whole, the second dropped, step 3 worded for the one left); the leading way in never cut.
+Acceptance check on a test publish (the plan's last task, run by the owner): the link on the Marketplace page is clickable and opens Watchtower; the code copies whole; any markup renders. If the link is not clickable, the code block moves above step 2 and step 2 becomes "Paste the code below in …" (D8). `aboutLeadsWithCode` is removed either way; the order follows the check. `about_test.go` covers: the full text; a bundle that needs the download line cut; a 3,000-character bundle (the leading way in kept whole, the second dropped, step 2 worded for the one left); the leading way in never cut.
 
 Existing companies get the new layout on the admin's next **Publish** / `slack app link`; no migration.
 
