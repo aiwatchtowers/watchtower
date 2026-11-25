@@ -1,5 +1,7 @@
 import AVFoundation
 import Foundation
+import os
+import WatchtowerCore
 
 enum AudioFileDecoderError: Error, LocalizedError {
     case unsupportedFormat
@@ -26,10 +28,12 @@ enum AudioFileDecoderError: Error, LocalizedError {
 /// Decodes any AVFoundation-readable audio file (caf, m4a, wav, …) to the raw
 /// 16 kHz mono Float32 sample stream WhisperKit expects.
 enum AudioFileDecoder {
+    private static let log = Logger(subsystem: Constants.bundleID, category: "decoder")
+
     /// Decode any AVFoundation-readable file to 16 kHz mono Float32 samples.
     static func decodePCM16k(url: URL) throws -> [Float] {
         let file = try AVAudioFile(forReading: url)
-        try rejectUnfinalized(file, at: url)
+        try rejectUnfinalized(length: file.length, at: url)
         let sourceFormat = file.processingFormat
 
         guard let targetFormat = AVAudioFormat(
@@ -114,9 +118,21 @@ enum AudioFileDecoder {
 
     /// A file listing no frames is either truly empty or one whose writer
     /// never finalized it; only the header tells them apart, and the second
-    /// must not pass for a recording of silence.
-    private static func rejectUnfinalized(_ file: AVAudioFile, at url: URL) throws {
-        if file.length == 0, case .unfinalized = try? AudioFileIntegrity.inspect(url: url) {
+    /// must not pass for a recording of silence. A header that cannot be read
+    /// fails the decode too, rather than passing for silence. Internal for
+    /// tests.
+    static func rejectUnfinalized(length: AVAudioFramePosition, at url: URL) throws {
+        guard length == 0 else { return }
+        let integrity: AudioFileIntegrity
+        do {
+            integrity = try AudioFileIntegrity.inspect(url: url)
+        } catch {
+            let status = (error as? AudioFileIntegrity.Unreadable)?.status ?? 0
+            log.error("decode: 0 frames and the header is unreadable (OSStatus \(status, privacy: .public))")
+            throw AudioFileDecoderError.conversionFailed("could not read the file header (OSStatus \(status))")
+        }
+        if case .unfinalized(let bytes) = integrity {
+            log.error("decode: file not finalized, 0 packets in \(bytes, privacy: .public) audio bytes")
             throw AudioFileDecoderError.notFinalized
         }
     }
