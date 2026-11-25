@@ -400,7 +400,9 @@ const chatContextsStep = "chat_conversations"
 // and its agent action proposals still waiting for a decision or an apply
 // (agent_actions context 'project' = tools.WorkbenchContextType, context_id
 // the bench id; status pending or approved). A decided, running or applied
-// row stays B's: audit rows outlive their workbench (inventory).
+// row stays B's: audit rows outlive their workbench (inventory). The ask
+// explain chats' queued follow-ups (`chat_queued_drafts`, keyed by the
+// chat's surface key) move with them.
 func reKeyChats(ctx context.Context, tx *sql.Tx, m *merger) error {
 	from, into := strconv.FormatInt(m.from, 10)+":", strconv.FormatInt(m.into, 10)+":"
 	if _, err := tx.ExecContext(ctx, `UPDATE agent_actions SET context_id = ?
@@ -409,8 +411,15 @@ func reKeyChats(ctx context.Context, tx *sql.Tx, m *merger) error {
 		return err //nolint:wrapcheck // Merge names the step
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET context_id = ? || substr(context_id, length(?) + 1)
-		WHERE context_type IN ('code_question', ?) AND substr(context_id, 1, length(?)) = ?`,
-		into, from, db.SpecReviewThreadContextType, from, from); err != nil {
+		WHERE context_type IN ('code_question', ?, ?) AND substr(context_id, 1, length(?)) = ?`,
+		into, from, db.SpecReviewThreadContextType, db.AskExplainContextType, from, from); err != nil {
+		return err //nolint:wrapcheck // Merge names the step
+	}
+	// The "Not clear?" chats' queued follow-ups follow their conversations:
+	// the Desktop keys them `owner_ask_explain.<wb>:<ask>.<conversation>`.
+	draftFrom, draftInto := db.AskExplainDraftKeyPrefix(m.from), db.AskExplainDraftKeyPrefix(m.into)
+	if _, err := tx.ExecContext(ctx, `UPDATE chat_queued_drafts SET surface_key = ? || substr(surface_key, length(?) + 1)
+		WHERE substr(surface_key, 1, length(?)) = ?`, draftInto, draftFrom, draftFrom, draftFrom); err != nil {
 		return err //nolint:wrapcheck // Merge names the step
 	}
 	// A branch name never holds a colon (git refuses one): a rest with a

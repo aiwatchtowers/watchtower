@@ -407,8 +407,40 @@ func (db *DB) DeleteWorkbench(id int64) error {
 		if err := deleteWorkbenchCodeQuestions(tx, id); err != nil {
 			return err
 		}
-		return deleteWorkbenchSpecReviewThreads(tx, id)
+		if err := deleteWorkbenchSpecReviewThreads(tx, id); err != nil {
+			return err
+		}
+		return deleteWorkbenchAskExplainChats(tx, id)
 	})
+}
+
+// deleteWorkbenchAskExplainChats drops a workbench's "Not clear?" chats on its
+// asks: `chat_conversations` rows of context type `owner_ask_explain` whose
+// `context_id` starts with `<id>:`, the prefix matched exactly as in
+// deleteWorkbenchCodeQuestions. The asks go with the workbench. Their queued
+// follow-ups in `chat_queued_drafts` go too: the Desktop keys them by the
+// chat's surface key `owner_ask_explain.<id>:<ask>.<conversation>`
+// (AskExplainDraftKeyPrefix), matched exactly by prefix.
+func deleteWorkbenchAskExplainChats(tx *sql.Tx, workbenchID int64) error {
+	prefix := strconv.FormatInt(workbenchID, 10) + ":"
+	if _, err := tx.Exec(`DELETE FROM chat_conversations WHERE context_type = ?
+		AND substr(context_id, 1, length(?)) = ?`, AskExplainContextType, prefix, prefix); err != nil {
+		return fmt.Errorf("deleting workbench %d ask explain chats: %w", workbenchID, err)
+	}
+	draftPrefix := AskExplainDraftKeyPrefix(workbenchID)
+	if _, err := tx.Exec(`DELETE FROM chat_queued_drafts
+		WHERE substr(surface_key, 1, length(?)) = ?`, draftPrefix, draftPrefix); err != nil {
+		return fmt.Errorf("deleting workbench %d ask explain drafts: %w", workbenchID, err)
+	}
+	return nil
+}
+
+// AskExplainDraftKeyPrefix is the start of every `chat_queued_drafts`
+// surface key of workbench workbenchID's "Not clear?" chats: the Desktop's
+// EmbeddedChatKey description `<context_type>.<context_id>.<conversation>`
+// with context_id `<workbench>:<ask>`.
+func AskExplainDraftKeyPrefix(workbenchID int64) string {
+	return AskExplainContextType + "." + strconv.FormatInt(workbenchID, 10) + ":"
 }
 
 // deleteWorkbenchCodeQuestions drops a workbench's code questions (spec

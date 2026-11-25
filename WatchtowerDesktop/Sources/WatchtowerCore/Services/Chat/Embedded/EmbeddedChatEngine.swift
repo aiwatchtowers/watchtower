@@ -118,6 +118,10 @@ package final class EmbeddedChatEngine {
     /// chat's run writes the row; mobile Inbox spec §8: the bubble never
     /// waits for the write). Nil once the row is on disk or the start failed.
     package private(set) var pendingOwnerText: String?
+    /// The last turn to start was a hidden one (no owner text) and it could
+    /// not start: nothing was sent and no row holds it. Cleared when the
+    /// next turn starts. Only reports; no chat's behaviour reads it.
+    package private(set) var hiddenTurnNotStarted = false
     package var isBusy: Bool { isStreaming || isQueued || isStarting }
     /// Busy, or holding follow-ups for a later turn — the center keeps such
     /// an engine even when no view has shown it for a while.
@@ -315,6 +319,39 @@ package final class EmbeddedChatEngine {
         start(request)
     }
 
+    /// A reopened chat whose latest reply ended `partial` or in an `error`
+    /// before this engine ran a turn (spec 2026-11-24 "The first message"):
+    /// Retry is offered for it when its error code is retryable (the
+    /// engine's own rule: a `quota_exhausted` partial never replays,
+    /// provider-fallback's no-replay contract), rerunning the nearest owner
+    /// row before it, or `hiddenPrompt` when there is none (a hidden first
+    /// turn). Nothing changes once a turn ran here, while one is busy, or
+    /// when the latest reply completed.
+    ///
+    /// A `partial` with no code is offered Retry: the stored row cannot tell
+    /// an app quit (`finishAsPartial`) from the owner's Stop — both are
+    /// finished `partial` with no code.
+    package func offerRetryOfStoredReply(hiddenPrompt: String) {
+        guard !isBusy, lastRequest == nil, !canRetry, let last = messages.last?.message, last.isAssistant,
+              last.status == "partial" || last.status == "error",
+              ChatErrorPresentation.isRetryable(last.errorCode) else { return }
+        let owner = messages.dropLast().last { $0.message.isUser }?.message
+        lastRequest = TurnRequest(ownerText: nil, basePrompt: owner?.text ?? hiddenPrompt, carriedFollowUps: [],
+                                  previousOwnerMessageAt: nil)
+        canRetry = true
+    }
+
+    /// The chat's first turn, hidden (no owner row), started only when the
+    /// history was read and holds no row and no turn is busy: a chat whose
+    /// history could not be read never gets a first turn on top of replies
+    /// it did not see. True when the turn was handed on.
+    @discardableResult
+    package func startFirstTurnIfEmpty(hidden prompt: String) -> Bool {
+        guard !isBusy, historyLoaded(), messages.isEmpty else { return false }
+        start(TurnRequest(ownerText: nil, basePrompt: prompt, carriedFollowUps: [], previousOwnerMessageAt: nil))
+        return true
+    }
+
     /// Returns once the turn being started has its rows written and its
     /// process started (or could not start): `isStreaming` then says which.
     package func started() async {
@@ -426,6 +463,7 @@ package final class EmbeddedChatEngine {
         let turnID = UUID().uuidString
         let options = spec.runOptions()
         isStarting = true
+        hiddenTurnNotStarted = false
         pendingOwnerText = request.ownerText
         stopBeforeStart = false
         startTask = Task { [self] in
@@ -464,6 +502,7 @@ package final class EmbeddedChatEngine {
                 draftMirror?.clear(for: spec.key)  // back in the composer: an ordinary draft
             }
             queuedFollowUps.insert(contentsOf: request.carriedFollowUps, at: 0)
+            hiddenTurnNotStarted = request.ownerText == nil
             report(error, prefix: "Couldn't send")
             onTurnFinished?(.notStarted(message: "Couldn't send: \(error.localizedDescription)"))
             return

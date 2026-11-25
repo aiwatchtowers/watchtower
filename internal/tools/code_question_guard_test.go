@@ -116,6 +116,9 @@ func checkChatTableReader(t *testing.T, file string, src []byte, reader chatTabl
 	if !strings.Contains(string(src), "'analytics_tuning'") {
 		t.Errorf("%s reads the chat tables but does not filter 'analytics_tuning' conversations", file)
 	}
+	if !strings.Contains(string(src), "'owner_ask_explain'") {
+		t.Errorf("%s reads the chat tables but does not filter 'owner_ask_explain' conversations", file)
+	}
 	if !strings.Contains(string(src), "'review_reviewer'") {
 		t.Errorf("%s reads the chat tables but does not filter 'review_reviewer' conversations", file)
 	}

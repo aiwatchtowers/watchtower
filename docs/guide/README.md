@@ -71,7 +71,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Workchat](features/workbench/workchat.md) — read a session's dialog as a chat, write to the agent, stop it and answer its permission prompts
 - [Session report and analytics](features/workbench/session-report.md) — a session's progress line, its Session view and what its agents cost
 - [Updates and quitting](features/workbench/updates-and-quitting.md) — what keeps running when you update, quit or restart with sessions at work
-- [Asks](features/workbench/asks.md) — reviews, checks and decisions the agent files for you, and how your answer gets back
+- [Asks](features/workbench/asks.md) — reviews, checks and decisions the agent files for you, how your answer gets back, and Not clear? to have a question explained
+- [The ask guard](features/workbench/ask-guard.md) — how a question the agent writes in the terminal still reaches you as an ask
 - [Code viewer](features/workbench/code-viewer.md) — read and edit the folder's files, jump to definitions with Open Quickly, and ask about code
 - [Switching branches](features/workbench/branches.md) — switch, create, fetch and check out branches from a workbench page without losing work
 - [Worktrees and cleanup](features/workbench/worktrees-and-cleanup.md) — an own git worktree per parallel session, and safe removal of what a session leaves behind
