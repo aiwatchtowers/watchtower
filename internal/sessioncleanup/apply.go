@@ -441,18 +441,21 @@ func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 		return
 	}
 	a.unregisterBundles(ctx, root)
-	if a.recheckClear(ctx, it, root, "process in use: ", true) {
-		rctx, cancel := context.WithTimeout(ctx, worktreeRemoveTimeout)
-		unlock, err := a.lockWorktrees(rctx)
-		if err != nil {
+	// The final re-check runs under the worktree lock, right before the
+	// removal: a wait for the lock never stands between them.
+	lctx, cancelLock := context.WithTimeout(ctx, worktreeRemoveTimeout)
+	unlock, err := a.lockWorktrees(lctx)
+	cancelLock()
+	if err != nil {
+		a.fail(it, err)
+	} else {
+		if a.recheckClear(ctx, it, root, "process in use: ", true) {
+			rctx, cancel := context.WithTimeout(ctx, worktreeRemoveTimeout)
+			_, code, err := a.git.run.RunGit(rctx, a.folder, a.git.bin, "worktree", "remove", root)
 			cancel()
-			a.fail(it, err)
-			return
+			a.settleGit(it, code, err)
 		}
-		_, code, err := a.git.run.RunGit(rctx, a.folder, a.git.bin, "worktree", "remove", root)
 		unlock()
-		cancel()
-		a.settleGit(it, code, err)
 	}
 	if !it.Done {
 		a.reregisterBundles(ctx, root)
@@ -461,12 +464,12 @@ func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 
 // lockWorktrees takes the repository's worktree lock (workbenchgit.LockWorktrees),
 // so the removal never races a session start's or a coach publish's
-// `worktree add` (#2394). A common dir git cannot tell runs unlocked: the
-// removal then fails or succeeds on its own, as before the lock.
+// `worktree add` (#2394). A common dir git cannot tell is a failure: the
+// worktree stays.
 func (a *applier) lockWorktrees(ctx context.Context) (func(), error) {
 	out, err := a.git.output(ctx, a.folder, "rev-parse", "--git-common-dir")
 	if err != nil {
-		return func() {}, nil //nolint:nilerr // no common dir: the removal runs unlocked, as before the lock
+		return nil, fmt.Errorf("locating the repository for the worktree lock: %w", err)
 	}
 	return workbenchgit.LockWorktrees(ctx, absFrom(a.folder, strings.TrimSpace(string(out))))
 }

@@ -328,3 +328,38 @@ func TestApply_WorktreeRemoveHoldsTheWorktreeLock(t *testing.T) {
 		t.Fatalf("worktree remove ran %d times, %d under the lock", removes, held)
 	}
 }
+
+// The worktree lock cannot be taken (here: the repository's common dir is
+// not told): the worktree stays, its bundles are registered again, and the
+// apply stops — git never removes it unlocked (#2394).
+func TestApply_WorktreeLockFailureKeepsTheWorktree(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	log := &opLog{}
+	armed := false
+	f.git = &loggingGit{log: log, before: func(args []string) *gitAnswer {
+		if armed && len(args) >= 2 && args[0] == "rev-parse" && args[1] == "--git-common-dir" {
+			return &gitAnswer{code: -1, err: errors.New("injected: git did not run")}
+		}
+		return nil
+	}}
+	res := f.apply(Request{}, nil, func(d *Deps) {
+		d.LS = &fakeLS{log: log, onUnregister: func(string) { armed = true }}
+	})
+	it := wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonCheckFailed, false)
+	if !strings.Contains(it.Detail, "worktree lock") {
+		t.Fatalf("detail = %q", it.Detail)
+	}
+	ops := log.list()
+	if slices.Contains(ops, "git worktree remove "+root) {
+		t.Fatalf("removed without the lock: %v", ops)
+	}
+	if !slices.Contains(ops, "lsregister "+filepath.Join(root, "Build", "App.app")) {
+		t.Fatalf("bundle not registered again: %v", ops)
+	}
+	if !f.listsWorktree(root) {
+		t.Fatal("the worktree is gone")
+	}
+}
