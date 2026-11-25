@@ -264,6 +264,26 @@ extension MacMovedWiringTests {
         XCTAssertEqual(copies.map(\.id), [request.controlID], "the copy is still there")
     }
 
+    /// A lapse's request closed by its day keeps its iCloud copy on purpose: the left-behind move leaves it alone.
+    func testALeftBehindMoveLeavesAClosedLapseRequestAlone() async throws {
+        let bed = try await Bed.make(self, on: .relay, relayLinkOwner: "_owner-acme")
+        bed.access.userRecordNameValue = "_another-acme"
+        let session = try await bed.orderedSession()
+        await session.outbox.holdFlushes()
+        await session.lapseRelay()
+        bed.clock.advance(25 * 3600)
+        await bed.root.resumeRelayUpgrades()
+        let closed = try XCTUnwrap(try bed.row()?.link.transportRequest)
+        XCTAssertEqual(closed.refusal, .lapseNoAnswer)
+
+        _ = await session.transportSignals.marker(marker(.cloudKit, epoch: 2))
+
+        XCTAssertEqual(try bed.row()?.link.macMoved, 2)
+        XCTAssertEqual(try bed.row()?.link.transportRequest, closed, "nothing cleared")
+        let copies = try await bed.cloudControls(.transportSwitch)
+        XCTAssertEqual(copies.map(\.id), [closed.controlID], "the copy is kept")
+    }
+
     /// A marker leaves the phone behind first; the switch of the same move, its keybox not opened, is then handled.
     func testASwitchAfterItsMarkerIsHandledWithoutItsKeybox() async throws {
         let bed = try await Bed.make(self, on: .relay, relayLinkOwner: "_owner-acme")

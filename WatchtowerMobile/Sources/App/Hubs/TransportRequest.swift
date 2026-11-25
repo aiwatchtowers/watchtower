@@ -512,7 +512,8 @@ final class TransportRequester {
     private func leftBehind(_ controlID: String) async -> TransportRequestRecord? {
         let box = WithdrawnBox()
         _ = await run {
-            guard let link = self.link, let request = link.transportRequest, request.controlID == controlID,
+            // A request closed meanwhile (a lapse's day keeps its iCloud copy on purpose) is left as it is.
+            guard let link = self.link, let request = link.transportRequest, request.isOpen, request.controlID == controlID,
                   await self.withdraw(request, link: link) else { return .refused(.unavailable) }
             box.request = request
             return .underWay
