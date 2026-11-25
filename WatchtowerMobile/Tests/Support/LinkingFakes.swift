@@ -76,6 +76,8 @@ final class LinkEventLog {
 final class FakeLinkAccess: LinkAccess {
     var status: CloudAvailability = .available
     var userRecordNameValue = "_owner-acme"
+    /// Thrown by `identity()` when set: the account read failed.
+    var identityError: (any Error)?
     var acceptError: (any Error)?
     var leaveError: (any Error)?
     private(set) var accepted: [[URL]] = []
@@ -101,6 +103,7 @@ final class FakeLinkAccess: LinkAccess {
 
     func identity() async throws -> String {
         accountAsks += 1
+        if let identityError { throw identityError }
         return userRecordNameValue
     }
 

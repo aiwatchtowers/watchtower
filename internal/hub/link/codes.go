@@ -134,8 +134,10 @@ func (c *Center) issue(ck *cloudKitFields, token string) (wire.LinkPayload, stri
 		return wire.LinkPayload{}, "", fmt.Errorf("link: storing the code: %w", err)
 	}
 	for _, pd := range refused {
-		// Under the replaced code's nonce: only the stream that asked for that
-		// code hears it, never the one asking for this code.
+		// Under the replaced code's nonce, before this code's qr: it reaches
+		// the streams that showed the phone's sas (or still show that code),
+		// so the stream asking for this code hears it only when it asked for
+		// the replaced code too and showed this phone.
 		c.refusedEvent(pd, wire.RefusedExpiredCode)
 	}
 	if len(refused) > 0 {

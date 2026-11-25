@@ -56,6 +56,17 @@ struct RelayIDClaim: Equatable, Sendable {
     let relayDeviceID: String
     let authPub: String
     let sig: String
+
+    /// The three fields as `DeviceHello(device:signingKey:agreementKey:relayIDProof:)` takes them.
+    var proof: (relayDeviceID: String, authPub: String, sig: String) { (relayDeviceID, authPub, sig) }
+}
+
+extension RelayLinkOps {
+    /// `relayIDProof` for the hub a link record names: the claim a slot hello carries (#2387), so the Mac marks the
+    /// link as one over Relay. A hub id that is not a UUID throws.
+    func relayIDProof(hubID: String, deviceID: UUID) throws -> RelayIDClaim {
+        try relayIDProof(hubID: try WireBytes.hubUUID(hubID), deviceID: deviceID)
+    }
 }
 
 /// The relay while it is off: never asked, since nothing routes to it.

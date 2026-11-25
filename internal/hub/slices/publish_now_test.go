@@ -475,7 +475,11 @@ func (r *rig) runFakeKinds(sources ...Source) (*runner, *kindSaves) {
 	ft := newFakeTime()
 	saves := &kindSaves{}
 	p := r.publisherWith(Config{Clock: ft.Now, Latency: saves}, sources...)
-	p.mono, p.timer = ft.Now, ft.Timer
+	// drive, not a bare mono/timer swap: a kind nudged mid-cycle leaves a
+	// wake queued, and without drive's pending-wake check the arm Run makes
+	// on its way round counted as settled, so the test read and stepped the
+	// clock while Run was still moving (#2391, as #1918 in runFake).
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()

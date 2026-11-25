@@ -22,6 +22,21 @@ public struct DeviceHello: Codable, Equatable, Sendable {
         self.relayDeviceID = relayDeviceID
     }
 
+    /// The hello of a link through a Relay pairing slot (#2387): `device` carries this phone's relay id, its
+    /// `relay_auth` key and the key's signature (`RelayIDProof.sign` for the hub and this device), and the hello
+    /// names the same id. The hub marks the link as one over Relay only for such a hello (`RelayIDProof.verify`).
+    public init(
+        device: DevicePayload,
+        signingKey: String,
+        agreementKey: String,
+        relayIDProof proof: (relayDeviceID: String, authPub: String, sig: String)
+    ) {
+        self.init(
+            device: device.withRelayID(proof.relayDeviceID, authPub: proof.authPub, sig: proof.sig),
+            signingKey: signingKey, agreementKey: agreementKey, relayDeviceID: proof.relayDeviceID
+        )
+    }
+
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.init(

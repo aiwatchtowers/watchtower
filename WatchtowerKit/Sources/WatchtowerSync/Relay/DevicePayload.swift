@@ -146,4 +146,14 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         relayIDSig = try values.decodeIfPresent(String.self, forKey: .relayIDSig)
         workAlertsOffFlag = try values.decodeIfPresent(Bool.self, forKey: .workAlertsOffFlag) == true ? true : nil
     }
+
+    /// This record naming `relayDeviceID` with its proof (`RelayIDProof.sign`), every other field kept.
+    public func withRelayID(_ relayDeviceID: String, authPub: String, sig: String) -> Self {
+        Self(
+            deviceID: deviceID, name: name, model: model, appVersion: appVersion, scope: scope,
+            userRecordName: userRecordName, linkNonce: linkNonce, unlinked: unlinked, typingRequested: typingRequested,
+            startSessions: startSessions, permissionsRequested: permissionsRequested, seenAt: seenAt, updatedAt: updatedAt,
+            relayDeviceID: relayDeviceID, relayAuthPub: authPub, relayIDSig: sig, workAlertsOff: workAlertsOff
+        )
+    }
 }

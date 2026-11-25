@@ -1102,13 +1102,7 @@ extension AppRoot: LinkHost {
             Self.logger.error("device record without the relay id: no proof (\(String(describing: type(of: error)), privacy: .public))")
             return payload
         }
-        return DevicePayload(
-            deviceID: payload.deviceID, name: payload.name, model: payload.model, appVersion: payload.appVersion,
-            scope: payload.scope, userRecordName: payload.userRecordName, linkNonce: payload.linkNonce,
-            unlinked: payload.unlinked, typingRequested: payload.typingRequested, startSessions: payload.startSessions,
-            permissionsRequested: payload.permissionsRequested, seenAt: payload.seenAt, updatedAt: payload.updatedAt,
-            relayDeviceID: claim.relayDeviceID, relayAuthPub: claim.authPub, relayIDSig: claim.sig,
-            workAlertsOff: payload.workAlertsOff)
+        return payload.withRelayID(claim.relayDeviceID, authPub: claim.authPub, sig: claim.sig)
     }
 
     func removeHub(_ hubID: String, keepRecordings: Bool, farewell: CloudRecord?) async -> LocalWipe {
@@ -1331,6 +1325,10 @@ extension AppRoot: TransportFollowerHost {
 
     func relayUse(for link: LinkRecord) async -> RelayUse {
         await linking.relayUse(for: link)
+    }
+
+    func iCloudAccount() async -> String? {
+        await linking.currentAccount()
     }
 
     func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox? {

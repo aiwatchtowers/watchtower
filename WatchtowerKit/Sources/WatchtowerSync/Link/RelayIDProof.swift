@@ -46,4 +46,13 @@ public enum RelayIDProof {
         else { return false }
         return key.isValidSignature(sig, for: message(hubID: hubID, deviceID: deviceID, relayDeviceID: relayDeviceID))
     }
+
+    /// The hub's check of a hello read from a Relay pairing slot (#2387, `link.slotRelayIDProof`): its device data
+    /// proves an id for this hub and its device, and that id is the one the hello names. Only such a hello makes the
+    /// link one over Relay; any other links without the move to Relay.
+    public static func verify(_ hello: DeviceHello, hubID: UUID) -> Bool {
+        guard let deviceID = UUID(uuidString: hello.device.deviceID), let named = hello.relayDeviceID,
+              hello.device.relayDeviceID == named else { return false }
+        return verify(hello.device, hubID: hubID, deviceID: deviceID)
+    }
 }

@@ -267,7 +267,11 @@ type DevicePayload struct {
 // RelayDeviceID is the phone's own hosted-relay device id (lower-case
 // unpadded base32 of SHA-256 of its relay_auth key), sent by a phone linking
 // over the hosted relay so the hub can name it in set_hub_readers; absent on
-// the CloudKit route and from phones that predate it.
+// the CloudKit route and from phones that predate it. A phone that sends it
+// also proves it in Device (relay_device_id, relay_auth_pub, relay_id_sig,
+// as in its device record, #2387); only a proven id makes a pairing-slot
+// hello a Relay link (link's slotRelayIDProof), an unproven one links
+// without the move to Relay.
 type DeviceHello struct {
 	Device        DevicePayload `json:"device"`
 	SigningKey    string        `json:"signing_key"`

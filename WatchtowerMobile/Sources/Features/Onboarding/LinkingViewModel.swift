@@ -550,22 +550,24 @@ final class LinkingViewModel {
     /// The hello (mobile E2E spec §2.3): this phone's device record for
     /// `hubID` plus its public keys, `hello-<device_id>` in RelayZone. The
     /// host's transport seals it to the hub's agreement key and signs it with
-    /// the device key.
+    /// the device key. A hello through a Relay pairing slot carries `relayID`, this phone's relay id with its proof
+    /// (#2387), so the Mac marks the link as one over Relay.
     private func helloRecord(
         hubID: String,
         for device: LinkedDevice,
         keys deviceKeys: DeviceIdentityKeys,
         linkNonce: String,
-        relayDeviceID: String? = nil
+        relayID: RelayIDClaim? = nil
     ) throws -> CloudRecord {
         guard let host else { throw CancellationError() }
         let payload = host.devicePayload(hubID: hubID, for: device, linkNonce: linkNonce, unlinked: false, now: clock.now())
-        let hello = DeviceHello(
-            device: payload,
-            signingKey: WireBytes.base64URL(deviceKeys.signing.publicKey.rawRepresentation),
-            agreementKey: WireBytes.base64URL(deviceKeys.agreement.publicKey.rawRepresentation),
-            relayDeviceID: relayDeviceID
-        )
+        let signingKey = WireBytes.base64URL(deviceKeys.signing.publicKey.rawRepresentation)
+        let agreementKey = WireBytes.base64URL(deviceKeys.agreement.publicKey.rawRepresentation)
+        let hello = if let relayID {
+            DeviceHello(device: payload, signingKey: signingKey, agreementKey: agreementKey, relayIDProof: relayID.proof)
+        } else {
+            DeviceHello(device: payload, signingKey: signingKey, agreementKey: agreementKey)
+        }
         return try CloudRecordFactory.record(for: hello, modifiedAt: payload.updatedAt)
     }
 
@@ -680,9 +682,9 @@ final class LinkingViewModel {
             return nil
         }
         do {
-            let relayDeviceID = pending.relaySlot == nil ? nil : try relay.phoneDeviceID()
+            let relayID = pending.relaySlot == nil ? nil : try relay.relayIDProof(hubID: hubID, deviceID: deviceKeys.deviceID)
             let hello = try helloRecord(
-                hubID: hubID, for: device, keys: deviceKeys, linkNonce: pending.link.nonce, relayDeviceID: relayDeviceID)
+                hubID: hubID, for: device, keys: deviceKeys, linkNonce: pending.link.nonce, relayID: relayID)
             return try await sendHello(hello, for: pending, via: transport, directly: pending.relaySlot == nil)
         } catch is CancellationError {
             return nil
@@ -1384,14 +1386,8 @@ final class LinkingViewModel {
         let kept = host.pendingFarewells()
         guard !kept.isEmpty else { return }
         // Only an iCloud farewell needs the account (carry-over R19: a Relay farewell never depends on iCloud).
-        var account: String?
-        if kept.contains(where: { $0.route.cloudKitScope != nil }), await access.availability() == .available {
-            do {
-                account = try await access.identity()
-            } catch {
-                Self.logger.warning("account check before the farewells failed: \(error.localizedDescription, privacy: .public)")
-            }
-        }
+        let needsAccount = kept.contains { $0.route.cloudKitScope != nil }
+        let account = needsAccount ? await currentAccount() : nil
         for farewell in kept {
             let hubID = farewell.hubID
             let iCloud = farewell.route.cloudKitScope != nil
@@ -1420,6 +1416,17 @@ final class LinkingViewModel {
         }
     }
 
+    /// This phone's iCloud account, read now; nil when it cannot be read (signed out, restricted, the read failed).
+    func currentAccount() async -> String? {
+        guard await access.availability() == .available else { return nil }
+        do {
+            return try await access.identity()
+        } catch {
+            Self.logger.warning("iCloud account check failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     /// `hubID` has a saved link, a pending one, or a code of it being
     /// linked: read now, from the host and the store.
     private func isLinked(_ hubID: String) -> Bool {
@@ -1433,18 +1440,11 @@ final class LinkingViewModel {
         refreshLinks()
         // A Relay link depends on no iCloud account (R19).
         guard links.contains(where: { $0.link.route.cloudKitScope != nil }) else { return }
-        guard await access.availability() == .available else { return }
-        let current: String
-        do {
-            current = try await access.identity()
-        } catch {
-            Self.logger.warning("account check failed: \(error.localizedDescription, privacy: .public)")
-            return
-        }
+        guard let current = await currentAccount() else { return }
         // An unlink or a removal that ran during the check already ended
         // its hub.
         let rows = (host?.linkedHubs() ?? []).filter { !ending.contains($0.hubID) && $0.link.route.cloudKitScope != nil }
-        guard let host, rows.contains(where: { $0.link.userRecordName != current }) else { return }
+        guard let host, rows.contains(where: { $0.link.madeOnAccount.map { $0 != current } ?? false }) else { return }
         Self.logger.notice("iCloud account changed while linked: removing every iCloud hub")
         if store.pending?.relaySlot == nil {
             store.pending = nil
@@ -1666,7 +1666,7 @@ extension LinkingViewModel {
         }
         await endRepairedLink(payload.hubID)
         let deviceKeys: DeviceIdentityKeys
-        let relayDeviceID: String
+        let relayID: RelayIDClaim
         do {
             deviceKeys = try keys.identity()
             try keys.saveHubLink(code.hubKeys.unconfirmedLink)
@@ -1692,7 +1692,7 @@ extension LinkingViewModel {
         )
         let transport: any CloudSyncTransport
         do {
-            relayDeviceID = try relay.phoneDeviceID()
+            relayID = try relay.relayIDProof(hubID: record.hubID, deviceID: deviceKeys.deviceID)
             transport = try await host.preparePairing(macDeviceID: code.mac, slot: slot.slot, hubID: record.hubID)
         } catch is CancellationError {
             return
@@ -1715,7 +1715,7 @@ extension LinkingViewModel {
         store.pending = pending
         do {
             let hello = try helloRecord(
-                hubID: record.hubID, for: device, keys: deviceKeys, linkNonce: payload.nonce, relayDeviceID: relayDeviceID
+                hubID: record.hubID, for: device, keys: deviceKeys, linkNonce: payload.nonce, relayID: relayID
             )
             pending = try await sendHello(hello, for: pending, via: transport, directly: false)
         } catch is CancellationError {

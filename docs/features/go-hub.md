@@ -393,6 +393,22 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   `github.com/skip2/go-qrcode`, ask #881) prints a half-block QR, the link and expiry, the pinned SAS prompt
   `Confirm code 1234 on your phone? [y/N] `; needs stdin and stdout terminals (exit 2 otherwise); phone strings pass
   `sanitizeForTerminal`. Copy reviewed in `docs/design/mockups/go-hub/hub-pair-terminal.html` (ask #883).
+  The answer is bound to the request shown (#2384, the terminal side of #2191): a y, an n, Ctrl-D, Ctrl-C and the
+  code's expiry each send the confirm `pairConfirmRequest` builds from the prompt's `sas` (code, `moves_to_relay`,
+  `request`), so the hub refuses it `code_changed` when the phone's request moved on. A prompt whose `sas` has
+  `moves_to_relay` prints the Mac sheet's Relay-move warning over it (`hubPairRelayMove`). A replaced request (another
+  code, `moves_to_relay` or `request`; a new name alone is not one) prints `The phone sent a new code.` and the prompt
+  again while the prompt is open; the line read across that reprint may answer the earlier code, so it is not sent
+  (`The code changed, so that answer was not sent. Check the code on your phone and answer again.`) and the prompt is
+  printed again. A replacement after the answer was sent waits for the hub's `code_changed` (`The phone sent a new code
+  before your answer reached the hub. Nothing was linked.`), which asks about the newer request, or, when its `sas`
+  has not come yet, prints `Waiting for the phone's new code…` with no prompt open until it does (its read deadline is the code's
+  expiry plus `hubPairGrace`, not the after-confirm bound; the code expiring meanwhile ends the pairing expired). Each fresh read starts only after its prompt is printed and the terminal's
+  unread input (`flushTerminalInput`, TCIFLUSH) and the reader's buffer are dropped, so the line it returns was typed
+  after that prompt; a flush that fails prints `Could not clear what was typed before this question, so no answer can
+  be taken.` and the prompt is a no. Ctrl-D is a no whichever code was on screen, bound to the request shown last.
+  `no_request` ends as an expired code; a yes on a hub that names no request ends with `errPairHubTooOld`, nothing sent
+  (a no still goes through).
 - **Recording switch** (protocol §7.7, §9): see v1 limits; a Linux host never has `desktop_seen_at`, so it always
   publishes `capabilities.recordings: "off"` (`hub desktop heartbeat` is refused off darwin).
 - **Builds**: `.github/workflows/linux-build.yml` on native `ubuntu-22.04` / `ubuntu-22.04-arm` (glibc floor 2.35,
@@ -517,9 +533,18 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   (`pairListener.token`, `stream-<n>`); every issue path runs for the asking stream's token (`IssueFor`,
   `IssueCloudKitFor`). The `qr` and `waiting` events carry the token and the code's nonce and go to that stream only,
   which records the nonce (at most `link.KeptCodes`); a phone's `sas`, `linked` and `refused` carry the nonce of the
-  code its hello came in under and go only to the streams holding it. An event naming neither (an issue no stream
-  asked for) goes to every stream. The center emits a code's `qr` under its lock before any hello under that code can be
-  decided, so a stream always holds the nonce first.
+  code its hello came in under. `sas` and `linked` go only to the streams holding it. `refused` (a hello under an old
+  code, `used_code` after another phone linked, an expired or declined request) goes only to the streams that showed
+  that phone's `sas` under that code, or whose newest code it is (`pairListener.refusalFor`, #2385): a stream that asked
+  again (a relay code after its iCloud code) is not ended when a phone it never showed scans the replaced code. A
+  refusal no stream matches, or one without a nonce, is sent to none (logged while a pairing stream is open). Any other
+  event naming neither token nor nonce (an issue no stream asked for) goes to every stream. The center emits a code's
+  `qr` under its lock before any hello under that code can be decided, so a stream always holds the nonce first. A hello
+  under a replaced code is decided after the new code's `qr`, so its refusal finds the asking stream's newest code moved
+  on: it reaches the streams that showed the phone, and any other stream that still shows the replaced code as its
+  newest. The issue of a relay code itself refuses the requests waiting under the CloudKit code it replaces before it emits
+  the new `qr`; those phones had a `sas`, so the stream that showed it hears the refusal, the asking stream included
+  when it asked for both codes.
 - **`hub pair --json --stream` and a replaced request** (#2191). The `sas` line carries `moves_to_relay` (below) and
   `request` (`link.RequestID`, opaque; a replacement has a new one even when it drew the same four digits). The CLI
   reads the stream while the owner decides (`pairStream`) and prints the `sas` line again whenever the request of the
@@ -538,7 +563,7 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   its link closes, its waiting phones read `not_confirmed`); a relay code is not retired when its stream closes and
   stays valid until it expires or another code replaces it.
 - **`moves_to_relay` on the `sas` line** (#2191, Q6; local CLI contract, not the phone wire). `link.PairEvent.OverRelay`:
-  the hello came through a Relay pairing slot and names the phone's relay id. The runtime sets `MovesToRelay`
+  the hello came through a Relay pairing slot and proves the relay id it names (#2387). The runtime sets `MovesToRelay`
   (`hubRuntime.movesToRelay`, on the event goroutine, outside the supervisor's `pairMu`) when the phone paired over
   Relay, the active transport is CloudKit and another linked phone has an iCloud route (`state.Store.ICloudRoutes`); a
   failed route read answers true (warn when unsure). The value is fixed at the `sas`: a switch between the `sas` and
@@ -554,13 +579,36 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   request; iCloud phones without Relay then lose their connection until they subscribe.
   - **`hub_meta.relay_slot_links`** (`internal/hub/state/relay_slot_links.go`, ask #1827) is the positive "linked over
     Relay" signal, since an empty iCloud user alone cannot tell a slot link from a CloudKit link whose owner was
-    unreadable: JSON `{"linked": {id: devices.link_nonce}, "pending": {id: code nonce}}`, ids uppercase. Its writers
-    are `internal/hub/link` only, each in the transaction of the change, under the center's lock: a saved hello marks or
-    clears its pending entry, the confirm promotes the entry whose nonce matches the linked request (any other link, a
-    CloudKit re-link, drops the phone from `linked`), a refusal or expiry drops the pending entry, an unlink both. Every
+    unreadable: JSON `{"v": 2, "linked": {id: devices.link_nonce}, "pending": {id: {"nonce": code nonce, "proven":
+    bool}}}`, ids uppercase (`v` since #2387: a row without it, written by the builds between #2191 and #2387 whose
+    marks never proved a relay id, keeps its pending entries as unproven slot requests, so their route still counts,
+    and loses its linked marks; the next write stores v2 and logs the drop once). Its writers
+    are `internal/hub/link` only, each in the transaction of the change, under the center's lock: a saved hello writes or
+    clears its pending entry, the confirm promotes a proven entry whose nonce matches the linked request (any other link,
+    a CloudKit re-link or an unproven slot link, drops the phone from `linked`), a refusal or expiry drops the pending entry, an unlink both. Every
     write prunes entries whose `devices`/`pending_devices` row is gone or names another nonce; an undecodable row reads
     as an error (no candidate) and a writer replaces it with an empty one plus its change. Only phones in `linked` can
     move the Mac. No migration.
+  - **A slot hello proves its relay id (#2387).** A slot hello is marked (`proven`) only when its `device` part
+    proves the relay id the hello names (`relay_device_id`, `relay_auth_pub`, `relay_id_sig`, the device record's
+    `RelayIDProof` for this hub and device; `link.slotRelayIDProof` = `checkRelayIDProof` plus the proven id equal to
+    the hello's, run for slot hellos only). Anything less (an older phone's hello without a proof, a proof of another
+    id, of another hub or device, a bad signature, no relay id at all) still keeps its slot route in the pending entry
+    and waits and links, keeping a named id as an unproven claim, but it is never a candidate and its `sas` event's
+    `OverRelay` (so `moves_to_relay`) stays false; a newly saved request logs it once by class (`proves no relay id
+    (…): not a Relay link`). Route and mark are apart: `savePending` compares both, so a route change (an unproven
+    slot hello then the same hello over CloudKit, which keeps its verified iCloud user, or the other way round) and a
+    gained or lost proof each replace the request. Released phones (v0.29.3 and earlier) send no proof, but they
+    take a slot only for a code of a Mac already on Relay (their `LinkRoutePolicy` predates #2191), where the mark
+    changes nothing, so they lose nothing user-visible.
+  - **Who writes `devices.relay_device_id` and who wins (#2387).** A proven slot hello at the confirm
+    (`linkPending`, the proven flag read from the request's pending entry) and a proven device record
+    (`takeRelayID`) take the id off any row that holds it (`state.ClearRelayDeviceIDTx`, with its admission stamp
+    and lapse; only the `relay_auth` key's holder can sign, so between two proofs the later one wins). An unproven
+    hello's id is stored only when no other row holds it. An unlink drops the row with its id. Pinned by
+    `link/slot_relay_proof_test.go`, `link/slot_relay_route_test.go`, `switcher`'s
+    `TestRelayLinkALegacySlotRowIsNoCandidate` and the `device_hello` cases' `slot_relay_link` in
+    `hub_contract_cases.json` (Go `TestHelloFixtureRelayIDRule`, Kit `testHelloCasesRoundTrip`).
   - **The candidate** (`relayLinkCandidates`, in `devices` order): `relay_slot_links.linked[id]` equals the row's
     `link_nonce`, the row has a relay id and no iCloud route, and `linked_at > max(stored relay_link_since,
     relayLinkSince(switched_at))`. `relayLinkSince(t)` is the second before `t`'s whole second, and the stored

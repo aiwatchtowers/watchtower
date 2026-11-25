@@ -161,6 +161,76 @@ func TestPairStreamsSeeOnlyTheirOwnCodes(t *testing.T) {
 	}
 }
 
+// A refusal goes only to the streams that showed that phone's request under
+// the refused code, or whose newest code is the refused one (#2385). A
+// stream that asked again (a relay code after its CloudKit code) is not
+// ended by a hello on its replaced code from a phone it never showed; a
+// phone it did show still reaches it. A refusal no stream matches, or one
+// naming no code, is sent to none.
+func TestARefusalReachesOnlyTheStreamsThatShowedItsRequest(t *testing.T) {
+	events := func(p *pairListener) []string {
+		var got []string
+		for len(p.queue) > 0 {
+			ev := <-p.queue
+			got = append(got, ev.Event+":"+ev.DeviceID)
+		}
+		return got
+	}
+	a := &pairListener{token: "stream-a", queue: make(chan ControlAnswer, 16), codes: map[string]pairShown{}}
+	b := &pairListener{token: "stream-b", queue: make(chan ControlAnswer, 16), codes: map[string]pairShown{}}
+	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{a: true, b: true}, watches: map[*pairListener]bool{}}
+	// A: an iCloud code, a phone's SAS under it, then a relay code.
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/ck", Nonce: "n-ck", Token: "stream-a"})
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "AAAA", Code: "1234", Nonce: "n-ck"})
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/relay", Nonce: "n-relay", Token: "stream-a"})
+	// B: one code, no phone.
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/b", Nonce: "n-b", Token: "stream-b"})
+	events(a)
+	events(b)
+
+	// Another phone scans A's replaced iCloud code: A never showed it.
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "CCCC", Reason: wire.RefusedExpiredCode, Nonce: "n-ck"})
+	if got := events(a); len(got) != 0 {
+		t.Fatalf("the relay-code stream got %v for a phone it never showed", got)
+	}
+	// The phone A showed under that code is refused: A hears it.
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "aaaa", Reason: wire.RefusedUsedCode, Nonce: "n-ck"})
+	if got, want := events(a), []string{"refused:aaaa"}; !slices.Equal(got, want) {
+		t.Fatalf("A's events %v, want %v", got, want)
+	}
+	// The same phone refused under another code than the one A showed it on.
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedExpiredCode, Nonce: "n-b"})
+	if got := events(a); len(got) != 0 {
+		t.Fatalf("A got %v for a refusal under B's code", got)
+	}
+	// A refusal on a stream's newest code, no SAS shown: that stream only.
+	if got, want := events(b), []string{"refused:AAAA"}; !slices.Equal(got, want) {
+		t.Fatalf("B's events %v, want %v", got, want)
+	}
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "DDDD", Reason: wire.RefusedTooManyRequests, Nonce: "n-relay"})
+	if got, want := events(a), []string{"refused:DDDD"}; !slices.Equal(got, want) {
+		t.Fatalf("A's events %v, want %v", got, want)
+	}
+	// No stream's code, or no code at all: sent to none.
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedExpiredCode, Nonce: "n-gone"})
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedExpiredCode})
+	if ga, gb := events(a), events(b); len(ga)+len(gb) != 0 {
+		t.Fatalf("an unmatched refusal reached A %v, B %v", ga, gb)
+	}
+	// A sas no code names reaches every stream and is recorded without a
+	// nonce; a refusal naming no code still matches none of them.
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "EEEE", Code: "9999"})
+	events(a)
+	events(b)
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "EEEE", Reason: wire.RefusedExpiredCode})
+	if ga, gb := events(a), events(b); len(ga)+len(gb) != 0 {
+		t.Fatalf("a refusal naming no code reached A %v, B %v", ga, gb)
+	}
+	if !s.pairs[a] || !s.pairs[b] {
+		t.Fatal("a stream was dropped")
+	}
+}
+
 // A pairing stream whose queue is full is dropped (removed, its connection
 // closed) without holding back another stream of the same code, which gets
 // every event. In a bubble: a send that blocked instead would deadlock it.

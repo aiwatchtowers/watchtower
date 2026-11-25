@@ -73,6 +73,7 @@ Download `Watchtower-CLI-<version>-arm64.zip` (Apple silicon only), put `watchto
 - **`service install` says Watchtower needs a systemd user manager.** The same cause and the same fix, then run it again.
 - **The terminal says "Widen this window to at least N columns to see the QR code."** Widen the window and run `watchtower hub pair` again, or open the printed link on the phone.
 - **"This code expired." or "This code was already used."** Run `watchtower hub pair` for a new code.
+- **"The phone sent a new code."** The phone asked again, sometimes with the same digits. Compare the code on screen with the phone and answer again.
 
 ## Related
 

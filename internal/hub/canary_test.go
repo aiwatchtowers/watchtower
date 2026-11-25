@@ -536,10 +536,12 @@ var hubMetaKeys = map[string]string{
 	state.MetaWorkAlertsAwaySince: "timestamp",
 	state.MetaServingNobodySince:  "timestamp",
 	state.MetaReaderLostOwed:      "id", // device ids with their link times
-	// The phones linked through a Relay pairing slot with their link
-	// nonces, and the waiting requests that came through one with the open
-	// code's nonce, which pending_devices already holds (#2191).
-	state.MetaRelaySlotLinks: "id, nonce",
+	// v2 (#2387): the row version, the phones linked through a Relay
+	// pairing slot with a proven relay id and their link nonces, and the
+	// waiting requests that came through one with the open code's nonce,
+	// which pending_devices already holds, and whether the hello proved its
+	// relay id (#2191).
+	state.MetaRelaySlotLinks: "version, id, nonce, proven flag",
 	"handlers_held_asks":     "id", // ask, session and run ids
 	"hygiene_last_run":       "timestamp",
 }
