@@ -121,6 +121,26 @@ final class PasteTokenPillTests: XCTestCase {
         XCTAssertFalse(accentAt(5, in: view))
     }
 
+    /// The SwiftUI update sets the paste hook and the live kinds on every pass: an unchanged pass leaves the pills
+    /// alone (review round 1); turning inline pastes off clears them.
+    func testUnchangedUpdateDoesNotRestyle() {
+        let view = makeView(live: [1: .image])
+        view.string = "fix [Image #1]"
+        XCTAssertTrue(accentAt(5, in: view))
+        // Wiped by hand: a restyle would draw it back.
+        view.layoutManager?.removeTemporaryAttribute(.foregroundColor, forCharacterRange: NSRange(location: 0, length: 14))
+
+        view.onInlinePaste = { _ in "new closure, same mode" }
+        view.livePastes = [1: .image]
+        XCTAssertFalse(accentAt(5, in: view), "no restyle for an unchanged update")
+
+        view.onInlinePaste = nil
+        XCTAssertEqual(view.tokenRanges, [])
+        view.onInlinePaste = { _ in nil }
+        XCTAssertEqual(view.tokenRanges, [NSRange(location: 4, length: 10)])
+        XCTAssertTrue(accentAt(5, in: view))
+    }
+
     /// The whole-token Backspace and its undo: the pill goes and comes back with the string.
     func testUndoOfTheWholeTokenDeleteBringsThePillBack() {
         let view = makeView(live: [1: .image], undoable: true)

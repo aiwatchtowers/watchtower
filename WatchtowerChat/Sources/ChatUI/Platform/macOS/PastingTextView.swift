@@ -14,8 +14,9 @@ public final class PastingTextView: NSTextView {
     var onAttachFiles: (([URL]) -> Void)?
     var onLongTextPaste: ((LongPaste) -> Void)?
     /// Keeps a pasted image or long text and returns its token; nil → no inline tokens.
+    /// Set on every SwiftUI update: only turning inline pastes on or off restyles.
     var onInlinePaste: ((InlinePaste) async -> String?)? {
-        didSet { restyleTokens() }
+        didSet { if (onInlinePaste == nil) != (oldValue == nil) { restyleTokens() } }
     }
     /// A token `onInlinePaste` returned that never went in (the field refused the edit or was gone by then): the
     /// owner lets go of its payload, which would otherwise wait for the token forever.
@@ -140,22 +141,23 @@ public final class PastingTextView: NSTextView {
 
     /// A programmatic set (the binding, a picker edit) restyles too; typing, paste and undo come through `didChangeText`.
     override public var string: String {
-        didSet { restyleTokens() }
+        didSet { restyleTokens(textChanged: true) }
     }
 
     override public func didChangeText() {
         super.didChangeText()
-        restyleTokens()
+        restyleTokens(textChanged: true)
     }
 
     /// Draws each live token (`PasteTokens.liveRanges`) as a pill: a `tokenTone` foreground as a layout manager's
     /// temporary attribute and a tinted rounded fill in `draw(_:)`. Display only: the text storage, hence the
-    /// draft string, the binding and the undo stack, never carries either.
-    func restyleTokens() {
+    /// draft string, the binding and the undo stack, never carries either. Nothing is redone when the ranges are
+    /// the ones drawn, unless the text changed around a pill (a character typed next to it must not take its tone).
+    func restyleTokens(textChanged: Bool = false) {
         let ranges = inlinePastes ? PasteTokens.liveRanges(in: string, kinds: livePastes) : []
-        guard ranges != tokenRanges || !ranges.isEmpty else { return }
-        tokenRanges = ranges
+        guard ranges != tokenRanges || (textChanged && !ranges.isEmpty) else { return }
         guard let layoutManager else { return }
+        tokenRanges = ranges
         let whole = NSRange(location: 0, length: (string as NSString).length)
         layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: whole)
         for range in ranges where NSMaxRange(range) <= whole.length {
