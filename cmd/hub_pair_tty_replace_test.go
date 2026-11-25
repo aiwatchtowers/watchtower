@@ -329,7 +329,7 @@ func TestHubPairTTYBufferedLinesAreDropped(t *testing.T) {
 	r.raw(t)
 	ttySend(t, r, f, ttySAS("1111", "r1"))
 	r.waitFor(t, "Confirm code 1111 on your phone? [y/N] ")
-	r.typeLine(t, "y\ny\n") // one read in raw mode: the second y stays buffered
+	r.typeLine(t, strings.Repeat("y\n", 2)) // one read in raw mode: the second y stays buffered
 	assert.Equal(t, ttyYes("1111", "r1", false), ttyGot(t, r, f))
 	ttySend(t, r, f, ttySAS("2222", "r2"))
 	ttySend(t, r, f, hub.ControlAnswer{Op: hub.OpConfirm, Error: hub.ErrClassCodeChanged})

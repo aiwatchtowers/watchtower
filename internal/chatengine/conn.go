@@ -94,9 +94,9 @@ type connSub struct {
 }
 
 func newConn(s *Server, nc net.Conn, peer peerCreds) *conn {
-	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: kept in the conn, called by kill
-	return &conn{s: s, nc: nc, peer: peer, ctx: ctx, cancel: cancel, subs: map[string]*connSub{},
-		inFlight: make(chan struct{}, maxInFlight)}
+	c := &conn{s: s, nc: nc, peer: peer, subs: map[string]*connSub{}, inFlight: make(chan struct{}, maxInFlight)}
+	c.ctx, c.cancel = context.WithCancel(context.Background()) // kill calls the cancel
+	return c
 }
 
 // kill closes the connection (its reader then returns).

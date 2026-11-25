@@ -83,7 +83,10 @@ struct UpdateServicePureTests {
         // A flavored build carries a different baked-in credential set; picking
         // up a public-feed release would silently swap it for the default one.
         let svc = await UpdateService()
-        await MainActor.run { svc.buildFlavor = "b2" }
+        await MainActor.run {
+            svc.buildFlavor = "b2"
+            svc.companyMigrated = { false } // never the machine's own workspaces
+        }
         await svc.checkForUpdates()
         await MainActor.run { #expect(svc.state == .idle) }
     }
@@ -453,6 +456,7 @@ struct UpdateChannelTests {
     func updatesSupportedFlag() async {
         await MainActor.run {
             let svc = UpdateService()
+            svc.companyMigrated = { false } // never the machine's own workspaces
             svc.buildFlavor = ""
             #expect(svc.updatesSupported)
 
@@ -474,6 +478,7 @@ struct UpdateChannelTests {
         let svc = await UpdateService()
         await MainActor.run {
             svc.buildFlavor = "corp"
+            svc.companyMigrated = { false } // never the machine's own workspaces
             svc.updateFeedURL = nil
             svc.updateClientID = nil
             svc.updateClientSecret = nil

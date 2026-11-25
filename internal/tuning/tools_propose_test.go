@@ -33,7 +33,7 @@ func proposeFixture(t *testing.T) (*fixture, int64) {
 	conv, err := res.LastInsertId()
 	require.NoError(t, err)
 	env := coach.Env{Home: f.home}
-	put(t, filepath.Join(f.home, ".claude", "CLAUDE.md"), "Alpha line.\nBeta.\nBeta.\n")
+	put(t, filepath.Join(f.home, ".claude", "CLAUDE.md"), "Alpha line.\n"+strings.Repeat("Beta.\n", 2))
 	put(t, coach.ClaudeSkillPath(env, "a"), "Read the plan.\nRun tests.\n")
 	put(t, coach.ClaudeSkillPath(env, "crlf"), "a\r\nb\r\n")
 	put(t, filepath.Join(f.home, ".codex", "rules", "default.rules"), "")
