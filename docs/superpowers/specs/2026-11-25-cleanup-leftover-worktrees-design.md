@@ -63,7 +63,7 @@ A stat that fails, or a walk over its budget, counts as "now" (fail closed: the 
 - removable → applied by name (the sweep apply already takes named items only), its branch with it when the branch item is removable;
 - kept for a reason the build prune accepts (§4) → its build output is pruned.
 
-At most `sweepBatch` (20) worktrees are applied per repository per pass, oldest activity first; the rest wait for the next pass. The pass shares the pass budget (10 min); when the budget runs out the pass stops, and the next pass starts again from scratch.
+At most `sweepBatch` (20) worktrees are applied per repository per pass, oldest activity first; the rest wait for the next pass. The repository pass runs after the session applies with its own budget (10 min), so long session applies never starve it; when its budget runs out it stops, and the next pass starts again from scratch.
 
 The repository pass makes the "settled" reasons of a session scope matter less: a worktree a session will never claim (`existed_before_session`, `created_unknown`, an `agent-*` without a record) is reached here once it is idle.
 
@@ -84,7 +84,8 @@ The same rule applies in a session apply, in the automatic pass and in the owner
 
 - `pruneReasons` gains `locked`: a locked worktree's build output goes even when the worktree stays.
 - **An Xcode DerivedData folder is recognised by its content, whatever its name.** Today only a folder named `DerivedData` counts; `-derivedDataPath` folders named otherwise (seen: `.build-mobile-dd`, `.derived`, `.derived-mobile`, 1.7–2.9 GB each) stay. A directory at the worktree's root, or one level below it, holding `info.plist`, `Build/` and at least one of `Logs/`, `Index.noindex/`, `ModuleCache.noindex/` is a DerivedData folder for the prune and for W10's cache exemption (so it does not count as unsaved ignored work either). The same content check guards it as today's `DerivedData` kind (`buildKind.files`/`dirs`).
-- `pruneCatches` drops `catchLocked` and gains an **idle** check: a build folder is pruned only from a worktree idle for `idleFor`. This applies to the new paths (a locked worktree, the repository pass). The existing prune at a session's end (#2131, ask #1695) is unchanged.
+- `pruneCatches` drops `catchLocked` and gains an **idle** check: a build folder is pruned only from a worktree idle for `idleFor`. This applies to every prune of a locked worktree (a locked plan worktree keeps its build at its session's end until it has been idle 3 days) and to the repository pass. The existing prune at a session's end (#2131, ask #1695) of a worktree kept for any other reason is unchanged.
+- A quiet session (§1) counts as ended for the prune too, so its kept worktrees lose their build in the same apply, like a finished session's.
 - The live-process and session-in-it checks stay in `pruneCatches`, so a build in use is never removed.
 
 ### 5. Language servers
