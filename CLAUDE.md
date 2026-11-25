@@ -100,6 +100,10 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 
 The user-facing guide lives in `docs/guide/` (start at `docs/guide/README.md`). A user-facing change updates its page in the same PR, following `docs/guide/WRITING.md`. `docs/app-guide.md` is gone.
 
+## Changelog line in every PR
+
+Every PR body carries a "Changelog" section with one `Changelog: <category> [<area>] — <line for users>` per user-visible change (`internal — …` when nothing is user-visible) — also when the body is written with `gh pr create --body`, which skips `.github/pull_request_template.md`. `/release` builds the notes and picks the version from these lines; the categories, their bumps and the security wording rule are in `.claude/commands/release.md`, Step 1.
+
 ---
 
 ## Build & Test

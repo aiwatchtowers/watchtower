@@ -7,6 +7,16 @@
 <!-- Commands you ran (e.g. `go test ./internal/<pkg>`, `make test-swift FILTER=<TestClass>`)
      and anything you checked by hand in the app. -->
 
+## Changelog
+
+<!-- One line per user-visible change; the release collects these into the notes and picks the version.
+     Format: Changelog: <category> [<area>] — <what users can do or notice, in their words>
+     Categories: new · extended · improved · changed · removed · requirements · security · fixed · internal
+     Area (optional): mac · iphone · cli · a connector name. Security lines stay vague (no attack details).
+     See .claude/commands/release.md, Step 1, for what each category means. -->
+
+Changelog: internal — 
+
 ## User guide
 
 - [ ] The change is user-facing and `docs/guide/` is updated in this PR
