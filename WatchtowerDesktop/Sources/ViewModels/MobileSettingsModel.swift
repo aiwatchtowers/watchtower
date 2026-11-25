@@ -147,8 +147,11 @@ final class MobileSettingsModel {
     /// The phone the Remove dialog is about, kept while it dismisses.
     private(set) var removeSubject: PhoneRow?
     var pendingDiscard: FailedRecording?
-    /// The rename field while it is up.
-    var renaming: String?
+    /// The rename field is up.
+    var renaming = false
+    /// The rename field's text. Kept apart from `renaming`: the alert's
+    /// dismissal clears that before Save runs.
+    var renameText = ""
     /// The pairing sheet while it is up.
     private(set) var pairing: MobilePairingModel?
 
@@ -400,17 +403,16 @@ final class MobileSettingsModel {
         }
     }
 
-    /// The rename field's text while it is up.
-    var renameText: String {
-        get { renaming ?? "" }
-        set { renaming = newValue }
+    /// The Mac name's button: the rename field opens on today's name.
+    func requestRename() {
+        renameText = macName
+        renaming = true
     }
 
     /// Save in the rename field: it closes and the name is written.
     func saveRename() async {
-        let name = renameText
-        renaming = nil
-        await rename(name)
+        renaming = false
+        await rename(renameText)
     }
 
     /// What Remove does to the phone the dialog is about.
@@ -452,20 +454,20 @@ final class MobileSettingsModel {
     func requestStartSessionsAllow(_ phone: PhoneRow) { pendingStartSessionsAllow = phone }
     func requestPermissionsAllow(_ phone: PhoneRow) { pendingPermissionsAllow = phone }
 
-    func confirmAllow() async {
-        guard let phone = pendingAllow else { return }
+    // The confirms take the phone the dialog presented: its dismissal clears
+    // the pending property before the button's action runs.
+
+    func confirmAllow(_ phone: PhoneRow) async {
         pendingAllow = nil
         await allow(phone.id, Self.typingGrant, true)
     }
 
-    func confirmStartSessionsAllow() async {
-        guard let phone = pendingStartSessionsAllow else { return }
+    func confirmStartSessionsAllow(_ phone: PhoneRow) async {
         pendingStartSessionsAllow = nil
         await allow(phone.id, Self.startSessionsGrant, true)
     }
 
-    func confirmPermissionsAllow() async {
-        guard let phone = pendingPermissionsAllow else { return }
+    func confirmPermissionsAllow(_ phone: PhoneRow) async {
         pendingPermissionsAllow = nil
         await allow(phone.id, Self.permissionsGrant, true)
     }
@@ -476,8 +478,7 @@ final class MobileSettingsModel {
     }
 
     /// The confirmed Remove: nothing is removed without it.
-    func confirmRemove() async {
-        guard let phone = pendingRemove else { return }
+    func confirmRemove(_ phone: PhoneRow) async {
         pendingRemove = nil
         await unlink(phone.id)
     }
@@ -537,8 +538,7 @@ final class MobileSettingsModel {
     func requestDiscard(_ recording: FailedRecording) { pendingDiscard = recording }
 
     /// The confirmed Discard: the audio and the job go (`hub recording discard`).
-    func confirmDiscard() async {
-        guard let recording = pendingDiscard else { return }
+    func confirmDiscard(_ recording: FailedRecording) async {
         pendingDiscard = nil
         await recordingWrite(recording.id, MobileHubCLI.discardArgs(recording.id), failure: Self.couldNotDiscard)
     }

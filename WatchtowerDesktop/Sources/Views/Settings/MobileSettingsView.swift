@@ -225,7 +225,7 @@ private struct MobileHubSection: View {
             SettingRow(title: Copy.macNameTitle, caption: Copy.macNameCaption) {
                 HStack(spacing: Spacing.regular) {
                     if model.busy.contains(.name) { ProgressView().controlSize(.small) }
-                    Button(model.macName) { model.renaming = model.macName }
+                    Button(model.macName) { model.requestRename() }
                         .buttonStyle(.kitSecondary)
                         .disabled(model.busy.contains(.name))
                 }
@@ -477,57 +477,62 @@ private struct MobileSettingsDialogs: ViewModifier {
         content
             .confirmationDialog(
                 Copy.allowQuestion(name: model.pendingAllow?.name ?? Copy.thisPhone),
-                isPresented: Binding(get: { model.pendingAllow != nil }, set: { if !$0 { model.pendingAllow = nil } })
-            ) {
-                Button(Copy.allowConfirmTitle) { Task { await model.confirmAllow() } }
+                isPresented: Binding(get: { model.pendingAllow != nil }, set: { if !$0 { model.pendingAllow = nil } }),
+                presenting: model.pendingAllow
+            ) { phone in
+                Button(Copy.allowConfirmTitle) { Task { await model.confirmAllow(phone) } }
                 Button(Copy.cancelTitle, role: .cancel) { model.pendingAllow = nil }
-            } message: {
-                Text(Copy.allowMessage(model.pendingAllow))
+            } message: { phone in
+                Text(Copy.allowMessage(phone))
             }
             .confirmationDialog(
                 Copy.startSessionsQuestion(name: model.pendingStartSessionsAllow?.name ?? Copy.thisPhone),
                 isPresented: Binding(
                     get: { model.pendingStartSessionsAllow != nil }, set: { if !$0 { model.pendingStartSessionsAllow = nil } }
-                )
-            ) {
-                Button(Copy.allowConfirmTitle) { Task { await model.confirmStartSessionsAllow() } }
+                ),
+                presenting: model.pendingStartSessionsAllow
+            ) { phone in
+                Button(Copy.allowConfirmTitle) { Task { await model.confirmStartSessionsAllow(phone) } }
                 Button(Copy.cancelTitle, role: .cancel) { model.pendingStartSessionsAllow = nil }
-            } message: {
+            } message: { _ in
                 Text(Copy.startSessionsMessage)
             }
             .confirmationDialog(
                 Copy.permissionsQuestion(name: model.pendingPermissionsAllow?.name ?? Copy.thisPhone),
                 isPresented: Binding(
                     get: { model.pendingPermissionsAllow != nil }, set: { if !$0 { model.pendingPermissionsAllow = nil } }
-                )
-            ) {
-                Button(Copy.allowConfirmTitle) { Task { await model.confirmPermissionsAllow() } }
+                ),
+                presenting: model.pendingPermissionsAllow
+            ) { phone in
+                Button(Copy.allowConfirmTitle) { Task { await model.confirmPermissionsAllow(phone) } }
                 Button(Copy.cancelTitle, role: .cancel) { model.pendingPermissionsAllow = nil }
-            } message: {
+            } message: { _ in
                 Text(Copy.permissionsMessage)
             }
             .confirmationDialog(
                 Copy.removeQuestion(name: model.removeSubject?.name ?? Copy.thisPhone),
-                isPresented: Binding(get: { model.pendingRemove != nil }, set: { if !$0 { model.pendingRemove = nil } })
-            ) {
-                Button(Copy.removeConfirmTitle, role: .destructive) { Task { await model.confirmRemove() } }
+                isPresented: Binding(get: { model.pendingRemove != nil }, set: { if !$0 { model.pendingRemove = nil } }),
+                presenting: model.pendingRemove
+            ) { phone in
+                Button(Copy.removeConfirmTitle, role: .destructive) { Task { await model.confirmRemove(phone) } }
                 Button(Copy.cancelTitle, role: .cancel) { model.pendingRemove = nil }
-            } message: {
+            } message: { _ in
                 Text(model.removeConsequence)
             }
             .confirmationDialog(
                 Copy.discardQuestion,
-                isPresented: Binding(get: { model.pendingDiscard != nil }, set: { if !$0 { model.pendingDiscard = nil } })
-            ) {
-                Button(Copy.discardConfirmTitle, role: .destructive) { Task { await model.confirmDiscard() } }
+                isPresented: Binding(get: { model.pendingDiscard != nil }, set: { if !$0 { model.pendingDiscard = nil } }),
+                presenting: model.pendingDiscard
+            ) { recording in
+                Button(Copy.discardConfirmTitle, role: .destructive) { Task { await model.confirmDiscard(recording) } }
                 Button(Copy.cancelTitle, role: .cancel) { model.pendingDiscard = nil }
-            } message: {
+            } message: { _ in
                 Text(Copy.discardMessage)
             }
-            .alert(Copy.renameTitle, isPresented: Binding(get: { model.renaming != nil }, set: { if !$0 { model.renaming = nil } })) {
+            .alert(Copy.renameTitle, isPresented: Binding(get: { model.renaming }, set: { model.renaming = $0 })) {
                 TextField(Copy.renamePrompt, text: Binding(get: { model.renameText }, set: { model.renameText = $0 }))
                 Button(Copy.saveTitle) { Task { await model.saveRename() } }
-                Button(Copy.cancelTitle, role: .cancel) { model.renaming = nil }
+                Button(Copy.cancelTitle, role: .cancel) { model.renaming = false }
             }
     }
 }
