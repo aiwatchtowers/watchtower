@@ -56,10 +56,10 @@ Steps:
 
 **Depends on:** Task 2, Task 3 · **Spec:** §2
 
-Files: `internal/sessioncleanup/auto.go` (after the session applies: one repository pass per distinct git common dir of the workbenches' folders), new `internal/sessioncleanup/repopass.go` (+ test), `cmd/workbench_cleanup_auto.go` (deps: folders of every workbench, the live set), `internal/daemon/session_cleanup.go` only if the pass needs new wiring.
+Files: `internal/sessioncleanup/auto.go` (after the session applies, with its own budget — see step 0: one repository pass per distinct git common dir of the workbenches' folders), new `internal/sessioncleanup/repopass.go` (+ test), `cmd/workbench_cleanup_auto.go` (deps: folders of every workbench, the live set), `internal/daemon/session_cleanup.go` only if the pass needs new wiring.
 
 Steps:
-0. The repository pass runs after the session applies with **its own** budget (`repoPassBudget = 10 * time.Minute`, a fresh ctx from the daemon's ctx), so long session applies never starve it; the daemon's per-pass bound becomes the sum (`sessionCleanupBudget` covers the session part only).
+0. The repository pass runs after the session applies with **its own** budget (`repoPassBudget = 10 * time.Minute`, a fresh ctx from the daemon's ctx), so long session applies never starve it; today `internal/daemon/session_cleanup.go` wraps the whole pass in one `sessionCleanupBudget` ctx, which would bound the repository pass too — so the daemon's ctx becomes the sum (`sessionCleanupBudget = 20 * time.Minute`) and `AutoRun` derives two sub-contexts from it itself: the session part `sessionApplyBudget = 10 min`, then the repository pass `repoPassBudget = 10 min`, each with its own deadline. A session part that ends early leaves its unused time unused (no borrowing), so neither part can starve the other.
 1. Per repository, under `TryLock` (busy → next pass): marker restore (Task 3 step 4); list linked worktrees under `<main checkout>/.claude/worktrees/`; skip those with a session working in them (W6 rule) or not idle; oldest activity first, at most `sweepBatch = 20`.
 2. Plan them in sweep mode (`Request.Sweep`), apply the removable worktree and branch items by name; for kept items whose reason the prune accepts, prune builds (idle already holds).
 3. Live set unreadable → skip the repository this pass. ctx done → stop; next pass starts over. Log one line per repository that removed or failed something (existing `Logf`).
