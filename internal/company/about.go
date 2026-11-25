@@ -2,6 +2,7 @@ package company
 
 import (
 	"fmt"
+	"strings"
 
 	"watchtower/internal/slackapp"
 	"watchtower/internal/slackconnect"
@@ -14,31 +15,52 @@ func ConnectLink(wire string) string {
 	return fmt.Sprintf("http://127.0.0.1:%d/company/connect?b=%s", slackconnect.Port, wire)
 }
 
-// aboutLeadsWithCode puts the connect code before the link in the Slack
-// About text. Spike S1.2 (is a URL in long_description clickable on About?)
-// is still open; the plan's default is that it is, so the link leads. Flip
-// this one value when S1.2 answers "no".
-const aboutLeadsWithCode = false
-
 // AboutText is the company's text on the Slack app's About page (`company
-// publish`): "Watchtower for <company> — connect: <link>", the connect code
-// for when the link does not open, and where to get Watchtower. When the
-// text and the scope and AI disclosures do not fit Slack's long_description
-// cap, the download line goes first, then the second way in (the code, or
-// the link when the code leads); the leading one is never cut. The caller
-// still checks the result against the cap (slackmanifest.Description).
+// publish`), laid out as sections:
+//
+//	Watchtower for <company>
+//
+//	How to connect
+//	1. Install Watchtower: <release page>
+//	2. Open Watchtower.
+//	3. Click this link: <link>
+//	   If it does not open, paste the code below in Watchtower → Connections → Company code.
+//
+//	Company code
+//	<code>
+//
+// When the text and the scope and AI disclosures do not fit Slack's
+// long_description cap, the install step goes first, then the code (its
+// fallback line and the Company code section); the link is never cut. The
+// steps are renumbered after a cut. When nothing fits, the last, shortest
+// candidate is returned and the caller's own check against the cap
+// (slackmanifest.Description) reports it.
 func AboutText(company, link, code string) string {
-	first := "Watchtower for " + company + " — connect: " + link
-	second := "Connect code: " + code + " — paste it in Watchtower → Connections → Connect with a company code if the link does not open."
-	if aboutLeadsWithCode {
-		first = "Watchtower for " + company + " — connect code: " + code + " — paste it in Watchtower → Connections → Connect with a company code."
-		second = "Or open this link with Watchtower running: " + link
+	header := "Watchtower for " + company + "\n\nHow to connect\n"
+	clickStep := "Click this link: " + link
+	withCode := clickStep + "\n   If it does not open, paste the code below in Watchtower → Connections → Company code."
+	codeSection := "\n\nCompany code\n" + code
+	install := "Install Watchtower: " + slackapp.ReleasePage
+	open := "Open Watchtower."
+
+	candidates := []string{
+		header + numberedSteps(install, open, withCode) + codeSection,
+		header + numberedSteps(open, withCode) + codeSection,
+		header + numberedSteps(open, clickStep),
 	}
-	tail := "Open Watchtower first. No Watchtower yet? Download it from " + slackapp.ReleasePage + "."
-	for _, text := range []string{first + "\n" + second + "\n" + tail, first + "\n" + second} {
+	for _, text := range candidates {
 		if _, err := slackmanifest.Description(text); err == nil {
 			return text
 		}
 	}
-	return first
+	return candidates[len(candidates)-1]
+}
+
+// numberedSteps numbers steps from 1, one per line.
+func numberedSteps(steps ...string) string {
+	lines := make([]string, len(steps))
+	for i, step := range steps {
+		lines[i] = fmt.Sprintf("%d. %s", i+1, step)
+	}
+	return strings.Join(lines, "\n")
 }
