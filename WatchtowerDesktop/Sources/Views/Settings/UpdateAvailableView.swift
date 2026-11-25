@@ -44,6 +44,9 @@ struct UpdateAvailableView: View {
         for window in existing {
             window.collectionBehavior.insert(.moveToActiveSpace)
             if window.isMiniaturized { window.deminiaturize(nil) }
+            // Ordered in on this Space first, so activating brings the app
+            // here rather than to the Space of its last key window.
+            window.makeKeyAndOrderFront(nil)
         }
         activate()
         if existing.isEmpty {

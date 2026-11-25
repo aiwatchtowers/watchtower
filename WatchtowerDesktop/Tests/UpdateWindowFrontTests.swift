@@ -27,7 +27,7 @@ final class UpdateWindowFrontTests: XCTestCase {
         )
 
         XCTAssertTrue(shown)
-        XCTAssertEqual(log, ["deminiaturize moveToActiveSpace", "activate", "front moveToActiveSpace"],
+        XCTAssertEqual(log, ["deminiaturize moveToActiveSpace", "front moveToActiveSpace", "activate", "front moveToActiveSpace"],
                        "the window is on the active Space before the app activates; no new window is opened")
         XCTAssertFalse(other.collectionBehavior.contains(.moveToActiveSpace), "other windows are left alone")
     }
@@ -38,7 +38,8 @@ final class UpdateWindowFrontTests: XCTestCase {
 
         _ = UpdateAvailableView.present(windows: [update], activate: { log.append("activate") }, open: { log.append("open") })
 
-        XCTAssertEqual(log, ["activate", "front moveToActiveSpace"])
+        XCTAssertEqual(log, ["front moveToActiveSpace", "activate", "front moveToActiveSpace"],
+                       "ordered in on the active Space before activation, so activation does not switch Spaces")
     }
 
     func testNoWindowYetIsOpened() {
