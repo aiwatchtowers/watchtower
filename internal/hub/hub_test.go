@@ -879,9 +879,10 @@ func TestStartFailureHasItsOwnReason(t *testing.T) {
 	})
 }
 
-// TestControlSocketDropsAStalledClient: a pairing stream that stops reading
-// is dropped (write deadline or full queue) and never holds back another
-// stream, which gets every pairing event. In a bubble over in-memory pipes:
+// TestControlSocketDropsAStalledClient: an event stream (here a
+// desktop_watch, which hears every pairing step) that stops reading is
+// dropped (write deadline or full queue) and never holds back a pairing
+// stream, which gets every event of its codes. In a bubble over in-memory pipes:
 // a pipe has no buffer, so the stalled stream blocks on its first write and
 // the write deadline is the bubble's.
 func TestControlSocketDropsAStalledClient(t *testing.T) {
@@ -895,17 +896,18 @@ func TestControlSocketDropsAStalledClient(t *testing.T) {
 		r.start(o)
 		r.waitState(StateRunning, "")
 
+		// A desktop_watch stream hears every pairing step of every stream (a
+		// pairing stream hears only its own code's), through the same queue
+		// and drop as a pairing stream.
 		stalled := r.dial()
 		defer func() { _ = stalled.Close() }()
-		if err := stalled.Send(ControlRequest{Op: OpPair}); err != nil {
+		if err := stalled.Send(ControlRequest{Op: OpDesktopWatch}); err != nil {
 			t.Fatal(err)
 		}
 
 		good := r.dial()
 		defer func() { _ = good.Close() }()
 		const n = 120
-		// n qr events, or n+1 when the stalled client's own pair reached
-		// this stream.
 		qrs := make(chan struct{}, n+1)
 		answers := make(chan ControlAnswer, 1)
 		go func() {
@@ -924,8 +926,8 @@ func TestControlSocketDropsAStalledClient(t *testing.T) {
 			}
 		}()
 		// The reading client paces the sends: the next pair goes out only once
-		// it has read the previous qr event; the stalled client gets all n and
-		// must overflow its queue of 8.
+		// it has read the previous qr event; the stalled watch gets a pair
+		// step for each qr and waiting and must overflow its queue of 8.
 		for i := range n {
 			if err := good.Send(ControlRequest{Op: OpPair}); err != nil {
 				t.Fatal(err)

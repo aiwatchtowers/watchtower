@@ -13,6 +13,9 @@ protocol TransportFollowerHost: AnyObject {
     /// Whether this phone may use the relay to reach `link`'s Mac, asked at the switch: `.unknown` when the relay
     /// did not answer.
     func relayUse(for link: LinkRecord) async -> RelayUse
+    /// This phone's iCloud account (its user record name), read now; nil when it cannot be read (signed out,
+    /// restricted, the read failed).
+    func iCloudAccount() async -> String?
     /// The keybox of a `transport_switched`, opened with the hub's session; nil when it does not open.
     func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox?
     /// Merges `keybox`'s epoch keys into the Keychain; false when they could not be stored.
@@ -66,6 +69,10 @@ final class TransportFollower {
     private let now: @MainActor () -> Date
     /// Executes the policy's `requestSwitch` (a lapse's request toward iCloud): set by the hub's `TransportRequester`.
     var onRequestSwitch: (@MainActor (TransportKind, String) async -> Void)?
+    /// Withdraws an open request toward iCloud once a move to iCloud left this phone behind (#2381): its queued row and
+    /// its iCloud copy. Takes the request's control id; returns the record withdrawn once both are gone, nil otherwise.
+    /// Set by the hub's `TransportRequester`.
+    var onRequestLeftBehind: (@MainActor (String) async -> TransportRequestRecord?)?
     /// Called once a decision has ended `hubOnRelayAt` on the row (a later move, or the hub's answer for where it runs):
     /// the session forgets the `hub_on_relay` it read (`HubSession.forgetHubOnRelay`), set by `AppRoot.wire`.
     var onHubOnRelayEnded: (@MainActor () -> Void)?
@@ -129,7 +136,12 @@ final class TransportFollower {
         return await decision.value
     }
 
-    private func decide(_ input: FollowerInput) async -> Bool {
+    /// Whose iCloud account the phone is on, read only for a Relay-made link's move to CloudKit (#2381).
+    private enum Account {
+        case unread, owner, another
+    }
+
+    private func decide(_ input: FollowerInput, account: Account = .unread) async -> Bool {
         guard let host, let asked = host.followerLink(hubID: hubID) else { return false }
         let canUseRelay = await relayUse(input, asked, host)
         // Read again after the relay call: the row may have moved meanwhile.
@@ -141,13 +153,58 @@ final class TransportFollower {
         let state = FollowerState(
             route: link.transport ?? .cloudKit, newestEpoch: epoch, canUseRelay: canUseRelay,
             leftTransport: link.leftTransport, relaySwitchRequested: Self.upgradeRequested(link),
-            hasOtherRoute: link.offersCloudKit, macMovedEpoch: link.macMoved)
-        let (next, commands) = TransportFollowerPolicy.decide(input, state: state, now: now())
+            hasOtherRoute: link.offersCloudKit && account != .another, macMovedEpoch: link.macMoved)
+        let (next, decided) = TransportFollowerPolicy.decide(input, state: state, now: now())
+        var commands = decided
+        if account == .unread, Self.ownerAccountDecides(input, state: state, commands: commands, link: link) {
+            guard let read = await host.iCloudAccount() else {
+                Self.logger.notice("a move to iCloud waits for the phone's iCloud account")
+                return false
+            }
+            // Decided again on the row as it stands after the read.
+            return await decide(input, account: read == link.ownerName ? .owner : .another)
+        }
+        // A move to iCloud ends a move marked before (while the phone was on another account, say), which parks the feed.
+        if link.macMoved != nil, Self.movesToCloudKit(commands), !commands.contains(.clearMoved) { commands.append(.clearMoved) }
         guard !commands.isEmpty else {
             Self.logger.notice("transport input left for a later pass")
             return false
         }
         return await execute(commands, next: next, link: link, input: input, canUseRelay: canUseRelay, host: host)
+    }
+
+    /// A link made over a Relay pairing slot (no `userRecordName`) reaches its Mac's iCloud only on the Mac owner's
+    /// Apple ID (#2381). When the policy would move it to CloudKit only because the hub offers CloudKit, the phone's
+    /// account decides: another account would open its own private database and lose the tower, so the link is left
+    /// behind as one with no other route (a move marked, S59; a lost slot's term); an account that cannot be read
+    /// decides nothing yet, and the input is handed again (the feed's next cycle, the hydrator's next pass, the next
+    /// slot check). Also asked when a switch's keybox did not open: another account is left behind without it, while
+    /// the owner still needs it to follow. A code with no owner (a Mac already on Relay issues one) cannot tell, and
+    /// follows as before.
+    private static func ownerAccountDecides(
+        _ input: FollowerInput, state: FollowerState, commands: [FollowerCommand], link: LinkRecord
+    ) -> Bool {
+        guard link.userRecordName.isEmpty, !link.ownerName.isEmpty, state.hasOtherRoute else { return false }
+        var without = state
+        without.hasOtherRoute = false
+        let alone = TransportFollowerPolicy.decide(input, state: without, now: .distantPast).commands
+        if movesToCloudKit(commands) { return !movesToCloudKit(alone) }
+        // Left behind without the keybox: the move marked now, or already marked (a marker read first), when the
+        // control is only handled.
+        guard commands.isEmpty, !alone.isEmpty else { return false }
+        return alone.allSatisfy { command in
+            switch command {
+            case .withdrawUnechoed, .markMoved, .markHandled: return true
+            default: return false
+            }
+        }
+    }
+
+    private static func movesToCloudKit(_ commands: [FollowerCommand]) -> Bool {
+        commands.contains { command in
+            if case .moveRoute(to: .cloudKit, _, _, _) = command { return true }
+            return false
+        }
     }
 
     /// An upgrade's `transport_switch{relay}` waits for its answer (relay client Phase 3b Task 19): the policy then
@@ -243,7 +300,7 @@ final class TransportFollower {
         }
         guard await moveOutbox(plan, moves: moves) else { return false }
         await keySource(input, plan, host: host)
-        let effects = RequestEffects(plan: plan, moves: moves)
+        let effects = RequestEffects(plan: plan, moves: moves, endedRequest: await requestLeftBehind(plan, link: link))
         if let move = plan.move, !persist(move, next: next, effects: effects, host: host) {
             // Nothing moved: the session goes on on its route, so its outbox writes there again.
             if moves { await outbox.releaseFlushes() }
@@ -413,6 +470,9 @@ final class TransportFollower {
         /// The request is over: the hub moved (so the route is no longer the one it was made on), answered with the
         /// transport it runs on, or stays on the relay without this phone.
         let clearsRequest: Bool
+        /// The request a move to iCloud left behind (S59, #2381) and that was withdrawn: cleared while the row still
+        /// holds it.
+        let endedRequest: TransportRequestRecord?
         /// The hub stays on the relay for another paying phone (`hub_on_relay`, or a move to the relay this phone
         /// cannot follow): only `withoutHub` lists the unechoed actions as Not delivered.
         let setsHubOnRelay: Bool
@@ -424,7 +484,8 @@ final class TransportFollower {
         let moved: UInt32?
         let clearsMoved: Bool
 
-        init(plan: Plan, moves: Bool) {
+        init(plan: Plan, moves: Bool, endedRequest: TransportRequestRecord?) {
+            self.endedRequest = endedRequest
             refused = plan.refused
             moved = plan.moved
             clearsMoved = plan.clearsMoved
@@ -440,13 +501,20 @@ final class TransportFollower {
             if let refused, link.relayRefused == nil { link.relayRefused = RelayRefusedRecord(since: date, cause: refused) }
             if let moved, moved > (link.macMoved ?? 0) { link.macMoved = moved }
             if clearsMoved { link.macMoved = nil }
-            if clearsRequest { link.transportRequest = nil }
+            if clearsRequest || (endedRequest != nil && link.transportRequest == endedRequest) { link.transportRequest = nil }
             if setsHubOnRelay {
                 link.hubOnRelayAt = date
             } else if clearsHubOnRelay {
                 link.hubOnRelayAt = nil
             }
         }
+    }
+
+    /// The open request a move to iCloud left behind (#2381), once withdrawn (queued row, iCloud copy); nil when none
+    /// is open or it could not be withdrawn (it then stays, and ends by the day limit).
+    private func requestLeftBehind(_ plan: Plan, link: LinkRecord) async -> TransportRequestRecord? {
+        guard plan.moved != nil, let request = link.transportRequest else { return nil }
+        return await onRequestLeftBehind?(request.controlID)
     }
 
     /// The request and `hubOnRelayAt` of a decision that moves nothing, on the row as it stands now (the request

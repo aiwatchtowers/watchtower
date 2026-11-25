@@ -482,6 +482,8 @@ final class Bed {
         let looksAtWake: Bool
         /// `stop()`'s wait for a hung look runs out at once; otherwise it never does.
         let stopLookCapRunsOut: Bool
+        /// The phone's iCloud account as the linking model reads it.
+        let access: FakeLinkAccess
         /// The farewell's delivery reads the hub's own send queue, as the live app's does, so a save the relay refuses
         /// keeps it (relay client Phase 5, Task 17); otherwise every farewell reads as sent.
         var farewellLive = false
@@ -511,6 +513,8 @@ final class Bed {
     var stopLookCaps: [Duration] { launch.stopLookWaits.all }
     /// The root's settings (the account center's claim lives here).
     var defaults: UserDefaults { launch.defaults }
+    /// The phone's iCloud account (`_owner-acme`, available, unless a test changes it).
+    var access: FakeLinkAccess { launch.access }
 
     static func make(
         _ test: XCTestCase,
@@ -526,6 +530,7 @@ final class Bed {
         relaySockets: ((any RelaySocketDialer) -> any RelaySocketDialer)? = nil,
         farewellLive: Bool = false,
         secondRelayHub: String? = nil,
+        relayLinkOwner: String? = nil,
         refusing: @escaping @Sendable (HubRoute) -> Bool = { _ in false }
     ) async throws -> Bed {
         let relayClock = ManualRelayClock(now: Date())
@@ -564,9 +569,11 @@ final class Bed {
         let keys = try TestE2E.phoneStore()
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "follower-\(UUID().uuidString)"))
         let registry = try HubRegistry.inMemory()
+        // A link made over a Relay pairing slot (`relayLinkOwner` set) keeps the code's owner ("" when the code names
+        // none) and no account of its own, as `connectRelay` does.
         var link = LinkRecord(
-            hubID: TestE2E.hubID.uuidString, macName: "Work Mac", scope: .private, ownerName: "",
-            userRecordName: "_owner-acme", nonce: "nonce", dataShareURL: nil, relayShareURL: nil,
+            hubID: TestE2E.hubID.uuidString, macName: "Work Mac", scope: .private, ownerName: relayLinkOwner ?? "",
+            userRecordName: relayLinkOwner == nil ? "_owner-acme" : "", nonce: "nonce", dataShareURL: nil, relayShareURL: nil,
             deviceID: TestE2E.deviceID.uuidString, linkedAt: Date(timeIntervalSince1970: 1_700_000_000),
             transport: .cloudKit, relayMacDeviceID: macRelayID ? mac.deviceID : nil, hubTransports: macRelayID ? hubTransports : nil
         )
@@ -596,7 +603,7 @@ final class Bed {
             clock: FakeLinkClock(now: Date()), availability: relayOff ? .off(.notConfigured) : .available(FakeRelayOps.origin))
         var launch = Launch(
             paths: paths, factory: factory, identity: identity, defaults: defaults, relay: rootRelay, keys: keys,
-            looksAtWake: looksAtWake, stopLookCapRunsOut: stopLookCapRunsOut)
+            looksAtWake: looksAtWake, stopLookCapRunsOut: stopLookCapRunsOut, access: FakeLinkAccess(log: LinkEventLog()))
         launch.farewellLive = farewellLive
         let root = try Self.root(launch, registry: registry, relayOps: relayOps, clock: clock)
         Self.tearDown(root, in: test)
@@ -615,7 +622,7 @@ final class Bed {
             env: env, registry: registry, paths: launch.paths, factory: launch.factory, identity: launch.identity,
             defaults: launch.defaults,
             linking: LinkingViewModel(
-                access: FakeLinkAccess(log: LinkEventLog()), store: LinkStore(defaults: launch.defaults),
+                access: launch.access, store: LinkStore(defaults: launch.defaults),
                 identity: launch.identity, keys: launch.keys, clock: FakeLinkClock(now: Date()), relay: relayOps
             ),
             startWork: nil,
@@ -1179,6 +1186,13 @@ actor RecordingCloud: ConditionalTransport {
         self.refusal = refusal
     }
 
+    /// Conditional deletes come back refused (no network, a rate limit), as a live transport reports them.
+    private var deleteRefusal: TransportRefusal?
+
+    func refuseDeletes(_ refusal: TransportRefusal?) {
+        deleteRefusal = refusal
+    }
+
     func save(_ records: [CloudRecord]) async throws {
         try await inner.save(records)
     }
@@ -1199,6 +1213,7 @@ actor RecordingCloud: ConditionalTransport {
 
     func delete(_ items: [ConditionalDelete]) async throws -> [DeleteOutcome] {
         conditionalDeletes += items
+        if let deleteRefusal { return items.map { _ in .refused(deleteRefusal) } }
         return try await inner.delete(items)
     }
 }
@@ -1229,6 +1244,7 @@ private final class FlakyMergeHost: TransportFollowerHost {
 
     func followerLink(hubID: String) -> LinkRecord? { root.followerLink(hubID: hubID) }
     func newestEpoch(hubID: String) -> UInt32? { root.newestEpoch(hubID: hubID) }
+    func iCloudAccount() async -> String? { await root.iCloudAccount() }
     func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox? {
         let keybox = await root.openSwitchKeybox(sealed, hubID: hubID)
         keyboxesOpened += 1

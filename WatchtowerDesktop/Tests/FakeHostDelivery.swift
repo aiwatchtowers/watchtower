@@ -12,9 +12,12 @@ import WatchtowerCore
 /// paste, the pause, the re-check, then the Return only when the line asked
 /// for one, the re-check is fresh, allows it and shows no dialog, and the
 /// prompt held nothing before or during the pause. The owner's keys
-/// (`ownerInput`) leave a draft or empty the prompt as the host's do; their
-/// Return during the pause sent the line. A relaunch (`newRun`) during the
-/// pause is no session.
+/// (`ownerInput`) feed the host's draft model (`DraftModel`, the shared key
+/// table of `draft_cases.json`): typed text holds a line, an erased one no
+/// longer does; their Return during the pause sent the line. A pasted line
+/// restarts the draft's run and sets its `\` (`appPasted`), as the host's
+/// `promptState.pasted` does. A relaunch (`newRun`) during the pause is no
+/// session.
 @MainActor
 final class FakeHostDelivery {
     private(set) var lines: [SessionDeliverLine] = []
@@ -27,6 +30,11 @@ final class FakeHostDelivery {
     var write: ([UInt8]) -> Void = { _ in }
     /// The host's delivery events to the attached pane.
     var event: (SessionHostDeliveryEvent) -> Void = { _ in }
+    /// Holds each `left_typed` event back (`deferredEvents`) until the test
+    /// sends it (`sendDeferredEvents`): the event and the requester's reply
+    /// travel on different connections, so the reply may come first.
+    var defersLeftTyped = false
+    private(set) var deferredEvents: [SessionHostDeliveryEvent] = []
     /// Whether a permission dialog is up (the host's PromptHint): the
     /// owner's keys then change nothing.
     var dialog: () -> Bool = { false }
@@ -35,8 +43,10 @@ final class FakeHostDelivery {
     var forced: DeliverOutcome?
     /// A line of this fake sits in the prompt without its Return.
     var leftTyped = false
-    /// The owner typed since their last submitting Return.
-    private(set) var draft = false
+    /// The owner's draft, by the host's draft model.
+    private(set) var draft = DraftModel()
+    /// The session's agent profile (the draft model's key table).
+    var profile: AgentInputProfile = .claude
     private var run = 0
     /// Lines in their pause; whether another line or the owner's text
     /// reached the prompt meanwhile (the host's `text_during_pause`); whether
@@ -49,47 +59,67 @@ final class FakeHostDelivery {
     func newRun() {
         run += 1
         leftTyped = false
-        draft = false
+        draft = DraftModel()
     }
 
     /// The owner's keys, as the host reads them (`prompt.go`): a submitting
     /// Return empties the prompt (and, in a pause, sent the line); keys
-    /// into a dialog (`dialog`) change nothing. Other keys leave a draft
-    /// only with `tracksDrafts`: a test's fake has no PromptHint, so without
-    /// it a key into a permission prompt would read as a draft.
+    /// into a dialog (`dialog`) change nothing. Other keys feed the draft
+    /// model only with `tracksDrafts`: a test's fake has no PromptHint, so
+    /// without it a key into a permission prompt would read as a draft.
     func ownerInput(_ bytes: [UInt8]) {
         guard !bytes.isEmpty, !dialog() else { return }
-        if TerminalCenter.isSubmit(bytes, backslashBefore: false) {
+        let key: DraftModel.Key = if tracksDrafts {
+            draft.feed(bytes, profile: profile, dialog: false)
+        } else {
+            TerminalCenter.isSubmit(bytes, backslashBefore: false, profile: profile) ? .submit : .ignored
+        }
+        switch key {
+        case .submit:
             leftTyped = false
-            draft = false
+            draft = DraftModel()
             if pausing > 0 { ownerReturnedInPause = true }
-        } else if tracksDrafts {
-            draft = true
-            if pausing > 0 { textDuringPause = true }
+        case .edit:
+            if pausing > 0 {
+                textDuringPause = true
+                // The key reached the line in its pause, unless the owner's Return sent it.
+                if !ownerReturnedInPause { draft.markInexact() }
+            }
+        case .ignored, .neutral:
+            break
         }
     }
 
-    /// Whether the owner's non-submitting keys leave a draft.
+    /// Whether the owner's non-submitting keys feed the draft model.
     var tracksDrafts = false
+
+    /// Runs as each request reaches the host, before anything is typed (an
+    /// owner's key landing meanwhile).
+    var onRequest: (() -> Void)?
 
     func deliver(_ line: SessionDeliverLine, check: @escaping @MainActor () async -> DeliverCheckReply) async -> DeliverOutcome {
         lines.append(line)
+        onRequest?()
         if let forced { return forced }
         guard bracketedPaste() else { return .noPasteMode }
         // A line in its pause holds the prompt too (the host's pending Return).
-        let besideText = leftTyped || draft || pausing > 0
+        let besideText = leftTyped || draft.holdsText || pausing > 0
         if line.holdIfPromptText, besideText { return .held("prompt_has_text") }
         let started = run
+        var endsInBackslash = false
         if case let .paste(bytes) = WorkbenchCommentPrompt.terminalPayload(
             line.text, bracketedPaste: true, keepingLineBreaks: line.keepLineBreaks,
             keepingFormatCharacters: line.keepFormat
         ) {
             write(bytes)
+            endsInBackslash = DraftModel.pasteEndsInBackslash(bytes)
+            draft.appPasted(endingInBackslash: endsInBackslash)
         }
         send(.pasted)
-        guard line.submitIf, !besideText else {
+        // A Return after a `\` would be a line break: such a line stays typed.
+        guard line.submitIf, !besideText, !endsInBackslash else {
             if pausing > 0 { textDuringPause = true }
-            return leaveTyped(besideText: besideText)
+            return leaveTyped(line, besideText: besideText, endsInBackslash: endsInBackslash)
         }
         pausing += 1
         textDuringPause = false
@@ -101,14 +131,15 @@ final class FakeHostDelivery {
         guard run == started else { return .noSession }
         if ownerReturnedInPause {
             // The owner's Return sent it, unless the re-check cannot vouch.
-            guard reply.fresh, !reply.answersDialog else { return leaveTyped(besideText: false) }
+            guard reply.fresh, !reply.answersDialog else { return leaveTyped(line, besideText: false) }
             send(.submitted)
             return .submitted
         }
         guard reply.fresh, reply.canSubmit, !reply.answersDialog, !textDuringPause else {
-            return leaveTyped(besideText: textDuringPause)
+            return leaveTyped(line, besideText: textDuringPause)
         }
         write([0x0D])
+        draft = DraftModel()
         send(.submitted)
         return .submitted
     }
@@ -125,13 +156,26 @@ final class FakeHostDelivery {
         }
     }
 
-    private func leaveTyped(besideText: Bool) -> DeliverOutcome {
+    /// Sends the `left_typed` events held back (`defersLeftTyped`), in order.
+    func sendDeferredEvents() {
+        let held = deferredEvents
+        deferredEvents = []
+        held.forEach(event)
+    }
+
+    /// Leaves `line` typed: its `left_typed` names the request and says
+    /// whether the line ends in `\` (a line with a pause never does).
+    private func leaveTyped(_ line: SessionDeliverLine, besideText: Bool, endsInBackslash: Bool = false) -> DeliverOutcome {
         leftTyped = true
-        send(.leftTyped, besideText: besideText)
+        draft.markInexact()
+        let typedEvent = SessionHostDeliveryEvent(
+            row: 0, run: "", kind: .leftTyped, besideText: besideText, id: line.id, endsInBackslash: endsInBackslash
+        )
+        if defersLeftTyped { deferredEvents.append(typedEvent) } else { event(typedEvent) }
         return .typed
     }
 
-    private func send(_ kind: SessionHostDeliveryEvent.Kind, besideText: Bool = false) {
-        event(SessionHostDeliveryEvent(row: 0, run: "", kind: kind, besideText: besideText))
+    private func send(_ kind: SessionHostDeliveryEvent.Kind) {
+        event(SessionHostDeliveryEvent(row: 0, run: "", kind: kind))
     }
 }

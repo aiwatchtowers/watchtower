@@ -148,7 +148,7 @@ func TestHubContractFixture(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &f))
 	require.NotEmpty(t, f.DeviceGrant)
 	require.NotEmpty(t, f.LinkPayload)
-	require.Len(t, f.DeviceHello, 3)
+	require.Len(t, f.DeviceHello, 5)
 
 	for _, c := range f.DeviceGrant {
 		t.Run("grant/"+c.Name, func(t *testing.T) {
@@ -200,6 +200,13 @@ func TestHubContractFixture(t *testing.T) {
 				require.Equal(t, wire.DeviceHello{
 					Device: h.Device, SigningKey: h.SigningKey, AgreementKey: h.AgreementKey, RelayDeviceID: id,
 				}, h)
+				require.Empty(t, h.Device.RelayIDSig, "an older phone's hello: no proof (#2387)")
+			case "with_proven_relay_id", "proof_of_another_id":
+				// The device data proves the seed's id (#2387); the hub's link
+				// pins which hello it marks (TestHelloFixtureRelayIDRule).
+				requireCoherentRelay(t, c.RelayAuthSeed, h.Device.RelayAuthPub, h.Device.RelayDeviceID)
+				require.NotEmpty(t, h.Device.RelayIDSig)
+				require.Equal(t, c.Name == "with_proven_relay_id", h.RelayDeviceID == h.Device.RelayDeviceID)
 			case "without_relay_id":
 				require.Empty(t, h.RelayDeviceID)
 			case "bad_relay_id":

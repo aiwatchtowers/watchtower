@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 
 	"watchtower/internal/hub"
 	"watchtower/internal/hub/hubtest"
@@ -81,21 +84,25 @@ func (b *syncBuffer) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 
-// String is the output so far, the pty's \r\n folded to \n.
+// String is the output so far (output processing is off on the pty, see
+// startPairTTY: no \r is added).
 func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return strings.ReplaceAll(b.buf.String(), "\r\n", "\n")
+	return b.buf.String()
 }
 
 // ttyPair is one `hub pair` run in-process on a pty (stdin, stdout and
 // stderr the pty's terminal end), with Ctrl-C injected through
 // hubPairInterrupts.
 type ttyPair struct {
-	pty  *os.File
-	out  *syncBuffer
-	sigs chan os.Signal
-	done chan error
+	pty     *os.File
+	tty     *os.File // the CLI's end
+	out     *syncBuffer
+	sigs    chan os.Signal
+	done    chan error
+	started atomic.Int64 // reads of the owner's line started (each past its flush)
+	typed   int64        // reads typeLine typed into
 
 	finished bool // done was read into err
 	err      error
@@ -106,30 +113,52 @@ func startPairTTY(t *testing.T, cols uint16) *ttyPair {
 	ptm, tty, err := pty.Open()
 	require.NoError(t, err)
 	require.NoError(t, pty.Setsize(ptm, &pty.Winsize{Rows: 80, Cols: cols}))
-	r := &ttyPair{pty: ptm, out: &syncBuffer{}, sigs: make(chan os.Signal, 1), done: make(chan error, 1)}
+	// No output processing: under ONLCR the pty turns \n into \r\n, and
+	// with its output queue full sometimes into \r\r\n, which no fold of
+	// the output undoes reliably.
+	tio, err := unix.IoctlGetTermios(int(tty.Fd()), ioctlGetTermios)
+	require.NoError(t, err)
+	tio.Oflag &^= unix.OPOST | unix.ONLCR
+	require.NoError(t, unix.IoctlSetTermios(int(tty.Fd()), ioctlSetTermios, tio))
+	r := &ttyPair{pty: ptm, tty: tty, out: &syncBuffer{}, sigs: make(chan os.Signal, 1), done: make(chan error, 1)}
 	copied := make(chan struct{})
 	go func() { _, _ = io.Copy(r.out, ptm); close(copied) }()
 
 	orig := hubPairInterrupts
 	hubPairInterrupts = func() (<-chan os.Signal, func()) { return r.sigs, func() {} }
+	origReading := hubPairReading
+	hubPairReading = func(open bool) {
+		if open {
+			r.started.Add(1)
+		}
+	}
 	rootCmd.SetIn(tty)
 	rootCmd.SetOut(tty)
 	rootCmd.SetErr(tty)
 	rootCmd.SetArgs([]string{"hub", "pair"})
 	go func() { r.done <- rootCmd.Execute() }()
 	t.Cleanup(func() {
-		// One line ends a prompt still waiting for the owner (a test that
-		// failed early) and releases a reader a prompt that ended without
-		// the owner's line (expiry, Ctrl-C) left blocked on the terminal,
-		// which would keep the pty open past the closes below.
-		_, _ = io.WriteString(ptm, "\n")
+		// Ctrl-C ends a run still going (a test that failed early): the
+		// run's loop always takes it and returns, so the wait cannot hang.
+		// The buffer of one is full only with an interrupt the run takes
+		// anyway. Only once the run is over is a line typed: it releases a
+		// reader a prompt that ended without the owner's line (expiry,
+		// Ctrl-C) left blocked on the terminal, which would keep the pty
+		// open past the closes below; typed earlier, a prompt's flush could
+		// drop it.
+		select {
+		case r.sigs <- os.Interrupt:
+		default:
+		}
 		if !r.finished {
 			<-r.done
 		}
+		_, _ = io.WriteString(ptm, "\n")
 		_ = tty.Close()
 		_ = ptm.Close()
 		<-copied
 		hubPairInterrupts = orig
+		hubPairReading = origReading
 		rootCmd.SetIn(nil)
 		rootCmd.SetOut(nil)
 		rootCmd.SetErr(nil)
@@ -149,7 +178,27 @@ func (r *ttyPair) waitFor(t *testing.T, text string) {
 	waitFor(t, fmt.Sprintf("%q in the output", text), func() bool { return strings.Contains(r.out.String(), text) })
 }
 
+// typeLine types s into the next read of the owner's line once it has
+// started: the CLI drops what was typed before a read starts. Each call
+// answers one read (a read that a reprint made stale included), counted so
+// a read that already returned is not missed.
 func (r *ttyPair) typeLine(t *testing.T, s string) {
+	t.Helper()
+	r.typed++
+	waitFor(t, "an open read", func() bool { return r.started.Load() >= r.typed })
+	r.typeAhead(t, s)
+}
+
+// raw puts the CLI's terminal in raw mode: a read returns whatever was
+// typed, several lines at once included.
+func (r *ttyPair) raw(t *testing.T) {
+	t.Helper()
+	_, err := term.MakeRaw(int(r.tty.Fd()))
+	require.NoError(t, err)
+}
+
+// typeAhead types s at once, whether or not a read is open.
+func (r *ttyPair) typeAhead(t *testing.T, s string) {
 	t.Helper()
 	_, err := io.WriteString(r.pty, s)
 	require.NoError(t, err)
@@ -229,7 +278,7 @@ func fakePairOpening(t *testing.T, exp time.Time, name string) (string, []hub.Co
 	return url, []hub.ControlAnswer{
 		{Event: link.EventQR, URL: url, ExpiresAt: &exp},
 		{Event: link.EventWaiting},
-		{Event: link.EventSAS, DeviceID: fakePairDevice, Name: name, Code: "4827"},
+		{Event: link.EventSAS, DeviceID: fakePairDevice, Name: name, Code: "4827", Request: "r1"},
 	}
 }
 
@@ -379,6 +428,7 @@ func TestHubPairTTYAnythingButYesRefuses(t *testing.T) {
 			assert.Equal(t, hub.OpConfirm, req.Op)
 			assert.Equal(t, fakePairDevice, req.Device)
 			assert.False(t, req.Confirm)
+			assert.Equal(t, "r1", req.Request, "the no is bound to the request shown")
 			code, err := r.wait(t)
 			assert.Equal(t, 1, code)
 			assert.EqualError(t, err, "Not linked: the code was not confirmed.")

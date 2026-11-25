@@ -1979,7 +1979,7 @@ final class AppState {
                 rows: agentStates?.rows ?? [], liveIDs: terminals.liveAgentIDs, startedAt: terminals.startedAt
             )
         }
-        escalator.hasOwnerDraft = { terminals.promptDrafts.contains($0) }
+        escalator.hasOwnerDraft = { terminals.drafts[$0]?.holdsText == true }
         escalator.onFiled = { [weak vm, weak agentStates] projectID in
             agentStates?.refresh()
             Task { await vm?.asks.refreshIfChanged(projectID: projectID) }

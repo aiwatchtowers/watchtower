@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -140,7 +141,29 @@ exec sleep 30
 	data, err := os.ReadFile(filepath.Join(dir, "pid"))
 	require.NoError(t, err)
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-	assert.ErrorIs(t, syscall.Kill(-pid, 0), syscall.ESRCH, "the child's group is gone")
+	assert.ErrorIs(t, groupGone(pid), syscall.ESRCH, "the child's group is gone")
+}
+
+// groupGone probes process group pgid with signal 0 and returns the final
+// answer: ESRCH once the group is gone. QuerySync has already waited for the
+// leader (the group's only member), so the group is empty; but on macOS the
+// kernel can still answer EPERM for a few microseconds after wait4 returned,
+// while it finishes tearing the reaped leader out of the group (observed
+// under load: EPERM, then ESRCH on the very next probe, and no process of
+// the group in ps). That is a kernel state with no event to wait on, so the
+// probe yields the processor and retries a bounded number of times; a
+// member that really stayed behind keeps answering EPERM (or nil) and the
+// final answer still fails the assertion. No clock is involved.
+func groupGone(pgid int) error {
+	err := syscall.Kill(-pgid, 0)
+	for range 100000 {
+		if err != syscall.EPERM {
+			return err
+		}
+		runtime.Gosched()
+		err = syscall.Kill(-pgid, 0)
+	}
+	return err
 }
 
 // passWrap starts the CLI unwrapped (the stub needs no sandbox).

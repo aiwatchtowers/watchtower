@@ -122,6 +122,15 @@ final class CodeFilesCenter {
     /// How many views (FILES, the Files pane) show each root: git runs
     /// only for one on screen, a hidden one is refreshed when it shows again.
     @ObservationIgnored private var showing: [CodeRoot: Int] = [:]
+    /// The Workchat leases holding each root (`startHolding`), one entry per
+    /// lease — so a lease holding a restored root again is counted once,
+    /// beside any other lease on it (final review): its folder is watched and
+    /// indexed as for a shown one, but a hold alone never runs `git status`
+    /// (#2201 T2 review round 3).
+    @ObservationIgnored private var holds: [CodeRoot: Set<ObjectIdentifier>] = [:]
+    /// Roots retired with their bench folder or workbench: shown or held
+    /// again, their buffers and index read the disk afresh (round 4).
+    @ObservationIgnored private(set) var retiredRoots: Set<CodeRoot> = []
     @ObservationIgnored private var gitRunning: Set<CodeRoot> = []
     @ObservationIgnored private var gitPending: Set<CodeRoot> = []
     @ObservationIgnored private var gitLastRun: [CodeRoot: ContinuousClock.Instant] = [:]
@@ -134,6 +143,8 @@ final class CodeFilesCenter {
     @ObservationIgnored private var gitRunsStarted = 0
     /// Off in tests, which feed `handle` themselves.
     @ObservationIgnored private let watchesFolders: Bool
+    /// Starts a folder's FSEvents stream (a test seam: what runs when it starts).
+    @ObservationIgnored private let makeWatcher: (URL, @escaping @MainActor (FolderWatcher.Batch) -> Void) -> FolderWatcher?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     /// The symbol index (on `AppState`), told when a workbench shows and
     /// hides and fed this center's FSEvents batches — one stream per folder.
@@ -156,13 +167,17 @@ final class CodeFilesCenter {
         trash: @escaping (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
         gitRead: @escaping (URL) async -> GitStatusRead = { await GitStatusSnapshot.read(folder: $0) },
         gitMinInterval: Duration = .seconds(1),
-        watchesFolders: Bool = true
+        watchesFolders: Bool = true,
+        makeWatcher: @escaping (URL, @escaping @MainActor (FolderWatcher.Batch) -> Void) -> FolderWatcher? = {
+            FolderWatcher(root: $0, hidden: CodeFileTree.hiddenNames, onChange: $1)
+        }
     ) {
         self.defaults = defaults
         self.trash = trash
         self.gitRead = gitRead
         self.gitMinInterval = gitMinInterval
         self.watchesFolders = watchesFolders
+        self.makeWatcher = makeWatcher
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -192,19 +207,57 @@ final class CodeFilesCenter {
     /// (once per root) and its git status read. Balanced by
     /// `stopShowing` when that view goes.
     func startWatching(_ root: CodeRoot) {
+        guard beginWatch(root) else { return }
+        showing[root, default: 0] += 1
+        refreshGit(root)
+    }
+
+    /// A Workchat holds its session root while on screen: the folder is
+    /// watched and the code index runs and follows it, as for FILES, but
+    /// the chat is no FILES consumer — no `git status` runs for a hold
+    /// alone. Returns whether the hold counted (a worktree gone before it
+    /// showed does not); only a counted hold is balanced by `stopHolding`.
+    /// Counted per `lease`: holding again by the same lease counts it once.
+    @discardableResult
+    func startHolding(_ root: CodeRoot, lease: AnyObject) -> Bool {
+        guard beginWatch(root) else { return false }
+        holds[root, default: []].insert(ObjectIdentifier(lease))
+        return true
+    }
+
+    /// Balances `lease`'s counted `startHolding` (nothing when its hold went
+    /// with a retired root). A worktree root nothing shows or holds any more
+    /// stops being watched.
+    func stopHolding(_ root: CodeRoot, lease: AnyObject) {
+        holds[root]?.remove(ObjectIdentifier(lease))
+        codeIndex?.markHidden(root: root)
+        if holds[root]?.isEmpty ?? true, (showing[root] ?? 0) == 0, !root.isMain { unwatchRoot(root) }
+    }
+
+    /// Whether `lease` holds `root` (a retired root's holds are gone).
+    func isHolding(_ root: CodeRoot, lease: AnyObject) -> Bool {
+        holds[root]?.contains(ObjectIdentifier(lease)) == true
+    }
+
+    /// Whether the root's folder is watched (tests).
+    func isWatching(_ root: CodeRoot) -> Bool {
+        watched.contains(root)
+    }
+
+    /// What a show and a hold share: the root's folder watched (once per
+    /// root) and its index shown. False for a worktree gone before it
+    /// showed (not watched, nor indexed).
+    private func beginWatch(_ root: CodeRoot) -> Bool {
         if root.isMain { dropStaleMainRoots(of: root) }
         sweepRemovedWorktrees(workbenchID: root.workbenchID)
-        // A worktree gone before it showed is not watched (nor indexed).
-        guard root.isMain || CodeRootPolicy.directoryExists(root.folder) else { return }
+        guard root.isMain || CodeRootPolicy.directoryExists(root.folder) else { return false }
         if removedRoots.contains(root) { removedRoots.remove(root) }
-        showing[root, default: 0] += 1
-        codeIndex?.markShown(root: root)
         let isNew = watched.insert(root).inserted
-        // A worktree root is not watched while hidden: what changed
-        // meanwhile is read again now.
-        if isNew, !root.isMain { rescanRoot(root) }
+        // The stream starts first: it reports only what changes after it
+        // starts, so a file written before the reread below is in the reread
+        // and one written after it is in a batch (#2386 final review).
         if watchesFolders, isNew || watchers[root] == nil {
-            let watcher = FolderWatcher(root: root.folder, hidden: CodeFileTree.hiddenNames) { [weak self] batch in
+            let watcher = makeWatcher(root.folder) { [weak self] batch in
                 self?.receive(batch, root: root)
             }
             watchers[root] = watcher
@@ -215,14 +268,24 @@ final class CodeFilesCenter {
                 watchErrors[root] = nil
             }
         }
-        refreshGit(root)
+        // A worktree root is not watched while hidden, nor a folder off the
+        // bench: what changed meanwhile is read again now — the tree, the
+        // buffers and an index kept within its idle time (#2386: a duplicate
+        // base name added meanwhile is seen).
+        let retired = retiredRoots.remove(root) != nil
+        let unwatchedMeanwhile = isNew && (!root.isMain || retired)
+        codeIndex?.markShown(root: root, rescan: unwatchedMeanwhile)
+        if unwatchedMeanwhile { rescanRoot(root) }
+        return true
     }
 
     /// The workbench moved to another folder: the old main root's stream
     /// and tree go (as `CodeIndexCenter.markShown` drops its index). Its
     /// buffers stay — one may still hold an edit to save.
     private func dropStaleMainRoots(of root: CodeRoot) {
-        for stale in watched where stale.isMain && stale.workbenchID == root.workbenchID && stale != root {
+        // Another bench folder's main root is no stale one (#2201 T2 review).
+        for stale in watched where stale.isMain && stale.workbenchID == root.workbenchID && stale.folderID == root.folderID
+            && stale != root {
             unwatchRoot(stale)
             dropRootViews(stale)
         }
@@ -236,7 +299,44 @@ final class CodeFilesCenter {
         watchers[root] = nil
         watchErrors[root] = nil
         showing[root] = nil
+        holds[root] = nil
         gitPending.remove(root)
+    }
+
+    /// The bench's folders were read again (`applyBenchFolders`): a root of a
+    /// folder no longer on its bench — removed, or gone from the rows — stops
+    /// being watched and its tree and marks go, the main root's stream too
+    /// (#2201 T2 review round 3). Its buffers stay for a pending save. The
+    /// home folder's roots (`folderID` nil) are never retired here.
+    func retireRootsOffTheBench(_ all: [Int64: BenchFolders]) {
+        for root in watched {
+            guard let folderID = root.folderID, let bench = all[root.workbenchID] else { continue }
+            if let folder = bench.folder(folderID), !folder.isRemoved { continue }
+            retire(root)
+        }
+        // A folder whose row is gone never comes back on the bench (#2386).
+        retiredRoots = retiredRoots.filter { root in
+            guard let folderID = root.folderID, let bench = all[root.workbenchID] else { return true }
+            return bench.folder(folderID) != nil
+        }
+    }
+
+    /// The workbench was deleted: every root of it stops being watched, its
+    /// main roots' streams too (review round 4). None comes back, so none is
+    /// kept as retired, and its indexes go now (#2386).
+    func retireWorkbenchRoots(workbenchID: Int64) {
+        for root in watched where root.workbenchID == workbenchID {
+            unwatchRoot(root)
+            dropRootViews(root)
+        }
+        retiredRoots = retiredRoots.filter { $0.workbenchID != workbenchID }
+        codeIndex?.releaseWorkbench(workbenchID)
+    }
+
+    private func retire(_ root: CodeRoot) {
+        unwatchRoot(root)
+        dropRootViews(root)
+        retiredRoots.insert(root)
     }
 
     /// The view model is being replaced (`WorkbenchesViewModel.stop`):
@@ -267,14 +367,14 @@ final class CodeFilesCenter {
         }
     }
 
-    /// Balances `startWatching`. A worktree root nothing shows any more
-    /// stops being watched (its tabs, buffers and autosave stay — a save
+    /// Balances `startWatching`. A worktree root nothing shows or holds any
+    /// more stops being watched (its tabs, buffers and autosave stay — a save
     /// still checks the disk first); the main root's stream stays.
     func stopShowing(_ root: CodeRoot) {
         let count = max(0, (showing[root] ?? 0) - 1)
         showing[root] = count
         codeIndex?.markHidden(root: root)
-        if count == 0, !root.isMain { unwatchRoot(root) }
+        if count == 0, holds[root]?.isEmpty ?? true, !root.isMain { unwatchRoot(root) }
     }
 
     /// `startWatching` for as long as the calling task runs — a view's

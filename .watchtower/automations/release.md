@@ -1,5 +1,6 @@
 ---
 name: Release
+summary: Релиз Mac и iPhone через /release, с подагентами
 trigger:
   button: { label: "Release", confirm: true }
 permissions:
@@ -7,17 +8,26 @@ permissions:
 outputs: [report]
 budget: { tokens: 30000, minutes: 60 }
 ---
-Релиз watchtower одной сессией через скил /release: проверка и правка документации, сверка, что всё новое есть в доке и на Home, затем публичный релиз, корп и мобильное приложение.
+Релиз watchtower одной сессией через команду /release: публичный Mac-релиз и iPhone-приложение в TestFlight, без корп-сборки. Проверка и правка документации, сверка, что всё новое есть в доке и на Home. Все вопросы к владельцу задаются сразу в начале, независимые шаги идут параллельно на подагентах.
 
 ```js
 const s = session({
   title: "Release",
-  prompt: "Cut a release of this product with the /release skill: the public release, the corp build and the iPhone app. " +
-    "As part of it, check the documentation and fix what is wrong, and make sure every new feature and change since the last release is documented and shows up on Home. " +
-    "Report the result in your final summary."
+  prompt: "Выпусти релиз этого продукта по команде /release: публичный Mac-релиз и iPhone-приложение в TestFlight. Корп-сборку не делай. " +
+    "В рамках релиза проверь документацию и исправь, что в ней не так, и убедись, что каждая новая функция и каждое изменение с прошлого релиза описаны в документации и видны на Home. " +
+    "Делай это быстрее, чем по шагам подряд: независимую работу раздавай параллельным подагентам, а правки и коммиты делай только в этой сессии. " +
+    "1) Сразу на старте, параллельно: проверка CI на main; подготовка версии и текста релиза (шаги 1–2); проверка документации и Learn-карточек на Home (шаг 3); проверка всего, что нужно для TestFlight (ключи, Signing.xcconfig, токен и схема CloudKit, staging relay); черновики ответов на GitHub issues этого релиза (шаг 10). " +
+    "2) Все вопросы ко мне задай одним разом в начале: версия, текст релиза, какие PR требуют правки гайда, черновики ответов на issues и всё, чего не хватает для TestFlight. Потом не останавливайся с вопросами, если только что-то не сломалось. " +
+    "3) Дальше по порядку, как в /release: правки гайда отдельным коммитом, смена версии, make release-check, make app. " +
+    "4) После успешного make app параллельно: коммит, тег, push и GitHub-релиз с ожиданием Linux-сборки, и make testflight. " +
+    "5) В конце опубликуй подтверждённые ответы на issues. " +
+    "Если какой-то шаг падает, остановись и сообщи, как требует /release. Итог — в финальном резюме: версия, ссылка на релиз, номер сборки TestFlight, что сделано с документацией и issues, предупреждения."
 });
+let body;
+if (s.status === "not_watched") body = "Сессия идёт, но за ней не удаётся следить (" + s.reason + "): итог неизвестен, проверь её сам.";
+else body = s.summary || s.error || "";
 output.report({
   title: s.status === "finished" ? "Release finished" : "Release: " + s.status,
-  body: s.summary || s.error || ""
+  body: body
 });
 ```

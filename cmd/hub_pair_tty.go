@@ -117,16 +117,76 @@ func hubPairTerminal(cmd *cobra.Command) (in, out *os.File, ok bool) {
 
 // pairTTY is one `hub pair` in a terminal: the hub's pairing stream on one
 // side, the owner's keyboard and Ctrl-C on the other.
+//
+// The owner's answer is bound to the request the prompt showed (#2384, the
+// terminal side of #2191): the confirm names that sas's code,
+// moves_to_relay and request (pairConfirmRequest), so the hub refuses it
+// code_changed when the phone's request was replaced meanwhile. A
+// replacement while the prompt is open prints the new code; the line being
+// read across it may answer the earlier code, so it is not sent: the owner
+// is told and asked again. A code_changed from the hub asks about the
+// newer request, or, while its sas is still on its way, waits for it with
+// no prompt open (the code expiring meanwhile ends the pairing expired).
+// What was typed before a read starts is dropped (hubPairFlush, after the
+// prompt is printed), so a line a fresh read returns was typed after that
+// read's prompt; a flush that fails takes no typed answer: the prompt is a
+// no.
 type pairTTY struct {
 	c        *hub.ControlClient
+	inFile   *os.File
 	in       *bufio.Reader
 	out      *os.File
-	expires  time.Time // the code's expiry, from the qr event
-	device   string    // the phone whose code is shown, once a sas came
-	name     string    // that phone's name, made safe
-	asking   bool      // the SAS prompt was just printed
-	answered bool      // the owner's answer was sent to the hub
+	expires  time.Time  // the code's expiry, from the qr event
+	macName  string     // the host's name from the link, made safe ("" when it names none)
+	device   string     // the phone whose code is shown, once a sas came
+	name     string     // that phone's name, made safe
+	shown    hubPairSAS // device's latest request: the open prompt's, or newer while none is open
+	sent     hubPairSAS // the request the last answer sent was bound to
+	answers  <-chan ttyAnswer
+	stale    bool // a prompt was printed while answers was being read
+	asking   bool // a prompt is open: the owner's next line answers it
+	answered bool // the owner's answer was sent to the hub
+	awaiting bool // code_changed came before the newer sas: no prompt until it does
+	expiry   <-chan time.Time
 }
+
+// ttyAnswer is one line of the owner's: yes, or eof when the terminal
+// closed (Ctrl-D) before a line.
+type ttyAnswer struct{ yes, eof bool }
+
+// The lines of a replaced request (#2384).
+const (
+	hubPairReplaced    = "The phone sent a new code."
+	hubPairStaleAnswer = "The code changed, so that answer was not sent. Check the code on your phone and answer again."
+	hubPairCodeChanged = "The phone sent a new code before your answer reached the hub. Nothing was linked."
+	hubPairAwaitingNew = "Waiting for the phone's new code…"
+	hubPairFlushFailed = "Could not clear what was typed before this question, so no answer can be taken."
+)
+
+// hubPairRelayMove is the line over a prompt whose request moves the host
+// to Relay: the Mac sheet's approved copy (MobilePairingModel
+// .relayMoveWarning, ask #1829).
+func hubPairRelayMove(macName string) string {
+	if macName == "" {
+		macName = "this Mac"
+	}
+	return "Linking this iPhone moves " + macName + " to Relay. iPhones linked over iCloud without Relay lose their connection until they subscribe."
+}
+
+// hubPairFlush drops what was typed into the terminal and not read yet; a
+// seam so tests make it fail.
+var hubPairFlush = flushTerminalInput
+
+// hubPairReadDeadline sets the pairing stream's read deadline; a seam so
+// tests see which deadline a step sets without waiting for it.
+var hubPairReadDeadline = func(c *hub.ControlClient, t time.Time) { _ = c.SetReadDeadline(t) }
+
+func (p *pairTTY) deadline(t time.Time) { hubPairReadDeadline(p.c, t) }
+
+// hubPairReading, when set, is told when a read of the owner's line starts
+// (true, after the flush) and returns (false); a seam so tests type only
+// into an open read.
+var hubPairReading func(bool)
 
 type pairNext struct {
 	a   hub.ControlAnswer
@@ -165,9 +225,7 @@ func runHubPairTTY(cmd *cobra.Command) error {
 		}
 	}()
 
-	p := &pairTTY{c: c, in: bufio.NewReader(in), out: out}
-	var answer <-chan bool      // the owner's line, while the prompt is up
-	var expiry <-chan time.Time // the code's expiry, while the prompt is up
+	p := &pairTTY{c: c, inFile: in, in: bufio.NewReader(in), out: out}
 	for {
 		select {
 		case <-interrupts:
@@ -177,17 +235,22 @@ func runHubPairTTY(cmd *cobra.Command) error {
 				// no line that says it did not.
 				return &exitCodeError{code: 130, err: errQuietExit}
 			}
-			if answer != nil {
-				_ = c.Send(hub.ControlRequest{Op: hub.OpConfirm, Device: p.device, Confirm: false})
+			if p.asking {
+				if req, ok, err := pairConfirmRequest(p.device, p.shown, false, pairAnswer{}); ok && err == nil {
+					_ = c.Send(req)
+				}
 			}
 			return &exitCodeError{code: 130, err: errors.New(hubPairCancelled)} //nolint:staticcheck // ST1005: the owner's line (ask #883)
-		case yes := <-answer:
-			answer, expiry = nil, nil
-			if err := p.confirm(yes); err != nil {
+		case ans := <-p.answers:
+			if err := p.answer(ans); err != nil {
 				return err
 			}
-		case <-expiry:
-			answer, expiry = nil, nil
+		case <-p.expiry:
+			p.expiry = nil
+			if p.awaiting {
+				// The newer request never came within the code's life.
+				return &exitCodeError{code: 1, err: errors.New(hubPairRefusal(wire.RefusedExpiredCode))}
+			}
 			p.println()
 			if err := p.confirm(false); err != nil {
 				return err
@@ -210,15 +273,90 @@ func runHubPairTTY(cmd *cobra.Command) error {
 			if end || err != nil {
 				return err
 			}
-			if p.asking {
-				p.asking = false
-				answer = p.readAnswer()
-				if !p.expires.IsZero() {
-					expiry = time.After(time.Until(p.expires))
-				}
-			}
 		}
 	}
+}
+
+// answer takes the owner's line. A line that comes with no prompt open
+// (the code expired first) is dropped. A line read while a newer prompt
+// was printed may answer the earlier code: it is not sent, and the owner is
+// asked again. The terminal closing is a no whichever code was on screen:
+// the owner left, and the no is bound to the request shown last.
+func (p *pairTTY) answer(ans ttyAnswer) error {
+	p.answers = nil
+	stale := p.stale
+	p.stale = false
+	switch {
+	case !p.asking:
+		return nil
+	case stale && !ans.eof:
+		p.println(hubPairStaleAnswer)
+		return p.prompt()
+	}
+	p.expiry = nil
+	return p.confirm(ans.yes)
+}
+
+// prompt asks about p.shown and opens the answer. A read already out
+// (started for an earlier prompt) is marked stale. Otherwise, once the
+// prompt is printed, what was typed before it is dropped and a fresh read
+// starts; a flush that fails takes no typed answer, and the prompt is a no.
+func (p *pairTTY) prompt() error {
+	p.awaiting = false
+	p.deadline(time.Time{}) // before the prompt shows: the owner takes their time
+	if p.shown.MovesToRelay {
+		p.println(hubPairRelayMove(p.macName))
+	}
+	_, _ = fmt.Fprintf(p.out, "Confirm code %s on your phone? [y/N] ", sanitizeForTerminal(p.shown.Code))
+	p.asking, p.answered = true, false
+	if p.expiry == nil && !p.expires.IsZero() {
+		p.expiry = time.After(time.Until(p.expires))
+	}
+	if p.answers != nil {
+		p.stale = true
+		return nil
+	}
+	if err := hubPairFlush(p.inFile); err != nil {
+		p.println("", hubPairFlushFailed)
+		p.expiry = nil
+		return p.confirm(false)
+	}
+	// A tty in canonical mode returns at most one line per read, so the
+	// buffer is empty here; a terminal in raw mode (stty -icanon) can hand
+	// a read several lines, and the ones after the line answered were
+	// typed before this prompt.
+	_, _ = p.in.Discard(p.in.Buffered()) // Discard of Buffered() cannot fail
+	p.answers = p.readAnswer()
+	return nil
+}
+
+// sas takes a sas event of p.device (or the first phone's): the first
+// opens the prompt; a replaced request (another code, moves_to_relay or
+// request) prints the new code while the prompt is open or while waiting
+// for it after a code_changed, and while the answer is with the hub waits
+// for the hub's code_changed. A repeat of the request shown, or a new name
+// alone, is no replacement.
+func (p *pairTTY) sas(a hub.ControlAnswer) error {
+	line := hubPairSAS{Event: a.Event, DeviceID: a.DeviceID, Name: a.Name, Code: a.Code, MovesToRelay: a.MovesToRelay,
+		Request: a.Request}
+	if p.device == "" {
+		p.device, p.name, p.shown = a.DeviceID, sanitizeForTerminal(a.Name), line
+		p.println("", `"`+p.name+`" wants to link.`)
+		return p.prompt()
+	}
+	if line.Code == p.shown.Code && line.MovesToRelay == p.shown.MovesToRelay && line.Request == p.shown.Request {
+		return nil
+	}
+	p.name, p.shown = sanitizeForTerminal(a.Name), line
+	switch {
+	case p.awaiting:
+		p.println(`"` + p.name + `" wants to link.`)
+	case p.asking:
+		p.println("", hubPairReplaced, `"`+p.name+`" wants to link.`)
+	default:
+		return nil
+	}
+	return p.prompt()
 }
 
 // handle prints one line of the stream; end is true once the pairing is
@@ -232,6 +370,28 @@ func (p *pairTTY) handle(a hub.ControlAnswer) (end bool, err error) {
 			// The request expired while the owner looked at the code.
 			return true, &exitCodeError{code: 1, err: errors.New(hubPairRefusal(wire.RefusedExpiredCode))}
 		}
+		if a.Op == hub.OpConfirm && a.Error == hub.ErrClassCodeChanged {
+			// The phone's request was replaced before the answer reached the
+			// hub: the newer request is asked about, or, while its sas is
+			// still on its way, awaited with no prompt open. The
+			// after-confirm deadline is replaced before anything is printed:
+			// a stalled terminal write must not let it lapse.
+			if p.shown == p.sent {
+				p.awaiting, p.answered = true, false
+				if !p.expires.IsZero() {
+					// The wait is the code's, not the answer's.
+					p.deadline(p.expires.Add(hubPairGrace))
+					if p.expiry == nil {
+						p.expiry = time.After(time.Until(p.expires))
+					}
+				}
+				p.println(hubPairCodeChanged, hubPairAwaitingNew)
+				return false, nil
+			}
+			p.deadline(time.Time{}) // the prompt below is open
+			p.println(hubPairCodeChanged, `"`+p.name+`" wants to link.`)
+			return false, p.prompt()
+		}
 		if err := hubAnswerError(a); err != nil {
 			return true, err
 		}
@@ -241,20 +401,16 @@ func (p *pairTTY) handle(a hub.ControlAnswer) (end bool, err error) {
 	case link.EventQR:
 		if a.ExpiresAt != nil {
 			p.expires = *a.ExpiresAt
-			_ = p.c.SetReadDeadline(p.expires.Add(hubPairGrace))
+			p.deadline(p.expires.Add(hubPairGrace))
 		}
 		return false, p.printQR(a.URL)
 	case link.EventWaiting:
 		p.println("", hubPairWaiting)
 	case link.EventSAS:
-		if p.device != "" {
+		if p.device != "" && !strings.EqualFold(a.DeviceID, p.device) {
 			return false, nil // another phone while this one waits for the owner
 		}
-		p.device, p.name = a.DeviceID, sanitizeForTerminal(a.Name)
-		_ = p.c.SetReadDeadline(time.Time{})
-		p.println("", `"`+p.name+`" wants to link.`)
-		_, _ = fmt.Fprintf(p.out, "Confirm code %s on your phone? [y/N] ", sanitizeForTerminal(a.Code))
-		p.asking = true
+		return false, p.sas(a)
 	case link.EventLinked:
 		if p.device == "" || !strings.EqualFold(a.DeviceID, p.device) {
 			return false, nil
@@ -277,6 +433,7 @@ func (p *pairTTY) printQR(url string) error {
 	name := "this host"
 	if lp, err := wire.ParseLinkURL(url); err == nil && lp.MacName != "" {
 		name = sanitizeForTerminal(lp.MacName)
+		p.macName = name
 	}
 	p.println("Link your iPhone to "+name, "")
 	width, err := termqr.Width(url)
@@ -300,33 +457,47 @@ func (p *pairTTY) printQR(url string) error {
 }
 
 // readAnswer reads the owner's line once: y or yes in any case is a yes;
-// anything else, or the terminal closing (EOF), a no.
-func (p *pairTTY) readAnswer() <-chan bool {
-	ch := make(chan bool, 1)
+// anything else a no, and the terminal closing before a line (EOF) eof.
+// Only one read is out at a time (p.answers).
+func (p *pairTTY) readAnswer() <-chan ttyAnswer {
+	ch := make(chan ttyAnswer, 1)
+	reading := hubPairReading // read here: a reader can outlive the run
 	go func() {
+		if reading != nil {
+			reading(true)
+		}
 		line, err := p.in.ReadString('\n')
+		if reading != nil {
+			reading(false)
+		}
 		if err != nil && line == "" {
-			ch <- false
+			ch <- ttyAnswer{eof: true}
 			return
 		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "y", "yes":
-			ch <- true
+			ch <- ttyAnswer{yes: true}
 		default:
-			ch <- false
+			ch <- ttyAnswer{}
 		}
 	}()
 	return ch
 }
 
-// confirm sends the owner's answer; the hub's linked or refused ends the
+// confirm sends the owner's answer, bound to the request shown
+// (pairConfirmRequest: a yes on a hub that names no request is
+// errPairHubTooOld, nothing sent); the hub's linked or refused ends the
 // stream within hubPairAfterConfirm.
 func (p *pairTTY) confirm(yes bool) error {
-	if err := p.c.Send(hub.ControlRequest{Op: hub.OpConfirm, Device: p.device, Confirm: yes}); err != nil {
+	req, _, err := pairConfirmRequest(p.device, p.shown, false, pairAnswer{confirm: yes})
+	if err != nil {
+		return err
+	}
+	p.deadline(time.Now().Add(hubPairAfterConfirm)) // before the send: the hub may answer at once
+	if err := p.c.Send(req); err != nil {
 		return fmt.Errorf("the hub closed the pairing: %w", err)
 	}
-	p.answered = true
-	_ = p.c.SetReadDeadline(time.Now().Add(hubPairAfterConfirm))
+	p.asking, p.answered, p.sent = false, true, p.shown
 	return nil
 }
 

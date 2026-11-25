@@ -10,9 +10,13 @@ import WatchtowerChatText
 /// (Working and Done) and open in place (the path bar leads back).
 struct SessionChatView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.workchatHighlightProbe) private var highlightProbe
     let vm: WorkbenchesViewModel
     let sessionID: Int64
     let projectID: Int64
+    /// The workspace pane this chat is shown in: its own Workchat pane, or Branch review's (`.changes`) for the
+    /// review's Author chat. A path click opens Files beside it (review round 4).
+    let hostPane: WorkspacePane
     /// Each new value puts the keyboard in the composer (Branch review's Ask agent).
     var composerFocus: UUID?
     /// The composer takes the keyboard as it is made.
@@ -37,6 +41,12 @@ struct SessionChatView: View {
     @State private var pagingStalled = false
     /// An artifact card opened from the feed.
     @State private var artifact: ChatArtifactContent?
+    /// The agent's highlighted spans: their paths' lookups and what a click does.
+    @State private var highlights = WorkchatHighlights()
+    /// "Copied …" over the feed for a moment after a hash or command click.
+    @State private var copiedNotice: String?
+    /// The session root's code index, held while the Workchat is on screen.
+    @State private var indexLease = WorkchatIndexLease()
     /// The messages this session sent to another session that still wait (`session_messages`, state `queued`).
     @State private var waitingMessages: [SessionMessage] = []
 
@@ -44,12 +54,14 @@ struct SessionChatView: View {
         vm: WorkbenchesViewModel,
         sessionID: Int64,
         projectID: Int64,
+        hostPane: WorkspacePane? = nil,
         composerFocus: UUID? = nil,
         composerAutoFocus: Bool = false
     ) {
         self.vm = vm
         self.sessionID = sessionID
         self.projectID = projectID
+        self.hostPane = hostPane ?? .sessionChat(sessionID)
         self.composerFocus = composerFocus
         self.composerAutoFocus = composerAutoFocus
         // An autoclosure, run once per pane (the pane is keyed by session):
@@ -123,8 +135,16 @@ struct SessionChatView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if store.runnerMissing {
+        let emptyShown = path.stack.last == nil && Self.showsEmptyState(
+            dialogEmpty: dialogEntries.isEmpty,
+            nothingPending: (workchat?.outgoing.isEmpty ?? true) && permission == nil && openAsks.isEmpty,
+            hasEarlierPage: store.hasEarlierPage)
+        // An empty pane whose read failed shows the centred error block instead of a bar.
+        let errorBlock = emptyShown && (store.error != nil || store.runnerMissing)
+        return VStack(spacing: 0) {
+            if errorBlock {
+                EmptyView()
+            } else if store.runnerMissing {
                 errorBar(WorkbenchesViewModel.cliMissingMessage, retry: nil)
             } else if path.isRoot, let error = store.error {
                 errorBar(error) { Task { await store.poller.refresh() } }
@@ -136,10 +156,7 @@ struct SessionChatView: View {
             }
             if let subagent = path.stack.last {
                 subagentScreen(subagent)
-            } else if Self.showsEmptyState(
-                dialogEmpty: dialogEntries.isEmpty,
-                nothingPending: (workchat?.outgoing.isEmpty ?? true) && permission == nil && openAsks.isEmpty,
-                hasEarlierPage: store.hasEarlierPage) {
+            } else if emptyShown {
                 emptyState
             } else {
                 feed
@@ -193,6 +210,18 @@ struct SessionChatView: View {
         }
         // The feed shows a sent line: its bubble leaves.
         .onChange(of: store.entries) { _, entries in workchat?.reconcile(with: entries) }
+        // The session root's code index runs while the Workchat is on screen: a bare file name resolves in it.
+        .onAppear { indexLease.hold(sessionCodeRoot, in: vm.codeFiles) }
+        .onChange(of: sessionCodeRoot) { _, root in
+            highlights.cancelPendingClick()
+            indexLease.hold(root, in: vm.codeFiles)
+        }
+        // A bench folder restored after it was retired: its root is held (watched and indexed) again.
+        .onChange(of: vm.benchFolders[projectID]) { _, _ in indexLease.hold(sessionCodeRoot, in: vm.codeFiles) }
+        .onDisappear {
+            highlights.cancelPendingClick()
+            indexLease.release()
+        }
         // The main feed is polled only while it is on screen: an open
         // subagent stops it, and back at the root it is read once.
         .task(id: MainFollowKey(state: stateKind, root: path.isRoot)) {
@@ -298,12 +327,15 @@ struct SessionChatView: View {
                 store: store,
                 subagent: subagent,
                 parentToolUseID: path.stack.dropLast().last?.toolUseID,
+                parentConversation: store.subagents.first { $0.subagent?.toolUseID == path.stack.first?.toolUseID }?
+                    .conversation,
                 paneKey: "session-\(sessionID)/\(subagent.toolUseID)",
                 memory: vm.paneMemory,
                 status: { currentSubagentStatus(subagent) },
                 isActive: { isActive },
                 isOnScreen: { vm.isTabOnScreen() },
                 onOpenSubagent: { path.push($0) },
+                highlights: highlightHandlers(),
                 liveLine: { activity, entries in
                     let lastAgent = entries.last { $0.kind == "agent" }
                     return WorkchatActivityPresenter.subagentLine(
@@ -315,6 +347,7 @@ struct SessionChatView: View {
                 followKey: SubagentFollowKey(state: stateKind, onScreen: appState.uiVisibility.isOnScreen)
             )
             .id(path.stack.map(\.toolUseID))
+            .overlay(alignment: .top) { copiedLine }
             Divider()
             Text("Subagents are read-only. Write to the agent in the main Workchat.")
                 .font(.callout)
@@ -398,6 +431,11 @@ struct SessionChatView: View {
         workchatFeed.isWorking = working
         workchatFeed.answerPending = !(workchat?.outgoing.isEmpty ?? true)
         workchatFeed.onOpenArtifact = { artifact = $0 }
+        workchatFeed.transcriptDirs = store.transcriptDirs
+        let handlers = highlightHandlers()
+        highlightProbe?(handlers, highlights)
+        workchatFeed.onHighlight = handlers.open
+        workchatFeed.resolvesPath = handlers.resolvesPath
         var context = workchatFeed.context()
         context.hasEarlier = Self.hasEarlier(windowHasEarlier: window.hasEarlier(total: total),
                                              hasEarlierPage: store.hasEarlierPage,
@@ -420,7 +458,82 @@ struct SessionChatView: View {
             .onAppear { if !messages.isEmpty { store.openTrace?.mark(.paint) } }
             .onChange(of: messages.isEmpty) { _, empty in if !empty { store.openTrace?.mark(.paint) } }
             .embeddedArtifactSheet($artifact)
+            .overlay(alignment: .top) { copiedLine }
     }
+
+    // MARK: - Highlighted spans
+
+    /// The session's code root, where the agent's paths resolve and open.
+    private var sessionCodeRoot: CodeRoot? {
+        vm.summaries.first { $0.id == projectID }.map { vm.codeRoot(sessionID: sessionID, project: $0.project) }
+    }
+
+    /// The span click and path lookup the feed and a subagent's run share. The session's code root is worked out
+    /// once here, per feed build, never per span (review round 1). An answer is asked again once the dialog or the
+    /// root's file list changes (`filesRevision`).
+    private func highlightHandlers() -> WorkchatHighlightHandlers {
+        let root = sessionCodeRoot
+        let index = root.map { appState.codeIndexCenter.index(for: $0) }
+        let epoch = dialogEntries.count
+        let revision = index?.filesRevision ?? 0
+        let indexView = index.map { index in
+            WorkchatHighlights.IndexView(files: { index.files }, revision: { index.filesRevision })
+        } ?? .none
+        let (highlights, vm, hostPane) = (highlights, vm, hostPane)
+        return WorkchatHighlightHandlers(
+            open: { span, messageID in
+                highlights.click(span, messageID: messageID, root: root, index: indexView) { action in
+                    switch action {
+                    case let .showTarget(targetID):
+                        vm.showTargetOnBoard(targetID, projectID: projectID)
+                    case let .copy(text):
+                        WorkchatFeed.copy(text)
+                        copiedNotice = WorkchatHighlights.copiedNotice(text)
+                    case let .openFile(file, root):
+                        // The click is looked up again before the unsent edits are pulled, and after the pull only
+                        // a bare name's index revision is compared (final review F1); an open given up while the
+                        // chat is still here beeps, never a silent no-op.
+                        let bare = !span.text.contains("/")
+                        var lookedUp = 0
+                        let opened = await vm.openSessionFile(file, root: root, pane: hostPane, stillValid: {
+                            let again = await highlights.action(for: span, messageID: messageID, root: root,
+                                                                index: indexView)
+                            lookedUp = indexView.revision()
+                            return again == .openFile(file, root)
+                        }, stillCurrent: { !bare || indexView.revision() == lookedUp })
+                        if !opened, !Task.isCancelled { NSSound.beep() }
+                    case .nothing:
+                        NSSound.beep()
+                    }
+                }
+            },
+            resolvesPath: { path, messageID in
+                guard let root else { return false }
+                return highlights.resolves(path, messageID: messageID, root: root, epoch: epoch, revision: revision,
+                                           indexFiles: index?.files ?? [])
+            }
+        )
+    }
+
+    /// "Copied …" for a moment after a hash or a command is copied: quiet secondary text, no box (D3).
+    @ViewBuilder private var copiedLine: some View {
+        if let copiedNotice {
+            Text(copiedNotice)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.top, Spacing.regular)
+                .transition(.opacity)
+                .task(id: copiedNotice) {
+                    try? await Task.sleep(for: Self.copiedNoticeLifetime)
+                    guard !Task.isCancelled else { return }
+                    self.copiedNotice = nil
+                }
+        }
+    }
+
+    static let copiedNoticeLifetime: Duration = .milliseconds(1500)
 
     /// After the entries: the lines on their way, the permission card and this session's open asks.
     @ViewBuilder private var pending: some View {
@@ -430,6 +543,8 @@ struct SessionChatView: View {
                     line: line,
                     working: working,
                     holdsUntilIdle: workchat.holdsUntilIdle,
+                    holdPreview: workchat.holdPreview(for: line.id),
+                    onSendTogether: { Task { await workchat.sendTogether(line.id) } },
                     onCancel: { workchat.cancel(line.id) },
                     onShowTerminal: showInTerminal
                 )
@@ -578,30 +693,91 @@ struct SessionChatView: View {
         windowHasEarlier || (hasEarlierPage && !pageFailed)
     }
 
+    /// The first read is not back: a spinner, not "No messages yet". Keyed on the feed's
+    /// read, which `clearActivity()` (a turn ending) never resets.
+    static func showsLoading(feedLoaded: Bool, error: String?, runnerMissing: Bool) -> Bool {
+        !feedLoaded && error == nil && !runnerMissing
+    }
+
     @ViewBuilder
     private var emptyState: some View {
-        if store.error == nil && !store.runnerMissing {
-            Text("No messages yet")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        if Self.showsLoading(feedLoaded: store.feedLoaded, error: store.error, runnerMissing: store.runnerMissing) {
+            SessionChatLoadingView()
+        } else if store.error == nil && !store.runnerMissing {
+            SessionChatEmptyView()
                 // The empty state's paint: once the first read is back and found nothing.
                 .task(id: store.liveLoaded) { if store.liveLoaded { store.openTrace?.mark(.paint) } }
+        } else if store.runnerMissing {
+            SessionChatErrorBlock(detail: WorkbenchesViewModel.cliMissingMessage, retry: nil)
         } else {
-            Spacer()
+            SessionChatErrorBlock(detail: store.error) { Task { await store.poller.refresh() } }
         }
     }
 
     private func errorBar(_ message: String, retry: (() -> Void)?) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text(message).font(.callout).lineLimit(3).textSelection(.enabled)
-            Spacer(minLength: 4)
+        SessionChatErrorBar(message: message, retry: retry)
+    }
+}
+
+/// The pane once the first read is back and found nothing.
+struct SessionChatEmptyView: View {
+    var body: some View {
+        Text("No messages yet")
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// The pane's first-read state (#2201 spec §7): a small spinner over the text, centred.
+struct SessionChatLoadingView: View {
+    var body: some View {
+        VStack(spacing: Spacing.regular) {
+            ProgressView().controlSize(.small)
+            Text(SessionChatPresentation.loadingText).font(.caption).foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// The pane's error bar: no fill, a warning glyph, grey text, a quiet Retry.
+struct SessionChatErrorBar: View {
+    let message: String
+    let retry: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: Spacing.regular) {
+            Image(systemName: "exclamationmark.triangle").foregroundStyle(Tone.warning)
+            Text(message).font(.callout).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+            Spacer(minLength: Spacing.small)
             if let retry {
-                Button("Retry", action: retry)
+                Button(SessionChatPresentation.retryTitle, action: retry).buttonStyle(KitQuietButtonStyle(label: .secondary))
             }
         }
-        .padding(8)
-        .background(Color.orange.opacity(0.1))
+        .padding(Spacing.regular)
+    }
+}
+
+/// The pane's first-read failure (#2201 spec §7, mock 12): centred, no fill: a warning glyph and
+/// the title in grey, the store's message below in the quietest grey, a quiet Retry.
+struct SessionChatErrorBlock: View {
+    let detail: String?
+    let retry: (() -> Void)?
+
+    var body: some View {
+        VStack(spacing: Spacing.regular) {
+            HStack(spacing: Spacing.compact) {
+                Image(systemName: "exclamationmark.triangle").foregroundStyle(Tone.warning)
+                Text(SessionChatPresentation.errorTitle).foregroundStyle(.secondary)
+            }
+            if let detail = SessionChatPresentation.errorDetail(detail) {
+                Text(detail).font(.caption).foregroundStyle(.tertiary).lineLimit(3).textSelection(.enabled)
+            }
+            if let retry {
+                Button(SessionChatPresentation.retryTitle, action: retry).buttonStyle(KitQuietButtonStyle(label: .secondary))
+            }
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

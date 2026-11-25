@@ -250,7 +250,7 @@ final class HubContractFixtureTests: XCTestCase {
     /// Owner approval 5: a v4 code decodes on this phone. `v4_desktop` offers both routes, `v4_headless` the relay
     /// only; both carry the relay identity their seed derives.
     func testV4LinksDecodeOnThisPhone() throws {
-        for name in ["v4_desktop", "v4_headless"] {
+        for name in ["v4_desktop", "v4_desktop_relay_switch", "v4_headless"] {
             let fixtureCase = try linkCase(name)
             let url = try XCTUnwrap(URL(string: try XCTUnwrap(fixtureCase["url"] as? String)), name)
             let payload = try LinkPayload.parse(url).get()
@@ -266,6 +266,8 @@ final class HubContractFixtureTests: XCTestCase {
             XCTAssertEqual(payload.relayAuthPub, kit["relay_auth_pub"] as? String, name)
             XCTAssertEqual(payload.dataShare, kit["data_share"] as? String, name)
             XCTAssertEqual(payload.relayShare, kit["relay_share"] as? String, name)
+            // `relay_switch` (#2191, ask #1827): a current Mac sends it; a case without the key reads false.
+            XCTAssertEqual(payload.switchesToRelay, kit["relay_switch"] as? Bool ?? false, name)
             let pair = try relayPair(seed: fixtureCase["relay_auth_seed"])
             XCTAssertEqual(payload.relayAuthPub, pair.pub, name)
             XCTAssertEqual(payload.relayDeviceID, pair.id, name)
@@ -325,12 +327,22 @@ final class HubContractFixtureTests: XCTestCase {
     /// The hello's `relay_device_id` (wire key), read and written as the Go `wire.DeviceHello` does.
     func testHelloCasesRoundTrip() throws {
         let cases = try XCTUnwrap(load()["device_hello"])
-        XCTAssertEqual(cases.map { $0["name"] as? String }, ["with_relay_id", "without_relay_id", "bad_relay_id"])
+        XCTAssertEqual(cases.map { $0["name"] as? String }, [
+            "with_relay_id", "with_proven_relay_id", "proof_of_another_id", "without_relay_id", "bad_relay_id"
+        ])
+        var marked = 0
         for fixtureCase in cases {
             let name = try XCTUnwrap(fixtureCase["name"] as? String)
             let hello = try RelayCoder.makeDecoder().decode(DeviceHello.self, from: bytes(try XCTUnwrap(fixtureCase["json"])))
             let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
             XCTAssertEqual(hello.relayDeviceID, kit["relay_device_id"] as? String, name)
+            // #2387: the hub's verdict on a slot hello of these bytes (`link.slotRelayIDProof`), the Kit's too.
+            if let mark = fixtureCase["slot_relay_link"] as? Bool {
+                let hubID = try XCTUnwrap(UUID(uuidString: try XCTUnwrap(fixtureCase["hub_id"] as? String)), name)
+                XCTAssertEqual(RelayIDProof.verify(hello, hubID: hubID), mark, name)
+                XCTAssertFalse(RelayIDProof.verify(hello, hubID: UUID()), name)
+                marked += mark ? 1 : 0
+            }
             let encoded = try XCTUnwrap(String(bytes: try RelayCoder.makeEncoder().encode(hello), encoding: .utf8), name)
             XCTAssertFalse(encoded.contains("relayDeviceId"), name)
             if let relayCoder = fixtureCase["relay_coder"] as? String {
@@ -339,10 +351,45 @@ final class HubContractFixtureTests: XCTestCase {
                 XCTAssertFalse(encoded.contains("relay_device_id"), name)
             }
         }
+        XCTAssertEqual(marked, 1)
         let withID = try XCTUnwrap(cases.first)
         let decoded = try RelayCoder.makeDecoder().decode(DeviceHello.self, from: bytes(try XCTUnwrap(withID["json"])))
         XCTAssertEqual(decoded.relayDeviceID, try relayPair(seed: withID["relay_auth_seed"]).id)
         XCTAssertTrue(RelayIDs.isValid(try XCTUnwrap(decoded.relayDeviceID)))
+    }
+
+    /// #2387: the slot hello this phone writes (`DeviceHello(device:…relayIDProof:)`) is the fixture's proven case,
+    /// byte for byte, from the same proof; one signed now by a fresh key passes the hub's check for its hub only.
+    func testASlotHelloCarriesItsRelayIDProof() throws {
+        let proven = try XCTUnwrap(load()["device_hello"]?.first { $0["name"] as? String == "with_proven_relay_id" })
+        let older = try XCTUnwrap(load()["device_hello"]?.first { $0["name"] as? String == "with_relay_id" })
+        let hubID = try XCTUnwrap(UUID(uuidString: try XCTUnwrap(proven["hub_id"] as? String)))
+        let fixture = try RelayCoder.makeDecoder().decode(DeviceHello.self, from: bytes(try XCTUnwrap(proven["json"])))
+        let plain = try RelayCoder.makeDecoder().decode(DeviceHello.self, from: bytes(try XCTUnwrap(older["json"])))
+        XCTAssertNil(plain.device.relayIDSig, "an older phone's hello names its id without a proof")
+
+        let rebuilt = DeviceHello(
+            device: plain.device, signingKey: plain.signingKey, agreementKey: plain.agreementKey,
+            relayIDProof: (
+                try XCTUnwrap(fixture.device.relayDeviceID), try XCTUnwrap(fixture.device.relayAuthPub),
+                try XCTUnwrap(fixture.device.relayIDSig)
+            )
+        )
+        XCTAssertEqual(rebuilt, fixture)
+        let encoded = try XCTUnwrap(String(bytes: try RelayCoder.makeEncoder().encode(rebuilt), encoding: .utf8))
+        XCTAssertEqual(encoded, proven["relay_coder"] as? String)
+
+        let key = Curve25519.Signing.PrivateKey()
+        let deviceID = try XCTUnwrap(UUID(uuidString: plain.device.deviceID))
+        let proof = try RelayIDProof.sign(authPub: key.publicKey.rawRepresentation, hubID: hubID, deviceID: deviceID) {
+            try key.signature(for: $0)
+        }
+        let hello = DeviceHello(device: plain.device, signingKey: plain.signingKey, agreementKey: plain.agreementKey, relayIDProof: proof)
+        let read = try RelayCoder.makeDecoder().decode(DeviceHello.self, from: try RelayCoder.makeEncoder().encode(hello))
+        XCTAssertEqual(read.relayDeviceID, RelayIDs.deviceID(publicKey: key.publicKey.rawRepresentation))
+        XCTAssertTrue(RelayIDProof.verify(read, hubID: hubID))
+        XCTAssertFalse(RelayIDProof.verify(read, hubID: UUID()), "bound to the hub")
+        XCTAssertFalse(RelayIDProof.verify(plain, hubID: hubID))
     }
 
     /// The "When work stops" switch in a device record (Open decision 1, option A): written only when true, an absent

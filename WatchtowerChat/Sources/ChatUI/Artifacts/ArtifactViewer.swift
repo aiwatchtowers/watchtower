@@ -76,8 +76,16 @@ public struct ArtifactViewer: View {
             ArtifactTable(rows: CSVTable.parse(artifact.content))
         default:
             ScrollView {
-                ChatAnswerText(text: ChatArtifactActions.markdown(artifact.draft), isFinal: artifact.isComplete, isOwner: false)
-                    .textSelection(.enabled)
+                if let markdown = ChatArtifactActions.markdown(artifact.draft) {
+                    ChatAnswerText(text: markdown, isFinal: artifact.isComplete, isOwner: false)
+                        .textSelection(.enabled)
+                } else {
+                    // Code no Markdown fence can hold: the text as it is, line endings and blank edges kept.
+                    Text(verbatim: artifact.content)
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
     }

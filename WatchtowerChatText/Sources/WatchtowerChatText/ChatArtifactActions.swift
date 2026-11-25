@@ -66,9 +66,26 @@ public struct ChatArtifactActions: Equatable {
         }
     }
 
-    /// The text a Markdown kind renders: code in a fence of its language.
-    public static func markdown(_ draft: ArtifactDraft) -> String {
+    /// The longest fence CommonMark reads: cmark clamps a backtick fence at this many.
+    static let maxFence = 255
+
+    /// A backtick fence longer than any run of backticks in `content` (at least three), so the code cannot close it;
+    /// nil when no fence is long enough (a run of `maxFence` or more).
+    static func codeFence(for content: String) -> String? {
+        var longest = 0
+        var run = 0
+        for character in content {
+            run = character == "`" ? run + 1 : 0
+            longest = max(longest, run)
+        }
+        return longest >= maxFence ? nil : String(repeating: "`", count: max(3, longest + 1))
+    }
+
+    /// The text a Markdown kind renders: code in a fence of its language (`codeFence`); nil for code no fence can
+    /// hold (a run of `maxFence` backticks or more), which the viewer shows as literal text, never parsed as Markdown.
+    public static func markdown(_ draft: ArtifactDraft) -> String? {
         guard draft.kind == "code" else { return draft.content }
-        return "```\(draft.meta["language"] ?? "")\n\(draft.content)\n```"
+        guard let fence = codeFence(for: draft.content) else { return nil }
+        return "\(fence)\(draft.meta["language"] ?? "")\n\(draft.content)\n\(fence)"
     }
 }

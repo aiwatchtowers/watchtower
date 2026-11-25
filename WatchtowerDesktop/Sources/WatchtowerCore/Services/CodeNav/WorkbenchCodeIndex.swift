@@ -61,6 +61,12 @@ package final class WorkbenchCodeIndex {
     package private(set) var rulesError: String?
     /// Every file, in the order the CLI first reported it.
     package private(set) var files: [String] = []
+    /// Bumped once per applied batch (or finished full run) in which a file joined or left `files` — not on a
+    /// symbol-only re-index: a reader that keyed an answer to the file list (the Workchat's base-name lookup) asks
+    /// again on a change.
+    package private(set) var filesRevision = 0
+    /// A file joined or left since the last bump.
+    @ObservationIgnored private var membershipChanged = false
     /// By entry id (stable while the file stays).
     private var entries: [Int: Entry] = [:]
     @ObservationIgnored private var position: [String: Int] = [:]
@@ -118,6 +124,17 @@ package final class WorkbenchCodeIndex {
             }
         }
         removeFiles(gone)
+        compactIfWasteful()
+        bumpRevisionIfChanged()
+    }
+
+    /// The corpus slots held, live and dead (tests).
+    package var corpusSlotCount: Int { corpus.slotCount }
+
+    private func bumpRevisionIfChanged() {
+        guard membershipChanged else { return }
+        membershipChanged = false
+        filesRevision += 1
     }
 
     /// A full run starts: files it does not list are dropped when it finishes.
@@ -130,6 +147,8 @@ package final class WorkbenchCodeIndex {
         guard let seen = seenInFullRun else { return }
         seenInFullRun = nil
         removeFiles(Set(files.filter { !seen.contains($0) }))
+        compactIfWasteful()
+        bumpRevisionIfChanged()
     }
 
     /// A full run that did not finish keeps everything it had.
@@ -162,6 +181,7 @@ package final class WorkbenchCodeIndex {
                 symbols: symbols, symbolSlots: symbolSlots(symbols, entry: id)
             )
             files.append(result.file)
+            membershipChanged = true
         }
         for symbol in symbols { definitions[symbol.name, default: []].insert(result.file) }
     }
@@ -192,6 +212,14 @@ package final class WorkbenchCodeIndex {
             ([entry.nameSlot, entry.pathSlot] + entry.symbolSlots.filter { $0 >= 0 }).forEach { corpus.killSlot($0) }
         }
         files.removeAll { doomed.contains($0) }
+        membershipChanged = true
+    }
+
+    /// Re-indexing a file kills its old symbol slots, and removing one all of
+    /// its slots: once the dead outnumber half the corpus (and 4096) it is
+    /// rebuilt — after every batch, so repeated full runs (a root shown again)
+    /// keep it bounded, not only removals (#2386 fix round 1).
+    private func compactIfWasteful() {
         if corpus.deadCount > max(4096, corpus.slotCount / 2) { rebuildCorpus() }
     }
 

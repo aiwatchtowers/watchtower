@@ -93,9 +93,11 @@ extension WorkbenchesViewModel {
     }
 
     /// The list's folder rows: every workbench's at once, and which live
-    /// folders are gone from disk.
+    /// folders are gone from disk. A folder off its bench stops being
+    /// watched (`CodeFilesCenter.retireRootsOffTheBench`).
     func applyBenchFolders(_ all: [Int64: BenchFolders]) {
         if benchFolders != all { benchFolders = all }
+        codeFiles.retireRootsOffTheBench(all)
         var missing: [Int64: Set<Int64>] = [:]
         for (id, bench) in all {
             let gone = Set(bench.live.filter { !folderExists($0.folderPath) }.map(\.id))

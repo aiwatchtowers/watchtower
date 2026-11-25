@@ -42,7 +42,7 @@ since: 0.24.0
 - The list turns each feature on or off, asking first if others depend on the one turned off. **Keep ML engines in memory** keeps the speech models loaded. **Save** restarts the background sync once. See [Features on and off](../concepts/features-on-and-off.md).
 - **Briefing, Day Plan, Tracks, Ideas and Reaction commands** have no switch here: "These now live in Automations → Built in", and **Open Automations** leads there. See [Built-in automations](../features/automations-built-in.md).
 - Tuning sections appear only while their feature is on:
-  - **Digest**: minimum messages.
+  - **Digest**: **Min Messages**.
 - Notifications:
   - One **Notifications** section holds every switch: **Pause notifications**, **Decision notifications**, **Briefing notifications**, **Workbench notifications**, **Claude plan limits**, **Notify about unknown voices** and **Meeting reminders** with **Remind before meeting** (0–60 minutes; 0 is **Off**).
   - **Pause notifications** (off by default) silences every notice, including the "still recording" alert, which no other switch affects. When you turn it off, new decisions and briefings, plan-limit warnings and reminders for meetings still ahead are sent; an update is announced on a later check; the rest are dropped.

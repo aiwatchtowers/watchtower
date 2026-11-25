@@ -75,6 +75,12 @@ type sessionFeedJSON struct {
 	Subagents      []sessionFeedSubagentItemJSON `json:"subagents"`
 	Skipped        int                           `json:"skipped"`
 	UnknownRecords map[string]int                `json:"unknown_records"`
+	// TranscriptDirs maps a Claude Code conversation to the directory of the
+	// transcript read for it (the folder's or a worktree's project): Open
+	// output reads an agent's output only from that project. Codex
+	// conversations are absent; omitted when there are none and on a
+	// --subagent read.
+	TranscriptDirs map[string]string `json:"transcript_dirs,omitempty"`
 }
 
 type sessionFeedEntryJSON struct {
@@ -89,6 +95,7 @@ type sessionFeedEntryJSON struct {
 	EventType    string                   `json:"event_type,omitempty"`
 	Subagent     *sessionfeed.SubagentRef `json:"subagent,omitempty"`
 	Peer         *sessionfeed.PeerRef     `json:"peer,omitempty"`
+	Task         *sessionfeed.TaskRef     `json:"task,omitempty"`
 }
 
 func toSessionFeedEntries(es []sessionfeed.Entry) []sessionFeedEntryJSON {
@@ -96,7 +103,7 @@ func toSessionFeedEntries(es []sessionfeed.Entry) []sessionFeedEntryJSON {
 	for _, e := range es {
 		out = append(out, sessionFeedEntryJSON{
 			ID: e.ID, Kind: e.Kind, At: e.At, Text: e.Text, Conversation: e.Conversation,
-			AskID: e.AskID, Title: e.Title, Via: e.Via, EventType: e.EventType, Subagent: e.Subagent, Peer: e.Peer,
+			AskID: e.AskID, Title: e.Title, Via: e.Via, EventType: e.EventType, Subagent: e.Subagent, Peer: e.Peer, Task: e.Task,
 		})
 	}
 	return out
@@ -256,10 +263,17 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 		maps.Copy(out.UnknownRecords, res.Unknown)
 		return out, nil
 	}
-	feed, err := sessionfeed.Build(convs, after, lookup)
+	var feed *sessionfeed.Feed
+	var err error
+	if tail > 0 {
+		feed, out.Before, err = sessionfeed.BuildTail(convs, after, lookup, before, tail)
+	} else {
+		feed, err = sessionfeed.Build(convs, after, lookup)
+	}
 	if err != nil {
 		return out, err
 	}
+	out.TranscriptDirs = transcriptDirs(convs)
 	if feed.Cursor.Conv != "" {
 		out.Cursor = feed.Cursor.String()
 	}
@@ -268,17 +282,26 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 		out.Activity = sessionFeedActivity(last.Path, last.Codex, false)
 		setSessionFeedLive(&out, last, false)
 	}
-	entries := feed.Entries
-	if tail > 0 {
-		entries, out.Before, err = sessionfeed.TailPage(entries, before, tail)
-		if err != nil {
-			return out, err
-		}
-	}
-	out.Entries, out.Subagents = toSessionFeedEntries(entries), toSessionFeedSubagentItems(feed.Subagents)
+	out.Entries, out.Subagents = toSessionFeedEntries(feed.Entries), toSessionFeedSubagentItems(feed.Subagents)
 	out.Skipped = feed.Skipped
 	maps.Copy(out.UnknownRecords, feed.Unknown)
 	return out, nil
+}
+
+// transcriptDirs is the directory of each Claude Code conversation's
+// transcript; nil when there is none.
+func transcriptDirs(convs []sessionfeed.Conversation) map[string]string {
+	var dirs map[string]string
+	for _, c := range convs {
+		if c.Codex || c.AgentSessionID == "" || c.Path == "" {
+			continue
+		}
+		if dirs == nil {
+			dirs = map[string]string{}
+		}
+		dirs[c.AgentSessionID] = filepath.Dir(c.Path)
+	}
+	return dirs
 }
 
 // The live hint has its own failure envelope: exit-0 feed reads must not

@@ -30,7 +30,7 @@ a{color:var(--url)}
 <h1>watchtower hub pair — terminal (headless host)</h1>
 <p class="note">Go hub plan 2, Task 6 (spec §10, §12.4). One panel per state; the copy is the plan's, the SAS prompt is the spec's pinned line.
 Hub name <code>raspberrypi</code>, phone name <code>iPhone</code>, device id and URL are placeholders. The terminal look is a dark theme; the code is the same in any terminal.</p>
-<ul><li><a href="#qr">QR code and waiting</a></li><li><a href="#narrow">Narrow window</a></li><li><a href="#sas">SAS prompt</a></li><li><a href="#linked">Linked</a></li><li><a href="#r-used_code">Refused: used_code</a></li><li><a href="#r-expired_code">Refused: expired_code</a></li><li><a href="#r-unknown_code">Refused: unknown_code</a></li><li><a href="#r-not_confirmed">Refused: not_confirmed</a></li><li><a href="#r-too_many_requests">Refused: too_many_requests</a></li><li><a href="#r-unknown">Refused: unknown reason</a></li><li><a href="#cancel">Ctrl-C</a></li><li><a href="#notty">Not a terminal</a></li></ul>
+<ul><li><a href="#qr">QR code and waiting</a></li><li><a href="#narrow">Narrow window</a></li><li><a href="#sas">SAS prompt</a></li><li><a href="#linked">Linked</a></li><li><a href="#r-used_code">Refused: used_code</a></li><li><a href="#r-expired_code">Refused: expired_code</a></li><li><a href="#r-unknown_code">Refused: unknown_code</a></li><li><a href="#r-not_confirmed">Refused: not_confirmed</a></li><li><a href="#r-too_many_requests">Refused: too_many_requests</a></li><li><a href="#r-unknown">Refused: unknown reason</a></li><li><a href="#cancel">Ctrl-C</a></li><li><a href="#notty">Not a terminal</a></li><li><a href="#replaced">A replaced request</a></li><li><a href="#relay-move">A request that moves the host to Relay</a></li><li><a href="#code-changed">code_changed before the new code</a></li><li><a href="#flush-failed">Typed input cannot be cleared</a></li></ul>
 <section id="qr">
 <h2>1. QR code and waiting</h2>
 <p class="note">The window is at least 93 columns wide (the QR's width for a headless hub's link, quiet zone included). The QR is real <code>termqr.Render</code> output of a placeholder URL as long as a v4 headless link. It is drawn with explicit colours, black modules on a white background (quiet zone included), so it reads the same on a light and a dark terminal.</p>
@@ -227,5 +227,55 @@ Waiting for your phone… (Ctrl-C cancels)
 <span class="err">hub pair needs a terminal; scripts use --json --stream</span>
 <span class="ps">owner@raspberrypi:~$</span> </pre></div>
 <div class="exit">exit 2</div>
+</section><section id="replaced">
+<h2>13. A replaced request (#2384)</h2>
+<p class="note">The phone asked again while the prompt was open (a new code, <code>moves_to_relay</code> or request; the four digits may stay the same). The new code is printed. The line read across that reprint may answer the earlier code, so it is not sent, and the prompt is printed again; the next answer names the new request.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+"iPhone" wants to link.
+Confirm code 4827 on your phone? [y/N]
+The phone sent a new code.
+"iPhone" wants to link.
+Confirm code 5163 on your phone? [y/N] <span class="in">y</span>
+The code changed, so that answer was not sent. Check the code on your phone and answer again.
+Confirm code 5163 on your phone? [y/N] <span class="in">y</span>
+Linked "iPhone".
+To let it type into sessions or start them: watchtower hub allow BBBBBBBB-0000-4000-8000-000000000002 typing|start_sessions
+<span class="ps">owner@raspberrypi:~$</span> </pre></div>
+<div class="exit">exit 0</div>
+</section><section id="relay-move">
+<h2>14. A request that moves the host to Relay</h2>
+<p class="note">The <code>sas</code> has <code>moves_to_relay</code>: the Mac sheet's approved warning (ask #1829) is printed over the prompt ("this Mac" when the link names no host).</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+"iPhone" wants to link.
+Linking this iPhone moves raspberrypi to Relay. iPhones linked over iCloud without Relay lose their connection until they subscribe.
+Confirm code 4827 on your phone? [y/N] <span class="cur"> </span></pre></div>
+</section><section id="code-changed">
+<h2>15. code_changed before the new code</h2>
+<p class="note">The phone asked again after the owner's answer was sent: the hub refuses it <code>code_changed</code>. With the new code not here yet the terminal waits for it with no prompt open (the code expiring meanwhile ends as panel 6), then asks about it. With the new code already here it is asked about at once.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+"iPhone" wants to link.
+Confirm code 4827 on your phone? [y/N] <span class="in">y</span>
+The phone sent a new code before your answer reached the hub. Nothing was linked.
+Waiting for the phone's new code…
+"iPhone" wants to link.
+Confirm code 5163 on your phone? [y/N] <span class="cur"> </span></pre></div>
+</section><section id="flush-failed">
+<h2>16. Typed input cannot be cleared</h2>
+<p class="note">What was typed before the prompt is dropped before each answer is read. When that fails no typed answer can be trusted to answer this code: the prompt is a no.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+"iPhone" wants to link.
+Confirm code 4827 on your phone? [y/N]
+Could not clear what was typed before this question, so no answer can be taken.
+<span class="err">Not linked: the code was not confirmed.</span>
+<span class="ps">owner@raspberrypi:~$</span> </pre></div>
+<div class="exit">exit 1</div>
 </section>
 </main></body></html>

@@ -42,6 +42,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"watchtower/internal/askanswer"
@@ -501,6 +502,8 @@ type supervisor struct {
 	pairMu  sync.Mutex
 	pairs   map[*pairListener]bool
 	watches map[*pairListener]bool
+	// pairSeq numbers the pairing streams (pairListener.token).
+	pairSeq atomic.Uint64
 
 	// view is the Desktop's last desktop_view (in memory only).
 	view desktopViewBox

@@ -110,7 +110,7 @@ Commands for a [headless host](../features/headless-host.md): a Linux box or a M
 | `watchtower hub pair` | Link a phone from this terminal: a QR code, a link, then **Confirm code 1234 on your phone? [y/N]**. Scripts use `--json --stream` |
 | `watchtower hub phones` | Linked phones with their device ids and grants |
 | `watchtower hub diagnostics [--days N]` | How long the hub took to apply phone actions and save what they changed, p50 and p90 per step and transport (and per kind of action) over the last 1–7 days (7 by default), and how many alerts were dropped because too many were waiting. Timings only, kept on this machine; works without a running hub |
-| `watchtower hub allow <device> typing\|permissions\|start_sessions` | Let a phone type into sessions, answer permission prompts or start sessions; `--revoke` takes it back |
+| `watchtower hub allow <device> typing\|permissions\|start_sessions\|chat` | Let a phone type into sessions, answer permission prompts, start sessions or use AI chat; `--revoke` takes it back |
 | `watchtower hub unlink <device>` | Unlink a phone |
 | `watchtower hub name <name>` | The name phones show for this host (the hostname by default) |
 | `watchtower hub enable\|disable` | Turn the hub on or off |

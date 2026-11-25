@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"path/filepath"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"watchtower/internal/hub/secure"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/wire"
 )
 
 // watchLines connects to r's control socket, asks for desktop_watch and
@@ -119,6 +121,166 @@ func TestDesktopWatchHearsPairStepsWithoutCodes(t *testing.T) {
 	}
 	if status.Event != EventStatus || status.State != StateRunning {
 		t.Errorf("status event = %+v", status)
+	}
+}
+
+// Two pairing streams at once: each is shown only its own code (the qr and
+// waiting carrying its token) and the events of phones under that code (by
+// nonce); neither sees the other's qr, SAS or refusal, and neither records
+// the other's SAS. An earlier code's refusal reaches only the stream that
+// asked for that code.
+func TestPairStreamsSeeOnlyTheirOwnCodes(t *testing.T) {
+	a := &pairListener{token: "stream-a", queue: make(chan ControlAnswer, 8), codes: map[string]pairShown{}}
+	b := &pairListener{token: "stream-b", queue: make(chan ControlAnswer, 8), codes: map[string]pairShown{}}
+	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{a: true, b: true}, watches: map[*pairListener]bool{}}
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/a", Nonce: "na", Token: "stream-a"})
+	s.broadcast(link.PairEvent{Kind: link.EventWaiting, Nonce: "na", Token: "stream-a"})
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "AAAA", Code: "1234", Nonce: "na"})
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/b", Nonce: "nb", Token: "stream-b"})
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedExpiredCode, Nonce: "na"})
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "BBBB", Code: "5678", Nonce: "nb"})
+	events := func(p *pairListener) []string {
+		var got []string
+		for len(p.queue) > 0 {
+			ev := <-p.queue
+			got = append(got, ev.Event+":"+ev.DeviceID+ev.URL)
+		}
+		return got
+	}
+	if got, want := events(a), []string{"qr:https://example.com/a", "waiting:", "sas:AAAA", "refused:AAAA"}; !slices.Equal(got, want) {
+		t.Fatalf("A's events %v, want %v", got, want)
+	}
+	if got, want := events(b), []string{"qr:https://example.com/b", "sas:BBBB"}; !slices.Equal(got, want) {
+		t.Fatalf("B's events %v, want %v", got, want)
+	}
+	if _, ok := b.code("AAAA"); ok {
+		t.Error("B recorded A's SAS")
+	}
+	if _, ok := a.code("BBBB"); ok {
+		t.Error("A recorded B's SAS")
+	}
+}
+
+// A refusal goes only to the streams that showed that phone's request under
+// the refused code, or whose newest code is the refused one (#2385). A
+// stream that asked again (a relay code after its CloudKit code) is not
+// ended by a hello on its replaced code from a phone it never showed; a
+// phone it did show still reaches it. A refusal no stream matches, or one
+// naming no code, is sent to none.
+func TestARefusalReachesOnlyTheStreamsThatShowedItsRequest(t *testing.T) {
+	events := func(p *pairListener) []string {
+		var got []string
+		for len(p.queue) > 0 {
+			ev := <-p.queue
+			got = append(got, ev.Event+":"+ev.DeviceID)
+		}
+		return got
+	}
+	a := &pairListener{token: "stream-a", queue: make(chan ControlAnswer, 16), codes: map[string]pairShown{}}
+	b := &pairListener{token: "stream-b", queue: make(chan ControlAnswer, 16), codes: map[string]pairShown{}}
+	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{a: true, b: true}, watches: map[*pairListener]bool{}}
+	// A: an iCloud code, a phone's SAS under it, then a relay code.
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/ck", Nonce: "n-ck", Token: "stream-a"})
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "AAAA", Code: "1234", Nonce: "n-ck"})
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/relay", Nonce: "n-relay", Token: "stream-a"})
+	// B: one code, no phone.
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/b", Nonce: "n-b", Token: "stream-b"})
+	events(a)
+	events(b)
+
+	// Another phone scans A's replaced iCloud code: A never showed it.
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "CCCC", Reason: wire.RefusedExpiredCode, Nonce: "n-ck"})
+	if got := events(a); len(got) != 0 {
+		t.Fatalf("the relay-code stream got %v for a phone it never showed", got)
+	}
+	// The phone A showed under that code is refused: A hears it.
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "aaaa", Reason: wire.RefusedUsedCode, Nonce: "n-ck"})
+	if got, want := events(a), []string{"refused:aaaa"}; !slices.Equal(got, want) {
+		t.Fatalf("A's events %v, want %v", got, want)
+	}
+	// The same phone refused under another code than the one A showed it on.
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedExpiredCode, Nonce: "n-b"})
+	if got := events(a); len(got) != 0 {
+		t.Fatalf("A got %v for a refusal under B's code", got)
+	}
+	// A refusal on a stream's newest code, no SAS shown: that stream only.
+	if got, want := events(b), []string{"refused:AAAA"}; !slices.Equal(got, want) {
+		t.Fatalf("B's events %v, want %v", got, want)
+	}
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "DDDD", Reason: wire.RefusedTooManyRequests, Nonce: "n-relay"})
+	if got, want := events(a), []string{"refused:DDDD"}; !slices.Equal(got, want) {
+		t.Fatalf("A's events %v, want %v", got, want)
+	}
+	// No stream's code, or no code at all: sent to none.
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedExpiredCode, Nonce: "n-gone"})
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedExpiredCode})
+	if ga, gb := events(a), events(b); len(ga)+len(gb) != 0 {
+		t.Fatalf("an unmatched refusal reached A %v, B %v", ga, gb)
+	}
+	// A sas no code names reaches every stream and is recorded without a
+	// nonce; a refusal naming no code still matches none of them.
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "EEEE", Code: "9999"})
+	events(a)
+	events(b)
+	s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "EEEE", Reason: wire.RefusedExpiredCode})
+	if ga, gb := events(a), events(b); len(ga)+len(gb) != 0 {
+		t.Fatalf("a refusal naming no code reached A %v, B %v", ga, gb)
+	}
+	if !s.pairs[a] || !s.pairs[b] {
+		t.Fatal("a stream was dropped")
+	}
+}
+
+// A pairing stream whose queue is full is dropped (removed, its connection
+// closed) without holding back another stream of the same code, which gets
+// every event. In a bubble: a send that blocked instead would deadlock it.
+func TestAFullPairingStreamIsDroppedAndTheOtherGetsEveryEvent(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		conn, peer := net.Pipe()
+		t.Cleanup(func() { _ = peer.Close() })
+		full := &pairListener{token: "stream-full", queue: make(chan ControlAnswer, 1), w: &answerWriter{c: conn}}
+		other := &pairListener{token: "stream-other", queue: make(chan ControlAnswer, 4)}
+		full.addNonce("n")
+		other.addNonce("n")
+		s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{full: true, other: true}, watches: map[*pairListener]bool{}}
+		s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "AAAA", Code: "1234", Nonce: "n"})
+		s.broadcast(link.PairEvent{Kind: link.EventRefused, DeviceID: "AAAA", Reason: wire.RefusedNotConfirmed, Nonce: "n"})
+		if s.pairs[full] || !full.w.dropped.Load() {
+			t.Fatalf("the full stream was kept (in pairs %v, dropped %v)", s.pairs[full], full.w.dropped.Load())
+		}
+		if len(other.queue) != 2 {
+			t.Fatalf("the other stream got %d events, want 2", len(other.queue))
+		}
+	})
+}
+
+// A stream keeps the nonces of its newest link.KeptCodes codes only: the
+// center keeps no older code.
+func TestAStreamKeepsItsNewestCodesOnly(t *testing.T) {
+	p := &pairListener{}
+	for i := range link.KeptCodes + 1 {
+		p.addNonce(fmt.Sprintf("n%d", i))
+	}
+	if p.owns("n0") || !p.owns(fmt.Sprintf("n%d", link.KeptCodes)) || len(p.nonces) != link.KeptCodes {
+		t.Fatalf("nonces %v: want the newest %d", p.nonces, link.KeptCodes)
+	}
+}
+
+// A phone's SAS that the link center emits before the pair request that
+// asked for its code has even been answered reaches that stream: the stream
+// holds the code's nonce from its qr, which the center emits first, not
+// from anything done once the issue call returns.
+func TestASASBeforeThePairAnswerReachesItsStream(t *testing.T) {
+	a := &pairListener{token: "stream-a", queue: make(chan ControlAnswer, 4)}
+	s := &supervisor{o: Options{Dir: t.TempDir()}, pairs: map[*pairListener]bool{a: true}, watches: map[*pairListener]bool{}}
+	s.broadcast(link.PairEvent{Kind: link.EventQR, URL: "https://example.com/a", Nonce: "na", Token: "stream-a"})
+	s.broadcast(link.PairEvent{Kind: link.EventSAS, DeviceID: "AAAA", Code: "1234", Nonce: "na"})
+	<-a.queue
+	if sas := <-a.queue; sas.Event != link.EventSAS || sas.DeviceID != "AAAA" {
+		t.Fatalf("got %+v, want the SAS", sas)
+	}
+	if code, ok := a.code("AAAA"); !ok || code.code != "1234" {
+		t.Fatalf("code %+v %v: the confirm would find none", code, ok)
 	}
 }
 
