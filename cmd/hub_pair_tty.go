@@ -177,6 +177,12 @@ func hubPairRelayMove(macName string) string {
 // seam so tests make it fail.
 var hubPairFlush = flushTerminalInput
 
+// hubPairReadDeadline sets the pairing stream's read deadline; a seam so
+// tests see which deadline a step sets without waiting for it.
+var hubPairReadDeadline = func(c *hub.ControlClient, t time.Time) { _ = c.SetReadDeadline(t) }
+
+func (p *pairTTY) deadline(t time.Time) { hubPairReadDeadline(p.c, t) }
+
 // hubPairReading, when set, is told when a read of the owner's line starts
 // (true, after the flush) and returns (false); a seam so tests type only
 // into an open read.
@@ -297,12 +303,12 @@ func (p *pairTTY) answer(ans ttyAnswer) error {
 // starts; a flush that fails takes no typed answer, and the prompt is a no.
 func (p *pairTTY) prompt() error {
 	p.awaiting = false
+	p.deadline(time.Time{}) // before the prompt shows: the owner takes their time
 	if p.shown.MovesToRelay {
 		p.println(hubPairRelayMove(p.macName))
 	}
 	_, _ = fmt.Fprintf(p.out, "Confirm code %s on your phone? [y/N] ", sanitizeForTerminal(p.shown.Code))
 	p.asking, p.answered = true, false
-	_ = p.c.SetReadDeadline(time.Time{})
 	if p.expiry == nil && !p.expires.IsZero() {
 		p.expiry = time.After(time.Until(p.expires))
 	}
@@ -370,11 +376,16 @@ func (p *pairTTY) handle(a hub.ControlAnswer) (end bool, err error) {
 			// still on its way, awaited with no prompt open.
 			p.println(hubPairCodeChanged)
 			if p.shown == p.sent {
-				p.println(hubPairAwaitingNew)
 				p.awaiting, p.answered = true, false
-				if p.expiry == nil && !p.expires.IsZero() {
-					p.expiry = time.After(time.Until(p.expires))
+				if !p.expires.IsZero() {
+					// The wait is the code's, not the answer's: the
+					// after-confirm deadline would end it early.
+					p.deadline(p.expires.Add(hubPairGrace))
+					if p.expiry == nil {
+						p.expiry = time.After(time.Until(p.expires))
+					}
 				}
+				p.println(hubPairAwaitingNew)
 				return false, nil
 			}
 			p.println(`"` + p.name + `" wants to link.`)
@@ -389,7 +400,7 @@ func (p *pairTTY) handle(a hub.ControlAnswer) (end bool, err error) {
 	case link.EventQR:
 		if a.ExpiresAt != nil {
 			p.expires = *a.ExpiresAt
-			_ = p.c.SetReadDeadline(p.expires.Add(hubPairGrace))
+			p.deadline(p.expires.Add(hubPairGrace))
 		}
 		return false, p.printQR(a.URL)
 	case link.EventWaiting:
@@ -481,11 +492,11 @@ func (p *pairTTY) confirm(yes bool) error {
 	if err != nil {
 		return err
 	}
+	p.deadline(time.Now().Add(hubPairAfterConfirm)) // before the send: the hub may answer at once
 	if err := p.c.Send(req); err != nil {
 		return fmt.Errorf("the hub closed the pairing: %w", err)
 	}
 	p.asking, p.answered, p.sent = false, true, p.shown
-	_ = p.c.SetReadDeadline(time.Now().Add(hubPairAfterConfirm))
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -333,9 +334,54 @@ func TestHubPairTTYBufferedLinesAreDropped(t *testing.T) {
 	ttySend(t, r, f, ttySAS("2222", "r2"))
 	ttySend(t, r, f, hub.ControlAnswer{Op: hub.OpConfirm, Error: hub.ErrClassCodeChanged})
 	r.waitFor(t, "Confirm code 2222 on your phone? [y/N] ")
-	r.typeLine(t, "n\n")
+	// The second read starts; had the buffered y not been dropped it
+	// returns at once and its confirm reaches the hub instead of the n.
+	waitFor(t, "the second read or a confirm", func() bool { return r.started.Load() >= 2 || len(f.got) > 0 })
+	ttyNothingSent(t, f)
+	r.typeAhead(t, "n\n")
 	assert.Equal(t, hub.ControlRequest{Op: hub.OpConfirm, Device: fakePairDevice, Request: "r2"}, ttyGot(t, r, f))
 	ttyRefuse(t, r, f)
+}
+
+// #2384 round 2: waiting for the newer request after code_changed is the
+// code's wait, not the answer's: the read deadline moves from the
+// after-confirm bound to the code's expiry plus grace, so a sas that comes
+// after hubPairAfterConfirm but before the code expires is still read.
+func TestHubPairTTYAwaitingUsesTheCodesDeadline(t *testing.T) {
+	var mu sync.Mutex
+	var deadlines []time.Time
+	orig := hubPairReadDeadline
+	hubPairReadDeadline = func(_ *hub.ControlClient, d time.Time) { // recorded, never applied: no clock runs
+		mu.Lock()
+		defer mu.Unlock()
+		deadlines = append(deadlines, d)
+	}
+	t.Cleanup(func() { hubPairReadDeadline = orig })
+	last := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return deadlines[len(deadlines)-1]
+	}
+
+	dir := hubShortDir(t)
+	f := startScriptedPairHub(t, dir)
+	exp := time.Now().Add(10 * time.Minute)
+	r := startPairTTY(t, 120)
+	ttySend(t, r, f, hub.ControlAnswer{Event: link.EventQR, URL: testLinkURL(t), ExpiresAt: &exp})
+	ttySend(t, r, f, ttySAS("1111", "r1"))
+	r.waitFor(t, "Confirm code 1111 on your phone? [y/N] ")
+	r.typeLine(t, "y\n")
+	ttyGot(t, r, f)
+	assert.True(t, !last().IsZero() && last().Before(exp), "after the answer the deadline is the after-confirm bound")
+	ttySend(t, r, f, hub.ControlAnswer{Op: hub.OpConfirm, Error: hub.ErrClassCodeChanged})
+	r.waitFor(t, hubPairAwaitingNew+"\n")
+	assert.True(t, last().Equal(exp.Add(hubPairGrace)), "the wait for the new code runs to the code's expiry plus grace")
+	ttySend(t, r, f, ttySAS("2222", "r2"))
+	r.waitFor(t, "Confirm code 2222 on your phone? [y/N] ")
+	assert.True(t, last().IsZero(), "an open prompt has no read deadline")
+	r.typeLine(t, "y\n")
+	assert.Equal(t, ttyYes("2222", "r2", false), ttyGot(t, r, f))
+	ttyLink(t, r, f)
 }
 
 // #2384: stdin closing is the owner's no whichever code was on screen: it

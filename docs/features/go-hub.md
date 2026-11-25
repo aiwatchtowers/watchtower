@@ -402,8 +402,8 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   (`The code changed, so that answer was not sent. Check the code on your phone and answer again.`) and the prompt is
   printed again. A replacement after the answer was sent waits for the hub's `code_changed` (`The phone sent a new code
   before your answer reached the hub. Nothing was linked.`), which asks about the newer request, or, when its `sas`
-  has not come yet, prints `Waiting for the phone's new code…` with no prompt open until it does (the code expiring
-  meanwhile ends the pairing expired). Each fresh read starts only after its prompt is printed and the terminal's
+  has not come yet, prints `Waiting for the phone's new code…` with no prompt open until it does (its read deadline is the code's
+  expiry plus `hubPairGrace`, not the after-confirm bound; the code expiring meanwhile ends the pairing expired). Each fresh read starts only after its prompt is printed and the terminal's
   unread input (`flushTerminalInput`, TCIFLUSH) and the reader's buffer are dropped, so the line it returns was typed
   after that prompt; a flush that fails prints `Could not clear what was typed before this question, so no answer can
   be taken.` and the prompt is a no. Ctrl-D is a no whichever code was on screen, bound to the request shown last.

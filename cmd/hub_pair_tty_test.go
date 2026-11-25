@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
 	"watchtower/internal/hub"
@@ -83,11 +84,12 @@ func (b *syncBuffer) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 
-// String is the output so far, the pty's \r\n folded to \n.
+// String is the output so far (output processing is off on the pty, see
+// startPairTTY: no \r is added).
 func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return strings.ReplaceAll(b.buf.String(), "\r\n", "\n")
+	return b.buf.String()
 }
 
 // ttyPair is one `hub pair` run in-process on a pty (stdin, stdout and
@@ -99,7 +101,8 @@ type ttyPair struct {
 	out     *syncBuffer
 	sigs    chan os.Signal
 	done    chan error
-	reading atomic.Bool // a read of the owner's line is open (past its flush)
+	started atomic.Int64 // reads of the owner's line started (each past its flush)
+	typed   int64        // reads typeLine typed into
 
 	finished bool // done was read into err
 	err      error
@@ -110,6 +113,13 @@ func startPairTTY(t *testing.T, cols uint16) *ttyPair {
 	ptm, tty, err := pty.Open()
 	require.NoError(t, err)
 	require.NoError(t, pty.Setsize(ptm, &pty.Winsize{Rows: 80, Cols: cols}))
+	// No output processing: under ONLCR the pty turns \n into \r\n, and
+	// with its output queue full sometimes into \r\r\n, which no fold of
+	// the output undoes reliably.
+	tio, err := unix.IoctlGetTermios(int(tty.Fd()), ioctlGetTermios)
+	require.NoError(t, err)
+	tio.Oflag &^= unix.OPOST | unix.ONLCR
+	require.NoError(t, unix.IoctlSetTermios(int(tty.Fd()), ioctlSetTermios, tio))
 	r := &ttyPair{pty: ptm, tty: tty, out: &syncBuffer{}, sigs: make(chan os.Signal, 1), done: make(chan error, 1)}
 	copied := make(chan struct{})
 	go func() { _, _ = io.Copy(r.out, ptm); close(copied) }()
@@ -117,7 +127,11 @@ func startPairTTY(t *testing.T, cols uint16) *ttyPair {
 	orig := hubPairInterrupts
 	hubPairInterrupts = func() (<-chan os.Signal, func()) { return r.sigs, func() {} }
 	origReading := hubPairReading
-	hubPairReading = r.reading.Store
+	hubPairReading = func(open bool) {
+		if open {
+			r.started.Add(1)
+		}
+	}
 	rootCmd.SetIn(tty)
 	rootCmd.SetOut(tty)
 	rootCmd.SetErr(tty)
@@ -127,7 +141,12 @@ func startPairTTY(t *testing.T, cols uint16) *ttyPair {
 		// One line ends a prompt still waiting for the owner (a test that
 		// failed early) and releases a reader a prompt that ended without
 		// the owner's line (expiry, Ctrl-C) left blocked on the terminal,
-		// which would keep the pty open past the closes below.
+		// which would keep the pty open past the closes below. Ctrl-C first
+		// ends a run that never reached a prompt (a test that failed early).
+		select {
+		case r.sigs <- os.Interrupt:
+		default:
+		}
 		_, _ = io.WriteString(ptm, "\n")
 		if !r.finished {
 			<-r.done
@@ -156,11 +175,14 @@ func (r *ttyPair) waitFor(t *testing.T, text string) {
 	waitFor(t, fmt.Sprintf("%q in the output", text), func() bool { return strings.Contains(r.out.String(), text) })
 }
 
-// typeLine types s once a read of the owner's line is open: the CLI drops
-// what was typed before a read starts.
+// typeLine types s into the next read of the owner's line once it has
+// started: the CLI drops what was typed before a read starts. Each call
+// answers one read (a read that a reprint made stale included), counted so
+// a read that already returned is not missed.
 func (r *ttyPair) typeLine(t *testing.T, s string) {
 	t.Helper()
-	waitFor(t, "an open read", r.reading.Load)
+	r.typed++
+	waitFor(t, "an open read", func() bool { return r.started.Load() >= r.typed })
 	r.typeAhead(t, s)
 }
 
