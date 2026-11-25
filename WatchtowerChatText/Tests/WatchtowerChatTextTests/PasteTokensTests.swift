@@ -82,4 +82,15 @@ final class PasteTokensTests: XCTestCase {
         XCTAssertEqual(PasteTokens.heldNumbers(in: text, kinds: kinds), [1], "held, though not a token")
         XCTAssertEqual(PasteTokens.heldNumbers(in: "[Pasted text #1 +2 lines]", kinds: kinds), [])
     }
+
+    /// The ranges the Mac field draws as pills: live tokens only, in order.
+    func testLiveRangesAreTheLiveTokensOnly() {
+        let kinds: [Int: PasteKind] = [1: .image, 2: .text]
+        let text = "a [Image #1] b [Pasted text #2 +4 lines] [Pasted text #1 +3 lines] [Image #3]"
+        XCTAssertEqual(PasteTokens.liveRanges(in: text, kinds: kinds),
+                       [NSRange(location: 2, length: 10), NSRange(location: 15, length: 25)])
+        XCTAssertEqual(PasteTokens.liveRanges(in: "[Image #1] [Image #1]", kinds: kinds), [], "a doubled label")
+        XCTAssertEqual(PasteTokens.liveRanges(in: "", kinds: kinds), [])
+        XCTAssertEqual(PasteTokens.liveRanges(in: "[Image #1]", kinds: [:]), [], "no payload")
+    }
 }

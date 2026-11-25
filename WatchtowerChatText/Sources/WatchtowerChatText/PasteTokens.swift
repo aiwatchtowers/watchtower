@@ -98,6 +98,12 @@ public enum PasteTokens {
         Set(singles(in: text).filter { kinds[$0.number] == $0.kind }.map(\.number))
     }
 
+    /// The ranges of the live tokens in `text` (a label held once, its number with a payload of the label's kind), in
+    /// order: what the Mac field draws as a pill. A typed lookalike and a doubled label are not among them.
+    public static func liveRanges(in text: String, kinds: [Int: PasteKind]) -> [NSRange] {
+        singles(in: text).filter { kinds[$0.number] == $0.kind }.map(\.range)
+    }
+
     /// The numbers in `kinds` whose label, of that kind, is in `text` at all (once or more): a token the field
     /// inserted, whether or not it still counts as one.
     public static func heldNumbers(in text: String, kinds: [Int: PasteKind]) -> Set<Int> {

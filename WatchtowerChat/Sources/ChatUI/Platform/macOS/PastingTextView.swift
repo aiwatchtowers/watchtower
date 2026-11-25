@@ -14,13 +14,22 @@ public final class PastingTextView: NSTextView {
     var onAttachFiles: (([URL]) -> Void)?
     var onLongTextPaste: ((LongPaste) -> Void)?
     /// Keeps a pasted image or long text and returns its token; nil → no inline tokens.
-    var onInlinePaste: ((InlinePaste) async -> String?)?
+    var onInlinePaste: ((InlinePaste) async -> String?)? {
+        didSet { restyleTokens() }
+    }
     /// A token `onInlinePaste` returned that never went in (the field refused the edit or was gone by then): the
     /// owner lets go of its payload, which would otherwise wait for the token forever.
     var onInlinePasteDropped: ((String) -> Void)?
     /// The kind of each token number with a payload (the owner's model): only a token of that number and kind is
     /// deleted whole.
-    var livePastes: [Int: PasteKind] = [:]
+    var livePastes: [Int: PasteKind] = [:] {
+        didSet { if livePastes != oldValue { restyleTokens() } }
+    }
+    /// A live token's tone: the info chip's blue (`Tone.artifact(.info)`), not the accent, which is grey for an
+    /// owner on the Graphite accent and would leave the token as grey-on-grey as plain text.
+    static let tokenTone = NSColor.systemBlue
+    /// The live tokens' ranges as last drawn: each one a pill (`restyleTokens`).
+    private(set) var tokenRanges: [NSRange] = []
     private var inlinePastes: Bool { onInlinePaste != nil }
     /// ⌥↓ goes here first (the Workchat steps list): true = handled; false or nil = the stock key.
     var onOptionArrowDown: (() -> Bool)?
@@ -125,6 +134,71 @@ public final class PastingTextView: NSTextView {
             self.undoManager?.setActionName("Paste")
             self.setSelectedRange(NSRange(location: range.location + (label as NSString).length, length: 0))
         }
+    }
+
+    // MARK: - Token pills
+
+    /// A programmatic set (the binding, a picker edit) restyles too; typing, paste and undo come through `didChangeText`.
+    override public var string: String {
+        didSet { restyleTokens() }
+    }
+
+    override public func didChangeText() {
+        super.didChangeText()
+        restyleTokens()
+    }
+
+    /// Draws each live token (`PasteTokens.liveRanges`) as a pill: a `tokenTone` foreground as a layout manager's
+    /// temporary attribute and a tinted rounded fill in `draw(_:)`. Display only: the text storage, hence the
+    /// draft string, the binding and the undo stack, never carries either.
+    func restyleTokens() {
+        let ranges = inlinePastes ? PasteTokens.liveRanges(in: string, kinds: livePastes) : []
+        guard ranges != tokenRanges || !ranges.isEmpty else { return }
+        tokenRanges = ranges
+        guard let layoutManager else { return }
+        let whole = NSRange(location: 0, length: (string as NSString).length)
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: whole)
+        for range in ranges where NSMaxRange(range) <= whole.length {
+            layoutManager.addTemporaryAttribute(.foregroundColor, value: Self.tokenTone, forCharacterRange: range)
+        }
+        needsDisplay = true
+    }
+
+    /// The pills' rects in the view's coordinates: one per line a token spans.
+    func tokenPillRects() -> [NSRect] {
+        guard let layoutManager, let textContainer, !tokenRanges.isEmpty else { return [] }
+        let origin = textContainerOrigin
+        let length = (string as NSString).length
+        var rects: [NSRect] = []
+        for range in tokenRanges where NSMaxRange(range) <= length {
+            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            layoutManager.enumerateEnclosingRects(
+                forGlyphRange: glyphs,
+                withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
+                in: textContainer
+            ) { rect, _ in
+                rects.append(rect.offsetBy(dx: origin.x, dy: origin.y).insetBy(dx: -Spacing.tight / 2, dy: 0))
+            }
+        }
+        return rects
+    }
+
+    override public func draw(_ dirtyRect: NSRect) {
+        let rects = tokenPillRects().filter { $0.intersects(dirtyRect) }
+        if !rects.isEmpty {
+            let fill = Self.tokenTone.withAlphaComponent(ChipTint.fillOpacity)
+            let stroke = Self.tokenTone.withAlphaComponent(ChipTint.strokeOpacity)
+            for rect in rects {
+                let inset = ChipTint.strokeWidth / 2
+                let path = NSBezierPath(roundedRect: rect.insetBy(dx: inset, dy: inset), xRadius: Radius.mark, yRadius: Radius.mark)
+                fill.setFill()
+                path.fill()
+                stroke.setStroke()
+                path.lineWidth = ChipTint.strokeWidth
+                path.stroke()
+            }
+        }
+        super.draw(dirtyRect)
     }
 
     /// One Backspace right after a live paste token removes the whole token (#2065 §6); anything else is the
