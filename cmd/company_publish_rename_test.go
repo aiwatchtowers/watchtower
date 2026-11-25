@@ -60,7 +60,7 @@ func TestPublish_RenameChangesOnlyTheDisplayName(t *testing.T) {
 	b, err := companybundle.Parse(res.Code, companybundle.OriginCode)
 	require.NoError(t, err)
 	assert.Equal(t, "Acme Corp", b.Company, "the link carries the new name")
-	assert.Contains(t, h.api.lastLong, "Watchtower for Acme Corp — connect: "+res.Link)
+	assert.Contains(t, h.api.lastLong, "Watchtower for Acme Corp\n\nHow to connect\n1. Open Watchtower.\n2. Click this link: "+res.Link)
 	assertOnlyAcme(t, h, id, "Acme Corp")
 	assert.Equal(t, company.DraftNone, h.draftState(t), "the published draft is deleted")
 	assert.Empty(t, res.DraftError)

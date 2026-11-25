@@ -198,8 +198,8 @@ func TestPublish_WritesLinkToDescription(t *testing.T) {
 
 	assert.Equal(t, 1, h.api.updates)
 	assert.Zero(t, h.api.creates)
-	assert.Contains(t, h.api.lastLong, "Watchtower for Acme — connect: "+res.Link)
-	assert.Contains(t, h.api.lastLong, "Connect code: "+res.Code)
+	assert.Contains(t, h.api.lastLong, "Watchtower for Acme\n\nHow to connect\n1. Open Watchtower.\n2. Click this link: "+res.Link)
+	assert.Contains(t, h.api.lastLong, "Company code\n"+res.Code)
 	assert.Equal(t, "Acme Watchtower", h.api.manifest["display_information"].(map[string]any)["name"], "only the About text changes")
 	assert.Equal(t, []slackapp.Step{
 		{Name: "pack", State: "running"}, {Name: "pack", State: "done"},
