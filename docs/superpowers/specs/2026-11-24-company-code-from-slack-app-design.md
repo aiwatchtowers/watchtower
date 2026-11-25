@@ -33,6 +33,8 @@ A colleague who installs Watchtower at a company that already ran **Set up for m
 | D7 | Only `<sub>.slack.com` addresses; an Enterprise Grid org address (`<sub>.enterprise.slack.com`) is refused with its own caption pointing to the workspace address | Agent's call — `/apps/manage` on a Grid org address is untested (see Failure paths) | Org addresses are accepted and `https://<sub>.enterprise.slack.com/apps/manage` opens as is | #902 |
 | D8 | The link stays first in About only if a test publish shows it clickable on the Marketplace page; otherwise the code leads | Agent's call; the spikes did not click the link | The code leads from the start | #902 |
 | D9 | The block's heading: "No code? Ask a colleague who uses Watchtower, or find Watchtower in your company's Slack:" | Owner, ask #894 | Heading "No code? Find it in Slack" | #894 |
+| D10 | Ask #895 ("do not add the Installed apps fallback; keep the colleague's and the admin's link") and #894 ("…or open <your-slack>.slack.com/apps/manage and find Watchtower") conflict; this spec follows #894: it names `apps/manage` explicitly, prescribes the hint wording and drops the invite button that #895 relied on. The admin's link at Publish stays (approach 4) | Owner, asks #894, #895 (both 2026-11-25); agent's reading, flagged in chat | The `apps/manage` block is removed: only the heading's "Ask a colleague who uses Watchtower" and the admin's link remain | #917 |
+| D11 | The app's Marketplace page link at the end of setup is not part of this change | Owner allowed it (#894, "можно"), did not require it | Publish also shows `https://<workspace>.slack.com/marketplace/<APP_ID>-watchtower` as a shareable link, separate target | #917 |
 
 ## Goals
 
@@ -42,7 +44,8 @@ A colleague who installs Watchtower at a company that already ran **Set up for m
 ## Non-goals / anti-goals
 
 - No bot, no DM push, no Home tab, no slash command, no external redirect, no backend, no DNS (finding 2; asks #885, #886 dismissed).
-- No "Invite a colleague" button in this change.
+- No "Invite a colleague" button (D6).
+- No Marketplace page link at the end of setup in this change (D11).
 - Watchtower never reads the Slack desktop app's files to guess the workspace (TCC risk on the App Store build's container).
 
 ## Approaches
@@ -82,7 +85,7 @@ invalid address:
 - **Slack address** field (`.kit`), placeholder `acme.slack.com`. Accepted: `acme`, `acme.slack.com`, `https://acme.slack.com/…` (any path, trailing slash), any case, surrounding spaces, `http://` input. Normalised to `<sub>.slack.com`, `<sub>` = one label of `[a-z0-9-]` (D7). Empty → button disabled, no caption. `<sub>.enterprise.slack.com` → caption "That is your organization's address. Enter your workspace's, like acme.slack.com — it is in Slack's workspace menu.", button disabled. Anything else → caption "Enter your Slack address, like acme.slack.com", button disabled.
 - **Open Slack apps** (`.kitSecondary`) opens `https://<sub>.slack.com/apps/manage` through `@Environment(\.openURL)` (the pattern `CompanyAccountGroups` uses). Watchtower fetches nothing.
 - The steps and the fallback line are static text; the fallback covers not signed in, the app missing from the list, and no access (ask the admin). The address is not stored (D5).
-- Pure functions in `WatchtowerCore`: `SlackAddress.normalize(_:) -> String?` and `SlackAddress.appsURL(_:) -> URL`. Tests: each accepted form, uppercase, trailing slash and path, inner space (refused), empty, `slack.com` alone, `acme.enterprise.slack.com` (refused), a foreign host, `http://` input → `https://` URL.
+- Pure functions in `WatchtowerCore`: `SlackAddress.parse(_:) -> SlackAddress` (`.empty`, `.workspace(<sub>)`, `.organization`, `.invalid` — one entry point so the Grid caption is decidable) and `SlackAddress.appsURL(workspace:) -> URL`. Tests: each accepted form, uppercase, trailing slash and path, inner space (refused), empty, `slack.com` alone, `acme.enterprise.slack.com` (refused), a foreign host, `http://` input → `https://` URL.
 - Design shots: three states registered in `DesignShotCatalog` — empty address, valid address, invalid address with the caption.
 - Strings live in `CompanyConnectionsPresentation` (UI strings in English).
 - The block appears wherever the code field is shown (the Companies zone; the field opened from the **Connect…** menu and Jira's empty state reuse `codeField`).
