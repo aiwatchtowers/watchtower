@@ -12,19 +12,22 @@ import WatchtowerCore
 @MainActor
 enum WorkchatPastedImageShotFixtures {
     static let shots: [DesignShot] = [
-        DesignShot(name: "workchat-pasted-image", prepare: { try await view() }, size: NSSize(width: 720, height: 640))
+        DesignShot(name: "workchat-pasted-image", prepare: { try await view() }, size: NSSize(width: 720, height: 640)),
+        // A pane narrower than a thumbnail: the image shrinks to the bubble's width, nothing runs off the edge.
+        DesignShot(name: "workchat-pasted-image-narrow", prepare: { try await view() },
+                   size: NSSize(width: 280, height: 760))
     ]
 
-    private static var folder: URL?
+    private static var folders: [URL] = []
 
     static func cleanUp() {
-        if let folder { try? FileManager.default.removeItem(at: folder) }
-        folder = nil
+        for folder in folders { try? FileManager.default.removeItem(at: folder) }
+        folders = []
     }
 
     private static func view() async throws -> AnyView {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("wt-shot-\(UUID().uuidString)")
-        folder = root
+        folders.append(root)
         let attachments = root.appendingPathComponent("acme/workchat-attachments")
         let pastes = attachments.appendingPathComponent("7")
         try FileManager.default.createDirectory(at: pastes, withIntermediateDirectories: true)

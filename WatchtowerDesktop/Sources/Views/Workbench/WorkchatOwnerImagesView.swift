@@ -73,8 +73,8 @@ struct WorkchatImageThumbnail: View {
         _load = State(initialValue: WorkchatThumbnailCache.cached(image))
     }
 
-    /// The size a thumbnail is drawn at: its pixels at the screen's scale (a small screenshot at its own size, never
-    /// enlarged), shrunk to fit `Thumbnail.maxSide`. The decode is at most twice that in pixels, so a Retina screen
+    /// The largest size a thumbnail is drawn at: its pixels at the screen's scale (a small screenshot at its own size,
+    /// never enlarged), shrunk to fit `Thumbnail.maxSide`; a pane narrower than that shrinks it further to its width. The decode is at most twice that in pixels, so a Retina screen
     /// draws it pixel for pixel.
     static func drawnSize(pixels: CGSize, scale: CGFloat) -> CGSize {
         let scale = max(scale, 1)
@@ -95,10 +95,12 @@ struct WorkchatImageThumbnail: View {
                 let size = Self.drawnSize(pixels: CGSize(width: cgImage.width, height: cgImage.height),
                                           scale: displayScale)
                 Button { open() } label: {
+                    // `size` is an upper bound: a narrow pane shrinks the image to its width, aspect kept.
                     Image(decorative: cgImage, scale: 1)
                         .resizable()
-                        .frame(width: size.width, height: size.height)
+                        .scaledToFit()
                         .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
+                        .frame(maxWidth: size.width, maxHeight: size.height)
                 }
                 .buttonStyle(.plain)
                 .help("Open \(image.name)")
