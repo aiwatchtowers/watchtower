@@ -140,8 +140,9 @@ final class AudioFileIntegrityTests: XCTestCase {
     }
 
     /// A zero-byte or garbage `.aac` has no readable packet: the header read
-    /// fails, the recorder's check fails the stop, and the decode throws —
-    /// none of them passes it for silence.
+    /// fails and the recorder's check fails a stop that wrote frames. The
+    /// decode throws on garbage; a zero-byte file is what a recording with
+    /// no frames leaves (`testDecoderReturnsNoSamplesForAnEmptyADTSFile`).
     func testEmptyOrGarbageADTSFileFailsHonestly() throws {
         for (name, bytes) in [("empty", Data()), ("garbage", Data("not audio, not adts".utf8))] {
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID().uuidString).aac")
@@ -155,9 +156,23 @@ final class AudioFileIntegrityTests: XCTestCase {
                     return XCTFail("\(name): expected .notFinalized, got \($0)")
                 }
             }
-            XCTAssertThrowsError(try AudioFileDecoder.decodePCM16k(url: url), "\(name) must not decode to silence")
             XCTAssertThrowsError(try AudioFileDecoder.rejectUnfinalized(length: 0, at: url), name)
         }
+        let garbage = FileManager.default.temporaryDirectory.appendingPathComponent("garbage-\(UUID().uuidString).aac")
+        try Data("not audio, not adts".utf8).write(to: garbage)
+        cleanup.append(garbage)
+        XCTAssertThrowsError(try AudioFileDecoder.decodePCM16k(url: garbage), "garbage must not decode to silence")
+    }
+
+    /// Zero frames written leave a 0-byte `.aac`; like the empty CAF it
+    /// replaces, it decodes to no samples (the job then reports no speech)
+    /// rather than an open error.
+    func testDecoderReturnsNoSamplesForAnEmptyADTSFile() throws {
+        let url = try AACFixture.writeEmpty(fileExtension: "aac")
+        cleanup.append(url)
+        let size = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int
+        XCTAssertEqual(size, 0, "an ADTS writer closed with nothing written leaves 0 bytes")
+        XCTAssertEqual(try AudioFileDecoder.decodePCM16k(url: url), [])
     }
 
     // MARK: decoder

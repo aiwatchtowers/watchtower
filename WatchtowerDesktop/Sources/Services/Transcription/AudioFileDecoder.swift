@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import Foundation
 import os
@@ -31,9 +32,10 @@ enum AudioFileDecoder {
     private static let log = Logger(subsystem: Constants.bundleID, category: "decoder")
 
     /// Decode any AVFoundation-readable file to 16 kHz mono Float32 samples.
+    /// Sample 0 is the first frame the recorder wrote, in every container:
+    /// an ADTS file's encoder priming is skipped (see `adtsPrimingFrames`).
     static func decodePCM16k(url: URL) throws -> [Float] {
-        let file = try AVAudioFile(forReading: url)
-        try rejectUnfinalized(length: file.length, at: url)
+        guard let file = try openForDecode(url: url) else { return [] }
         let sourceFormat = file.processingFormat
 
         guard let targetFormat = AVAudioFormat(
@@ -50,10 +52,8 @@ enum AudioFileDecoder {
 
         let inputChunkFrames: AVAudioFrameCount = 32_768
         var samples: [Float] = []
-        if file.length > 0 {
-            let estimated = Double(file.length) * targetFormat.sampleRate / sourceFormat.sampleRate
-            samples.reserveCapacity(Int(estimated) + Int(targetFormat.sampleRate))
-        }
+        let estimated = Double(max(0, file.length)) * targetFormat.sampleRate / sourceFormat.sampleRate
+        samples.reserveCapacity(Int(estimated) + Int(targetFormat.sampleRate))
 
         var reachedEnd = false
         var readError: Error?
@@ -135,6 +135,53 @@ enum AudioFileDecoder {
             log.error("decode: file not finalized, 0 packets in \(bytes, privacy: .public) audio bytes")
             throw AudioFileDecoderError.notFinalized
         }
+    }
+
+    /// The file positioned at its first recorded frame, or nil for a 0-byte
+    /// `.aac`: a recording that wrote no frames leaves one (ADTS has no header
+    /// to write), and the empty CAF it replaces decoded to no samples too.
+    private static func openForDecode(url: URL) throws -> AVAudioFile? {
+        if isZeroByteADTS(url) {
+            log.info("decode: \(url.lastPathComponent, privacy: .public) is empty (0 bytes), no samples")
+            return nil
+        }
+        let file = try AVAudioFile(forReading: url)
+        try rejectUnfinalized(length: file.length, at: url)
+        let priming = adtsPrimingFrames(of: file, at: url)
+        if priming > 0, file.length > priming {
+            file.framePosition = priming
+        }
+        return file
+    }
+
+    /// The frames of encoder priming at the start of an ADTS file's decode;
+    /// 0 for any other container. CAF and MP4 carry a packet table whose
+    /// priming count AVAudioFile already trims; ADTS has nowhere to store
+    /// it, so its decode starts with the encoder's priming (2112 frames for
+    /// Apple's AAC-LC encoder, ~132 ms at 16 kHz) and would run that late
+    /// against the recorder's own timeline (the `.activity` bins) and the
+    /// player's (the precise asset trims it). The count is read from an
+    /// encoder for the file's own format, the one that wrote it, rather
+    /// than hard-coded. Internal for tests.
+    static func adtsPrimingFrames(of file: AVAudioFile, at url: URL) -> AVAudioFramePosition {
+        guard AudioFileIntegrity.fileType(url: url) == kAudioFileAAC_ADTSType else { return 0 }
+        let encoded = file.fileFormat
+        guard let pcm = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: encoded.sampleRate,
+            channels: encoded.channelCount, interleaved: false
+        ), let encoder = AVAudioConverter(from: pcm, to: encoded) else {
+            log.error("decode: no AAC encoder for \(url.lastPathComponent, privacy: .public), priming not trimmed")
+            return 0
+        }
+        return AVAudioFramePosition(encoder.primeInfo.leadingFrames)
+    }
+
+    private static func isZeroByteADTS(_ url: URL) -> Bool {
+        guard url.pathExtension.lowercased() == "aac",
+              let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int else {
+            return false // missing or unreadable: AVAudioFile reports it below
+        }
+        return size == 0
     }
 
     private static func append(_ buffer: AVAudioPCMBuffer, to samples: inout [Float]) throws {

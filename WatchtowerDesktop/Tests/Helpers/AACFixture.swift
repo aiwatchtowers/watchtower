@@ -22,15 +22,43 @@ enum AACFixture {
     /// as a leaked writer leaves it. Hold `writer` while reading `url`
     /// through a second handle; dropping it closes the file.
     static func writeUnclosed(durationSec: Double, fileExtension: String) throws -> (url: URL, writer: AVAudioFile) {
+        let frames = Int(sampleRate * durationSec)
+        return try writeUnclosed(frames: frames, fileExtension: fileExtension) { i in
+            sinf(2 * .pi * 440 * Float(i) / Float(sampleRate)) * 0.5
+        }
+    }
+
+    /// `onsetFrame` frames of digital silence, then a 1 kHz tone to
+    /// `totalFrames`: decoding it shows where frame `onsetFrame` lands.
+    static func writeSilenceThenTone(onsetFrame: Int, totalFrames: Int, fileExtension: String) throws -> URL {
+        let (url, writer) = try writeUnclosed(frames: totalFrames, fileExtension: fileExtension) { i in
+            i < onsetFrame ? 0 : sinf(2 * .pi * 1000 * Float(i - onsetFrame) / Float(sampleRate)) * 0.5
+        }
+        if #available(macOS 15, *) { writer.close() }
+        return url
+    }
+
+    /// `silenceSec` of digital silence, then `noiseSec` of broadband noise:
+    /// packets of very different sizes, so a duration estimated from the
+    /// first packets' bitrate is far off (the `AVAudioPlayer` failure).
+    static func writeSilenceThenNoise(silenceSec: Double, noiseSec: Double, fileExtension: String) throws -> URL {
+        let silence = Int(sampleRate * silenceSec)
+        var seed: UInt32 = 12_345
+        let (url, writer) = try writeUnclosed(frames: silence + Int(sampleRate * noiseSec),
+                                              fileExtension: fileExtension) { i in
+            guard i >= silence else { return 0 }
+            seed = seed &* 1_664_525 &+ 1_013_904_223
+            return (Float(seed >> 8) / Float(1 << 24) - 0.5) * 0.8
+        }
+        if #available(macOS 15, *) { writer.close() }
+        return url
+    }
+
+    private static func writeUnclosed(
+        frames: Int, fileExtension: String, sample: (Int) -> Float
+    ) throws -> (url: URL, writer: AVAudioFile) {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("aac-fixture-\(UUID().uuidString).\(fileExtension)")
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 32_000
-        ]
-        let frames = Int(sampleRate * durationSec)
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false
         ), let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
@@ -38,7 +66,7 @@ enum AACFixture {
             throw FixtureError.allocation
         }
         for i in 0..<frames {
-            data[0][i] = sinf(2 * .pi * 440 * Float(i) / Float(sampleRate)) * 0.5
+            data[0][i] = sample(i)
         }
         buffer.frameLength = AVAudioFrameCount(frames)
         let file = try AVAudioFile(
@@ -49,20 +77,23 @@ enum AACFixture {
         return (url, file)
     }
 
-    /// An AAC CAF opened for writing and closed with nothing written: a
-    /// finalized file that holds no audio at all.
-    static func writeEmpty() throws -> URL {
+    /// The recorder's writer settings.
+    private static let settings: [String: Any] = [
+        AVFormatIDKey: kAudioFormatMPEG4AAC,
+        AVSampleRateKey: sampleRate,
+        AVNumberOfChannelsKey: 1,
+        AVEncoderBitRateKey: 32_000
+    ]
+
+    /// An AAC file opened for writing and closed with nothing written: a
+    /// finalized CAF that holds no audio at all, or — for `.aac` — a 0-byte
+    /// file (ADTS has no header to write).
+    static func writeEmpty(fileExtension: String = "caf") throws -> URL {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("aac-empty-\(UUID().uuidString).caf")
+            .appendingPathComponent("aac-empty-\(UUID().uuidString).\(fileExtension)")
         do {
             let file = try AVAudioFile(
-                forWriting: url,
-                settings: [
-                    AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVSampleRateKey: sampleRate,
-                    AVNumberOfChannelsKey: 1,
-                    AVEncoderBitRateKey: 32_000
-                ],
+                forWriting: url, settings: settings,
                 commonFormat: .pcmFormatFloat32, interleaved: false
             )
             if #available(macOS 15, *) { file.close() }

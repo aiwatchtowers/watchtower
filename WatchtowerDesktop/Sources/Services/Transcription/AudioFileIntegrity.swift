@@ -43,6 +43,18 @@ enum AudioFileIntegrity: Equatable {
         return bytes > 0 ? .unfinalized(audioBytes: Int64(clamping: bytes)) : .empty
     }
 
+    /// The container type AudioToolbox detects (`kAudioFileAAC_ADTSType`,
+    /// `kAudioFileCAFType`, …); nil when the file cannot be opened.
+    static func fileType(url: URL) -> AudioFileTypeID? {
+        var opened: AudioFileID?
+        guard AudioFileOpenURL(url as CFURL, .readPermission, 0, &opened) == noErr, let file = opened else { return nil }
+        defer { AudioFileClose(file) }
+        var type: AudioFileTypeID = 0
+        var size = UInt32(MemoryLayout<AudioFileTypeID>.size)
+        guard AudioFileGetProperty(file, kAudioFilePropertyFileFormat, &size, &type) == noErr else { return nil }
+        return type
+    }
+
     private static func uint64Property(_ property: AudioFilePropertyID, of file: AudioFileID) throws -> UInt64 {
         var value: UInt64 = 0
         var size = UInt32(MemoryLayout<UInt64>.size)
