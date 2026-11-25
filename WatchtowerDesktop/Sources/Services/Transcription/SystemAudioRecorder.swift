@@ -22,7 +22,7 @@ final class SystemAudioRecorder: AudioRecording {
 
     static let reattachKey = "transcription.reattachSystemAudio"
 
-    fileprivate static let log = Logger(subsystem: Constants.bundleID, category: "recorder")
+    static let log = Logger(subsystem: Constants.bundleID, category: "recorder")
 
     /// `transcription.reattachSystemAudio`, default ON: rebuild the tap when
     /// the default output or input device changes mid-recording
@@ -79,7 +79,8 @@ final class SystemAudioRecorder: AudioRecording {
     /// decodes to nothing (`AudioFileIntegrity`), so such a file fails the
     /// stop instead of passing for a finished recording. The file stays on
     /// disk either way. Internal for tests.
-    static func verifyFinalized(url: URL, framesWritten: Int64) throws {
+    static func verifyFinalized(_ result: RecordingResult, framesWritten: Int64) throws {
+        let url = result.audioURL
         guard framesWritten > 0 else {
             log.info("stop: no frames written, nothing to verify")
             return
@@ -92,7 +93,7 @@ final class SystemAudioRecorder: AudioRecording {
             log.error(
                 "stop: closed recording unreadable (OSStatus \(status, privacy: .public)), \(framesWritten, privacy: .public) frames written"
             )
-            throw AudioRecordingError.notFinalized
+            throw AudioRecordingError.notFinalized(result)
         }
         switch integrity {
         case .finalized(let packets):
@@ -103,10 +104,10 @@ final class SystemAudioRecorder: AudioRecording {
             log.error(
                 "stop: recording NOT finalized, \(framesWritten, privacy: .public) frames written, 0 packets in \(bytes, privacy: .public) bytes"
             )
-            throw AudioRecordingError.notFinalized
+            throw AudioRecordingError.notFinalized(result)
         case .empty:
             log.error("stop: recording NOT finalized, \(framesWritten, privacy: .public) frames written, no audio bytes")
-            throw AudioRecordingError.notFinalized
+            throw AudioRecordingError.notFinalized(result)
         }
     }
 }
@@ -314,9 +315,10 @@ private final class TapRecorderImpl {
             SystemAudioRecorder.log.error("stop: write failed mid-recording after \(frames, privacy: .public) frames")
             throw AudioRecordingError.writeFailed(writeError.localizedDescription)
         }
-        try SystemAudioRecorder.verifyFinalized(url: audioURL, framesWritten: frames)
         let duration = Int(Double(frames) / Self.outputSampleRate)
-        return RecordingResult(audioURL: audioURL, durationSec: duration)
+        let result = RecordingResult(audioURL: audioURL, durationSec: duration)
+        try SystemAudioRecorder.verifyFinalized(result, framesWritten: frames)
+        return result
     }
 
     deinit {

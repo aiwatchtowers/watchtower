@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os
 import WatchtowerCore
 
 /// Native-notification seam for transcript completion/failure, so
@@ -1203,6 +1204,11 @@ final class MeetingRecorderCenter {
         let result: RecordingResult
         do {
             result = try await recorder.stop() // also finishes liveSamples
+        } catch AudioRecordingError.notFinalized(let kept) where captureLiveEnabled && pendingLiveStart == nil {
+            // Undecodable file, but this capture owns its live pass: stop as usual so the live text
+            // is saved; without live text the batch decode fails with the honest message.
+            SystemAudioRecorder.log.warning("stop: recording not finalized, continuing with the live transcript")
+            result = kept
         } catch {
             let isPrivate = currentPrivate
             // `recorder.stop()` finishes `liveSamples` before throwing, so the

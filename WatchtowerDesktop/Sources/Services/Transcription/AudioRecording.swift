@@ -27,7 +27,8 @@ protocol AudioRecording: AnyObject {
     /// file is kept on disk, but it must not be reported as a clean success.
     /// Throws `.notFinalized` when the closed file lists no audio packets
     /// although frames were written (it would decode to nothing); that file
-    /// is kept on disk too.
+    /// is kept on disk too, and the error carries the result `stop` would
+    /// have returned, so a caller holding a live transcript can still save it.
     func stop() async throws -> RecordingResult
     /// Live 16 kHz mono Float32 samples delivered as they are captured, for
     /// in-progress transcription. Finishes when `stop()` is called. Consuming it
@@ -48,7 +49,9 @@ enum AudioRecordingError: LocalizedError {
     case systemAudioPermissionDenied
     case deviceSetupFailed(String)
     case writeFailed(String)
-    case notFinalized
+    /// The recording that `stop()` would have returned; its audio file is
+    /// on disk but cannot be decoded.
+    case notFinalized(RecordingResult)
 
     var errorDescription: String? {
         switch self {

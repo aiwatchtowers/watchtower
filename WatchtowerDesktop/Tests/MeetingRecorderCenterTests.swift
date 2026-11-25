@@ -487,6 +487,102 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(runner.invocations.count, 0)
     }
 
+    func testNotFinalizedStopWithLiveTextSavesTheLiveTranscript() async throws {
+        // The file cannot be decoded, but the live pass heard the meeting:
+        // its transcript is saved as on a normal stop.
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+
+        let recorder = FakeRecorder()
+        recorder.stopError = AudioRecordingError.notFinalized(RecordingResult(audioURL: audio, durationSec: 1))
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        var decodeCalls = 0
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["live one", "live two"])) },
+            decode: { _ in decodeCalls += 1; throw AudioFileDecoderError.notFinalized },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        await center.startRecording(eventID: nil, title: "Live meeting")
+        recorder.emitLive([Float](repeating: 0, count: 5600))
+        await center.stopAndProcess(config: threeWindowConfig())
+
+        XCTAssertEqual(center.phase, .idle, "the live transcript must be saved, not failed")
+        XCTAssertEqual(decodeCalls, 0, "the live result is saved without touching the file")
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path), "the audio stays for a manual rescue")
+    }
+
+    func testNotFinalizedStopWithEmptyLivePassFailsWithNotFinalized() async throws {
+        // Live was on but heard nothing: the batch path decodes the file and
+        // fails with the decoder's honest message.
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+
+        let recorder = FakeRecorder()
+        recorder.stopError = AudioRecordingError.notFinalized(RecordingResult(audioURL: audio, durationSec: 1))
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [""])) },
+            decode: { _ in throw AudioFileDecoderError.notFinalized },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        await center.startRecording(eventID: nil, title: "Ad hoc")
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        guard case .failed(let reason) = center.phase else {
+            return XCTFail("expected .failed, got \(center.phase)")
+        }
+        XCTAssertTrue(reason.contains("not finalized"), "got: \(reason)")
+        XCTAssertEqual(center.pendingAudioURL, audio, "the audio must be kept for recovery")
+        XCTAssertEqual(runner.invocations.count, 0)
+    }
+
+    func testNotFinalizedStopWithoutLivePassFailsAndKeepsAudio() async throws {
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+
+        let recorder = FakeRecorder()
+        recorder.stopError = AudioRecordingError.notFinalized(RecordingResult(audioURL: audio, durationSec: 1))
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let notifier = FakeNotifier()
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["batch text"])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: notifier,
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        var config = singleWindowConfig()
+        config.liveTranscription = false
+        await center.startRecording(eventID: nil, title: "No live", config: config)
+        let pendingBefore = try XCTUnwrap(center.pendingAudioURL)
+        await center.stopAndProcess(config: config)
+
+        guard case .failed(let reason) = center.phase else {
+            return XCTFail("expected .failed, got \(center.phase)")
+        }
+        XCTAssertTrue(reason.contains("not finalized"), "got: \(reason)")
+        XCTAssertEqual(center.pendingAudioURL, pendingBefore, "the audio must be kept for recovery")
+        XCTAssertEqual(runner.invocations.count, 0)
+        XCTAssertEqual(notifier.failedReasons.count, 1)
+    }
+
     func testMissingRunnerFailsVisiblyAfterRecorderStopped() async throws {
         let audio = try makeDummyAudioFile()
         defer {

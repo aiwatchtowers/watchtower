@@ -52,22 +52,26 @@ final class AudioFileIntegrityTests: XCTestCase {
 
     // MARK: recorder's after-close check
 
+    private func verify(_ url: URL, framesWritten: Int64) throws {
+        try SystemAudioRecorder.verifyFinalized(RecordingResult(audioURL: url, durationSec: 2), framesWritten: framesWritten)
+    }
+
     func testVerifyFinalizedAcceptsAClosedFile() throws {
-        XCTAssertNoThrow(try SystemAudioRecorder.verifyFinalized(url: finalizedFixture(), framesWritten: 32_000))
+        XCTAssertNoThrow(try verify(finalizedFixture(), framesWritten: 32_000))
     }
 
     func testVerifyFinalizedAcceptsAVeryShortClosedFile() throws {
         // Under one AAC packet of input: the encoder only emits it on close.
-        XCTAssertNoThrow(try SystemAudioRecorder.verifyFinalized(
-            url: finalizedFixture(durationSec: 0.01), framesWritten: 160
-        ))
+        XCTAssertNoThrow(try verify(finalizedFixture(durationSec: 0.01), framesWritten: 160))
     }
 
     func testVerifyFinalizedRejectsAnUnfinalizedFile() throws {
-        XCTAssertThrowsError(try SystemAudioRecorder.verifyFinalized(url: unfinalizedFixture(), framesWritten: 32_000)) {
-            guard case AudioRecordingError.notFinalized = $0 else {
+        let url = try unfinalizedFixture()
+        XCTAssertThrowsError(try verify(url, framesWritten: 32_000)) {
+            guard case AudioRecordingError.notFinalized(let kept) = $0 else {
                 return XCTFail("expected .notFinalized, got \($0)")
             }
+            XCTAssertEqual(kept, RecordingResult(audioURL: url, durationSec: 2), "the error carries the would-be result")
             XCTAssertTrue($0.localizedDescription.contains("kept"), "the message must say the audio is kept")
         }
     }
@@ -76,7 +80,7 @@ final class AudioFileIntegrityTests: XCTestCase {
         let garbage = FileManager.default.temporaryDirectory.appendingPathComponent("garbage-\(UUID().uuidString).caf")
         try Data("not audio".utf8).write(to: garbage)
         cleanup.append(garbage)
-        XCTAssertThrowsError(try SystemAudioRecorder.verifyFinalized(url: garbage, framesWritten: 32_000)) {
+        XCTAssertThrowsError(try verify(garbage, framesWritten: 32_000)) {
             guard case AudioRecordingError.notFinalized = $0 else {
                 return XCTFail("expected .notFinalized, got \($0)")
             }
@@ -85,7 +89,7 @@ final class AudioFileIntegrityTests: XCTestCase {
 
     func testVerifyFinalizedSkipsARecordingThatWroteNothing() throws {
         // Nothing was written, so 0 packets is the truth, not a lost table.
-        XCTAssertNoThrow(try SystemAudioRecorder.verifyFinalized(url: unfinalizedFixture(), framesWritten: 0))
+        XCTAssertNoThrow(try verify(unfinalizedFixture(), framesWritten: 0))
     }
 
     // MARK: decoder
