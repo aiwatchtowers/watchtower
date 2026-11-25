@@ -1,18 +1,26 @@
 import Foundation
 import AVFoundation
 
-/// Abstraction over `AVAudioPlayer`'s playback surface, so `AudioPlaybackCenter`
-/// is unit-testable without touching real audio hardware/files.
+/// The playback surface `AudioPlaybackCenter` and `ClipPlayer` drive, so
+/// both are unit-testable without touching real audio hardware/files. The
+/// production one is `PreciseAudioPlayback`.
 protocol AudioPlayback: AnyObject {
+    /// Setting it seeks (exactly, in the production player).
     var currentTime: TimeInterval { get set }
+    /// 0 while not known yet: the production player loads it after creation.
     var duration: TimeInterval { get }
+    /// False once playback ended on its own, was paused, or failed.
     var isPlaying: Bool { get }
+    /// Why the file cannot be played, found after creation. Nil by default.
+    var playbackError: Error? { get }
     @discardableResult func play() -> Bool
     func pause()
     func stop()
 }
 
-extension AVAudioPlayer: AudioPlayback {}
+extension AudioPlayback {
+    var playbackError: Error? { nil }
+}
 
 /// App-wide, single-slot registry for meeting-recording audio playback.
 ///
@@ -38,7 +46,7 @@ final class AudioPlaybackCenter {
     private var timer: Timer?
     private let playerFactory: (URL) throws -> AudioPlayback
 
-    init(playerFactory: @escaping (URL) throws -> AudioPlayback = { try AVAudioPlayer(contentsOf: $0) }) {
+    init(playerFactory: @escaping (URL) throws -> AudioPlayback = { try PreciseAudioPlayback(url: $0) }) {
         self.playerFactory = playerFactory
     }
 
@@ -92,22 +100,33 @@ final class AudioPlaybackCenter {
         startTimer()
     }
 
-    /// Seeks the active player, clamped to `[0, duration]`. No-op when
-    /// nothing is active.
+    /// Seeks the active player, clamped to `[0, duration]` — only from below
+    /// while the duration is not known yet (a scrub that starts playback
+    /// seeks before it loads). No-op when nothing is active.
     func seek(to time: TimeInterval) {
         guard let player else { return }
-        let clamped = min(max(0, time), duration)
+        let clamped = duration > 0 ? min(max(0, time), duration) : max(0, time)
         player.currentTime = clamped
         currentTime = clamped
     }
 
-    /// Pulls `currentTime` from the active player and detects natural
-    /// end-of-playback (the player stopped itself without `pause()` being
-    /// called). Driven by a timer during real playback; exposed (not
-    /// `private`) so tests can call it directly instead of spinning a
-    /// `RunLoop` to let a real `Timer` fire.
+    /// Pulls `currentTime` (and the duration, once the player has loaded
+    /// it) from the active player, detects natural end-of-playback (the
+    /// player stopped itself without `pause()` being called), and reports a
+    /// file found unplayable after it was opened as this row's failure.
+    /// Driven by a timer during real playback; exposed (not `private`) so
+    /// tests can call it directly instead of spinning a `RunLoop` to let a
+    /// real `Timer` fire.
     func refreshProgress() {
         guard let player else { return }
+        if let error = player.playbackError {
+            let failed = activeTranscriptID
+            stopCurrent()
+            failedTranscriptID = failed
+            errorMessage = error.localizedDescription
+            return
+        }
+        if player.duration != duration { duration = player.duration }
         currentTime = player.currentTime
         if isPlaying && !player.isPlaying {
             isPlaying = false

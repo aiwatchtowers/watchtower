@@ -21,7 +21,7 @@ final class ClipPlayer {
     /// or the output refused to start) — cleared by the next play or stop.
     private(set) var errorMessage: String?
 
-    init(playerFactory: @escaping (URL) throws -> AudioPlayback = { try AVAudioPlayer(contentsOf: $0) }) {
+    init(playerFactory: @escaping (URL) throws -> AudioPlayback = { try PreciseAudioPlayback(url: $0) }) {
         self.playerFactory = playerFactory
     }
 
@@ -69,8 +69,13 @@ final class ClipPlayer {
     /// `private`) so tests can call it directly instead of spinning a
     /// `RunLoop` to let a real `Timer` fire.
     func tick() {
-        guard let p = player, let s = playingSpan else { return }
-        if p.currentTime >= s.end || !p.isPlaying { stop() }
+        guard let p = player, let s = playingSpan, let url = playingURL else { return }
+        if let error = p.playbackError {
+            stop()
+            fail("Can't play this clip: \(error.localizedDescription)", url: url)
+        } else if p.currentTime >= s.end || !p.isPlaying {
+            stop()
+        }
     }
 
     func stop() {

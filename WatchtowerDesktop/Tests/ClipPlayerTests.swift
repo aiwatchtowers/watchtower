@@ -128,6 +128,23 @@ final class ClipPlayerTests: XCTestCase {
         XCTAssertFalse(p.isPlaying(url: a, span: span))
         XCTAssertTrue(fake.isPlaying)
     }
+
+    /// A clip whose file turns out unplayable after it opened stops and
+    /// says so, instead of stopping silently.
+    func testAPlaybackErrorFoundLaterStopsWithAMessage() {
+        let fake = FakeAudioPlayback(duration: 60)
+        let p = ClipPlayer { _ in fake }
+        let url = URL(fileURLWithPath: "/tmp/x.aac")
+        p.play(url: url, span: ClipSpan(start: 10, end: 15))
+
+        fake.playbackError = CocoaError(.fileReadCorruptFile)
+        p.tick()
+
+        XCTAssertFalse(p.isPlaying(url: url, span: ClipSpan(start: 10, end: 15)))
+        XCTAssertFalse(fake.isPlaying)
+        XCTAssertNotNil(p.errorMessage)
+        XCTAssertTrue(p.errorMessage?.hasPrefix("Can't play this clip") == true)
+    }
 }
 
 /// An output that refuses to start — `play()` returns false.
