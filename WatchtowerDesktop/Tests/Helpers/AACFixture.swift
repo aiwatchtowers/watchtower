@@ -8,8 +8,8 @@ import XCTest
 enum AACFixture {
     static let sampleRate = 16_000.0
 
-    /// Writes `durationSec` of a 440 Hz sine as 16 kHz mono AAC; the file is
-    /// closed (finalized) when the writer goes out of scope here.
+    /// Writes `durationSec` of a 440 Hz sine as 16 kHz mono AAC and closes
+    /// (finalizes) the file: explicitly on macOS 15+, by deallocation before.
     static func write(durationSec: Double, fileExtension: String = "caf") throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("aac-fixture-\(UUID().uuidString).\(fileExtension)")
@@ -36,6 +36,28 @@ enum AACFixture {
                 commonFormat: .pcmFormatFloat32, interleaved: false
             )
             try file.write(from: buffer)
+            if #available(macOS 15, *) { file.close() }
+        }
+        return url
+    }
+
+    /// An AAC CAF opened for writing and closed with nothing written: a
+    /// finalized file that holds no audio at all.
+    static func writeEmpty() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aac-empty-\(UUID().uuidString).caf")
+        do {
+            let file = try AVAudioFile(
+                forWriting: url,
+                settings: [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVSampleRateKey: sampleRate,
+                    AVNumberOfChannelsKey: 1,
+                    AVEncoderBitRateKey: 32_000
+                ],
+                commonFormat: .pcmFormatFloat32, interleaved: false
+            )
+            if #available(macOS 15, *) { file.close() }
         }
         return url
     }

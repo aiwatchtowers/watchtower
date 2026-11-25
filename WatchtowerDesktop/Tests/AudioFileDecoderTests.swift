@@ -12,39 +12,8 @@ final class AudioFileDecoderTests: XCTestCase {
     private let sampleRate = 16_000.0
     private let durationSec = 2.6 // deliberately NOT a whole multiple of AAC's 1024-frame packets
 
-    /// Writes a sine wave through the same AAC writer settings SystemAudioRecorder uses.
-    private func writeAACFixture(fileExtension: String) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("decoder-fixture-\(UUID().uuidString).\(fileExtension)")
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 32_000
-        ]
-        let file = try AVAudioFile(
-            forWriting: url, settings: settings,
-            commonFormat: .pcmFormatFloat32, interleaved: false
-        )
-        guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false
-        ), let buffer = AVAudioPCMBuffer(
-            pcmFormat: format, frameCapacity: AVAudioFrameCount(sampleRate * durationSec)
-        ), let data = buffer.floatChannelData else {
-            XCTFail("fixture allocation failed")
-            throw AudioFileDecoderError.unsupportedFormat
-        }
-        let frames = Int(sampleRate * durationSec)
-        for i in 0..<frames {
-            data[0][i] = sinf(2 * .pi * 440 * Float(i) / Float(sampleRate)) * 0.5
-        }
-        buffer.frameLength = AVAudioFrameCount(frames)
-        try file.write(from: buffer)
-        return url
-    }
-
     private func assertDecodesFully(fileExtension: String) throws {
-        let url = try writeAACFixture(fileExtension: fileExtension)
+        let url = try AACFixture.write(durationSec: durationSec, fileExtension: fileExtension)
         defer { try? FileManager.default.removeItem(at: url) }
 
         let samples = try AudioFileDecoder.decodePCM16k(url: url)

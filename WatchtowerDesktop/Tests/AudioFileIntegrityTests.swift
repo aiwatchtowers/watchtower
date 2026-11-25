@@ -45,6 +45,12 @@ final class AudioFileIntegrityTests: XCTestCase {
         XCTAssertGreaterThan(bytes, 0)
     }
 
+    func testFileClosedWithNoWritesIsEmpty() throws {
+        let url = try AACFixture.writeEmpty()
+        cleanup.append(url)
+        XCTAssertEqual(try AudioFileIntegrity.inspect(url: url), .empty)
+    }
+
     func testMissingFileThrows() {
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("missing-\(UUID().uuidString).caf")
         XCTAssertThrowsError(try AudioFileIntegrity.inspect(url: missing))
@@ -87,6 +93,17 @@ final class AudioFileIntegrityTests: XCTestCase {
         }
     }
 
+    func testVerifyFinalizedRejectsAnEmptyFileWhenFramesWereWritten() throws {
+        let url = try AACFixture.writeEmpty()
+        cleanup.append(url)
+        XCTAssertThrowsError(try verify(url, framesWritten: 32_000)) {
+            guard case AudioRecordingError.notFinalized(let kept) = $0 else {
+                return XCTFail("expected .notFinalized, got \($0)")
+            }
+            XCTAssertEqual(kept, RecordingResult(audioURL: url, durationSec: 2))
+        }
+    }
+
     func testVerifyFinalizedSkipsARecordingThatWroteNothing() throws {
         // Nothing was written, so 0 packets is the truth, not a lost table.
         XCTAssertNoThrow(try verify(unfinalizedFixture(), framesWritten: 0))
@@ -101,5 +118,27 @@ final class AudioFileIntegrityTests: XCTestCase {
             }
             XCTAssertTrue($0.localizedDescription.contains("not finalized"))
         }
+    }
+
+    func testDecoderReturnsNoSamplesForAFileClosedWithNoWrites() throws {
+        // Truly empty, not unfinalized: the honest result is no samples.
+        let url = try AACFixture.writeEmpty()
+        cleanup.append(url)
+        XCTAssertEqual(try AudioFileDecoder.decodePCM16k(url: url), [])
+    }
+
+    func testDecoderFailsWhenTheHeaderOfAnEmptyFileIsUnreadable() throws {
+        // The header read must never fall through to "no samples" on error.
+        let garbage = FileManager.default.temporaryDirectory.appendingPathComponent("garbage-\(UUID().uuidString).caf")
+        try Data("not audio".utf8).write(to: garbage)
+        cleanup.append(garbage)
+        XCTAssertThrowsError(try AudioFileDecoder.rejectUnfinalized(length: 0, at: garbage)) {
+            guard case AudioFileDecoderError.conversionFailed(let detail) = $0 else {
+                return XCTFail("expected .conversionFailed, got \($0)")
+            }
+            XCTAssertTrue(detail.contains("OSStatus"), "got: \(detail)")
+        }
+        XCTAssertNoThrow(try AudioFileDecoder.rejectUnfinalized(length: 1024, at: garbage),
+                         "a file listing frames needs no header check")
     }
 }

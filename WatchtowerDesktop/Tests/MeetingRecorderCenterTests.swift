@@ -494,8 +494,9 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
 
         let recorder = FakeRecorder()
-        recorder.stopError = AudioRecordingError.notFinalized(RecordingResult(audioURL: audio, durationSec: 1))
+        recorder.stopError = AudioRecordingError.notFinalized(RecordingResult(audioURL: audio, durationSec: 42))
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let notifier = FakeNotifier()
         var decodeCalls = 0
         let center = MeetingRecorderCenter(
             pendingStore: pendingStore,
@@ -503,7 +504,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["live one", "live two"])) },
             decode: { _ in decodeCalls += 1; throw AudioFileDecoderError.notFinalized },
             runnerResolver: { runner },
-            notifier: FakeNotifier(),
+            notifier: notifier,
             defaults: try isolatedDefaults(),
             recordingsDirectory: recordingsDir
         )
@@ -515,6 +516,13 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(center.phase, .idle, "the live transcript must be saved, not failed")
         XCTAssertEqual(decodeCalls, 0, "the live result is saved without touching the file")
         XCTAssertEqual(runner.invocations.count, 1)
+        let saved = runner.stdinInputs.first.flatMap { TranscriptStdinPayload.decode($0)?.transcript }
+        XCTAssertEqual(saved?.contains("live one"), true, "the live text is what gets saved, got: \(saved ?? "nil")")
+        let args = try XCTUnwrap(runner.invocations.first)
+        let value = { (flag: String) in args.firstIndex(of: flag).map { args[$0 + 1] } }
+        XCTAssertEqual(value("--audio"), audio.path, "the audio URL comes from the error's result")
+        XCTAssertEqual(value("--duration"), "42", "the duration comes from the error's result")
+        XCTAssertTrue(notifier.failedReasons.isEmpty, "a saved live transcript is not a failure")
         XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path), "the audio stays for a manual rescue")
     }
 
@@ -547,6 +555,59 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertTrue(reason.contains("not finalized"), "got: \(reason)")
         XCTAssertEqual(center.pendingAudioURL, audio, "the audio must be kept for recovery")
         XCTAssertEqual(runner.invocations.count, 0)
+    }
+
+    func testNotFinalizedStopWhileTheLivePassIsParkedFails() async throws {
+        // Recording 2 starts while recording 1's orphaned live task still
+        // holds the engine, so its live pass is parked (.waiting): it owns no
+        // live text, and a not-finalized stop must fail, not save. The batch
+        // decode stub succeeds, so treating the stop as a live one would save.
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        let gateEngine = GateEngine(texts: ["stale"])
+        var recorders = [recorder1, recorder2]
+        var engineLoads = 0
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorders.removeFirst() },
+            engineFactory: { _ in
+                engineLoads += 1
+                return engineLoads == 1 ? TestTranscriber(gateEngine) : TestTranscriber(ScriptedEngine(texts: ["batch"]))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        let liveConfig = threeWindowConfig()
+
+        await center.startRecording(eventID: nil, title: "First", config: liveConfig)
+        recorder1.emitLive([Float](repeating: 0, count: 3200))
+        var entered = gateEngine.enteredStream.makeAsyncIterator()
+        _ = await entered.next()
+        recorder1.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
+        await center.stopAndProcess(config: liveConfig)
+
+        await center.startRecording(eventID: nil, title: "Second", config: liveConfig)
+        XCTAssertEqual(center.liveEngineState, .waiting, "setup: recording 2's live pass must be parked")
+        let audio2 = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio2); removeSidecars(audio2) }
+        recorder2.stopError = AudioRecordingError.notFinalized(RecordingResult(audioURL: audio2, durationSec: 1))
+        let stop = Task { await center.stopAndProcess(config: liveConfig) }
+        await waitUntil("recording 2 stopped") { !center.isCapturing }
+        gateEngine.release() // lets a wrongly started batch job run, so the mutation shows
+        await stop.value
+        await waitUntil("the orphan exits") { center.liveEngineState != .waiting }
+
+        let failures = center.jobs.compactMap { job -> String? in
+            if case .failed(let reason) = job.phase, job.title == "Second" { return reason }
+            return nil
+        }
+        XCTAssertEqual(failures.count, 1, "recording 2 must fail, jobs: \(center.jobs.map(\.phase))")
+        XCTAssertTrue(failures.first?.contains("not finalized") == true, "got: \(failures)")
+        XCTAssertEqual(runner.invocations.count, 0, "nothing may be saved")
     }
 
     func testNotFinalizedStopWithoutLivePassFailsAndKeepsAudio() async throws {
