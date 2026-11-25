@@ -33,6 +33,8 @@ struct CompaniesZone: View {
     /// §5.4, §7), before **Set up for my company**; nil: no button.
     var agent: (harness: ConnectHarness, open: () -> Void)?
 
+    @Environment(\.openURL) private var openURL
+
     private typealias Pres = CompanyConnectionsPresentation
 
     var body: some View {
@@ -185,6 +187,53 @@ struct CompaniesZone: View {
             if let error = model.codeError {
                 Text(error).font(.caption).foregroundStyle(Tone.error).fixedSize(horizontal: false, vertical: true)
             }
+            slackHint.padding(.top, Spacing.regular)
         }
+    }
+
+    /// "No code?" (always shown under the code field, spec D4): the Slack
+    /// address opens the workspace's app list in the browser; Watchtower
+    /// fetches nothing.
+    private var slackHint: some View {
+        let address = SlackAddress.parse(model.slackAddress)
+        return VStack(alignment: .leading, spacing: Spacing.compact) {
+            Text(Pres.slackHintTitle)
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Spacing.regular) { slackAddressRow(address) }
+                VStack(alignment: .leading, spacing: Spacing.regular) { slackAddressRow(address) }
+            }
+            if let caption = Pres.slackAddressCaption(address) {
+                Text(caption).font(.caption).foregroundStyle(Tone.error).fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(Array(Pres.slackHintSteps.enumerated()), id: \.offset) { index, step in
+                Text("\(index + 1). \(step)").font(.caption).fixedSize(horizontal: false, vertical: true)
+            }
+            Text(Pres.slackHintFallback)
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private func slackAddressRow(_ address: SlackAddress) -> some View {
+        TextField(Pres.slackAddressPlaceholder, text: $model.slackAddress)
+            .textFieldStyle(.kit)
+            .onSubmit { openSlackApps(address) }
+        Button(Pres.openSlackApps) { openSlackApps(address) }
+            .buttonStyle(.kitSecondary)
+            .disabled(!address.isWorkspace)
+    }
+
+    /// Opens the workspace's app list; anything but a workspace opens nothing.
+    private func openSlackApps(_ address: SlackAddress) {
+        guard case .workspace(let workspace) = address else { return }
+        openURL(SlackAddress.appsURL(workspace: workspace))
+    }
+}
+
+private extension SlackAddress {
+    var isWorkspace: Bool {
+        if case .workspace = self { return true }
+        return false
     }
 }

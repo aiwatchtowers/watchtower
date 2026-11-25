@@ -15,6 +15,9 @@ enum CompanySetupShotFixtures {
     /// Connections overview frames (the Companies zone).
     enum Overview: String, CaseIterable {
         case companies, mdm, relogin, empty, loading, readFailed, codePaste, portBusy, setupInProgress
+        /// The code field's "No code?" block with a workspace, a foreign host
+        /// and an Enterprise Grid organization address typed in.
+        case slackValid, slackInvalid, slackOrganization
     }
 
     /// One narrow wizard frame per distinct step layout: the services checklist,
