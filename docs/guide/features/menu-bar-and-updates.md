@@ -26,7 +26,7 @@ Other lines appear only when they apply:
 
 ### Updates
 
-Watchtower checks for a new version at every launch and then every 6 hours while it runs. When it finds one, you get one notification and one **Software Update** window per version, never repeated. The window shows the release notes in full.
+Watchtower checks for a new version at every launch and then every 6 hours while it runs. When it finds one, you get one notification and one **Software Update** window per version, never repeated. The window shows the release notes in full, grouped under colored labels: **Requirements**, **New**, **Extended**, **Improved**, **Changed**, **Removed**, **Security** and **Fixed**. Notes of older releases show as plain text.
 
 The window is held back while a recording or transcription is running, and appears at the next background check after it ends (checks run every 6 hours). **Update to <version> available…** also shows in the menu, and **Update Available** at the bottom of the sidebar; both open the **Software Update** window.
 

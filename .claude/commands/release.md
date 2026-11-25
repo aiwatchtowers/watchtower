@@ -6,37 +6,59 @@ A release ships two things: the public Mac app (GitHub release, which also bumps
 
 Before Step 1, check that `main`'s latest CI run is green (`gh run list --branch main --workflow ci.yml --limit 1`); a red `main` is fixed first, never tagged.
 
-## Step 1: Determine Version
+## Step 1: Collect the changes and determine the version
 
-1. Get the current version from `cmd/version.go` (the `Version` variable)
-2. Get the latest git tag: `git tag -l 'v*' --sort=-v:refname | head -1`
-3. Get commits since last tag (or last 20 if no tags): `git log $(git tag -l 'v*' --sort=-v:refname | head -1)..HEAD --oneline` (if no tags, use `git log --oneline -20`)
-4. Based on the changes, suggest a version following semver:
-   - PATCH (0.2.x): bug fixes, minor tweaks
-   - MINOR (0.x.0): new features, new commands
-   - MAJOR (x.0.0): breaking changes
-5. Present the suggestion to the user and ask for confirmation. Show the commits that will be included.
+1. Get the current version from `cmd/version.go` (the `Version` variable) and the latest tag: `prev=$(git tag -l 'v*' --sort=-v:refname | head -1)`.
+2. List what landed on `main` since the tag: `git log $prev..HEAD --first-parent --format='%h %s'` (no tag yet: `git log -20 --first-parent --format='%h %s'`). Each PR is one first-parent commit: a squash merge whose subject ends in `(#N)`, or a merge commit `Merge pull request #N from …`; read each PR's body with `gh pr view N --json number,title,body`. A commit with neither was made on `main` directly: classify it from its subject and diff — the previous release's own commits (`release: vX.Y.Z`, `docs(guide): stamp … Learn cards`) are `internal`.
+3. Read each PR's `Changelog:` lines (the "Changelog" section of `.github/pull_request_template.md`), ignoring text inside `<!-- … -->`: `Changelog: <category> [<area>] — <line for users>`, one line per user-visible change, several allowed; the area is optional and written without brackets (`Changelog: fixed mac — The tray icon no longer flickers after sleep.`). A PR with no line, or a line still holding the template's placeholder (`<category>` or `<line for users>`), gets its category guessed from its title and diff; mark every guessed line `(guessed)` in the ask. An umbrella PR carries one line per change of all its targets.
+4. Categories, in the order the ask and the notes use (the keys are fixed — the PR template, this file and the notes use the same ones):
+
+   | Key | Badge in the notes | What belongs here | Bump |
+   |---|---|---|---|
+   | `requirements` | ⚠️ Requirements | A new minimum macOS/iOS, a new permission, a one-way data migration (no downgrade after it) | patch, ⚠️ |
+   | `new` | ✨ New | A new entry point: a screen, tab, CLI command, connector or integration | minor |
+   | `extended` | ➕ Extended | Inside an existing entry point, the user can now do something they could not before | patch |
+   | `improved` | 💅 Improved | The same thing, done better: faster, clearer text, fewer clicks | patch |
+   | `changed` | 🔀 Changed | Doing what they did before, the user gets a different result: a new default, a move, a rename, a reworked flow | patch, ⚠️ |
+   | `removed` | 🗑 Removed | A feature, setting or command is gone | minor |
+   | `security` | 🔒 Security | A security fix | patch |
+   | `fixed` | 🐞 Fixed | It did not behave as designed or documented | patch |
+   | `internal` | — (not in the notes) | Refactors, tests, CI, build, developer docs: nothing a user sees | none |
+
+   `area` is optional: `mac`, `iphone`, `cli`; a connector-specific change names the connector (`slack`, `jira`, …). Tie-breaks: if a returning user would look for the thing in its old place or under its old name, it is `changed`, not `improved`; a security bug is `security`, not `fixed`. A change in several categories takes the line under its main category; the version follows the heaviest one.
+5. The version:
+   - **No release** if every change is `internal`: tell the user there is nothing to release and stop.
+   - **MAJOR** only when the user asks for it.
+   - **MINOR** (`0.x.0`, patch reset) when any change is `new` or `removed`.
+   - **PATCH** otherwise.
+6. Ask the user (one ask): the suggested version and why, then the changes grouped by category in the table's order, each line `#<PR> <line>` (plus `(guessed)`), with `internal` collapsed to a count. Put a ⚠️ line at the top when there are `changed`, `requirements` or `removed` entries ("changes users' habits / cannot be undone — consider a bigger bump"). The user may move a line to another category or edit it; recompute the version after their edits.
 
 ## Step 2: Generate Release Notes
 
-Based on the commits since last release, generate release notes in this format:
+Build the notes from the confirmed lines, one section per non-empty category, in the table's order (requirements first — they decide whether a user can update at all; `internal` never appears). Nothing else goes into the notes (only the `min_version` marker, below, which the app strips): the Mac app's Software Update window reads these headings to draw its badges.
 
 ```
 ## What's New
 
-### Features
-- [list new features, if any]
+### ⚠️ Requirements
+- [line] (Mac)
 
-### Improvements
-- [list improvements, if any]
+### ✨ New
+- [line] (iPhone)
 
-### Bug Fixes
-- [list fixes, if any]
+### ➕ Extended
+### 💅 Improved
+### 🔀 Changed
+### 🗑 Removed
+### 🔒 Security
+### 🐞 Fixed
 
 **Full Changelog**: [previous_tag]...[new_tag]
 ```
 
-Group commits by type. Skip merge commits. Write in English. Be concise — one line per change.
+Write in English, one line per change, in user words (what they can do or notice, not the code). The area, when set, goes at the end in parentheses (`Mac`, `iPhone`, `CLI`, `Slack`, …). **Security lines stay vague** — this repository is public and users update later: say what area was hardened ("Tightened how shared links are validated"), never the attack, the input or the file; the details stay in the private triage.
+
+Before showing them, check the notes against the format the app reads: every `###` heading is one of the eight badge headings above, spelled exactly, with at least one line under it (an empty category is left out, not written as an empty heading). A heading the app does not know makes the Software Update window drop all badges and show the notes as plain text.
 
 Show the release notes to the user and ask for confirmation.
 
@@ -86,7 +108,7 @@ make release-check
 
 If `periphery-check` fails (dead-code count above baseline), either clean up
 the new dead code or — only after a deliberate review — refresh the baseline
-with `make periphery-baseline` and explain in the release notes why.
+with `make periphery-baseline` and explain why in the release commit message (not in the public notes).
 
 ## Step 6: Build
 

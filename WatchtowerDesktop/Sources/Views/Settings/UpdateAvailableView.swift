@@ -128,12 +128,51 @@ struct UpdateAvailableView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 ScrollView {
-                    MarkdownView(text: releaseNotes)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Group {
+                        if let parsed = ReleaseNotesSections.parse(releaseNotes) {
+                            categorisedNotes(parsed)
+                        } else {
+                            MarkdownView(text: releaseNotes)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
         .environment(\.openURL, AllowedURLSchemes.openURLAction)
+    }
+
+    /// Notes written by `/release`: each category section under its badge.
+    private func categorisedNotes(_ parsed: ReleaseNotesSections) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.large) {
+            if !parsed.leading.isEmpty {
+                MarkdownView(text: parsed.leading)
+            }
+            ForEach(Array(parsed.sections.enumerated()), id: \.offset) { _, section in
+                VStack(alignment: .leading, spacing: Spacing.regular) {
+                    MenuLabel(text: section.category.title, systemImage: section.category.systemImage,
+                              color: Self.tone(section.category), isMenu: false)
+                        .accessibilityAddTraits(.isHeader)
+                    MarkdownView(text: section.body)
+                }
+            }
+            if !parsed.trailing.isEmpty {
+                MarkdownView(text: parsed.trailing)
+            }
+        }
+    }
+
+    private static func tone(_ category: ReleaseNotesCategory) -> Color {
+        switch category {
+        case .requirements: Tone.warning
+        case .new: .accentColor
+        case .extended: Tone.status("teal")
+        case .improved: Tone.status("blue")
+        case .changed: Tone.amber
+        case .removed: Tone.error
+        case .security: Tone.status("purple")
+        case .fixed: Tone.success
+        }
     }
 
     @ViewBuilder
