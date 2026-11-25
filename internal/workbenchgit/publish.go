@@ -413,12 +413,15 @@ func Publish(ctx context.Context, o Options, req PublishRequest) (res PublishRes
 		return res, failure(nil, err)
 	}
 	dir := filepath.Join(o.Scratch, strconv.FormatInt(req.ID, 10))
-	removeScratch(r, dir)
-	defer removeScratch(r, dir)
+	p, err := r.locatePaths(ctx)
+	if err != nil {
+		return res, failure(nil, err)
+	}
+	defer removeScratch(r, p, dir)
 	if err := os.MkdirAll(o.Scratch, 0o700); err != nil {
 		return res, err
 	}
-	if err := commitInScratch(ctx, r, dir, req); err != nil {
+	if err := commitInScratch(ctx, r, p, dir, req); err != nil {
 		return res, err
 	}
 	if err := push(ctx, o, r, dir, strings.TrimSpace(string(pushURL)), req.Branch); err != nil {
@@ -459,24 +462,30 @@ func fetchBase(ctx context.Context, o Options, r *repo, url, sha string) error {
 // missing (an unmounted volume). It runs under its own short context so a
 // timed-out Publish still cleans up. Best effort: what it cannot remove the
 // next Publish of this id removes first.
-func removeScratch(r *repo, dir string) {
+func removeScratch(r *repo, p paths, dir string) {
 	ctx, cancel := context.WithTimeout(context.Background(), FetchTimeout)
 	defer cancel()
+	unlock, err := LockWorktrees(ctx, p.commonDir)
+	if err != nil {
+		return
+	}
+	defer unlock()
+	clearScratch(ctx, r, p, dir)
+}
+
+// clearScratch is removeScratch's work; the caller holds the worktree lock.
+func clearScratch(ctx context.Context, r *repo, p paths, dir string) {
 	if _, err := os.Lstat(dir); err == nil {
 		_, _ = r.git(ctx, "worktree", "remove", "--force", dir)
 		_ = os.RemoveAll(dir)
 	}
-	forgetWorktree(ctx, r, dir)
+	forgetWorktree(p, dir)
 }
 
 // forgetWorktree removes the registration (<common dir>/worktrees/<name>)
 // whose work tree is dir, if one is left — the entry `worktree remove`
 // could not drop because the folder was already gone — and no other.
-func forgetWorktree(ctx context.Context, r *repo, dir string) {
-	p, err := r.locatePaths(ctx)
-	if err != nil {
-		return
-	}
+func forgetWorktree(p paths, dir string) {
 	want := map[string]bool{filepath.Clean(dir): true}
 	if parent, err := filepath.EvalSymlinks(filepath.Dir(dir)); err == nil {
 		want[filepath.Join(parent, filepath.Base(dir))] = true
@@ -507,8 +516,17 @@ func forgetWorktree(ctx context.Context, r *repo, dir string) {
 // file holds req.Before, stages req.After with the file's mode (or, for
 // req.Delete, the file's removal) and commits that one file with the
 // repository's identity and no hooks.
-func commitInScratch(ctx context.Context, r *repo, dir string, req PublishRequest) error {
-	if _, err := r.git(ctx, "worktree", "add", "--detach", "--no-checkout", dir, req.BaseSHA); err != nil {
+func commitInScratch(ctx context.Context, r *repo, p paths, dir string, req PublishRequest) error {
+	// What an earlier Publish of this id left goes first, under the same lock
+	// as the add, so nothing can re-register dir in between.
+	unlock, err := LockWorktrees(ctx, p.commonDir)
+	if err != nil {
+		return failure(nil, err)
+	}
+	clearScratch(ctx, r, p, dir)
+	_, err = r.git(ctx, "worktree", "add", "--detach", "--no-checkout", dir, req.BaseSHA)
+	unlock()
+	if err != nil {
 		return failure(nil, err)
 	}
 	s := &repo{o: r.o, bin: r.bin}
