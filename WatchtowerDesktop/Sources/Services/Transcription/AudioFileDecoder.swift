@@ -4,6 +4,12 @@ import Foundation
 enum AudioFileDecoderError: Error, LocalizedError {
     case unsupportedFormat
     case conversionFailed(String)
+    /// Encoded audio with no packet table: the recorder's writer was never
+    /// closed (see `AudioFileIntegrity`). Not recoverable with Apple's
+    /// frameworks — the AAC decoder accepts truncated packets without an
+    /// error, so the packet boundaries cannot be found by trial — so the
+    /// file is kept as it is for a manual rescue.
+    case notFinalized
 
     var errorDescription: String? {
         switch self {
@@ -11,6 +17,8 @@ enum AudioFileDecoderError: Error, LocalizedError {
             return "Audio file format is not convertible to 16 kHz mono Float32 PCM"
         case let .conversionFailed(detail):
             return "Audio conversion failed: \(detail)"
+        case .notFinalized:
+            return "The recording file is not finalized — its audio could not be read. The file is kept for recovery."
         }
     }
 }
@@ -21,6 +29,7 @@ enum AudioFileDecoder {
     /// Decode any AVFoundation-readable file to 16 kHz mono Float32 samples.
     static func decodePCM16k(url: URL) throws -> [Float] {
         let file = try AVAudioFile(forReading: url)
+        try rejectUnfinalized(file, at: url)
         let sourceFormat = file.processingFormat
 
         guard let targetFormat = AVAudioFormat(
@@ -101,6 +110,15 @@ enum AudioFileDecoder {
         }
 
         return samples
+    }
+
+    /// A file listing no frames is either truly empty or one whose writer
+    /// never finalized it; only the header tells them apart, and the second
+    /// must not pass for a recording of silence.
+    private static func rejectUnfinalized(_ file: AVAudioFile, at url: URL) throws {
+        if file.length == 0, case .unfinalized = try? AudioFileIntegrity.inspect(url: url) {
+            throw AudioFileDecoderError.notFinalized
+        }
     }
 
     private static func append(_ buffer: AVAudioPCMBuffer, to samples: inout [Float]) throws {
