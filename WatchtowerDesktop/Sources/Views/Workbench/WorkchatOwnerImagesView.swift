@@ -66,10 +66,21 @@ struct WorkchatImageThumbnail: View {
     /// Bumped when a click finds the file will not open: the load runs again, so a file gone meanwhile turns into
     /// the missing chip.
     @State private var attempt = 0
+    @Environment(\.displayScale) private var displayScale
 
     init(image: WorkchatOwnerImages.ImageFile) {
         self.image = image
         _load = State(initialValue: WorkchatThumbnailCache.cached(image.path))
+    }
+
+    /// The size a thumbnail is drawn at: its pixels at the screen's scale (a small screenshot at its own size, never
+    /// enlarged), shrunk to fit `Thumbnail.maxSide`. The decode is at most twice that in pixels, so a Retina screen
+    /// draws it pixel for pixel.
+    static func drawnSize(pixels: CGSize, scale: CGFloat) -> CGSize {
+        let scale = max(scale, 1)
+        let points = CGSize(width: pixels.width / scale, height: pixels.height / scale)
+        let fit = min(1, Thumbnail.maxSide / max(points.width, points.height, 1))
+        return CGSize(width: points.width * fit, height: points.height * fit)
     }
 
     private struct LoadKey: Hashable {
@@ -81,9 +92,12 @@ struct WorkchatImageThumbnail: View {
         Group {
             switch load {
             case .image(let cgImage)?:
+                let size = Self.drawnSize(pixels: CGSize(width: cgImage.width, height: cgImage.height),
+                                          scale: displayScale)
                 Button { open() } label: {
-                    // Decoded at twice the points (a Retina screen): drawn at half its pixels, at most `Thumbnail.maxSide`.
-                    Image(decorative: cgImage, scale: 2)
+                    Image(decorative: cgImage, scale: 1)
+                        .resizable()
+                        .frame(width: size.width, height: size.height)
                         .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
                 }
                 .buttonStyle(.plain)

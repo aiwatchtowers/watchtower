@@ -63,6 +63,16 @@ final class WorkchatThumbnailCacheTests: XCTestCase {
         guard case .missing = await WorkchatThumbnailCache.load(path) else { return XCTFail("loads missing") }
     }
 
+    /// A thumbnail is drawn at its own point size on this screen, never enlarged, at most `Thumbnail.maxSide`.
+    func testDrawnSize() {
+        let size = WorkchatImageThumbnail.drawnSize
+        XCTAssertEqual(size(CGSize(width: 100, height: 40), 2), CGSize(width: 50, height: 20), "a small Retina shot")
+        XCTAssertEqual(size(CGSize(width: 100, height: 40), 1), CGSize(width: 100, height: 40))
+        XCTAssertEqual(size(CGSize(width: 440, height: 275), 2), CGSize(width: 220, height: 137.5), "the decode's cap")
+        XCTAssertEqual(size(CGSize(width: 440, height: 880), 1), CGSize(width: 110, height: 220), "shrunk to fit")
+        XCTAssertEqual(size(CGSize(width: 0, height: 0), 2), .zero)
+    }
+
     func testRewrittenFileIsDecodedAgain() async throws {
         let path = try file("again.png", try png())
         guard case .image = await WorkchatThumbnailCache.load(path) else { return XCTFail("decoded") }
