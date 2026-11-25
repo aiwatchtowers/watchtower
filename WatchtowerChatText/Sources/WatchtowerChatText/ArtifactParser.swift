@@ -78,6 +78,13 @@ public enum ArtifactParser {
         cache.object(forKey: cacheKey(text, final: final))?.parsed
     }
 
+    /// Drops every memoized parse, as `NSCache` may under memory pressure
+    /// (tests: start from an empty cache, so earlier parses near the cost
+    /// limit cannot evict the one under test).
+    public static func removeCachedParses() {
+        cache.removeAllObjects()
+    }
+
     private static func cacheKey(_ text: String, final: Bool) -> NSString {
         ((final ? "1" : "0") + text) as NSString
     }
