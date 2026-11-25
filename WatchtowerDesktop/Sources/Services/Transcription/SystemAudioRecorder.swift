@@ -2,12 +2,13 @@ import AVFoundation
 import AudioToolbox
 import CoreAudio
 import Foundation
+import os
 import WatchtowerCore
 
-/// Captures microphone + system audio into a single 16 kHz mono AAC file in a
-/// CAF container (crash-tolerant: CAF needs no header finalization, so a file
-/// cut off mid-recording stays decodable) without any virtual audio device
-/// (no BlackHole): a CoreAudio process tap grabs the system output, and a
+/// Captures microphone + system audio into a single 16 kHz mono AAC file
+/// (ADTS for a `.aac` URL, which stays readable even if the writer is never
+/// closed; recordings made before were AAC in CAF) without any virtual audio
+/// device (no BlackHole): a CoreAudio process tap grabs the system output, and a
 /// private aggregate device combines it with the default input so ONE IOProc
 /// delivers both streams clock-aligned.
 ///
@@ -21,6 +22,8 @@ final class SystemAudioRecorder: AudioRecording {
     }
 
     static let reattachKey = "transcription.reattachSystemAudio"
+
+    static let log = Logger(subsystem: Constants.bundleID, category: "recorder")
 
     /// `transcription.reattachSystemAudio`, default ON: rebuild the tap when
     /// the default output or input device changes mid-recording
@@ -69,6 +72,47 @@ final class SystemAudioRecorder: AudioRecording {
     func setMicMuted(_ muted: Bool) {
         guard #available(macOS 14.4, *), let recorder = impl as? TapRecorderImpl else { return }
         recorder.setMicMuted(muted)
+    }
+
+    /// The after-close check `stop()` runs: a recording that wrote frames
+    /// must come back as a file listing packets, or it fails the stop instead
+    /// of passing for a finished recording; the file stays on disk either way.
+    /// For today's ADTS `.aac` every packet carries its own header, so a file
+    /// whose writer could not be closed (macOS 14, or a leaked writer) still
+    /// lists every packet flushed to disk and passes; it fails only when no
+    /// readable packet reached the disk. A legacy AAC-in-CAF file gets its
+    /// packet table only when the writer closes it, and one without the table
+    /// decodes to nothing (`AudioFileIntegrity`). Internal for tests.
+    static func verifyFinalized(_ result: RecordingResult, framesWritten: Int64) throws {
+        let url = result.audioURL
+        guard framesWritten > 0 else {
+            log.info("stop: no frames written, nothing to verify")
+            return
+        }
+        let integrity: AudioFileIntegrity
+        do {
+            integrity = try AudioFileIntegrity.inspect(url: url)
+        } catch {
+            let status = (error as? AudioFileIntegrity.Unreadable)?.status ?? 0
+            log.error(
+                "stop: closed recording unreadable (OSStatus \(status, privacy: .public)), \(framesWritten, privacy: .public) frames written"
+            )
+            throw AudioRecordingError.notFinalized(result)
+        }
+        switch integrity {
+        case .finalized(let packets):
+            log.info(
+                "stop: recording readable, \(framesWritten, privacy: .public) frames written, \(packets, privacy: .public) packets"
+            )
+        case .unfinalized(let bytes):
+            log.error(
+                "stop: recording NOT finalized, \(framesWritten, privacy: .public) frames written, 0 packets in \(bytes, privacy: .public) bytes"
+            )
+            throw AudioRecordingError.notFinalized(result)
+        case .empty:
+            log.error("stop: recording NOT finalized, \(framesWritten, privacy: .public) frames written, no audio bytes")
+            throw AudioRecordingError.notFinalized(result)
+        }
     }
 }
 
@@ -243,7 +287,7 @@ private final class TapRecorderImpl {
             reattach?.stop()
             reattach = nil
         }
-        // Teardown order matters: IOProc → aggregate → tap, then finalize the file.
+        // Teardown order matters: IOProc → aggregate → tap, then close the file.
         if let procID = ioProcID {
             AudioDeviceStop(aggregateID, procID)
             AudioDeviceDestroyIOProcID(aggregateID, procID)
@@ -253,7 +297,14 @@ private final class TapRecorderImpl {
         // Barrier on the write queue so in-flight buffers land before closing.
         let (frames, url, writeError): (Int64, URL?, Error?) = writeQueue.sync {
             let result = (framesWritten, fileURL, firstWriteError)
-            audioFile = nil // deallocating AVAudioFile closes the file
+            // Closing flushes the encoder's last packets (and, for a legacy
+            // CAF, writes its packet table). Dropping the last reference was
+            // trusted to do it, and once left the underlying ExtAudioFile
+            // open: close explicitly where the API exists (macOS 15+). An
+            // ADTS file left open loses only that unflushed tail;
+            // `verifyFinalized` below fails a file with no readable packet.
+            if #available(macOS 15, *) { audioFile?.close() }
+            audioFile = nil
             converter = nil
             closeActivitySidecar()
             return result
@@ -266,10 +317,13 @@ private final class TapRecorderImpl {
         if let writeError {
             // The truncated file stays on disk for whatever it still holds,
             // but a cut-short recording must not be reported as a success.
+            SystemAudioRecorder.log.error("stop: write failed mid-recording after \(frames, privacy: .public) frames")
             throw AudioRecordingError.writeFailed(writeError.localizedDescription)
         }
         let duration = Int(Double(frames) / Self.outputSampleRate)
-        return RecordingResult(audioURL: audioURL, durationSec: duration)
+        let result = RecordingResult(audioURL: audioURL, durationSec: duration)
+        try SystemAudioRecorder.verifyFinalized(result, framesWritten: frames)
+        return result
     }
 
     deinit {
@@ -470,7 +524,7 @@ private final class TapRecorderImpl {
             }
         } catch {
             // Disk-full/IO error: stop accumulating silently corrupt data; the
-            // partial file up to here remains decodable (CAF) after stop().
+            // partial file up to here stays decodable (ADTS needs no close).
             firstWriteError = error
         }
     }
@@ -508,15 +562,16 @@ private final class TapRecorderImpl {
                 guard let self else { throw CancellationError() }
                 try self.swapCapture()
             },
-            log: { print("[Recorder] \($0)") }
+            log: { SystemAudioRecorder.log.info("\($0, privacy: .public)") }
         )
         controlQueue.sync {
             do {
                 try controller.start()
                 reattach = controller
             } catch {
-                print("[Recorder] cannot follow audio device changes, the tap will not re-attach: "
-                    + error.localizedDescription)
+                SystemAudioRecorder.log.error(
+                    "cannot follow audio device changes, the tap will not re-attach: \(error.localizedDescription, privacy: .public)"
+                )
             }
         }
     }
@@ -577,7 +632,9 @@ private final class TapRecorderImpl {
                 // Typically the old mic is gone and its aggregate with it.
                 // Destroying the proc guarantees it delivers nothing more
                 // into the new format; there is nothing left to roll back to.
-                print("[Recorder] stopping the previous capture failed (OSStatus \(stopStatus)), dropping it")
+                SystemAudioRecorder.log.error(
+                    "stopping the previous capture failed (OSStatus \(stopStatus, privacy: .public)), dropping it"
+                )
                 AudioDeviceDestroyIOProcID(aggregateID, procID)
                 oldProcID = nil
                 ioProcID = nil
@@ -590,12 +647,14 @@ private final class TapRecorderImpl {
             if let procID = oldProcID {
                 let restart = AudioDeviceStart(aggregateID, procID)
                 if restart != noErr {
-                    print("[Recorder] the previous capture could not be restarted either (OSStatus \(restart)): "
-                        + "nothing is being captured until a re-attach succeeds")
+                    SystemAudioRecorder.log.error(
+                        "previous capture not restarted either (OSStatus \(restart, privacy: .public)): nothing is captured until a re-attach"
+                    )
                 }
             } else {
-                print("[Recorder] no previous capture to fall back to: "
-                    + "nothing is being captured until a re-attach succeeds")
+                SystemAudioRecorder.log.error(
+                    "no previous capture to fall back to: nothing is being captured until a re-attach succeeds"
+                )
             }
             discardNew(newProcID)
             throw AudioRecordingError.deviceSetupFailed("starting the re-attached device (OSStatus \(status))")
@@ -605,7 +664,9 @@ private final class TapRecorderImpl {
         tapID = tap.id
         aggregateID = newAggregate
         ioProcID = newProcID
-        print("[Recorder] system audio tap rebuilt on the current default devices (\(Int(sampleRate)) Hz)")
+        SystemAudioRecorder.log.info(
+            "system audio tap rebuilt on the current default devices (\(Int(sampleRate), privacy: .public) Hz)"
+        )
 
         // Starting IO can move a Bluetooth headset into its call profile and
         // change the rate under the new aggregate; follow it so the file is
@@ -614,7 +675,7 @@ private final class TapRecorderImpl {
         if let settledRate = try? Self.requireNominalSampleRate(of: newAggregate), settledRate != sampleRate,
            let settled = try? Self.makeCaptureFormat(sampleRate: settledRate) {
             writeQueue.sync { installCaptureFormat(settled) }
-            print("[Recorder] re-attached device settled at \(Int(settledRate)) Hz")
+            SystemAudioRecorder.log.info("re-attached device settled at \(Int(settledRate), privacy: .public) Hz")
         }
     }
 
@@ -675,9 +736,9 @@ private final class TapRecorderImpl {
         return newAggregateID
     }
 
-    /// Opens the 16 kHz mono AAC output file (CAF container — `AVAudioFile`
-    /// infers it from the `.caf` URL extension; no header finalization, so an
-    /// app crash mid-recording leaves a decodable file) plus the device-rate →
+    /// Opens the 16 kHz mono AAC output file (`AVAudioFile` infers the
+    /// container from the URL extension: ADTS for the `.aac` the Center
+    /// names new recordings with, CAF for a `.caf`) plus the device-rate →
     /// 16 kHz converter. Sets `audioFile`/`converter`/`deviceFormat` only after
     /// every step succeeds, so on throw no partial state is left behind; the
     /// caller owns device/tap teardown.
@@ -738,7 +799,9 @@ private final class TapRecorderImpl {
         if aggregateID != kAudioObjectUnknown {
             let status = AudioHardwareDestroyAggregateDevice(aggregateID)
             if status != noErr {
-                print("[Recorder] destroying the recorder aggregate device failed (OSStatus \(status))")
+                SystemAudioRecorder.log.error(
+                    "destroying the recorder aggregate device failed (OSStatus \(status, privacy: .public))"
+                )
             }
             aggregateID = AudioObjectID(kAudioObjectUnknown)
         }
@@ -749,7 +812,7 @@ private final class TapRecorderImpl {
         if tapID != kAudioObjectUnknown {
             let status = AudioHardwareDestroyProcessTap(tapID)
             if status != noErr {
-                print("[Recorder] destroying the process tap failed (OSStatus \(status))")
+                SystemAudioRecorder.log.error("destroying the process tap failed (OSStatus \(status, privacy: .public))")
             }
             tapID = AudioObjectID(kAudioObjectUnknown)
         }

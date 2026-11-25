@@ -84,7 +84,7 @@ text: Click **Not clear?** under an ask's question and the assistant explains it
 area: development
 level: next
 kind: feature
-since: next
+since: 0.29.5
 action: nav:projects
 -->
 
@@ -136,6 +136,8 @@ Watchtower notifies you when an agent files an ask (**Agent asks: <title>**). Se
 - **The drawer did not open.** The pane may be too narrow for it beside the terminal; use **Open** on the banner. Or you closed it with **Later**; it stays closed until the next Full ask.
 - **The answer did not reach the agent.** Look for the highlighted line over the terminal: it says whether it is waiting for a permission prompt, typed but not sent, or copied to the clipboard because the terminal could not take it. Follow what it says.
 - **Withdrawn or Replaced.** The agent withdrew the ask or filed a newer round. It moves to **▸ N closed**.
+- **No Not clear?** Review asks have none; it is on questions and checks only.
+- **Couldn't explain.** The chat could not open; **Retry** opens it again. Without **Retry**, the ask's workbench is gone.
 - **Unsent answers on quit.** Drafts survive switching sessions, workbenches and tabs. Quitting Watchtower with unsent answers asks first.
 
 Answer not reaching the agent? See [A Workbench session or ask is stuck](../../troubleshooting/workbench-session-or-ask-stuck.md).

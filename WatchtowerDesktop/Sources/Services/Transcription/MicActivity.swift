@@ -15,7 +15,7 @@ struct MicActivity: Equatable {
 
     let bins: [Bin]
 
-    /// rec_X.caf → rec_X.activity: the rec_ prefix keeps the sidecar inside
+    /// rec_X.aac (or a legacy rec_X.caf) → rec_X.activity: the rec_ prefix keeps the sidecar inside
     /// the Go daemon's orphan-sweep contract (cleanupOrphanRecordings), so it
     /// is deleted alongside the audio after the retention window.
     static func url(for audioURL: URL) -> URL {

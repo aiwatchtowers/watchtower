@@ -50,7 +50,7 @@ extension MeetingRecorderCenter {
     /// voice matching to the event's attendees.
     ///
     /// The name is picked through `recordingNameClaims` — the claims
-    /// `startRecording` picks its `.caf` name through and holds until its
+    /// `startRecording` picks its `.aac` name through and holds until its
     /// start resolves — and reserved by an exclusive row insert, so ingests
     /// and a Desktop capture of the same second never share a stem (#1298).
     /// Returns the ingested audio URL — the key `onJobPhase`/`onJobFinished`

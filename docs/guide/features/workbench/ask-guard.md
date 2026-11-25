@@ -3,6 +3,7 @@
 The ask guard makes sure a workbench agent's question reaches you as an ask instead of scrolling past in its terminal. It is on by default in every workbench session; how asks are answered is on [Asks](asks.md).
 
 ## Why use it
+<!-- learn: none -->
 
 A question an agent writes as plain text in the terminal is easy to miss, and the agent waits for an answer you may never see. The guard sends such a question back to the agent to file as an ask, so it waits in **Waiting for you** with every other one.
 
@@ -20,6 +21,7 @@ since: 0.24.0
 By default (ask guard **strict**, finish check **on**), Claude Code's own question dialog is turned off in a workbench session. A check at the end of every agent turn sends any question written as plain text back to the agent to file as an ask. The finish check sends back a turn that reports the work done without marking the session **Finished**, and lets the agent finish only the whole target it was started for, its changes checked against the reviewer's AI overview; what it leaves comes to you as one ask.
 
 ## Using it
+<!-- learn: none -->
 
 The methodology can change this; see [Methodology](methodology.md) and **Agent Settings…**. With **soft**, Claude Code's question dialog works while you are in the session, and plain-text questions are recorded instead of bounced back. With **off**, nothing is checked. The finish check can be switched off on its own.
 
@@ -32,6 +34,7 @@ One short question may stay in the terminal while you are in that session. If yo
 A half-typed reply in Claude Code's input holds the question back for up to 30 minutes. If you answer in the terminal, nothing is filed.
 
 ## When it's empty or wrong
+<!-- learn: none -->
 
 - **Plain-text questions are not bounced back.** The guard is **soft** or **off** for this workbench; see **Agent Settings…** and [Methodology](methodology.md).
 

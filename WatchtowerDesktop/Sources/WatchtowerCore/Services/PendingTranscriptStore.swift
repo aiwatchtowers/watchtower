@@ -3,8 +3,9 @@ import GRDB
 
 /// The meeting recorder's record of recordings not yet saved (#604 S3/S4):
 /// replaces the `rec_*.meta`/`.txt`/`.json` sidecars. Recording names are the
-/// audio files' base names (`rec_<ts>.caf`). Writes await the writer (board
-/// #670: no synchronous write on the main thread); reads are synchronous.
+/// audio files' names (`rec_<ts>.aac`; `.caf` from before the switch to ADTS,
+/// `.m4a` from the phone). Writes await the writer (board #670: no
+/// synchronous write on the main thread); reads are synchronous.
 package protocol PendingTranscriptStore: Sendable {
     /// `isPrivate` is the recording's private flag (MEETPRIV), kept so a
     /// recording recovered after a crash still saves private.

@@ -85,7 +85,8 @@ Session or ask stuck? See [A Workbench session or ask is stuck](../../troublesho
 - [Sessions](sessions.md): states, the sessions panel, reports, starting and resuming.
 - [Folders and sub-sessions](folders.md): several repositories on one bench, sub-sessions and agent messages.
 - [Workchat](workchat.md): a session's dialog as a chat you can drive it from.
-- [Asks](asks.md): reviews, checks and questions, and how answers reach the agent.
+- [Asks](asks.md): reviews, checks and questions, how answers reach the agent, and **Not clear?**.
+- [The ask guard](ask-guard.md): a question typed in the terminal still reaches you as an ask.
 - [Code viewer](code-viewer.md): the Files pane, Open Quickly and go to definition.
 - [Switching branches](branches.md): switch, fetch and check out branches safely.
 - [Worktrees and cleanup](worktrees-and-cleanup.md): own worktree per session, cleaning up after a session.
