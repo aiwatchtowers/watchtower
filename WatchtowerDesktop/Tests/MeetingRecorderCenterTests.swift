@@ -527,8 +527,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
     }
 
     func testNotFinalizedStopWithEmptyLivePassFailsWithNotFinalized() async throws {
-        // Live was on but heard nothing: the batch path decodes the file and
-        // fails with the decoder's honest message.
+        // Live was on but heard nothing: the job fails with the stop's
+        // not-finalized reason, before the decode's own error could replace it.
         let audio = try makeDummyAudioFile()
         defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
 
@@ -552,7 +552,45 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         guard case .failed(let reason) = center.phase else {
             return XCTFail("expected .failed, got \(center.phase)")
         }
-        XCTAssertTrue(reason.contains("not finalized"), "got: \(reason)")
+        XCTAssertEqual(reason, AudioRecordingError.notFinalized(RecordingResult(audioURL: audio, durationSec: 1))
+            .localizedDescription, "the stop's reason, not the decoder's")
+        XCTAssertEqual(center.pendingAudioURL, audio, "the audio must be kept for recovery")
+        XCTAssertEqual(runner.invocations.count, 0)
+    }
+
+    /// A not-finalized ADTS file can be 0 bytes, which the decoder reads as
+    /// a recording of nothing (`[]`). With an empty live pass the job must
+    /// still fail with the stop's not-finalized reason, never "No speech
+    /// recognized" — and without decoding at all.
+    func testNotFinalizedStopWithEmptyLivePassFailsEvenWhenTheDecodeIsEmpty() async throws {
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+
+        let recorder = FakeRecorder()
+        let stopError = AudioRecordingError.notFinalized(RecordingResult(audioURL: audio, durationSec: 1))
+        recorder.stopError = stopError
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        var decodes = 0
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [""])) },
+            decode: { _ in decodes += 1; return [] },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        await center.startRecording(eventID: nil, title: "Ad hoc")
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        guard case .failed(let reason) = center.phase else {
+            return XCTFail("expected .failed, got \(center.phase)")
+        }
+        XCTAssertEqual(reason, stopError.localizedDescription)
+        XCTAssertFalse(reason.contains("No speech"), "got: \(reason)")
+        XCTAssertEqual(decodes, 0, "the batch decode is not consulted")
         XCTAssertEqual(center.pendingAudioURL, audio, "the audio must be kept for recovery")
         XCTAssertEqual(runner.invocations.count, 0)
     }

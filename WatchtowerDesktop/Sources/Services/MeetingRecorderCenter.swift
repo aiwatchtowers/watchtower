@@ -134,6 +134,7 @@ final class MeetingRecorderCenter {
         /// and survives a retry so a label-less persisted transcript keeps its
         /// flag when the retry short-circuits to it.
         var rolesError: String?
+        var stopError: AudioRecordingError? // `.notFinalized` from Stop: the batch path fails with it (`batchSamples`)
     }
 
     /// A finished recording with no transcript row yet: recovered from a crash
@@ -537,7 +538,7 @@ final class MeetingRecorderCenter {
     private let recorderFactory: () -> AudioRecording
     private let engineFactory: (TranscriptionConfig) async throws -> Transcriber
     private let diarizerFactory: (TranscriptionConfig) async throws -> SpeakerDiarizing
-    private let decode: (URL) throws -> [Float]
+    let decode: (URL) throws -> [Float]
     private let runnerResolver: () -> CLIRunnerProtocol?
     private let notifier: MeetingTranscriptNotifying
     let defaults: UserDefaults
@@ -1202,11 +1203,12 @@ final class MeetingRecorderCenter {
         // (`setCapturePrivate`) for as long as Stop finalizes the file, so a
         // flip in that window must reach the job (MEETPRIV-01).
         let result: RecordingResult
+        var stopError: AudioRecordingError?
         do {
             result = try await recorder.stop() // also finishes liveSamples
         } catch AudioRecordingError.notFinalized(let kept) where ownsLivePass {
-            // Undecodable file, but this capture owns its live pass: stop as usual so the live text
-            // is saved; without live text the batch decode fails with the honest message.
+            // Undecodable, but this capture owns its live pass: its live text is saved; without any the job fails with this.
+            stopError = .notFinalized(kept)
             SystemAudioRecorder.log.error("stop: not finalized (\(kept.durationSec, privacy: .public) s), saving the live text")
             result = kept
         } catch {
@@ -1272,7 +1274,7 @@ final class MeetingRecorderCenter {
         // dips through `.idle` mid-run. Marked as awaiting its tail until the
         // handover below, which is what guarantees the job starts only once it
         // is fully built — with the live text it may not need the engine for.
-        let job = ProcessingJob(audioURL: result.audioURL, eventID: eventID, title: title, isPrivate: isPrivate)
+        let job = ProcessingJob(audioURL: result.audioURL, eventID: eventID, title: title, isPrivate: isPrivate, stopError: stopError)
         jobs.append(job)
         if ownsLivePass { jobsAwaitingLiveTail.insert(job.id) }
         let task = startJobTask(jobID: job.id, config: config)
@@ -1325,8 +1327,7 @@ final class MeetingRecorderCenter {
         pendingLiveStart = nil
         return owns
     }
-    /// `consumeLivePassOwnership`'s answer without clearing the parked start.
-    private var ownsLivePass: Bool { captureLiveEnabled && pendingLiveStart == nil }
+    private var ownsLivePass: Bool { captureLiveEnabled && pendingLiveStart == nil } // without clearing the parked start
 
     /// Releases the engine slot a finished capture's live pass held and hands it
     /// on: to a recording that started while the tail was draining (with
@@ -1701,15 +1702,14 @@ final class MeetingRecorderCenter {
         guard let job = self.job(jobID) else { return nil }
         updateJob(jobID) { $0.phase = .transcribing(done: 0, total: 0) }
 
-        // Consume the reusable engine (if the live pass handed one over) up
-        // front, before any early-return path below — so an abandoned engine from
-        // a failed attempt is never left around for a later retry to pick up.
+        // Consume the reusable engine (if the live pass handed one over) up front, before any early
+        // return below, so an abandoned engine from a failed attempt is never left for a retry.
         let reusableEngine = job.engine
         updateJob(jobID) { $0.engine = nil }
 
         let samples: [Float]
         do {
-            samples = try decode(job.audioURL)
+            samples = try batchSamples(for: job)
         } catch {
             failJob(jobID, error.localizedDescription)
             return nil
