@@ -116,18 +116,35 @@ public enum PasteTokens {
     }
 
     /// `text` with each token whose number has a payload of its kind, and whose label occurs once, replaced: a text
-    /// token by its text, an image token by `imagePath(path)`. Every other bracket text stays as it is.
+    /// token by its text, an image token by `imagePath(path)`. Every other bracket text stays as it is. An image's
+    /// path is kept a word of its own: a space goes between it and a character glued to the token on either side
+    /// (`[Image #1][Image #2]`, `look[Image #1]`), unless that is whitespace, a quote or punctuation that closes
+    /// after it (`.,;:!?)]}`) or opens before it (`([{`).
     public static func expand(_ text: String, payloads: [Int: PastePayload], imagePath: (String) -> String) -> String {
         let result = NSMutableString(string: text)
         for match in singles(in: text).reversed() {
             let replacement: String
             switch (payloads[match.number], match.isImage) {
             case let (.text(pasted)?, false): replacement = pasted
-            case let (.image(path)?, true): replacement = imagePath(path)
+            case let (.image(path)?, true):
+                let before = match.range.location > 0 ? result.character(at: match.range.location - 1) : nil
+                let after = NSMaxRange(match.range) < result.length ? result.character(at: NSMaxRange(match.range)) : nil
+                let lead = before.map { separates($0, allowed: opensPath) } ?? false ? " " : ""
+                let trail = after.map { separates($0, allowed: closesPath) } ?? false ? " " : ""
+                replacement = lead + imagePath(path) + trail
             default: continue
             }
             result.replaceCharacters(in: match.range, with: replacement)
         }
         return result as String
+    }
+
+    /// What may touch an image path before it, and after it, without a space.
+    private static let opensPath = CharacterSet(charactersIn: "([{\"'").union(.whitespacesAndNewlines)
+    private static let closesPath = CharacterSet(charactersIn: ".,;:!?)]}\"'").union(.whitespacesAndNewlines)
+
+    /// A UTF-16 unit next to an image path that needs a space between them (half a surrogate pair always does).
+    private static func separates(_ unit: unichar, allowed: CharacterSet) -> Bool {
+        Unicode.Scalar(unit).map { !allowed.contains($0) } ?? true
     }
 }

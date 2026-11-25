@@ -1612,6 +1612,25 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertTrue(typedText.contains("see x"), "the expanded text goes to the terminal")
     }
 
+    /// Two image tokens with nothing between them, or one glued to a word, go as paths of their own: the agent gets
+    /// two files, not one long path (review round 1).
+    func testSendSpacesGluedImagePaths() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        _ = await model.paste(.image(Data([1]), name: "Pasted image.png"))
+        _ = await model.paste(.image(Data([2]), name: "Pasted image.png"))
+        let (first, second) = (try imagePath(model, 1), try imagePath(model, 2))
+        model.draft = "compare[Image #1][Image #2]."
+
+        await model.send()
+
+        let line = try XCTUnwrap(model.outgoing.first)
+        XCTAssertEqual(line.text, "compare \(WorkchatOutgoing.quoted(first)) \(WorkchatOutgoing.quoted(second)).")
+        let echo = SessionFeedEntry(id: "o1", kind: "owner", at: line.sentAt, text: line.text)
+        XCTAssertTrue(WorkchatOutgoing.matches(echo, line: line), "the echo still matches")
+    }
+
     func testDroppedImageStaysChip() async throws {
         let model = try makeModel(try await liveSession())
         let file = folder.appendingPathComponent("shot.png")

@@ -62,6 +62,14 @@ final class WorkchatOwnerImagesTests: XCTestCase {
                        "a word glued after the quote: not a whole token")
     }
 
+    /// Two pastes glued end to end (sent with no space between them) are two images.
+    func testGluedPathsSplitInTwo() {
+        let second = pasted.replacingOccurrences(of: "-1.png", with: "-2.PNG")
+        let result = split("look \(pasted)\(second).", existing: [pasted, second])
+        XCTAssertEqual(result.images.map(\.path), [pasted, second])
+        XCTAssertEqual(result.text, "look.")
+    }
+
     func testQuotedPathWithSpacesIsUnescaped() {
         let weird = "/Users/example/a \"b\" \\c/workchat-attachments/1/x.png"
         let text = "first \(WorkchatOutgoing.quoted(spaced)) then \(WorkchatOutgoing.quoted(weird))"

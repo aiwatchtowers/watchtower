@@ -44,6 +44,24 @@ final class PasteTokensTests: XCTestCase {
         XCTAssertEqual(out, "a x\ny b \"/tmp/p 1.png\"")
     }
 
+    /// An image path stays a word of its own: adjacent tokens and a word glued to one get a space, punctuation and
+    /// whitespace do not (review round 1).
+    func testExpandedImagePathIsAWordOfItsOwn() {
+        let payloads: [Int: PastePayload] = [1: .image(path: "/a-1.png"), 2: .image(path: "/a-2.png"), 3: .text("t")]
+        let expand = { PasteTokens.expand($0, payloads: payloads) { $0 } }
+        XCTAssertEqual(expand("[Image #1][Image #2]"), "/a-1.png /a-2.png")
+        XCTAssertEqual(expand("look[Image #1]please"), "look /a-1.png please")
+        XCTAssertEqual(expand("см.[Image #1]"), "см. /a-1.png", "a period before the path is not one after it")
+        XCTAssertEqual(expand("🙂[Image #1]"), "🙂 /a-1.png")
+        XCTAssertEqual(expand("see [Image #1]."), "see /a-1.png.")
+        XCTAssertEqual(expand("[Image #1], ([Image #2])?"), "/a-1.png, (/a-2.png)?")
+        XCTAssertEqual(expand("[[Image #1]] {[Image #2]}!"), "[/a-1.png] {/a-2.png}!")
+        XCTAssertEqual(expand("(\"[Image #1]\")"), "(\"/a-1.png\")")
+        XCTAssertEqual(expand("a\n[Image #1]\tb"), "a\n/a-1.png\tb")
+        XCTAssertEqual(expand("x[Pasted text #3 +1 lines]y"), "xty", "a text paste is not spaced")
+        XCTAssertEqual(expand("[Image #1]"), "/a-1.png")
+    }
+
     func testUnknownNumberStaysVerbatim() {
         let text = "see [Image #9] and [Pasted text #9 +1 lines]"
         XCTAssertEqual(PasteTokens.expand(text, payloads: [1: .image(path: "/p.png")]) { $0 }, text)

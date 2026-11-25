@@ -53,8 +53,17 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
             }
             for (_, image) in found where !images.contains(where: { $0.path == image.path }) { images.append(image) }
             var kept = line
-            for (token, _) in found.reversed() {
-                let cut = removal(of: token.range, in: line)
+            // Paths glued end to end leave as one.
+            var runs: [Range<String.Index>] = []
+            for (token, _) in found {
+                if let last = runs.last, last.upperBound == token.range.lowerBound {
+                    runs[runs.count - 1] = last.lowerBound..<token.range.upperBound
+                } else {
+                    runs.append(token.range)
+                }
+            }
+            for run in runs.reversed() {
+                let cut = removal(of: run, in: line)
                 kept.replaceSubrange(cut.range, with: cut.joint)
             }
             let tidy = kept.split { $0 == " " || $0 == "\t" }.joined(separator: " ")
@@ -118,9 +127,11 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
                 continue
             }
             let start = line[index...].firstIndex { !openers.contains($0) } ?? line.endIndex
-            if start < line.endIndex, let token = quotedToken(in: line, at: start) ?? bareToken(in: line, at: start) {
-                tokens.append(token)
-                index = token.range.upperBound
+            let found = start == line.endIndex ? []
+                : quotedToken(in: line, at: start).map { [$0] } ?? bareTokens(in: line, at: start)
+            if let last = found.last {
+                tokens += found
+                index = last.range.upperBound
             } else {
                 index = line.index(after: index)
             }
@@ -134,14 +145,30 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
         return rest.first.map(\.isWhitespace) ?? true
     }
 
-    private static func bareToken(in line: String, at start: String.Index) -> Token? {
-        guard line[start] == "/" else { return nil }
+    /// A bare path, or several glued end to end (`/…/a-1.png/…/a-2.png`, two pastes sent with no space between them
+    /// by an older build): split after each image extension a `/` follows.
+    private static func bareTokens(in line: String, at start: String.Index) -> [Token] {
+        guard line[start] == "/" else { return [] }
         var end = line[start...].firstIndex(where: \.isWhitespace) ?? line.endIndex
         while end > line.index(after: start), closers.contains(line[line.index(before: end)]) {
             end = line.index(before: end)
         }
-        return Token(range: start..<end, raw: line[start..<end], path: String(line[start..<end]))
+        var tokens: [Token] = []
+        var from = start
+        let word = NSRange(start..<end, in: line)
+        for match in gluedImageEnd?.matches(in: line, range: word) ?? [] {
+            guard let cut = Range(match.range, in: line)?.upperBound else { continue }
+            tokens.append(Token(range: from..<cut, raw: line[from..<cut], path: String(line[from..<cut])))
+            from = cut
+        }
+        tokens.append(Token(range: from..<end, raw: line[from..<end], path: String(line[from..<end])))
+        return tokens
     }
+
+    /// An image extension a `/` follows: where one glued path ends and the next begins.
+    private static let gluedImageEnd = try? NSRegularExpression(
+        pattern: "\\.(?:" + imageExtensions.sorted().joined(separator: "|") + ")(?=/)", options: .caseInsensitive
+    )
 
     private static func quotedToken(in line: String, at start: String.Index) -> Token? {
         guard line[start] == "\"" else { return nil }
