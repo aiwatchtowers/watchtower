@@ -16,8 +16,8 @@ package enum WorkchatOwnerImages {
 
     /// `text` with its image paths shown as `[Image #N]`, and a line that is only an image marker (Go's `[image]`,
     /// Claude Code's `[Image #N]`) dropped when an image stands for it. Unchanged when no image was found. For
-    /// Markdown (`markdown`, the feed's bubble) a label that opens a line before a colon is escaped (`\[Image #1]:`),
-    /// so it is not read as a link definition and lost.
+    /// Markdown (`markdown`, the feed's bubble) a label before a colon that opens a line, a list item's or a quote's
+    /// text is escaped (`\[Image #1]:`), so it is not read as a link definition and lost.
     package static func shown(_ text: String, markdown: Bool = false) -> String {
         guard text.contains("/") else { return text }
         var numbers: [String: Int] = [:]
@@ -51,7 +51,7 @@ package enum WorkchatOwnerImages {
 
     /// A label where Markdown would read a link definition: opening the line, or a list item's or a quote's text.
     private static let linkDefinitionStart = try? NSRegularExpression(
-        pattern: #"^(?:[ \t]*(?:>|[-*+]|\d{1,9}[.)])(?=[ \t]))*[ \t]*(\[Image #\d+\]:)"#
+        pattern: #"^(?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])(?=[ \t])))*[ \t]*(\[Image #\d+\]:)"#
     )
 
     private static func isImage(_ path: String, alone: Bool) -> Bool {
@@ -129,9 +129,10 @@ package enum WorkchatOwnerImages {
         return tokens
     }
 
-    /// An image extension a later `/` follows in the same word: where one path ends and the next begins.
+    /// An image extension a later `/` follows in the same word with only punctuation between: where one path ends and
+    /// the next begins. A letter or digit in between is a folder's name (`old.pngs/`), not a second path.
     private static let gluedImageEnd = try? NSRegularExpression(
-        pattern: "\\.(?:" + imageExtensions.sorted().joined(separator: "|") + ")(?=[^\\s/]*/)",
+        pattern: "\\.(?:" + imageExtensions.sorted().joined(separator: "|") + ")(?=[^\\s/\\p{L}\\p{N}]*/)",
         options: .caseInsensitive
     )
 

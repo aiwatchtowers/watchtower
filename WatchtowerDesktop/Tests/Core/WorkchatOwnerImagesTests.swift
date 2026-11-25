@@ -72,6 +72,13 @@ final class WorkchatOwnerImagesTests: XCTestCase {
         XCTAssertEqual(shown("\(pasted),\(second)"), "[Image #1],[Image #2]")
     }
 
+    /// A folder named like an image (`old.pngs`) is part of one path, and glued `.tiff` paths split after `.tiff`.
+    func testFolderNamedLikeAnImageAndGluedTiffs() {
+        XCTAssertEqual(shown("see\n/Users/example/old.pngs/shot.png"), "see\n[Image #1]")
+        XCTAssertEqual(shown("see\n/Users/example/my.gifts/shot.png"), "see\n[Image #1]")
+        XCTAssertEqual(shown("look \(root)/1/a.tiff\(root)/1/b.tiff"), "look [Image #1] [Image #2]")
+    }
+
     func testQuotedPathWithSpacesAndEscapes() {
         let weird = root + "/1/a \"b\" \\c.png"
         let text = "first \(WorkchatOutgoing.quoted(spaced)) then \(WorkchatOutgoing.quoted(weird))"
@@ -125,6 +132,7 @@ final class WorkchatOwnerImagesTests: XCTestCase {
             ("- \(pasted): before", "- \\[Image #1]: before"),
             ("> \(pasted): note", "> \\[Image #1]: note"),
             ("1. \(pasted): first", "1. \\[Image #1]: first"),
+            ("-\(pasted): no item", "-\(pasted): no item"),
             ("see \(pasted): here", "see [Image #1]: here")
         ] {
             XCTAssertEqual(WorkchatOwnerImages.shown(text, markdown: true), escaped, text)
