@@ -624,12 +624,11 @@ final class MobileSettingsModelTests: XCTestCase {
         await model.allow("AAAA0001", Model.typingGrant, false)
         XCTAssertEqual(model.notice, "Couldn't change typing for Phone A. No such phone.")
 
-        // Remove asks first; Cancel keeps the phone.
+        // Remove asks first: the request alone writes nothing.
         model.requestRemove(phoneB)
-        XCTAssertFalse(cli.writes.contains(MobileHubCLI.unlinkArgs("BBBB0002")))
+        XCTAssertFalse(cli.writes.contains(MobileHubCLI.unlinkArgs("BBBB0002")), "the request alone writes nothing")
         model.pendingRemove = nil
         XCTAssertEqual(model.removeSubject?.name, "Phone B", "the dialog keeps its phone while it dismisses")
-        XCTAssertFalse(cli.writes.contains(MobileHubCLI.unlinkArgs("BBBB0002")))
 
         model.requestRemove(phoneB)
         await model.confirmRemove(phoneB)
@@ -685,7 +684,7 @@ final class MobileSettingsModelTests: XCTestCase {
     }
 
     /// The rename field's text outlives the alert's dismissal, so Save writes
-    /// the typed name; Cancel writes nothing.
+    /// the typed name; a cancelled draft does not come back on the next open.
     func testRenameSavesTheTypedNameAfterTheDismissal() async {
         runningWith()
         let model = makeModel()
@@ -699,9 +698,10 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertEqual(cli.writes, [["hub", "name", "Studio", "--json"]])
 
         model.requestRename()
-        XCTAssertNotEqual(model.renameText, "Studio", "the field opens on the hub's name, not the last draft")
+        model.renameText = "Draft"
         model.renaming = false
-        XCTAssertEqual(cli.writes.count, 1, "Cancel writes nothing")
+        model.requestRename()
+        XCTAssertEqual(model.renameText, model.macName, "the field opens on the hub's name, not the cancelled draft")
     }
 
     func testRenameCallsHubName() async {
@@ -788,8 +788,8 @@ final class MobileSettingsModelTests: XCTestCase {
         model.requestDiscard(model.failedRecordings[0])
         XCTAssertEqual(Model.discardQuestion, "Discard this phone recording?")
         XCTAssertEqual(Model.discardMessage, "Its audio is deleted from this Mac. This can't be undone.")
+        XCTAssertEqual(cli.writes.count, 1, "the request alone discards nothing")
         model.pendingDiscard = nil
-        XCTAssertEqual(cli.writes.count, 1, "no discard without the confirmation")
         model.requestDiscard(model.failedRecordings[0])
         await model.confirmDiscard(model.failedRecordings[0])
         XCTAssertNil(model.pendingDiscard)

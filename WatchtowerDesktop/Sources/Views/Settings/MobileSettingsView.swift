@@ -473,6 +473,8 @@ private struct MobileSettingsDialogs: ViewModifier {
     typealias Copy = MobileSettingsModel
     let model: MobileSettingsModel
 
+    // Each action takes the presented value, never `model.pending…`: the
+    // dismissal clears that before the confirm runs (#1163).
     func body(content: Content) -> some View {
         content
             .confirmationDialog(

@@ -149,8 +149,8 @@ final class MobileSettingsModel {
     var pendingDiscard: FailedRecording?
     /// The rename field is up.
     var renaming = false
-    /// The rename field's text. Kept apart from `renaming`: the alert's
-    /// dismissal clears that before Save runs.
+    /// The rename field's text. Kept apart from `renaming`, which the alert's
+    /// dismissal has already cleared by the time Save runs (#1163).
     var renameText = ""
     /// The pairing sheet while it is up.
     private(set) var pairing: MobilePairingModel?
@@ -454,8 +454,9 @@ final class MobileSettingsModel {
     func requestStartSessionsAllow(_ phone: PhoneRow) { pendingStartSessionsAllow = phone }
     func requestPermissionsAllow(_ phone: PhoneRow) { pendingPermissionsAllow = phone }
 
-    // The confirms take the phone the dialog presented: its dismissal clears
-    // the pending property before the button's action runs.
+    // The confirms take the phone the dialog presented (#1163): by the time a
+    // confirm runs, the dialog's dismissal has already cleared the pending
+    // property, so reading it there found nothing and wrote nothing.
 
     func confirmAllow(_ phone: PhoneRow) async {
         pendingAllow = nil
@@ -477,7 +478,7 @@ final class MobileSettingsModel {
         pendingRemove = phone
     }
 
-    /// The confirmed Remove: nothing is removed without it.
+    /// The confirmed Remove; the dialog that asks first is the only caller.
     func confirmRemove(_ phone: PhoneRow) async {
         pendingRemove = nil
         await unlink(phone.id)
