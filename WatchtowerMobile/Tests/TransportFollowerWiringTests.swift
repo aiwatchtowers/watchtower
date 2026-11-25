@@ -1186,6 +1186,13 @@ actor RecordingCloud: ConditionalTransport {
         self.refusal = refusal
     }
 
+    /// Conditional deletes come back refused (no network, a rate limit), as a live transport reports them.
+    private var deleteRefusal: TransportRefusal?
+
+    func refuseDeletes(_ refusal: TransportRefusal?) {
+        deleteRefusal = refusal
+    }
+
     func save(_ records: [CloudRecord]) async throws {
         try await inner.save(records)
     }
@@ -1206,6 +1213,7 @@ actor RecordingCloud: ConditionalTransport {
 
     func delete(_ items: [ConditionalDelete]) async throws -> [DeleteOutcome] {
         conditionalDeletes += items
+        if let deleteRefusal { return items.map { _ in .refused(deleteRefusal) } }
         return try await inner.delete(items)
     }
 }

@@ -246,6 +246,24 @@ extension MacMovedWiringTests {
         XCTAssertTrue(copiesAfter.isEmpty, "the iCloud copy is withdrawn")
     }
 
+    /// An iCloud copy whose delete comes back refused is not withdrawn: the request stays, and ends by the day limit.
+    func testARefusedCopyDeleteKeepsTheRequest() async throws {
+        let bed = try await Bed.make(self, on: .relay, relayLinkOwner: "_owner-acme")
+        bed.access.userRecordNameValue = "_another-acme"
+        let session = try await bed.orderedSession()
+        await session.outbox.holdFlushes()
+        _ = await session.requestTransport(reason: nil)
+        let request = try XCTUnwrap(try bed.row()?.link.transportRequest)
+        await bed.cloud.refuseDeletes(.unreachable)
+
+        _ = await session.transportSignals.marker(marker(.cloudKit, epoch: 2))
+
+        XCTAssertEqual(try bed.row()?.link.macMoved, 2)
+        XCTAssertEqual(try bed.row()?.link.transportRequest?.controlID, request.controlID, "kept")
+        let copies = try await bed.cloudControls(.transportSwitch)
+        XCTAssertEqual(copies.map(\.id), [request.controlID], "the copy is still there")
+    }
+
     /// A marker leaves the phone behind first; the switch of the same move, its keybox not opened, is then handled.
     func testASwitchAfterItsMarkerIsHandledWithoutItsKeybox() async throws {
         let bed = try await Bed.make(self, on: .relay, relayLinkOwner: "_owner-acme")

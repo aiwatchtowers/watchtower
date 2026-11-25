@@ -70,8 +70,9 @@ final class TransportFollower {
     /// Executes the policy's `requestSwitch` (a lapse's request toward iCloud): set by the hub's `TransportRequester`.
     var onRequestSwitch: (@MainActor (TransportKind, String) async -> Void)?
     /// Withdraws an open request toward iCloud once a move to iCloud left this phone behind (#2381): its queued row and
-    /// its iCloud copy; true once both are gone. Set by the hub's `TransportRequester`.
-    var onRequestLeftBehind: (@MainActor (TransportRequestRecord) async -> Bool)?
+    /// its iCloud copy. Takes the request's control id; returns the record withdrawn once both are gone, nil otherwise.
+    /// Set by the hub's `TransportRequester`.
+    var onRequestLeftBehind: (@MainActor (String) async -> TransportRequestRecord?)?
     /// Called once a decision has ended `hubOnRelayAt` on the row (a later move, or the hub's answer for where it runs):
     /// the session forgets the `hub_on_relay` it read (`HubSession.forgetHubOnRelay`), set by `AppRoot.wire`.
     var onHubOnRelayEnded: (@MainActor () -> Void)?
@@ -512,8 +513,8 @@ final class TransportFollower {
     /// The open request a move to iCloud left behind (#2381), once withdrawn (queued row, iCloud copy); nil when none
     /// is open or it could not be withdrawn (it then stays, and ends by the day limit).
     private func requestLeftBehind(_ plan: Plan, link: LinkRecord) async -> TransportRequestRecord? {
-        guard plan.moved != nil, let request = link.transportRequest, await onRequestLeftBehind?(request) == true else { return nil }
-        return request
+        guard plan.moved != nil, let request = link.transportRequest else { return nil }
+        return await onRequestLeftBehind?(request.controlID)
     }
 
     /// The request and `hubOnRelayAt` of a decision that moves nothing, on the row as it stands now (the request
