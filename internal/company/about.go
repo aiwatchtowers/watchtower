@@ -32,9 +32,12 @@ func ConnectLink(wire string) string {
 //
 // When the text and the scope and AI disclosures do not fit Slack's
 // long_description cap, the download paragraph goes first, then the code
-// (its fallback line and the Company code section); the link is never cut.
-// When nothing fits, the last, shortest candidate is returned and the
-// caller's own check against the cap (slackmanifest.Description) reports it.
+// (its fallback line and the Company code section), then the numbered steps
+// collapse into one compact line ("Watchtower for <company>", a blank line,
+// "Connect: <link>") so a long company name still fits next to a large
+// bundle; the link is never cut. When nothing fits, that compact candidate is
+// returned and the caller's own check against the cap
+// (slackmanifest.Description) reports it.
 func AboutText(company, link, code string) string {
 	header := "Watchtower for " + company + "\n\nHow to connect\n"
 	open := "Open Watchtower."
@@ -47,6 +50,7 @@ func AboutText(company, link, code string) string {
 		withCodeSection + download,
 		withCodeSection,
 		header + numberedSteps(open, clickStep),
+		"Watchtower for " + company + "\n\nConnect: " + link,
 	}
 	for _, text := range candidates {
 		if _, err := slackmanifest.Description(text); err == nil {

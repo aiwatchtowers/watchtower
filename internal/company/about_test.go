@@ -79,3 +79,39 @@ func TestAboutText_LongCompanyName(t *testing.T) {
 	link := ConnectLink("eyJ2IjoxfQ")
 	assert.Equal(t, fullAboutText(name, link, "eyJ2IjoxfQ"), AboutText(name, link, "eyJ2IjoxfQ"))
 }
+
+func TestAboutText_LongNameNearCapStillFits(t *testing.T) {
+	wire := strings.Repeat("A", 3000)
+	link := ConnectLink(wire)
+	text := AboutText(strings.Repeat("a", 110), link, wire)
+	_, err := slackmanifest.Description(text)
+	require.NoError(t, err)
+	assert.Contains(t, text, link)
+}
+
+func TestAboutText_MiddleCandidateIsFullTextWithoutDownload(t *testing.T) {
+	download := "\n\nNo Watchtower yet? Download it: " + slackapp.ReleasePage
+	for n := 1000; n <= 3000; n++ {
+		wire := strings.Repeat("A", n)
+		link := ConnectLink(wire)
+		text := AboutText("Acme", link, wire)
+		if strings.Contains(text, "No Watchtower yet?") || !strings.Contains(text, "Company code\n") {
+			continue
+		}
+		full := fullAboutText("Acme", link, wire)
+		require.True(t, strings.HasSuffix(full, download))
+		assert.Equal(t, strings.TrimSuffix(full, download), text, "n=%d", n)
+		return
+	}
+	t.Fatal("no size in 1000..3000 keeps the code and drops only the download paragraph")
+}
+
+func TestAboutText_FallbackLineNeverOutlivesTheCode(t *testing.T) {
+	for n := 1000; n <= 3000; n += 10 {
+		wire := strings.Repeat("A", n)
+		text := AboutText("Acme", ConnectLink(wire), wire)
+		if strings.Contains(text, "If it does not open") {
+			assert.Contains(t, text, "Company code\n", "n=%d", n)
+		}
+	}
+}
