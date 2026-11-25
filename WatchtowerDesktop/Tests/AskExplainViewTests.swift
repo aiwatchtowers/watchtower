@@ -115,10 +115,10 @@ final class AskExplainViewTests: XCTestCase {
         await fx.vm.openExplain(ask)
         let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
         await engine.finished()
-        XCTAssertTrue(AskExplainChatView(ask: ask, engine: engine, onBack: {}).composer.hidesError)
+        XCTAssertTrue(AskExplainChatView(ask: ask, engine: engine) {}.composer.hidesError)
         XCTAssertTrue(engine.send("Why?"))
         await engine.finished()
-        XCTAssertFalse(AskExplainChatView(ask: ask, engine: engine, onBack: {}).composer.hidesError)
+        XCTAssertFalse(AskExplainChatView(ask: ask, engine: engine) {}.composer.hidesError)
     }
 
     /// The pane's Retry, used by both failure layouts and handed to the chat
@@ -127,12 +127,12 @@ final class AskExplainViewTests: XCTestCase {
         let ask = try fx.insertAsk()
         fx.tower.refuse(.chatNew, with: "The database is busy.")
         await fx.vm.openExplain(ask)
-        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask, onBack: {}).retryIfItCanHelp, "another failure: Retry")
+        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask) {}.retryIfItCanHelp, "another failure: Retry")
 
         fx.tower.refuse(.chatNew, with: nil)
         await fx.vm.openExplain(ask)
         let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
-        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask, onBack: {}).chatView(engine).onRetry)
+        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask) {}.chatView(engine).onRetry)
 
         let projectID = fx.projectID
         try await fx.pool.write { db in
@@ -142,7 +142,7 @@ final class AskExplainViewTests: XCTestCase {
         }
         fx.vm.closeExplain(ask.id)
         await fx.vm.openExplain(ask)
-        let pane = AskExplainPane(asks: fx.vm, ask: ask, onBack: {})
+        let pane = AskExplainPane(asks: fx.vm, ask: ask) {}
         XCTAssertEqual(AskExplainPane.shown(hasEngine: fx.vm.explainEngine(for: ask) != nil,
                                             error: fx.vm.explainErrors[ask.id]),
                        .failure("This workbench no longer exists."))
