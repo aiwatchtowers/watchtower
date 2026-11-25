@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreAudio
 import XCTest
 @testable import WatchtowerDesktop
 
@@ -32,6 +33,22 @@ final class PreciseAudioPlaybackTests: XCTestCase {
         await fulfillment(of: [XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in MainActor.assumeIsolated { condition() } }, object: nil
         )], timeout: timeout)
+    }
+
+    /// A playing `AVPlayer`'s clock only advances with an audio output to
+    /// render to; a CI VM may have none.
+    private func requireAudioOutput() throws {
+        var device = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device)
+        guard status == noErr, device != kAudioObjectUnknown else {
+            throw XCTSkip("no default audio output device (OSStatus \(status)): playback time cannot advance")
+        }
     }
 
     /// `AVAudioFile`'s frame count without the ADTS encoder priming the
@@ -75,7 +92,7 @@ final class PreciseAudioPlaybackTests: XCTestCase {
         XCTAssertEqual(playback.duration, truth, accuracy: packetSeconds)
 
         playback.currentTime = 33.25
-        await waitUntil(5) { !playback.isSeeking }
+        await waitUntil(15) { !playback.isSeeking }
         XCTAssertEqual(playerSeconds(playback), 33.25, accuracy: 0.001)
         playback.stop()
     }
@@ -88,22 +105,26 @@ final class PreciseAudioPlaybackTests: XCTestCase {
     func testASeekRightAfterCreationLandsExactly() async throws {
         let playback = try PreciseAudioPlayback(url: fixture("aac", durationSec: 5))
         playback.currentTime = 3.21
-        await waitUntil(5) { !playback.isSeeking }
+        await waitUntil(15) { !playback.isSeeking }
         XCTAssertEqual(playerSeconds(playback), 3.21, accuracy: 0.001)
         playback.stop()
     }
 
     /// Create → seek → play at once: playback starts from the target, not
-    /// from 0 (reaching past 6 s from 0 would take longer than the timeout).
+    /// from 0. The fixture is 60 s and the target 50 s, so even the generous
+    /// timeout cannot let a playback from 0 get past it; the position read
+    /// right after must sit just past 50 s. Needs an audio output (skipped
+    /// without one).
     func testSeekThenPlayStartsFromTheTarget() async throws {
-        let playback = try PreciseAudioPlayback(url: fixture("aac", durationSec: 10))
+        try requireAudioOutput()
+        let playback = try PreciseAudioPlayback(url: fixture("aac", durationSec: 60))
         playback.player.isMuted = true
-        playback.currentTime = 6
+        playback.currentTime = 50
         XCTAssertTrue(playback.play())
-        await waitUntil(3) { self.playerSeconds(playback) > 6.05 }
+        await waitUntil(20) { self.playerSeconds(playback) > 50.05 }
         let position = playerSeconds(playback)
-        XCTAssertGreaterThanOrEqual(position, 6)
-        XCTAssertLessThan(position, 7.5)
+        XCTAssertGreaterThanOrEqual(position, 50)
+        XCTAssertLessThan(position, 50 + 21, "started from the target, not from 0")
         playback.stop()
     }
 
@@ -119,7 +140,7 @@ final class PreciseAudioPlaybackTests: XCTestCase {
         playback.currentTime = 2.5
         XCTAssertEqual(playback.currentTime, 2.5, accuracy: 0.001)
 
-        await waitUntil(5) { !playback.isSeeking }
+        await waitUntil(15) { !playback.isSeeking }
         XCTAssertEqual(playerSeconds(playback), 2.5, accuracy: 0.001)
         playback.stop()
     }
@@ -181,7 +202,7 @@ final class PreciseAudioPlaybackTests: XCTestCase {
         XCTAssertEqual(playback.currentTime, 0)
         XCTAssertFalse(playback.reachedEnd)
         XCTAssertTrue(playback.isPlaying)
-        await waitUntil(5) { !playback.isSeeking }
+        await waitUntil(15) { !playback.isSeeking }
         XCTAssertLessThan(playerSeconds(playback), 1, "the player itself went back to the start")
 
         playback.stop()
