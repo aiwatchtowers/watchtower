@@ -396,6 +396,211 @@ final class AskExplainModelTests: XCTestCase {
         XCTAssertEqual(folder, "/tmp/acme-explain")
     }
 
+    // MARK: - Races (board #2383, ask #1849)
+
+    /// A merge while the explanation streams: the next open finds the
+    /// running engine under the old key and moves it to the new one — one
+    /// engine for the chat, the turn untouched, no second hidden turn.
+    func testMergeMidStreamMovesTheRunningEngine() async throws {
+        let ask = try fx.insertAsk()
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await engine.started()
+        let oldKey = engine.spec.key
+        let conversationID = try XCTUnwrap(oldKey.conversationID)
+
+        // What `reKeyChats` and the merge write: the ask and its chat move.
+        let into = try await fx.pool.write { db -> Int64 in
+            let into = try TestDatabase.insertWorkbench(db, name: "beta", folder: "/tmp/acme-explain-beta")
+            try db.execute(sql: "UPDATE owner_asks SET project_id = ? WHERE id = ?", arguments: [into, ask.id])
+            try db.execute(sql: "UPDATE chat_conversations SET context_id = ? WHERE id = ?",
+                           arguments: [AskExplainKey.contextID(workbenchID: into, askID: ask.id), conversationID])
+            return into
+        }
+        let stored = try await fx.pool.read { try OwnerAskQueries.ask($0, id: ask.id, projectID: into) }
+        let moved = try XCTUnwrap(stored)
+        fx.vm.closeExplain(ask.id)
+        await fx.vm.openExplain(moved)
+
+        XCTAssertTrue(fx.vm.explainEngine(for: moved) === engine, "the running engine, not a second one")
+        XCTAssertEqual(fx.center.count, 1)
+        XCTAssertNil(fx.center.loaded(oldKey))
+        XCTAssertEqual(engine.spec.key.contextID, AskExplainKey.contextID(workbenchID: into, askID: ask.id))
+        XCTAssertEqual(engine.spec.key.conversationID, conversationID)
+        XCTAssertTrue(engine.isBusy, "the turn runs on")
+        await finishTurn(engine)
+        XCTAssertEqual(try fx.rows(conversationID).last?.status, "complete")
+        XCTAssertEqual(fx.hiddenTurns.count, 1)
+    }
+
+    /// The workbench is deleted between the open's read and its `chat.new`:
+    /// the create is refused (Go checks the bench in its transaction), no
+    /// conversation is left, and the failure is final — no Retry.
+    func testWorkbenchDeletedBeforeChatNewLeavesNoChat() async throws {
+        let ask = try fx.insertAsk()
+        let held = TowerHold(fx.tower)
+        let vm = fx.vm
+        let open = Task { await vm.openExplain(ask) }
+        let tower = fx.tower
+        await waitForCondition { !tower.calls(.chatNew).isEmpty }
+        let projectID = fx.projectID
+        try await fx.pool.write { db in
+            try db.execute(sql: "DELETE FROM owner_asks WHERE project_id = ?", arguments: [projectID])
+            try db.execute(sql: "DELETE FROM workbench_folders WHERE workbench_id = ?", arguments: [projectID])
+            try db.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [projectID])
+        }
+        held.release()
+        await open.value
+
+        XCTAssertEqual(vm.explainErrors[ask.id], "This workbench no longer exists.")
+        XCTAssertFalse(vm.explainOffersRetry(ask.id), "Retry would fail the same way")
+        XCTAssertNil(vm.explainEngine(for: ask))
+        let chats = try await fx.pool.read {
+            try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_conversations WHERE context_type = ?",
+                             arguments: [AskExplainKey.contextType])
+        }
+        XCTAssertEqual(chats, 0, "no orphan conversation")
+        XCTAssertTrue(fx.ai.calls.isEmpty)
+    }
+
+    /// A failed open Retry can mend (any other refusal) keeps its Retry;
+    /// Back forgets the final state.
+    func testOnlyAGoneWorkbenchTakesTheRetryAway() async throws {
+        let ask = try fx.insertAsk()
+        fx.tower.refuse(.chatNew, with: "The database is busy.")
+        await fx.vm.openExplain(ask)
+        XCTAssertNotNil(fx.vm.explainErrors[ask.id])
+        XCTAssertTrue(fx.vm.explainOffersRetry(ask.id))
+
+        fx.tower.refuse(.chatNew, with: nil)
+        let projectID = fx.projectID
+        try await fx.pool.write { db in
+            try db.execute(sql: "DELETE FROM owner_asks WHERE project_id = ?", arguments: [projectID])
+            try db.execute(sql: "DELETE FROM workbench_folders WHERE workbench_id = ?", arguments: [projectID])
+            try db.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [projectID])
+        }
+        await fx.vm.openExplain(ask)
+        XCTAssertFalse(fx.vm.explainOffersRetry(ask.id))
+        fx.vm.closeExplain(ask.id)
+        XCTAssertTrue(fx.vm.explainOffersRetry(ask.id))
+    }
+
+    /// Back, then a reopen before `chat.new` answered: one conversation, one
+    /// hidden turn, and the surface the reopen read (the target's new intent).
+    func testBackAndReopenBeforeChatNewMakesOneChatWithTheLatestRead() async throws {
+        let projectID = fx.projectID
+        let targetID = try await fx.pool.write { db in
+            let id = try TestDatabase.insertWorkbenchTarget(db, projectID: projectID, text: "Feature")
+            try db.execute(sql: "UPDATE targets SET intent = 'Old intent' WHERE id = ?", arguments: [id])
+            return id
+        }
+        let ask = try fx.insertAsk(targetID: targetID)
+        let held = TowerHold(fx.tower)
+        let vm = fx.vm
+        let first = Task { await vm.openExplain(ask) }
+        let tower = fx.tower
+        await waitForCondition { !tower.calls(.chatNew).isEmpty }
+        vm.closeExplain(ask.id)
+        try await fx.pool.write { db in
+            try db.execute(sql: "UPDATE targets SET intent = 'New intent' WHERE id = ?", arguments: [targetID])
+        }
+        await vm.openExplain(ask)
+        held.release()
+        await first.value
+
+        XCTAssertTrue(vm.isExplaining(ask.id))
+        let engine = try XCTUnwrap(vm.explainEngine(for: ask))
+        await engine.started()
+        XCTAssertEqual(fx.hiddenTurns.count, 1, "one hidden first turn")
+        XCTAssertEqual(fx.center.count, 1)
+        let chats = try await fx.pool.read {
+            try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_conversations WHERE context_type = ?",
+                             arguments: [AskExplainKey.contextType])
+        }
+        XCTAssertEqual(chats, 1, "one conversation")
+        XCTAssertTrue(engine.spec.systemPrompt().contains("New intent"), "the reopen's read wins")
+        await finishTurn(engine)
+    }
+
+    /// A session in its delete's 5-second Undo window (not written yet) is
+    /// gone for the folder: the home folder is read. Undo brings it back,
+    /// and the next open reads its folder again.
+    func testSessionInTheUndoWindowIsGoneUntilUndo() async throws {
+        let projectID = fx.projectID
+        let sessionID = try await fx.pool.write { db -> Int64 in
+            let folderID = try Self.insertFolder(db, projectID: projectID, path: "/tmp/acme-explain-api")
+            return try Self.insertSession(db, projectID: projectID, folderID: folderID)
+        }
+        let ask = try fx.insertAsk(sessionID: sessionID)
+        var hidden: Set<Int64> = [sessionID]
+        fx.vm.hiddenSessions = { hidden }
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await engine.started()
+        XCTAssertEqual(fx.ai.calls.first?.readFolder, "/tmp/acme-explain", "the deleted session's folder is not read")
+        await finishTurn(engine)
+
+        hidden = []  // Undo
+        fx.vm.closeExplain(ask.id)
+        await fx.vm.openExplain(ask)
+        XCTAssertTrue(fx.vm.explainEngine(for: ask) === engine)
+        XCTAssertEqual(engine.spec.runOptions().readFolder, "/tmp/acme-explain-api", "back after Undo")
+        XCTAssertEqual(fx.ai.calls.count, 1)
+    }
+
+    /// The owner stopped the explanation, then the engine was made again
+    /// (the center let it go, or the app restarted): still no Retry — the
+    /// stop is remembered, though Stop and quit store the same `partial`.
+    func testStoppedFirstTurnOffersNoRetryAfterARebuild() async throws {
+        let ask = try fx.insertAsk()
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await engine.started()
+        fx.ai.emit(.text("It dec"))
+        await waitForCondition { engine.liveTurn?.fullText == "It dec" }
+        engine.stop()
+        await waitForCondition { !engine.isBusy }
+        await engine.finished()
+        XCTAssertEqual(try fx.rows(try XCTUnwrap(engine.spec.key.conversationID)).last?.status, "partial")
+
+        fx.center.release(engine.spec.key)
+        let rebuilt = try XCTUnwrap(fx.vm.ensureExplainEngine(ask))
+        XCTAssertFalse(rebuilt === engine)
+        XCTAssertFalse(rebuilt.canRetry, "a stopped explanation offers no Retry")
+
+        // A restart: a new view model over the same preferences.
+        fx.center.release(rebuilt.spec.key)
+        let restarted = OwnerAsksViewModel(dbPool: fx.pool, terminalCenter: nil,
+                                           lineDelivery: SessionLineDelivery(terminalCenter: nil), defaults: fx.defaults)
+        restarted.chats = fx.center
+        restarted.chatWrites = fx.writes
+        restarted.explainCatalog = fx.catalog
+        restarted.explainConfigProvider = { "claude" }
+        await restarted.openExplain(ask)
+        let reopened = try XCTUnwrap(restarted.explainEngine(for: ask))
+        XCTAssertFalse(reopened.canRetry)
+        XCTAssertEqual(fx.ai.calls.count, 1)
+    }
+
+    /// The app quit mid-explanation: the rebuilt engine offers Retry.
+    func testQuitFirstTurnOffersRetryAfterARebuild() async throws {
+        let ask = try fx.insertAsk()
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await engine.started()
+        fx.ai.emit(.text("It dec"))
+        await waitForCondition { engine.liveTurn?.fullText == "It dec" }
+        fx.center.finishAllAsPartial()
+        await waitForCondition { !engine.isBusy }
+        await engine.finished()
+        XCTAssertEqual(try fx.rows(try XCTUnwrap(engine.spec.key.conversationID)).last?.status, "partial")
+
+        fx.center.release(engine.spec.key)
+        let rebuilt = try XCTUnwrap(fx.vm.ensureExplainEngine(ask))
+        XCTAssertTrue(rebuilt.canRetry, "a quit-partial explanation offers Retry")
+        XCTAssertEqual(fx.ai.calls.count, 1)
+    }
+
     nonisolated private static func insertFolder(_ db: Database, projectID: Int64, path: String) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)

@@ -77,6 +77,7 @@ package final class FakeChatTower: ChatTowerSending, @unchecked Sendable {
     private static let chatGone = "This chat no longer exists."
     private static let messageGone = "This message no longer exists."
     private static let mainChat = "Watchtower's chat writes this chat itself. Update the app."
+    private static let workbenchGone = "This workbench no longer exists."
 
     // One switch over the commands the Desktop sends.
     // swiftlint:disable:next cyclomatic_complexity function_body_length
@@ -90,6 +91,13 @@ package final class FakeChatTower: ChatTowerSending, @unchecked Sendable {
             let q = try request(ChatNewRequest.self)
             let id = try await db.write { db -> Int64 in
                 if let context = q.context {
+                    // Go: a "Not clear?" chat only for a live workbench, in the creating transaction.
+                    if context.type == AskExplainKey.contextType {
+                        let bench = Int64(context.id.prefix { $0 != ":" }) ?? 0
+                        guard try Bool.fetchOne(db, sql: "SELECT 1 FROM projects WHERE id = ?", arguments: [bench]) != nil else {
+                            throw Refusal(sentence: Self.workbenchGone)
+                        }
+                    }
                     if context.reuse == true,
                        let existing = try ChatConversationQueries.fetchByContext(db, type: context.type, id: context.id) {
                         return existing.id
@@ -166,11 +174,17 @@ package final class FakeChatTower: ChatTowerSending, @unchecked Sendable {
             return try encode(ChatCount(count: Int64(count)))
         case .chatDraftSave:
             let q = try request(ChatDraftSaveRequest.self)
-            try await db.write { try QueuedDraftQueries.save($0, key: q.surfaceKey, text: q.text, at: Date()) }
+            try await db.write { db in
+                guard let key = try Self.askExplainDraftKey(db, q.surfaceKey) else { return }
+                try QueuedDraftQueries.save(db, key: key, text: q.text, at: Date())
+            }
             return done
         case .chatDraftClear:
             let q = try request(ChatDraftClearRequest.self)
-            try await db.write { try QueuedDraftQueries.clear($0, key: q.surfaceKey) }
+            try await db.write { db in
+                try QueuedDraftQueries.clear(db, key: q.surfaceKey)
+                if let key = try Self.askExplainDraftKey(db, q.surfaceKey) { try QueuedDraftQueries.clear(db, key: key) }
+            }
             return done
         case .chatMessageAppend:
             let q = try request(ChatMessageAppendRequest.self)
@@ -227,6 +241,19 @@ package final class FakeChatTower: ChatTowerSending, @unchecked Sendable {
         default:
             throw Refusal(sentence: "FakeChatTower does not model \(command.rawValue).")
         }
+    }
+
+    /// Go's `askExplainDraftKeyTx`: a "Not clear?" chat's draft key follows
+    /// its conversation — nil once it is deleted, the current key after a
+    /// merge re-keyed it; any other key as is.
+    private static func askExplainDraftKey(_ db: Database, _ key: String) throws -> String? {
+        let prefix = AskExplainKey.contextType + "."
+        guard key.hasPrefix(prefix), let dot = key.lastIndex(of: "."),
+              let conversation = Int64(key[key.index(after: dot)...]) else { return key }
+        guard let contextID = try String.fetchOne(db, sql: """
+            SELECT context_id FROM chat_conversations WHERE id = ? AND context_type = ?
+            """, arguments: [conversation, AskExplainKey.contextType]) else { return nil }
+        return "\(prefix)\(contextID).\(conversation)"
     }
 
     /// Go's `refuseMainChatTx`: a main chat's rows are the chat engine's.

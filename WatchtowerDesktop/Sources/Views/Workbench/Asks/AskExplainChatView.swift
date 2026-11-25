@@ -47,7 +47,8 @@ struct AskExplainChatView: View {
             .defaultScrollAnchor(.bottom)
             .frame(maxHeight: .infinity)
             EmbeddedChatComposer(engine: engine, placeholder: AskExplainCopy.placeholder, density: .compact,
-                                 onEscape: Self.composerEscape(engine: engine, onBack: onBack), autoFocus: true)
+                                 onEscape: Self.composerEscape(engine: engine, onBack: onBack), autoFocus: true,
+                                 hidesError: Self.composerHidesError(engine))
         }
     }
 
@@ -60,6 +61,13 @@ struct AskExplainChatView: View {
     static func startFailure(_ engine: EmbeddedChatEngine) -> String? {
         guard engine.hiddenTurnNotStarted, engine.messages.isEmpty, !engine.isBusy else { return nil }
         return engine.bannerError
+    }
+
+    /// A first turn that never started shows its failure once: in the
+    /// row with Retry above, not again on the composer's status line. Any
+    /// other failure keeps the composer's own status.
+    static func composerHidesError(_ engine: EmbeddedChatEngine) -> Bool {
+        startFailure(engine) != nil
     }
 
     /// The failure row's text: a failed open says "Couldn't explain: <reason>";
@@ -97,7 +105,7 @@ struct AskExplainPane: View {
             case let .failure(error):
                 VStack(alignment: .leading, spacing: 0) {
                     AskExplainStrip(title: ask.title, onBack: onBack)
-                    AskExplainErrorRow(text: AskExplainErrorRow.openFailure(error), onRetry: retry)
+                    AskExplainErrorRow(text: AskExplainErrorRow.openFailure(error), onRetry: retryIfItCanHelp)
                         .padding(.vertical, Spacing.regular)
                     Spacer(minLength: 0)
                 }
@@ -125,12 +133,19 @@ struct AskExplainPane: View {
 
     @ViewBuilder
     private func chat(_ engine: EmbeddedChatEngine) -> some View {
-        let view = AskExplainChatView(ask: ask, engine: engine, error: asks.explainErrors[ask.id], onRetry: retry, onBack: onBack)
+        let view = AskExplainChatView(ask: ask, engine: engine, error: asks.explainErrors[ask.id],
+                                      onRetry: retryIfItCanHelp, onBack: onBack)
         if let chats = asks.chats {
             view.embeddedChatVisibility(engine.spec.key, in: chats)
         } else {
             view
         }
+    }
+
+    /// Retry, unless the open failed for good (the workbench is gone): the
+    /// line then stays as the final state, Back leaves it.
+    private var retryIfItCanHelp: (() -> Void)? {
+        asks.explainOffersRetry(ask.id) ? retry : nil
     }
 
     private func retry() {

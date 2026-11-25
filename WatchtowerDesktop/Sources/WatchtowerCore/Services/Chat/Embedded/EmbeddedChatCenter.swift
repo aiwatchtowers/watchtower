@@ -57,6 +57,28 @@ package final class EmbeddedChatCenter {
 
     package func loaded(_ key: EmbeddedChatKey) -> EmbeddedChatEngine? { engines[key] }
 
+    /// The engine of `spec`'s conversation still held under another context
+    /// id of the same type — its context id changed under it (a workbench
+    /// merge re-keyed the conversation) — moved to `spec.key`, running turn
+    /// and all, so one conversation never has two engines. nil when
+    /// `spec.key` already has one or none is held. Opt-in: only a surface
+    /// whose context id can change calls it (the "Not clear?" chat).
+    package func adopt(_ spec: ChatSurfaceSpec) -> EmbeddedChatEngine? {
+        guard engines[spec.key] == nil, let conversationID = spec.key.conversationID,
+              let old = engines.keys.first(where: {
+                  $0.contextType == spec.key.contextType && $0.conversationID == conversationID
+              }),
+              let engine = engines.removeValue(forKey: old) else { return nil }
+        engine.rekey(spec: spec)
+        engines[spec.key] = engine
+        // A view still showing the old key hands its mark over on its own
+        // (`embeddedChatVisibility`); until one shows the new key it is idle.
+        shownCount[old] = nil
+        hiddenSince[old] = nil
+        hiddenSince[spec.key] = clock()
+        return engine
+    }
+
     package func markShown(_ key: EmbeddedChatKey) {
         shownCount[key, default: 0] += 1
         hiddenSince[key] = nil

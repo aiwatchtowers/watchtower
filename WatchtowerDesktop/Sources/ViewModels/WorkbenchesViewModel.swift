@@ -795,6 +795,8 @@ final class WorkbenchesViewModel {
             Task { await self?.openTerminalAskLink(askID, workbenchID: workbenchID) }
         }
         asks.isTabOnScreen = { [weak self] in self?.isTabOnScreen() ?? false }
+        // A session in its delete's Undo window is gone for the explain chat's folder.
+        asks.hiddenSessions = { [weak self] in self?.pendingDeletes.ids ?? [] }
         asks.watchedProjectID = { [weak self] in self?.selectedWorkbenchID }
         asks.onLoaded = { [weak self] projectID in self?.openNewAsk(projectID: projectID) }
         asks.onDelivered = { [weak self] projectID, sessionID, delivery in

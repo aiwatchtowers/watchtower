@@ -95,6 +95,11 @@ package final class EmbeddedChatEngine {
     /// Each tool step's start and end of the running turn, as it streams
     /// (the connect assistant watches the browser's tool results here).
     @ObservationIgnored package var onToolEvent: ((StreamEvent) -> Void)?
+    /// The owner's Stop ended a turn, with its reply row's id — never the
+    /// quit (`finishAsPartial`) or a shutdown, which store the same `partial`
+    /// row. Opt-in: only a surface that must tell the two apart after a
+    /// restart sets it (the "Not clear?" chat, ask #1849).
+    @ObservationIgnored package var onOwnerStop: ((Int64) -> Void)?
     /// The latest failed turn's classified failure (its code survives here,
     /// `TurnOutcome.failed` carries only the text). Set before that turn's
     /// `onTurnFinished`.
@@ -160,6 +165,8 @@ package final class EmbeddedChatEngine {
     /// A quit or a shutdown arrived while the turn's rows were written: the
     /// turn ends as stopped once they landed, and is never sent.
     @ObservationIgnored private var stopBeforeStart = false
+    /// The owner's Stop was among those (`onOwnerStop` once the row is known).
+    @ObservationIgnored private var ownerStopBeforeStart = false
     /// The app is quitting: a turn that ends from here on (its end awaits
     /// the writer, board #670) starts no follow-up turn.
     @ObservationIgnored private var isQuitting = false
@@ -293,9 +300,11 @@ package final class EmbeddedChatEngine {
             // Its rows are being written: the turn ends as stopped once they
             // landed (the owner's message stays with a `partial` reply).
             stopBeforeStart = true
+            ownerStopBeforeStart = true
             return
         }
-        guard running != nil else { return }
+        guard let current = running else { return }
+        onOwnerStop?(current.turn.messageID)
         running?.stopRequested = true
         endRunningTurn()
     }
@@ -416,6 +425,15 @@ package final class EmbeddedChatEngine {
         spec = newSpec
     }
 
+    /// The conversation's context id changed under the engine (a workbench
+    /// merge re-keyed it): it carries `newSpec` and its key from here on —
+    /// only `EmbeddedChatCenter.adopt` calls it, for the same conversation.
+    package func rekey(spec newSpec: ChatSurfaceSpec) {
+        guard newSpec.key.contextType == spec.key.contextType,
+              newSpec.key.conversationID == spec.key.conversationID else { return }
+        spec = newSpec
+    }
+
     // MARK: - Turn lifecycle
 
     private func start(_ request: TurnRequest) {
@@ -466,6 +484,7 @@ package final class EmbeddedChatEngine {
         hiddenTurnNotStarted = false
         pendingOwnerText = request.ownerText
         stopBeforeStart = false
+        ownerStopBeforeStart = false
         startTask = Task { [self] in
             await writeRowsAndStart(request, turnID: turnID, options: options)
             startTask = nil
@@ -527,6 +546,7 @@ package final class EmbeddedChatEngine {
         if stopBeforeStart {
             // A quit or a shutdown came first: nothing more is sent, and the
             // follow-ups it carried are kept (its process is stopped now).
+            if ownerStopBeforeStart { onOwnerStop?(ids.assistantID) }
             queuedFollowUps.insert(contentsOf: request.carriedFollowUps, at: 0)
             running?.stopRequested = true
             endRunningTurn()

@@ -83,6 +83,29 @@ final class AskExplainViewTests: XCTestCase {
         XCTAssertNil(AskExplainChatView.startFailure(engine))
     }
 
+    /// A first turn that never started shows its failure once (board #2383):
+    /// the row with Retry, not the composer's status line as well. An owner
+    /// send that failed the same way keeps the composer's own status.
+    func testFirstTurnFailingBeforeStartShowsItsErrorOnce() async throws {
+        struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
+        let ask = try fx.insertAsk()
+        fx.ai.persistStartError = EarlyExit()
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await engine.finished()
+        XCTAssertNotNil(AskExplainChatView.failureLine(openError: nil, engine: engine), "the row shows it")
+        XCTAssertTrue(AskExplainChatView.composerHidesError(engine))
+        XCTAssertNil(EmbeddedChatComposer.status(of: engine, hidesError: AskExplainChatView.composerHidesError(engine)),
+                     "not again under the composer")
+        XCTAssertNotNil(EmbeddedChatComposer.status(of: engine), "other chats keep the status line")
+
+        XCTAssertTrue(engine.send("Will my scripts be queued?"))
+        await engine.finished()
+        XCTAssertFalse(AskExplainChatView.composerHidesError(engine))
+        XCTAssertEqual(EmbeddedChatComposer.status(of: engine, hidesError: AskExplainChatView.composerHidesError(engine)),
+                       engine.bannerError.map { .error($0) }, "an owner send's failure stays on the composer")
+    }
+
     /// An owner send that fails before any row is not a hidden turn: no
     /// Retry row (it would send the explanation prompt instead), even once
     /// the restored draft is cleared; the composer keeps its own status.
