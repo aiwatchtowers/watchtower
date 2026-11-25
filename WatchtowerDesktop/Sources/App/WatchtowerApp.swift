@@ -423,9 +423,12 @@ struct WatchtowerApp: App {
                     appState.openVoicesWindow?()
                 }
                 appState.updateService.presentUpdateWindow = {
-                    ActivationPolicyDecision.becomeRegularAndActivate()
-                    openWindow(id: UpdateAvailableView.sceneID)
-                    return true
+                    UpdateAvailableView.present(
+                        windows: NSApp.windows,
+                        activate: ActivationPolicyDecision.becomeRegularAndActivate
+                    ) {
+                        openWindow(id: UpdateAvailableView.sceneID)
+                    }
                 }
             }
             .onOpenURL { url in
@@ -614,9 +617,12 @@ struct WatchtowerApp: App {
                     appState.openVoicesWindow?()
                 }
                 appState.updateService.presentUpdateWindow = {
-                    ActivationPolicyDecision.becomeRegularAndActivate()
-                    openWindow(id: UpdateAvailableView.sceneID)
-                    return true
+                    UpdateAvailableView.present(
+                        windows: NSApp.windows,
+                        activate: ActivationPolicyDecision.becomeRegularAndActivate
+                    ) {
+                        openWindow(id: UpdateAvailableView.sceneID)
+                    }
                 }
             }
         }.menuBarExtraStyle(.window)
