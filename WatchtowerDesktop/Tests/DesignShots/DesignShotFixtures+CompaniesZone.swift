@@ -42,7 +42,7 @@ enum CompaniesZoneScenes {
 
     static func overview(_ frame: CompanySetupShotFixtures.Overview) -> some View {
         let zone: CompaniesZoneState = switch frame {
-        case .companies, .codePaste:
+        case .companies, .codePaste, .slackValid, .slackInvalid, .slackOrganization:
             Pres.zone(companies: [acme], errors: [], draft: nil, accounts: threeOfFive, portBusy: false, loading: false)
         case .mdm:
             Pres.zone(companies: [acmeManaged], errors: [], draft: nil, accounts: [], portBusy: false, loading: false)
@@ -61,9 +61,14 @@ enum CompaniesZoneScenes {
             Pres.zone(companies: [acme], errors: [], draft: .inProgress(company: "Acme", step: "Atlassian", index: 3, count: 8),
                       accounts: threeOfFive, portBusy: false, loading: false)
         }
-        let model: CompaniesZoneModel = frame == .codePaste
-            ? .preview(code: "acme-onboarding-2026", codeError: Pres.codeInvalid)
-            : CompaniesZoneModel { nil }
+        // The code field is open (the model's own flag) in the code and "No code?" frames.
+        let model: CompaniesZoneModel = switch frame {
+        case .codePaste: .preview(code: "acme-onboarding-2026", codeError: Pres.codeInvalid)
+        case .slackValid: .preview(slackAddress: "acme.slack.com")
+        case .slackInvalid: .preview(slackAddress: "acme.example.com")
+        case .slackOrganization: .preview(slackAddress: "acme.enterprise.slack.com")
+        default: CompaniesZoneModel { nil }
+        }
         return ConnectionsOverviewContent(
             summaries: summaries(frame),
             companies: CompaniesZone(state: zone, model: model, actions: CompaniesZoneActions())

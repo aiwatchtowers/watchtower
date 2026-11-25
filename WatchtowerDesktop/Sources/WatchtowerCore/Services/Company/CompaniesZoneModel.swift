@@ -40,6 +40,10 @@ package final class CompaniesZoneModel {
         didSet { if code != oldValue { codeError = nil } }
     }
 
+    /// "No code?": the Slack address typed under the code field. One-time
+    /// input, kept in memory only and never stored (spec D5).
+    package var slackAddress = ""
+
     /// The field's error under it; nothing started.
     package private(set) var codeError: String?
     /// The pasted code is being read.
@@ -119,11 +123,12 @@ package final class CompaniesZoneModel {
 
     /// A model held with its code field open, for the design shots
     /// (`CompanySetupShotFixtures`): it runs no CLI.
-    package static func preview(code: String = "", codeError: String? = nil) -> CompaniesZoneModel {
+    package static func preview(code: String = "", codeError: String? = nil, slackAddress: String = "") -> CompaniesZoneModel {
         let model = CompaniesZoneModel { nil }
         model.codeFieldOpen = true
         model.code = code
         model.codeError = codeError
+        model.slackAddress = slackAddress
         return model
     }
 

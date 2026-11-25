@@ -174,6 +174,18 @@ final class CompaniesZoneModelTests: XCTestCase {
         XCTAssertFalse(called)
     }
 
+    /// The Slack address is one-time input (spec D5): a new model starts
+    /// empty and nothing lands in UserDefaults.
+    func testSlackAddressIsNotPersisted() {
+        let typed = "acme-slack-address-not-persisted"
+        let (model, _) = model([])
+        model.slackAddress = typed
+        XCTAssertEqual(model.slackAddress, typed)
+        XCTAssertEqual(CompaniesZoneModel { nil }.slackAddress, "")
+        let stored = UserDefaults.standard.dictionaryRepresentation().values.compactMap { $0 as? String }
+        XCTAssertFalse(stored.contains(typed))
+    }
+
     func testCardWaitLineAndSlackCopy() {
         // The card's waiting line names the vendor the chain signs in to (C1).
         XCTAssertEqual(SignInWaitCopy(vendor: .google).line, "Waiting for the Google sign-in in your browser…")
