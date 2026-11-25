@@ -530,7 +530,7 @@ final class Bed {
         relaySockets: ((any RelaySocketDialer) -> any RelaySocketDialer)? = nil,
         farewellLive: Bool = false,
         secondRelayHub: String? = nil,
-        linkedOverRelay: Bool = false,
+        relayLinkOwner: String? = nil,
         refusing: @escaping @Sendable (HubRoute) -> Bool = { _ in false }
     ) async throws -> Bed {
         let relayClock = ManualRelayClock(now: Date())
@@ -569,10 +569,11 @@ final class Bed {
         let keys = try TestE2E.phoneStore()
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "follower-\(UUID().uuidString)"))
         let registry = try HubRegistry.inMemory()
-        // A link made over a Relay pairing slot keeps the code's owner and no account of its own, as `connectRelay` does.
+        // A link made over a Relay pairing slot (`relayLinkOwner` set) keeps the code's owner ("" when the code names
+        // none) and no account of its own, as `connectRelay` does.
         var link = LinkRecord(
-            hubID: TestE2E.hubID.uuidString, macName: "Work Mac", scope: .private, ownerName: linkedOverRelay ? "_owner-acme" : "",
-            userRecordName: linkedOverRelay ? "" : "_owner-acme", nonce: "nonce", dataShareURL: nil, relayShareURL: nil,
+            hubID: TestE2E.hubID.uuidString, macName: "Work Mac", scope: .private, ownerName: relayLinkOwner ?? "",
+            userRecordName: relayLinkOwner == nil ? "_owner-acme" : "", nonce: "nonce", dataShareURL: nil, relayShareURL: nil,
             deviceID: TestE2E.deviceID.uuidString, linkedAt: Date(timeIntervalSince1970: 1_700_000_000),
             transport: .cloudKit, relayMacDeviceID: macRelayID ? mac.deviceID : nil, hubTransports: macRelayID ? hubTransports : nil
         )

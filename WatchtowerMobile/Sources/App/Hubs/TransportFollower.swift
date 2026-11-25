@@ -150,15 +150,18 @@ final class TransportFollower {
             route: link.transport ?? .cloudKit, newestEpoch: epoch, canUseRelay: canUseRelay,
             leftTransport: link.leftTransport, relaySwitchRequested: Self.upgradeRequested(link),
             hasOtherRoute: link.offersCloudKit && account != .another, macMovedEpoch: link.macMoved)
-        let (next, commands) = TransportFollowerPolicy.decide(input, state: state, now: now())
+        let (next, decided) = TransportFollowerPolicy.decide(input, state: state, now: now())
+        var commands = decided
         if account == .unread, Self.ownerAccountDecides(input, state: state, commands: commands, link: link) {
             guard let read = await host.iCloudAccount() else {
                 Self.logger.notice("a move to iCloud waits for the phone's iCloud account")
                 return false
             }
             // Decided again on the row as it stands after the read.
-            return await decide(input, account: !link.ownerName.isEmpty && read == link.ownerName ? .owner : .another)
+            return await decide(input, account: read == link.ownerName ? .owner : .another)
         }
+        // The owner's move to iCloud ends a move marked while the phone was on another account, which parks the feed.
+        if account == .owner, link.macMoved != nil, Self.movesToCloudKit(commands) { commands.append(.clearMoved) }
         guard !commands.isEmpty else {
             Self.logger.notice("transport input left for a later pass")
             return false
@@ -169,15 +172,23 @@ final class TransportFollower {
     /// A link made over a Relay pairing slot (no `userRecordName`) reaches its Mac's iCloud only on the Mac owner's
     /// Apple ID (#2381). When the policy would move it to CloudKit only because the hub offers CloudKit, the phone's
     /// account decides: another account would open its own private database and lose the tower, so the link is left
-    /// behind as one with no other route (S59); an account that cannot be read decides nothing yet, and the input is
-    /// handed again (the feed's next cycle, the hydrator's next pass, the next slot check).
+    /// behind as one with no other route (a move marked, S59; a lost slot's term); an account that cannot be read
+    /// decides nothing yet, and the input is handed again (the feed's next cycle, the hydrator's next pass, the next
+    /// slot check). Also asked when a switch's keybox did not open: another account is left behind without it, while
+    /// the owner still needs it to follow. A code with no owner (a Mac already on Relay issues one) cannot tell, and
+    /// follows as before.
     private static func ownerAccountDecides(
         _ input: FollowerInput, state: FollowerState, commands: [FollowerCommand], link: LinkRecord
     ) -> Bool {
-        guard link.userRecordName.isEmpty, state.hasOtherRoute, movesToCloudKit(commands) else { return false }
+        guard link.userRecordName.isEmpty, !link.ownerName.isEmpty, state.hasOtherRoute else { return false }
         var without = state
         without.hasOtherRoute = false
-        return !movesToCloudKit(TransportFollowerPolicy.decide(input, state: without, now: .distantPast).commands)
+        let alone = TransportFollowerPolicy.decide(input, state: without, now: .distantPast).commands
+        if movesToCloudKit(commands) { return !movesToCloudKit(alone) }
+        return commands.isEmpty && alone.contains { command in
+            if case .markMoved = command { return true }
+            return false
+        }
     }
 
     private static func movesToCloudKit(_ commands: [FollowerCommand]) -> Bool {
@@ -448,7 +459,7 @@ final class TransportFollower {
     /// Task 5), written with the move when there is one.
     private struct RequestEffects {
         /// The request is over: the hub moved (so the route is no longer the one it was made on), answered with the
-        /// transport it runs on, or stays on the relay without this phone.
+        /// transport it runs on, stays on the relay without this phone, or moved to iCloud without it (S59, #2381).
         let clearsRequest: Bool
         /// The hub stays on the relay for another paying phone (`hub_on_relay`, or a move to the relay this phone
         /// cannot follow): only `withoutHub` lists the unechoed actions as Not delivered.
@@ -467,7 +478,7 @@ final class TransportFollower {
             clearsMoved = plan.clearsMoved
             let routeMoved = plan.move != nil
             setsHubOnRelay = plan.listUndelivered
-            clearsRequest = moves || plan.answered || plan.listUndelivered
+            clearsRequest = moves || plan.answered || plan.listUndelivered || plan.moved != nil
             // A newer-epoch move or marker toward the route the phone is already on (an iCloud phone, the Mac back on
             // iCloud) moves nothing but still ends it.
             clearsHubOnRelay = !plan.listUndelivered && (routeMoved || plan.answered)

@@ -100,7 +100,7 @@ final class LinkingViewModel {
     @ObservationIgnored weak var host: (any LinkHost)? {
         didSet { refreshLinks() }
     }
-    @ObservationIgnored let access: any LinkAccess
+    @ObservationIgnored private let access: any LinkAccess
     @ObservationIgnored private let store: LinkStore
     /// The device id is filled in when the link flow creates the device keys.
     @ObservationIgnored private var identity: DeviceIdentity
@@ -1386,14 +1386,8 @@ final class LinkingViewModel {
         let kept = host.pendingFarewells()
         guard !kept.isEmpty else { return }
         // Only an iCloud farewell needs the account (carry-over R19: a Relay farewell never depends on iCloud).
-        var account: String?
-        if kept.contains(where: { $0.route.cloudKitScope != nil }), await access.availability() == .available {
-            do {
-                account = try await access.identity()
-            } catch {
-                Self.logger.warning("account check before the farewells failed: \(error.localizedDescription, privacy: .public)")
-            }
-        }
+        let needsAccount = kept.contains { $0.route.cloudKitScope != nil }
+        let account = needsAccount ? await currentAccount() : nil
         for farewell in kept {
             let hubID = farewell.hubID
             let iCloud = farewell.route.cloudKitScope != nil
@@ -1422,6 +1416,17 @@ final class LinkingViewModel {
         }
     }
 
+    /// This phone's iCloud account, read now; nil when it cannot be read (signed out, restricted, the read failed).
+    func currentAccount() async -> String? {
+        guard await access.availability() == .available else { return nil }
+        do {
+            return try await access.identity()
+        } catch {
+            Self.logger.warning("iCloud account check failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     /// `hubID` has a saved link, a pending one, or a code of it being
     /// linked: read now, from the host and the store.
     private func isLinked(_ hubID: String) -> Bool {
@@ -1435,18 +1440,11 @@ final class LinkingViewModel {
         refreshLinks()
         // A Relay link depends on no iCloud account (R19).
         guard links.contains(where: { $0.link.route.cloudKitScope != nil }) else { return }
-        guard await access.availability() == .available else { return }
-        let current: String
-        do {
-            current = try await access.identity()
-        } catch {
-            Self.logger.warning("account check failed: \(error.localizedDescription, privacy: .public)")
-            return
-        }
+        guard let current = await currentAccount() else { return }
         // An unlink or a removal that ran during the check already ended
         // its hub.
         let rows = (host?.linkedHubs() ?? []).filter { !ending.contains($0.hubID) && $0.link.route.cloudKitScope != nil }
-        guard let host, rows.contains(where: { $0.link.userRecordName != current }) else { return }
+        guard let host, rows.contains(where: { $0.link.madeOnAccount.map { $0 != current } ?? false }) else { return }
         Self.logger.notice("iCloud account changed while linked: removing every iCloud hub")
         if store.pending?.relaySlot == nil {
             store.pending = nil
