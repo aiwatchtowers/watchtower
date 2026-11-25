@@ -52,7 +52,7 @@ final class ClipPlayerTests: XCTestCase {
 
         p.play(url: URL(fileURLWithPath: "/tmp/x.caf"), span: ClipSpan(start: 0, end: 5))
         XCTAssertNil(p.playingSpan)
-        XCTAssertNotNil(p.errorMessage)
+        XCTAssertEqual(p.errorMessage, "Can't play this clip: the player refused to start")
 
         player = FakeAudioPlayback(duration: 60)
         p.play(url: URL(fileURLWithPath: "/tmp/x.caf"), span: ClipSpan(start: 0, end: 5))
