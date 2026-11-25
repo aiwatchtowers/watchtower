@@ -203,6 +203,9 @@ final class RelayLinkingTests: XCTestCase {
         let hello = try XCTUnwrap(hellos.first)
         XCTAssertEqual(hello.relayDeviceID, FakeRelayOps.phoneID)
         XCTAssertTrue(RelayIDs.isValid(try XCTUnwrap(hello.relayDeviceID)))
+        // #2387: the device data proves that id for this Mac, so the Mac marks the link as one over Relay.
+        XCTAssertTrue(RelayIDProof.verify(hello, hubID: TestE2E.hubID))
+        XCTAssertFalse(RelayIDProof.verify(hello, hubID: UUID()))
     }
 
     func testARelayLinkNeedsNoICloudAccount() async throws {
@@ -616,6 +619,7 @@ final class RelayLinkingTests: XCTestCase {
         let after = try await host.pairHellos()
         XCTAssertEqual(after.count, 2, "sent again into the slot")
         XCTAssertEqual(after.last?.relayDeviceID, try relay.phoneDeviceID())
+        XCTAssertTrue(RelayIDProof.verify(try XCTUnwrap(after.last), hubID: TestE2E.hubID), "with its proof (#2387)")
         XCTAssertEqual(after.last?.device.linkNonce, payload.nonce)
         XCTAssertEqual(host.directSaveAttempts, 0, "never a direct save on the relay")
     }
