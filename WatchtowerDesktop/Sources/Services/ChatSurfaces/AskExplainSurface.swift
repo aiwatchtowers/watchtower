@@ -35,9 +35,14 @@ enum AskExplainSurface {
     /// folder (`doc_folder_id`), else the home folder. Only a live folder of
     /// the ask's own workbench counts — a removed folder, or one that moved to
     /// another bench, falls back to the home folder. A session being deleted
-    /// (PROJ-17) counts as gone. Read at each open.
-    nonisolated static func readFolder(_ db: Database, ask: OwnerAsk, homeFolder: String) throws -> String {
-        let sessionFolderID = try ask.sessionID.flatMap {
+    /// (PROJ-17) counts as gone: one marked for its cleanup, and one still
+    /// in its delete's Undo window (`hiddenSessions`, not written yet). Undo
+    /// brings it back: the next open reads its folder again. Read at each open.
+    nonisolated static func readFolder(
+        _ db: Database, ask: OwnerAsk, homeFolder: String, hiddenSessions: Set<Int64> = []
+    ) throws -> String {
+        let liveSession = ask.sessionID.flatMap { hiddenSessions.contains($0) ? nil : $0 }
+        let sessionFolderID = try liveSession.flatMap {
             try Int64.fetchOne(db, sql: """
                 SELECT workbench_folder_id FROM terminal_sessions
                 WHERE id = ? AND delete_requested_at IS NULL

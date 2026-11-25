@@ -18,7 +18,9 @@ final class AskExplainFixture {
     let projectID: Int64
     let defaults: UserDefaults
 
-    init() throws {
+    /// `defaults`: preferences shared with another fixture (another
+    /// workspace's database on the same Mac); nil: a suite of its own.
+    init(defaults shared: UserDefaults? = nil) throws {
         (pool, path) = try TestDatabase.createPool()
         (writes, tower) = FakeChatTower.writes(pool)
         projectID = try pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: "/tmp/acme-explain") }
@@ -31,7 +33,7 @@ final class AskExplainFixture {
                                                                 conversationID: spec.key.conversationID ?? 0),
                                aiService: ai, gate: gate)
         }
-        defaults = try XCTUnwrap(UserDefaults(suiteName: "AskExplain-\(UUID().uuidString)"))
+        defaults = try shared ?? XCTUnwrap(UserDefaults(suiteName: "AskExplain-\(UUID().uuidString)"))
         vm = OwnerAsksViewModel(dbPool: pool, terminalCenter: nil, lineDelivery: SessionLineDelivery(terminalCenter: nil),
                                 defaults: defaults)
         vm.chats = center
@@ -146,6 +148,24 @@ final class AskExplainSurfaceTests: XCTestCase {
         XCTAssertEqual(conversation.contextID, AskExplainKey.contextID(workbenchID: fx.projectID, askID: ask.id))
         XCTAssertEqual(conversation.title, "Ask #\(ask.id)")
         XCTAssertTrue(fx.tower.calls(.chatNew).allSatisfy { ($0["context"] as? [String: Any])?["reuse"] as? Bool == true })
+    }
+
+    /// The fake tower refuses as Go does: a malformed or non-canonical
+    /// context id is a bad request (not a gone workbench), and nothing is made.
+    func testMalformedContextIDIsABadRequest() async throws {
+        for contextID in ["x:9", "04:9", "\(fx.projectID)"] {
+            do {
+                _ = try await DatabaseEmbeddedChatStore.conversationID(
+                    dbPool: fx.pool, writes: fx.writes, contextType: AskExplainKey.contextType,
+                    contextID: contextID, title: "Ask #9")
+                XCTFail("\(contextID) was accepted")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("the request is incomplete"),
+                              "\(contextID): \(error.localizedDescription)")
+            }
+        }
+        let count = try await fx.pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_conversations") }
+        XCTAssertEqual(count, 0)
     }
 
     func testTurnOutlivesDrawer() async throws {

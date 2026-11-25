@@ -83,6 +83,78 @@ final class AskExplainViewTests: XCTestCase {
         XCTAssertNil(AskExplainChatView.startFailure(engine))
     }
 
+    /// A first turn that never started shows its failure once (board #2383):
+    /// the row with Retry, not the composer's status line as well. An owner
+    /// send that failed the same way keeps the composer's own status.
+    func testFirstTurnFailingBeforeStartShowsItsErrorOnce() async throws {
+        struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
+        let ask = try fx.insertAsk()
+        fx.ai.persistStartError = EarlyExit()
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await engine.finished()
+        XCTAssertNotNil(AskExplainChatView.failureLine(openError: nil, engine: engine), "the row shows it")
+        XCTAssertTrue(AskExplainChatView.composerHidesError(engine))
+        XCTAssertNil(EmbeddedChatComposer.status(of: engine, hidesError: AskExplainChatView.composerHidesError(engine)),
+                     "not again under the composer")
+        XCTAssertNotNil(EmbeddedChatComposer.status(of: engine), "other chats keep the status line")
+
+        XCTAssertTrue(engine.send("Will my scripts be queued?"))
+        await engine.finished()
+        XCTAssertFalse(AskExplainChatView.composerHidesError(engine))
+        XCTAssertEqual(EmbeddedChatComposer.status(of: engine, hidesError: AskExplainChatView.composerHidesError(engine)),
+                       engine.bannerError.map { .error($0) }, "an owner send's failure stays on the composer")
+    }
+
+    /// The chat view hands its composer `hidesError` from
+    /// `composerHidesError` (board #2383): dropping that wiring fails here.
+    func testChatViewWiresTheComposersHiddenError() async throws {
+        struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
+        let ask = try fx.insertAsk()
+        fx.ai.persistStartError = EarlyExit()
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await engine.finished()
+        XCTAssertTrue(AskExplainChatView(ask: ask, engine: engine) {}.composer.hidesError)
+        XCTAssertTrue(engine.send("Why?"))
+        await engine.finished()
+        XCTAssertFalse(AskExplainChatView(ask: ask, engine: engine) {}.composer.hidesError)
+    }
+
+    /// The pane's Retry, used by both failure layouts and handed to the chat
+    /// view, is nil once the workbench is gone (board #2383).
+    func testPaneOffersNoRetryForAGoneWorkbench() async throws {
+        let ask = try fx.insertAsk()
+        fx.tower.refuse(.chatNew, with: "The database is busy.")
+        await fx.vm.openExplain(ask)
+        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask) {}.retryIfItCanHelp, "another failure: Retry")
+
+        fx.tower.refuse(.chatNew, with: nil)
+        await fx.vm.openExplain(ask)
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask) {}.chatView(engine).onRetry)
+
+        let projectID = fx.projectID
+        try await fx.pool.write { db in
+            try db.execute(sql: "DELETE FROM owner_asks WHERE project_id = ?", arguments: [projectID])
+            try db.execute(sql: "DELETE FROM workbench_folders WHERE workbench_id = ?", arguments: [projectID])
+            try db.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [projectID])
+        }
+        fx.vm.closeExplain(ask.id)
+        await fx.vm.openExplain(ask)
+        let pane = AskExplainPane(asks: fx.vm, ask: ask) {}
+        XCTAssertEqual(AskExplainPane.shown(hasEngine: fx.vm.explainEngine(for: ask) != nil,
+                                            error: fx.vm.explainErrors[ask.id]),
+                       .failure("This workbench no longer exists."))
+        XCTAssertNil(pane.retryIfItCanHelp, "a final state: no Retry")
+        XCTAssertNil(pane.chatView(engine).onRetry)
+        await engine.started()
+        fx.ai.emit(.text("It decides."), .done)
+        fx.ai.finish()
+        await waitForCondition { !engine.isBusy }
+        await engine.finished()
+    }
+
     /// An owner send that fails before any row is not a hidden turn: no
     /// Retry row (it would send the explanation prompt instead), even once
     /// the restored draft is cleared; the composer keeps its own status.

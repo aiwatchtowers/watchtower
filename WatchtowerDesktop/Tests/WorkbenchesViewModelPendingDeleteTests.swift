@@ -380,6 +380,90 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         }
     }
 
+    /// The ask explain chat's folder treats a deleted session as gone for
+    /// the whole delete: in the Undo window (`pendingDeletes`), and past it
+    /// until its `delete_requested_at` write settled (board #2383). Undo or
+    /// the write's end brings it back to the database's view.
+    func testDeletedSessionStaysGoneForTheExplainChatUntilItsWriteSettles() async throws {
+        let p = try await workbench()
+        let row = try await insertSession(p)
+        let vm = makeVM()
+        let write = WriteGate()
+        defer { write.open() }
+        let (started, didStart) = AsyncStream<Void>.makeStream()
+        vm.commitDeleteRequests = { [pool] ids, at in
+            didStart.yield()
+            await write.wait()
+            try await pool?.write { try TerminalSessionQueries.markDeleteRequested($0, ids: ids, at: at) }
+        }
+        await vm.reload()
+        XCTAssertFalse(vm.asks.hiddenSessions().contains(row.id))
+
+        await vm.delete(row)
+        XCTAssertTrue(vm.asks.hiddenSessions().contains(row.id), "the Undo window: wired to the asks")
+
+        gate.open()
+        var iterator = started.makeAsyncIterator()
+        _ = await iterator.next()
+        XCTAssertFalse(vm.pendingDeletes.ids.contains(row.id), "the batch left the window")
+        let isMarkedYet = try await marked(row.id)
+        XCTAssertFalse(isMarkedYet, "the write is held")
+        XCTAssertTrue(vm.asks.hiddenSessions().contains(row.id), "still gone while the write is under way")
+
+        write.open()
+        await vm.deleteCommitTask?.value
+        await vm.autoCleanupIdle()
+        let live = try await pool.read {
+            try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM terminal_sessions WHERE id = ? AND delete_requested_at IS NULL",
+                             arguments: [row.id])
+        }
+        XCTAssertEqual(live, 0, "marked (or cleaned up): the database says it from here")
+        XCTAssertFalse(vm.asks.hiddenSessions().contains(row.id))
+    }
+
+    /// A failed delete write brings the row back: it stops being gone for
+    /// the explain chat as soon as the write settled, before the reload
+    /// that lists it again (held here).
+    func testFailedDeleteWriteStopsHidingTheSessionBeforeTheReload() async throws {
+        let p = try await workbench()
+        let row = try await insertSession(p)
+        let vm = makeVM()
+        vm.commitDeleteRequests = { _, _ in throw WriteRefused() }
+        await vm.reload()
+        await vm.delete(row)
+        XCTAssertTrue(vm.asks.hiddenSessions().contains(row.id))
+
+        let reload = WriteGate()
+        defer { reload.open() }
+        let (reached, didReach) = AsyncStream<Void>.makeStream()
+        let read = vm.readWorkbenchSessions
+        vm.readWorkbenchSessions = { projectID in
+            didReach.yield()
+            await reload.wait()
+            return try await read(projectID)
+        }
+        gate.open()
+        var iterator = reached.makeAsyncIterator()
+        _ = await iterator.next()
+        XCTAssertFalse(vm.asks.hiddenSessions().contains(row.id), "the write failed: no longer gone, reload pending")
+
+        reload.open()
+        await vm.deleteCommitTask?.value
+        XCTAssertEqual(vm.sessionErrors[p], "Could not delete the session: database is locked")
+    }
+
+    /// Undo in the window: the session is back for the explain chat too.
+    func testUndoBringsTheSessionBackForTheExplainChat() async throws {
+        let p = try await workbench()
+        let row = try await insertSession(p)
+        let vm = makeVM()
+        await vm.reload()
+        await vm.delete(row)
+        XCTAssertTrue(vm.asks.hiddenSessions().contains(row.id))
+        await vm.undoPendingDeletes()
+        XCTAssertFalse(vm.asks.hiddenSessions().contains(row.id))
+    }
+
     func testFailedCommitBringsTheRowBackWithAnError() async throws {
         let p = try await workbench()
         let row = try await insertSession(p)

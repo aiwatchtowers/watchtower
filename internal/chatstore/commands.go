@@ -42,17 +42,22 @@ const (
 
 // The refusal sentences, shown by both clients as is.
 const (
-	sentenceChatGone     = "This chat no longer exists."
-	sentenceMessageGone  = "This message no longer exists."
-	sentenceBadRequest   = "Watchtower couldn't apply this: the request is incomplete. Update the app."
-	sentenceMacOnly      = "Only the Mac can do this."
-	sentenceEmbeddedOnly = "This chat's replies are written by its own session."
-	sentenceMainChat     = "Watchtower's chat writes this chat itself. Update the app."
+	sentenceChatGone      = "This chat no longer exists."
+	sentenceMessageGone   = "This message no longer exists."
+	sentenceBadRequest    = "Watchtower couldn't apply this: the request is incomplete. Update the app."
+	sentenceMacOnly       = "Only the Mac can do this."
+	sentenceEmbeddedOnly  = "This chat's replies are written by its own session."
+	sentenceMainChat      = "Watchtower's chat writes this chat itself. Update the app."
+	sentenceWorkbenchGone = "This workbench no longer exists."
 )
 
 // errMainChat: a conversation-level command for a main chat (context_type
 // NULL), whose rows only the chat engine writes.
 var errMainChat = errors.New("a main chat")
+
+// errWorkbenchGone: chat.new for a "Not clear?" chat of a workbench deleted
+// meanwhile (ask #1849): nothing is created.
+var errWorkbenchGone = errors.New("the ask's workbench is gone")
 
 // refuseMainChatTx: errMainChat when conv is a main chat; nil when it is an
 // embedded chat or gone (the command decides what gone means).
@@ -185,6 +190,8 @@ func refusal(err error, gone string) error {
 		return tower.Refuse(api.CodeNotPermitted, sentenceEmbeddedOnly)
 	case errors.Is(err, errMainChat):
 		return tower.Refuse(api.CodeNotPermitted, sentenceMainChat)
+	case errors.Is(err, errWorkbenchGone):
+		return tower.Refuse(api.CodeNotFound, sentenceWorkbenchGone)
 	case gone != "" && isForeignKeyFailure(err):
 		return tower.Refuse(api.CodeNotFound, gone)
 	}
@@ -203,7 +210,26 @@ func chatNew(ctx context.Context, c *tower.Ctx, q api.ChatNewRequest) (api.ChatN
 	if x.Type == "" || x.ID == "" {
 		return api.ChatNewResponse{}, tower.Refuse(api.CodeUnsupported, sentenceBadRequest)
 	}
+	explainBench, explain := int64(0), x.Type == db.AskExplainContextType
+	if explain {
+		var ok bool
+		if explainBench, ok = db.AskExplainWorkbenchID(x.ID); !ok {
+			return api.ChatNewResponse{}, tower.Refuse(api.CodeUnsupported, sentenceBadRequest)
+		}
+	}
 	return write(ctx, c, "This project no longer exists.", func(tx *sql.Tx) (api.ChatNewResponse, error) {
+		if explain {
+			// A "Not clear?" chat only for a live workbench, checked in the
+			// transaction that creates it: DeleteWorkbench drops the chats in
+			// its own, so neither order leaves one behind (ask #1849).
+			live, err := db.WorkbenchExistsTx(tx, explainBench)
+			if err != nil {
+				return api.ChatNewResponse{}, err
+			}
+			if !live {
+				return api.ChatNewResponse{}, errWorkbenchGone
+			}
+		}
 		if x.Reuse {
 			// EmbeddedChatStore.conversationID: the context's newest chat.
 			var id int64
