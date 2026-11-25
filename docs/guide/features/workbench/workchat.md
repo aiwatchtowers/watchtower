@@ -4,7 +4,7 @@ Workchat shows a workbench session's dialog as a chat, with markdown rendered, a
 
 ## Why use it
 
-In the terminal a long agent turn scrolls past as raw text. In Workchat you read it as messages, and write, stop the agent or allow a command without the terminal.
+In the terminal a long agent turn scrolls past as raw text; in Workchat you read it as messages, and write, stop the agent or allow a command without the terminal.
 
 ## How it works
 <!-- learn
@@ -50,7 +50,7 @@ since: 0.24.0
 action: hotkey:workchat
 -->
 
-- The toggle button on the session's strip, named for the mode it switches to (**Terminal** or **Workchat**), swaps the session in that pane between the two. It is greyed out when that mode already shows in the other pane. The session name with ▾ at the strip's left picks another session or starts a new one.
+- The strip's toggle button, named for the mode it switches to (**Terminal** or **Workchat**), swaps the session in that pane; it is greyed out when that mode already shows in the other pane. The session name with ▾ at the strip's left picks another session or starts a new one.
 - ⌃` does the same, as does View → **Show Terminal** / **Show Workchat**.
 - With the split on, the terminal shows on the left and the Workchat on the right.
 - A small glyph on each session row shows the mode it opens in. Right-click a row for **Open in Terminal** or **Open in Workchat**.
@@ -67,11 +67,11 @@ since: 0.24.0
 action: nav:projects
 -->
 
-- Return in the field sends your line. Shift-Return adds a line break; the message keeps its line breaks.
+- Return sends your line; Shift-Return adds a line break, which the message keeps.
 - A line starting with `/` is typed as written, so `/clear` works.
-- You can send while the agent works. With Claude Code the line shows **Queued · the agent reads it at its next step** until the agent picks it up. If it has to wait a moment, it reads **Queued · sends in a moment**, and **Cancel** drops it; quitting drops it too. While a Codex session works, the field says **Codex takes your message when this turn ends.** and your line reads **Queued · sends when the agent stops**.
+- You can send while the agent works. With Claude Code the line shows **Queued · the agent reads it at its next step** until the agent picks it up. If it has to wait a moment, it reads **Queued · sends in a moment**; **Cancel** or quitting drops it. While a Codex session works, the field says **Codex takes your message when this turn ends.** and your line reads **Queued · sends when the agent stops**.
 - The small line above the field shows the current tool, or **Last · …** for the last finished one while the agent keeps working; otherwise **Working…**.
-- Paste a screenshot with ⌘V and **[Image #1]** goes into the text at the cursor; a long text paste goes in as **[Pasted text #2 +42 lines]**. Each shows as a tinted pill, and one Backspace removes it whole; the same text typed by hand stays plain. On send, the text goes in full and the image as its file's path. Your message shows a thumbnail; click it to open. A dropped or picked image from elsewhere on your Mac shows as a chip with its name, and a click opens it. If the file is gone by then, **Pasted image #N is gone — paste it again** shows and your draft stays.
+- ⌘V of a screenshot puts **[Image #1]** at the cursor, of a long text **[Pasted text #2 +42 lines]**: a tinted pill that one Backspace removes whole (the same text typed by hand stays plain). On send the text goes in full and the image as its file's path; if that file is gone, **Pasted image #N is gone — paste it again** shows and your draft stays. Your message shows a pasted image as a thumbnail, and one dropped or picked from elsewhere as a chip with its name; click either to open it.
 - A pasted PDF, files pasted from Finder, dropped files and the paperclip's picks show as chips above the field (✕ removes one). The paperclip opens a menu: **Paste screenshot** (named by what the clipboard holds, such as **Paste 2 files** or **Paste text**; a greyed-out **Paste from clipboard** when nothing fits) and **Attach files…**. Pasted files are kept in Watchtower's folder until the session stops. If a paste can't be saved, or a file's path has a line break, the reason shows under the field.
 - The round button is **Stop** (■) only with an empty field while the agent works; it, or Esc in the empty field, interrupts the agent. If it can't, the reason shows above the field.
 - A line typed into the terminal but not sent says so, with **Show in Terminal**: press Return there.
@@ -94,7 +94,7 @@ A shortened request, or an edit of Watchtower or shell settings, gets **Deny** o
 
 ### Answer the agent's asks
 
-Each open ask of the session shows at the end of the chat as a card with its number and title. **Open Ask** opens it in the ask drawer to answer.
+Each open ask shows at the end of the chat as a card with its number and title; **Open Ask** opens it in the ask drawer.
 
 ### Open what the agent names
 <!-- learn
@@ -145,15 +145,15 @@ changed: Agents left the conversation; finished ones sit under Done in the list.
 
 Subagents never show in the conversation. The agents button above the field (two people and a count) opens the list: **WORKING** rows show the type, task, latest action and timer, and **Done · N** lists every finished subagent, newest first. Click a row to read that agent's chat in the same pane, with **‹ Back** and a path bar that starts at **Workchat**; subagents are read-only.
 
-The button shows the working count, a dimmed **✓ N** when only finished agents remain, and **?** when the agent state is unavailable, which is not the same as none running. Done is collapsed while agents work and opens by itself when none do; your own choice wins until you quit.
+The button shows the working count, a dimmed **✓ N** when only finished agents remain, and **?** when the agent state is unavailable (not the same as none running). Done is collapsed while agents work and opens by itself when none do; your own choice wins until you quit.
 
-While the agent works, the line reads **This turn · N steps** with the step that runs now and its time. Click the line, or press ⌥↓ in the field, to show the newest six steps above it (older ones as "N earlier steps"); the list starts closed, and Workchat remembers your choice for that pane. The list goes away when the turn ends or a permission card shows.
+While the agent works, the line reads **This turn · N steps** with the step that runs now and its time. Click the line, or press ⌥↓ in the field, to show the newest six steps above it (older ones as "N earlier steps"); it starts closed, and Workchat remembers your choice per pane. It goes away when the turn ends or a permission card shows.
 
 ## When it's empty or wrong
 
 - **Activity unavailable** or **Activity out of date · …**. The live hint could not refresh, or is more than ten seconds old. Timers stop and the agent count becomes unknown; click **Retry**.
-- **⌃` does nothing.** No session is on screen, or both its modes show side by side in the split. Pick a session in the sessions panel, or turn the split off.
-- **Stop says A permission prompt is open — answer it on the card or in the terminal.** Esc would answer the prompt, so Stop holds back. Use the card or the terminal.
+- **⌃` does nothing.** No session is on screen, or both its modes show side by side in the split: pick a session, or turn the split off.
+- **Stop says A permission prompt is open — answer it on the card or in the terminal.** Esc would answer the prompt, so Stop holds back.
 - **Could not read the permission prompt.** Watchtower could not read its database, so no card shows. Answer in the terminal; the next session update tries again.
 - **No permission card, but the session says Needs approval.** Only prompts the agent's hooks report get a card. Answer in the terminal.
 - **Your line says Waiting: the terminal prompt holds text.** Unsent text in the terminal shows under the caption. Send or erase it and the line goes; **Send together** puts it beside that text; your next Return there sends both.
