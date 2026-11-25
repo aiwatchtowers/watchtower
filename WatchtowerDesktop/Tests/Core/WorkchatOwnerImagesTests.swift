@@ -27,6 +27,41 @@ final class WorkchatOwnerImagesTests: XCTestCase {
         XCTAssertEqual(result.images.map(\.path), [pasted])
     }
 
+    /// Punctuation around a pasted path (`see [Image #1].`) is the owner's, not the path's: the path still reads as
+    /// an image and the punctuation stays in the text.
+    func testClosingPunctuationAfterABarePathStaysText() {
+        for (text, shown) in [
+            ("see \(pasted).", "see."),
+            ("\(pasted), look", ", look"),
+            ("why \(pasted)?", "why?"),
+            ("first \(pasted); then", "first; then"),
+            ("this \(pasted)!", "this!"),
+            ("in \(pasted): a bug", "in: a bug")
+        ] {
+            let result = split(text, existing: [pasted])
+            XCTAssertEqual(result.images.map(\.path), [pasted], text)
+            XCTAssertEqual(result.text, shown, text)
+        }
+    }
+
+    func testBracketsAroundAPathGoWithIt() {
+        XCTAssertEqual(split("look (\(pasted)) here", existing: [pasted]).text, "look here")
+        let partial = split("look (at \(pasted)) here", existing: [pasted])
+        XCTAssertEqual(partial.images.map(\.path), [pasted])
+        XCTAssertEqual(partial.text, "look (at) here")
+        XCTAssertEqual(split("[\(pasted)]", existing: [pasted]).images.map(\.path), [pasted])
+        XCTAssertEqual(split("{\(pasted)}", existing: [pasted]).text, "")
+    }
+
+    func testPunctuationAfterAQuotedPath() {
+        let result = split("see \(WorkchatOutgoing.quoted(spaced)), ok", existing: [spaced])
+        XCTAssertEqual(result.images.map(\.path), [spaced])
+        XCTAssertEqual(result.text, "see, ok")
+        XCTAssertEqual(split("(\(WorkchatOutgoing.quoted(spaced)))", existing: [spaced]).images.map(\.path), [spaced])
+        XCTAssertEqual(split("\(WorkchatOutgoing.quoted(spaced))x", existing: [spaced]).images, [],
+                       "a word glued after the quote: not a whole token")
+    }
+
     func testQuotedPathWithSpacesIsUnescaped() {
         let weird = "/Users/example/a \"b\" \\c/workchat-attachments/1/x.png"
         let text = "first \(WorkchatOutgoing.quoted(spaced)) then \(WorkchatOutgoing.quoted(weird))"

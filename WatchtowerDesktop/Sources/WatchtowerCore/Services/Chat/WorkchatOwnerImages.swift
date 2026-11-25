@@ -53,7 +53,10 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
             }
             for (_, image) in found where !images.contains(where: { $0.path == image.path }) { images.append(image) }
             var kept = line
-            for (token, _) in found.reversed() { kept.replaceSubrange(token.range, with: " ") }
+            for (token, _) in found.reversed() {
+                let cut = removal(of: token.range, in: line)
+                kept.replaceSubrange(cut.range, with: cut.joint)
+            }
             let tidy = kept.split { $0 == " " || $0 == "\t" }.joined(separator: " ")
             if !tidy.isEmpty { lines.append(tidy) }
         }
@@ -76,8 +79,35 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
         let path: String
     }
 
-    /// The whole-token absolute paths of one line: bare (`/…` up to whitespace) or double-quoted with `\"` and `\\`
-    /// escaped (`"/…"` followed by whitespace or the end), each starting the line or after whitespace.
+    /// Punctuation that may open before a path and stays text: `(/…/a.png)`.
+    private static let openers: Set<Character> = ["(", "[", "{"]
+    /// Punctuation that may close after a path and stays text: `see /…/a.png.`, `"/…/a b.png",`.
+    private static let closers: Set<Character> = [".", ",", ";", ":", "!", "?", ")", "]", "}"]
+    private static let pairs: [Character: Character] = ["(": ")", "[": "]", "{": "}"]
+
+    /// What leaves the line with a path, and what takes its place: the path, the brackets around it when they held
+    /// only it, and the spaces before it when punctuation follows (`see /…/a.png.` reads `see.`); a space otherwise.
+    private static func removal(
+        of range: Range<String.Index>,
+        in line: String
+    ) -> (range: Range<String.Index>, joint: String) {
+        var lower = range.lowerBound
+        var upper = range.upperBound
+        if lower > line.startIndex, upper < line.endIndex,
+           let close = pairs[line[line.index(before: lower)]], line[upper] == close {
+            lower = line.index(before: lower)
+            upper = line.index(after: upper)
+        }
+        guard upper < line.endIndex, closers.contains(line[upper]) else { return (lower..<upper, " ") }
+        while lower > line.startIndex, line[line.index(before: lower)].isWhitespace {
+            lower = line.index(before: lower)
+        }
+        return (lower..<upper, "")
+    }
+
+    /// The whole-token absolute paths of one line: bare (`/…` up to whitespace, closing punctuation left out) or
+    /// double-quoted with `\"` and `\\` escaped (`"/…"` followed by whitespace, closing punctuation or the end), each
+    /// starting the line or after whitespace, past any opening bracket.
     private static func pathTokens(in line: String) -> [Token] {
         var tokens: [Token] = []
         var index = line.startIndex
@@ -87,7 +117,8 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
                 index = line.index(after: index)
                 continue
             }
-            if let token = quotedToken(in: line, at: index) ?? bareToken(in: line, at: index) {
+            let start = line[index...].firstIndex { !openers.contains($0) } ?? line.endIndex
+            if start < line.endIndex, let token = quotedToken(in: line, at: start) ?? bareToken(in: line, at: start) {
                 tokens.append(token)
                 index = token.range.upperBound
             } else {
@@ -97,9 +128,18 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
         return tokens
     }
 
+    /// `index` ends a token: the end or whitespace, once any closing punctuation is skipped.
+    private static func endsToken(_ line: String, at index: String.Index) -> Bool {
+        let rest = line[index...].drop { closers.contains($0) }
+        return rest.first.map(\.isWhitespace) ?? true
+    }
+
     private static func bareToken(in line: String, at start: String.Index) -> Token? {
         guard line[start] == "/" else { return nil }
-        let end = line[start...].firstIndex(where: \.isWhitespace) ?? line.endIndex
+        var end = line[start...].firstIndex(where: \.isWhitespace) ?? line.endIndex
+        while end > line.index(after: start), closers.contains(line[line.index(before: end)]) {
+            end = line.index(before: end)
+        }
         return Token(range: start..<end, raw: line[start..<end], path: String(line[start..<end]))
     }
 
@@ -117,7 +157,7 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
                 continue
             }
             if char == "\"" {
-                guard next == line.endIndex || line[next].isWhitespace else { return nil }
+                guard endsToken(line, at: next) else { return nil }
                 return Token(range: start..<next, raw: line[start..<next], path: path)
             }
             path.append(char)
