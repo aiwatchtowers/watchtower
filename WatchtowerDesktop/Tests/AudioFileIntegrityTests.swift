@@ -109,6 +109,57 @@ final class AudioFileIntegrityTests: XCTestCase {
         XCTAssertNoThrow(try verify(unfinalizedFixture(), framesWritten: 0))
     }
 
+    // MARK: ADTS (today's recorder format)
+
+    /// The point of ADTS: a writer that is never closed (macOS 14, or a
+    /// leaked one) still leaves a file that lists its packets, passes the
+    /// recorder's check and decodes — only the encoder's unflushed tail is
+    /// lost.
+    func testUnclosedADTSFileIsReadableAndDecodes() throws {
+        let (url, writer) = try AACFixture.writeUnclosed(durationSec: 2, fileExtension: "aac")
+        cleanup.append(url)
+        try withExtendedLifetime(writer) {
+            guard case .finalized(let packets) = try AudioFileIntegrity.inspect(url: url) else {
+                return XCTFail("an unclosed ADTS file must list the packets on disk")
+            }
+            XCTAssertGreaterThan(packets, 0)
+            XCTAssertNoThrow(try verify(url, framesWritten: 32_000), "an unclosed ADTS file is not unfinalized")
+            let samples = try AudioFileDecoder.decodePCM16k(url: url)
+            XCTAssertGreaterThan(samples.count, 32_000 / 2, "most of the written audio must decode")
+            XCTAssertGreaterThan(samples.map(abs).max() ?? 0, 0.1, "decoded audio is silent — data lost")
+        }
+    }
+
+    func testClosedADTSFileListsItsPackets() throws {
+        let url = try AACFixture.write(durationSec: 2, fileExtension: "aac")
+        cleanup.append(url)
+        guard case .finalized(let packets) = try AudioFileIntegrity.inspect(url: url) else {
+            return XCTFail("a closed ADTS file must list its packets")
+        }
+        XCTAssertGreaterThan(packets, 30)
+    }
+
+    /// A zero-byte or garbage `.aac` has no readable packet: the header read
+    /// fails, the recorder's check fails the stop, and the decode throws —
+    /// none of them passes it for silence.
+    func testEmptyOrGarbageADTSFileFailsHonestly() throws {
+        for (name, bytes) in [("empty", Data()), ("garbage", Data("not audio, not adts".utf8))] {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID().uuidString).aac")
+            try bytes.write(to: url)
+            cleanup.append(url)
+            XCTAssertThrowsError(try AudioFileIntegrity.inspect(url: url), name) {
+                XCTAssertTrue($0 is AudioFileIntegrity.Unreadable, "\(name): got \($0)")
+            }
+            XCTAssertThrowsError(try verify(url, framesWritten: 32_000), name) {
+                guard case AudioRecordingError.notFinalized = $0 else {
+                    return XCTFail("\(name): expected .notFinalized, got \($0)")
+                }
+            }
+            XCTAssertThrowsError(try AudioFileDecoder.decodePCM16k(url: url), "\(name) must not decode to silence")
+            XCTAssertThrowsError(try AudioFileDecoder.rejectUnfinalized(length: 0, at: url), name)
+        }
+    }
+
     // MARK: decoder
 
     func testDecoderThrowsNotFinalizedInsteadOfReturningNoSamples() throws {

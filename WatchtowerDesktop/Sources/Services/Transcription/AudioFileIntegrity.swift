@@ -4,23 +4,30 @@ import Foundation
 /// What an audio file's container says about the audio in it, read from the
 /// header without decoding anything.
 ///
-/// AAC packets vary in size, so a CAF of AAC (the recorder's format) needs its
-/// packet table (`pakt` chunk) to say where each packet ends — and the writer
-/// adds that table, with the real `data` chunk size, only when the file is
-/// closed. A file whose writer was never closed holds every encoded byte but
-/// lists 0 packets; neither AudioToolbox nor ffmpeg can find the packet
-/// boundaries without the table, so it decodes to nothing.
+/// AAC packets vary in size, so a CAF of AAC (the recorder's format before
+/// ADTS) needs its packet table (`pakt` chunk) to say where each packet ends —
+/// and the writer adds that table, with the real `data` chunk size, only when
+/// the file is closed. A CAF whose writer was never closed holds every encoded
+/// byte but lists 0 packets; neither AudioToolbox nor ffmpeg can find the
+/// packet boundaries without the table, so it decodes to nothing.
+///
+/// ADTS (`.aac`, today's recorder format) has no such state: each packet
+/// carries a header with its own length, so AudioToolbox counts the packets by
+/// scanning the file, and one whose writer was never closed lists every packet
+/// that reached the disk (`.finalized`). An ADTS file with no complete packet
+/// cannot be opened at all (`Unreadable`), which is how a zero-byte one fails.
 enum AudioFileIntegrity: Equatable {
-    /// The container lists `packets` (> 0) audio packets.
+    /// The container lists `packets` (> 0) audio packets: a closed CAF, or
+    /// any ADTS file with a readable packet, closed or not.
     case finalized(packets: Int64)
     /// `audioBytes` (> 0) of encoded audio, but no packet listed: the writer
-    /// never finalized the file.
+    /// never finalized the file (a CAF without its packet table).
     case unfinalized(audioBytes: Int64)
     /// No audio at all.
     case empty
 
     /// The file could not be opened or its header read (`status` is the
-    /// AudioToolbox OSStatus).
+    /// AudioToolbox OSStatus) — for ADTS, also a file with no complete packet.
     struct Unreadable: Error, Equatable {
         let status: OSStatus
     }

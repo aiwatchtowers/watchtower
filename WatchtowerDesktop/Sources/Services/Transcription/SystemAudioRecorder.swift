@@ -5,9 +5,10 @@ import Foundation
 import os
 import WatchtowerCore
 
-/// Captures microphone + system audio into a single 16 kHz mono AAC file in a
-/// CAF container without any virtual audio device
-/// (no BlackHole): a CoreAudio process tap grabs the system output, and a
+/// Captures microphone + system audio into a single 16 kHz mono AAC file
+/// (ADTS for a `.aac` URL, which stays readable even if the writer is never
+/// closed; recordings made before were AAC in CAF) without any virtual audio
+/// device (no BlackHole): a CoreAudio process tap grabs the system output, and a
 /// private aggregate device combines it with the default input so ONE IOProc
 /// delivers both streams clock-aligned.
 ///
@@ -74,11 +75,14 @@ final class SystemAudioRecorder: AudioRecording {
     }
 
     /// The after-close check `stop()` runs: a recording that wrote frames
-    /// must come back as a file listing packets. An AAC-in-CAF file gets its
+    /// must come back as a file listing packets, or it fails the stop instead
+    /// of passing for a finished recording; the file stays on disk either way.
+    /// For today's ADTS `.aac` every packet carries its own header, so a file
+    /// whose writer could not be closed (macOS 14, or a leaked writer) still
+    /// lists every packet flushed to disk and passes; it fails only when no
+    /// readable packet reached the disk. A legacy AAC-in-CAF file gets its
     /// packet table only when the writer closes it, and one without the table
-    /// decodes to nothing (`AudioFileIntegrity`), so such a file fails the
-    /// stop instead of passing for a finished recording. The file stays on
-    /// disk either way. Internal for tests.
+    /// decodes to nothing (`AudioFileIntegrity`). Internal for tests.
     static func verifyFinalized(_ result: RecordingResult, framesWritten: Int64) throws {
         let url = result.audioURL
         guard framesWritten > 0 else {
@@ -98,7 +102,7 @@ final class SystemAudioRecorder: AudioRecording {
         switch integrity {
         case .finalized(let packets):
             log.info(
-                "stop: recording finalized, \(framesWritten, privacy: .public) frames written, \(packets, privacy: .public) packets"
+                "stop: recording readable, \(framesWritten, privacy: .public) frames written, \(packets, privacy: .public) packets"
             )
         case .unfinalized(let bytes):
             log.error(
@@ -293,11 +297,12 @@ private final class TapRecorderImpl {
         // Barrier on the write queue so in-flight buffers land before closing.
         let (frames, url, writeError): (Int64, URL?, Error?) = writeQueue.sync {
             let result = (framesWritten, fileURL, firstWriteError)
-            // Closing is what writes the AAC packet table. Dropping the last
-            // reference was trusted to do it, and once left the underlying
-            // ExtAudioFile open with no table written: close explicitly where
-            // the API exists (macOS 15+); `verifyFinalized` below catches a
-            // file left unfinalized either way.
+            // Closing flushes the encoder's last packets (and, for a legacy
+            // CAF, writes its packet table). Dropping the last reference was
+            // trusted to do it, and once left the underlying ExtAudioFile
+            // open: close explicitly where the API exists (macOS 15+). An
+            // ADTS file left open loses only that unflushed tail;
+            // `verifyFinalized` below fails a file with no readable packet.
             if #available(macOS 15, *) { audioFile?.close() }
             audioFile = nil
             converter = nil
@@ -519,7 +524,7 @@ private final class TapRecorderImpl {
             }
         } catch {
             // Disk-full/IO error: stop accumulating silently corrupt data; the
-            // partial file up to here is decodable once stop() closes it.
+            // partial file up to here stays decodable (ADTS needs no close).
             firstWriteError = error
         }
     }
@@ -731,8 +736,9 @@ private final class TapRecorderImpl {
         return newAggregateID
     }
 
-    /// Opens the 16 kHz mono AAC output file (CAF container — `AVAudioFile`
-    /// infers it from the `.caf` URL extension) plus the device-rate →
+    /// Opens the 16 kHz mono AAC output file (`AVAudioFile` infers the
+    /// container from the URL extension: ADTS for the `.aac` the Center
+    /// names new recordings with, CAF for a `.caf`) plus the device-rate →
     /// 16 kHz converter. Sets `audioFile`/`converter`/`deviceFormat` only after
     /// every step succeeds, so on throw no partial state is left behind; the
     /// caller owns device/tap teardown.

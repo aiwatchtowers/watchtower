@@ -25,7 +25,7 @@ enum AudioFileDecoderError: Error, LocalizedError {
     }
 }
 
-/// Decodes any AVFoundation-readable audio file (caf, m4a, wav, …) to the raw
+/// Decodes any AVFoundation-readable audio file (aac, caf, m4a, wav, …) to the raw
 /// 16 kHz mono Float32 sample stream WhisperKit expects.
 enum AudioFileDecoder {
     private static let log = Logger(subsystem: Constants.bundleID, category: "decoder")
@@ -59,7 +59,7 @@ enum AudioFileDecoder {
         var readError: Error?
         let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
             // EOF must be detected BEFORE reading: on compressed files (AAC in
-            // caf/m4a) read(into:) past the last packet throws a bridged
+            // aac/caf/m4a) read(into:) past the last packet throws a bridged
             // nilError instead of returning an empty buffer like PCM does.
             if reachedEnd || readError != nil || file.framePosition >= file.length {
                 outStatus.pointee = .endOfStream

@@ -18,15 +18,15 @@ struct CaptureLevels: Equatable, Sendable {
 /// Abstraction over the audio capture stack so MeetingRecorderCenter is
 /// testable without CoreAudio or TCC permissions.
 protocol AudioRecording: AnyObject {
-    /// Begins capturing mic + system audio into `url` (16 kHz mono AAC in a
-    /// .caf container). Throws immediately on permission denial
-    /// or unsupported OS.
+    /// Begins capturing mic + system audio into `url` (16 kHz mono AAC; the
+    /// container follows the extension — ADTS for today's `.aac`). Throws
+    /// immediately on permission denial or unsupported OS.
     func start(to url: URL) async throws
     /// Closes the file; always safe to call once after a successful start.
     /// Throws `.writeFailed` when writing broke mid-recording — the truncated
     /// file is kept on disk, but it must not be reported as a clean success.
-    /// Throws `.notFinalized` when the closed file lists no audio packets
-    /// although frames were written (it would decode to nothing); that file
+    /// Throws `.notFinalized` when the closed file lists no readable audio
+    /// packets although frames were written (it would decode to nothing); that file
     /// is kept on disk too, and the error carries the result `stop` would
     /// have returned, so a caller holding a live transcript can still save it.
     func stop() async throws -> RecordingResult

@@ -66,7 +66,7 @@ struct MicAGC {
     /// ~3.2–3.9 rather than the ~6 a speech-only EMA would ask for, and boosted
     /// own speech lands at ~0.036–0.066 instead of exactly on `target`. That
     /// bias is the safe direction — under-boosting costs some headroom, while
-    /// over-boosting bakes clipping and amplified bleed into the `.caf` that is
+    /// over-boosting bakes clipping and amplified bleed into the recording that is
     /// the source of truth. The dominance gate, not this floor, is the primary
     /// defense.
     static let noiseFloor: Float = 0.006

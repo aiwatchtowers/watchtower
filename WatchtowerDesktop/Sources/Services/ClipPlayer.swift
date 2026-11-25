@@ -2,7 +2,7 @@ import AVFoundation
 import Observation
 import WatchtowerCore
 
-/// Plays one time range of a recording straight from the `.caf` — no clip
+/// Plays one time range of a recording straight from the recording file — no clip
 /// files are ever written (spec §3.1). A view-local helper, not an
 /// AppState-owned center: a clip preview is scoped to whichever Voices card
 /// is on screen and has no state worth surviving navigation away from it.

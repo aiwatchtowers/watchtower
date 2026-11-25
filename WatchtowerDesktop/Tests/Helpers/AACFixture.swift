@@ -1,16 +1,27 @@
 import AVFoundation
 import XCTest
 
-/// AAC-in-CAF fixtures written with the recorder's own writer settings, plus
-/// an "unfinalized" variant built from one: the shape a writer that was never
-/// closed leaves behind (no `pakt` packet table, `data` chunk size -1 — the
-/// CAF spec's "runs to the end of the file").
+/// AAC fixtures written with the recorder's own writer settings — in CAF
+/// (`.caf`, the recorder's format before ADTS) or ADTS (`.aac`, today's), the
+/// container following the extension — plus an "unfinalized" CAF variant built
+/// from one: the shape a writer that was never closed leaves behind (no `pakt`
+/// packet table, `data` chunk size -1 — the CAF spec's "runs to the end of the
+/// file"), and an ADTS file whose writer is still open.
 enum AACFixture {
     static let sampleRate = 16_000.0
 
     /// Writes `durationSec` of a 440 Hz sine as 16 kHz mono AAC and closes
     /// (finalizes) the file: explicitly on macOS 15+, by deallocation before.
     static func write(durationSec: Double, fileExtension: String = "caf") throws -> URL {
+        let (url, writer) = try writeUnclosed(durationSec: durationSec, fileExtension: fileExtension)
+        if #available(macOS 15, *) { writer.close() }
+        return url
+    }
+
+    /// Like `write`, but the writer is handed back still open — never closed,
+    /// as a leaked writer leaves it. Hold `writer` while reading `url`
+    /// through a second handle; dropping it closes the file.
+    static func writeUnclosed(durationSec: Double, fileExtension: String) throws -> (url: URL, writer: AVAudioFile) {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("aac-fixture-\(UUID().uuidString).\(fileExtension)")
         let settings: [String: Any] = [
@@ -30,15 +41,12 @@ enum AACFixture {
             data[0][i] = sinf(2 * .pi * 440 * Float(i) / Float(sampleRate)) * 0.5
         }
         buffer.frameLength = AVAudioFrameCount(frames)
-        do {
-            let file = try AVAudioFile(
-                forWriting: url, settings: settings,
-                commonFormat: .pcmFormatFloat32, interleaved: false
-            )
-            try file.write(from: buffer)
-            if #available(macOS 15, *) { file.close() }
-        }
-        return url
+        let file = try AVAudioFile(
+            forWriting: url, settings: settings,
+            commonFormat: .pcmFormatFloat32, interleaved: false
+        )
+        try file.write(from: buffer)
+        return (url, file)
     }
 
     /// An AAC CAF opened for writing and closed with nothing written: a
