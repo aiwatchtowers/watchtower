@@ -115,14 +115,23 @@ struct WorkchatOutgoingBubble: View {
     let onShowTerminal: () -> Void
 
     var body: some View {
+        // The image paths sent in place of the paste tokens read as thumbnails, as in the echo (the line itself,
+        // `line.text`, went to the terminal unchanged).
+        let shown = WorkchatOwnerImages.split(line.text)
         HStack {
             Spacer(minLength: 48)
             VStack(alignment: .trailing, spacing: Spacing.tight) {
-                Text(line.text)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, Spacing.cozy)
-                    .padding(.vertical, Spacing.compact)
-                    .background(bubble)
+                VStack(alignment: .trailing, spacing: Spacing.compact) {
+                    if !shown.text.isEmpty {
+                        Text(shown.text).textSelection(.enabled)
+                    }
+                    if !shown.images.isEmpty {
+                        WorkchatOwnerImagesView(images: shown.images)
+                    }
+                }
+                .padding(.horizontal, Spacing.cozy)
+                .padding(.vertical, Spacing.compact)
+                .background(bubble)
                 caption
                     .font(.caption2)
                     .foregroundStyle(.secondary)

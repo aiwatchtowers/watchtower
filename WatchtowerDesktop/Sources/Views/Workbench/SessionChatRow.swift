@@ -95,6 +95,11 @@ struct WorkchatFeed {
                 })
             }
         }
+        context.ownerFooter = { message in
+            guard let entry = byID[message.id] else { return nil }
+            let images = WorkchatFeedAdapter.ownerImages(entry)
+            return images.isEmpty ? nil : AnyView(WorkchatOwnerImagesView(images: images))
+        }
         let (markdown, expanded, toggle) = (markdown, expandedEvents, onToggle)
         let (openArtifact, feed) = (onOpenArtifact, self)
         context.systemRow = { message in

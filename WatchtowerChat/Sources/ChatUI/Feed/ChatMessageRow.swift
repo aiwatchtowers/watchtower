@@ -21,12 +21,14 @@ public struct ChatMessageRow: View {
     let caption: String?
     let captionView: AnyView?
     let ownerHeader: AnyView?
+    let ownerFooter: AnyView?
     let isLast: Bool
     @Environment(\.chatUIStyle) private var style
     @State private var hovering = false
 
     /// `caption` is a line after the actions; `captionView` draws it instead (the Mac's Workchat); `ownerHeader` sits
-    /// in the owner's bubble over the text (an ask answer's ask); `isLast` keeps a hover-only actions row visible.
+    /// in the owner's bubble over the text (an ask answer's ask), `ownerFooter` under it (Workchat's image thumbnails);
+    /// `isLast` keeps a hover-only actions row visible.
     public init(
         message: ChatFeed.Message,
         parts: [ChatPart],
@@ -36,6 +38,7 @@ public struct ChatMessageRow: View {
         caption: String? = nil,
         captionView: AnyView? = nil,
         ownerHeader: AnyView? = nil,
+        ownerFooter: AnyView? = nil,
         isLast: Bool = false
     ) {
         self.message = message
@@ -46,6 +49,7 @@ public struct ChatMessageRow: View {
         self.caption = caption
         self.captionView = captionView
         self.ownerHeader = ownerHeader
+        self.ownerFooter = ownerFooter
         self.isLast = isLast
     }
 
@@ -98,6 +102,9 @@ public struct ChatMessageRow: View {
                     if let skill = owner.skill { style.chip("/\(skill)") }
                     ForEach(owner.references, id: \.token) { style.chip("@\($0.label)") }
                 }
+            }
+            if let ownerFooter {
+                ownerFooter
             }
         }
         return style.ownerBubble(AnyView(content))
