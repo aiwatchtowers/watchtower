@@ -9,8 +9,8 @@ Before Step 1, check that `main`'s latest CI run is green (`gh run list --branch
 ## Step 1: Collect the changes and determine the version
 
 1. Get the current version from `cmd/version.go` (the `Version` variable) and the latest tag: `prev=$(git tag -l 'v*' --sort=-v:refname | head -1)`.
-2. List what landed on `main` since the tag: `git log $prev..HEAD --first-parent --format='%h %s'`. Each PR is one first-parent commit: a squash merge whose subject ends in `(#N)`, or a merge commit `Merge pull request #N from …`; read each PR's body with `gh pr view N --json number,title,body`. A commit with neither was made on `main` directly: classify it from its subject and diff — the previous release's own commits (`release: vX.Y.Z`, `docs(guide): stamp … Learn cards`) are `internal`.
-3. Read each PR's `Changelog:` lines (the "Changelog" section of `.github/pull_request_template.md`), ignoring text inside `<!-- … -->`: `Changelog: <category> [<area>] — <line for users>`, one line per user-visible change, several allowed; the area is optional and written without brackets (`Changelog: fixed mac — The tray icon no longer flickers after sleep.`). A PR with no line, or only the template's unfilled placeholder (`Changelog: <category> — …`), gets its category guessed from its title and diff; mark every guessed line `(guessed)` in the ask. An umbrella PR carries one line per change of all its targets.
+2. List what landed on `main` since the tag: `git log $prev..HEAD --first-parent --format='%h %s'` (no tag yet: `git log -20 --first-parent --format='%h %s'`). Each PR is one first-parent commit: a squash merge whose subject ends in `(#N)`, or a merge commit `Merge pull request #N from …`; read each PR's body with `gh pr view N --json number,title,body`. A commit with neither was made on `main` directly: classify it from its subject and diff — the previous release's own commits (`release: vX.Y.Z`, `docs(guide): stamp … Learn cards`) are `internal`.
+3. Read each PR's `Changelog:` lines (the "Changelog" section of `.github/pull_request_template.md`), ignoring text inside `<!-- … -->`: `Changelog: <category> [<area>] — <line for users>`, one line per user-visible change, several allowed; the area is optional and written without brackets (`Changelog: fixed mac — The tray icon no longer flickers after sleep.`). A PR with no line, or a line still holding the template's placeholder (`<category>` or `<line for users>`), gets its category guessed from its title and diff; mark every guessed line `(guessed)` in the ask. An umbrella PR carries one line per change of all its targets.
 4. Categories, in the order the ask and the notes use (the keys are fixed — the PR template, this file and the notes use the same ones):
 
    | Key | Badge in the notes | What belongs here | Bump |
@@ -35,7 +35,7 @@ Before Step 1, check that `main`'s latest CI run is green (`gh run list --branch
 
 ## Step 2: Generate Release Notes
 
-Build the notes from the confirmed lines, one section per non-empty category, in the table's order (requirements first — they decide whether a user can update at all; `internal` never appears). Nothing else goes into the notes: the Mac app's Software Update window reads these headings to draw its badges.
+Build the notes from the confirmed lines, one section per non-empty category, in the table's order (requirements first — they decide whether a user can update at all; `internal` never appears). Nothing else goes into the notes (only the `min_version` marker, below, which the app strips): the Mac app's Software Update window reads these headings to draw its badges.
 
 ```
 ## What's New
@@ -57,6 +57,8 @@ Build the notes from the confirmed lines, one section per non-empty category, in
 ```
 
 Write in English, one line per change, in user words (what they can do or notice, not the code). The area, when set, goes at the end in parentheses (`Mac`, `iPhone`, `CLI`, `Slack`, …). **Security lines stay vague** — this repository is public and users update later: say what area was hardened ("Tightened how shared links are validated"), never the attack, the input or the file; the details stay in the private triage.
+
+Before showing them, check the notes against the format the app reads: every `###` heading is one of the eight badge headings above, spelled exactly, with at least one line under it (an empty category is left out, not written as an empty heading). A heading the app does not know makes the Software Update window drop all badges and show the notes as plain text.
 
 Show the release notes to the user and ask for confirmation.
 

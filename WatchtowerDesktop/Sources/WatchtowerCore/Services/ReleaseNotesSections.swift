@@ -34,55 +34,56 @@ package enum ReleaseNotesCategory: String, CaseIterable, Sendable {
 /// Release notes split into their category sections, for the Software Update
 /// window's badges (`UpdateAvailableView`). `parse` returns nil for notes with
 /// no category heading — releases before the categories, or hand-written
-/// notes — and the window then shows the text as it is.
+/// notes — or with an unknown `###` among the categories, and the window then
+/// shows the text as it is. A `## ` heading or the `**Full Changelog**` line
+/// ends the sections.
 package struct ReleaseNotesSections: Equatable, Sendable {
     package struct Section: Equatable, Sendable {
         package let category: ReleaseNotesCategory
-        /// The section's Markdown, heading excluded; empty for a heading with
-        /// no lines under it.
+        /// The section's Markdown, heading excluded; never empty (a heading
+        /// with nothing under it is dropped).
         package let body: String
     }
 
     /// Markdown before the first category heading, minus the `## What's New` title.
     package let leading: String
     package let sections: [Section]
-    /// Markdown after the last section's list — the `**Full Changelog**` line.
+    /// Markdown from the `**Full Changelog**` line on.
     package let trailing: String
 
     package static func parse(_ notes: String) -> Self? {
         var leading: [Substring] = []
         var sections: [(ReleaseNotesCategory, [Substring])] = []
-        for line in notes.split(separator: "\n", omittingEmptySubsequences: false) {
-            if let category = ReleaseNotesCategory(heading: line) {
+        var trailing: [Substring] = []
+        var inCodeBlock = false
+        // GitHub's release editor saves CRLF; "\r\n" is one Character, so split after normalising.
+        let lines = notes.replacingOccurrences(of: "\r\n", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") { inCodeBlock.toggle() }
+            let endsSections = trimmed.hasPrefix("**Full Changelog**") || trimmed.hasPrefix("## ")
+            if !trailing.isEmpty || (!inCodeBlock && !sections.isEmpty && endsSections) {
+                trailing.append(line)
+            } else if !inCodeBlock, let category = ReleaseNotesCategory(heading: line) {
                 sections.append((category, []))
             } else if sections.isEmpty {
-                if !isNotesTitle(line) { leading.append(line) }
+                if !isNotesTitle(trimmed) { leading.append(line) }
+            } else if !inCodeBlock, trimmed.hasPrefix("### ") {
+                // An unknown heading among the categories would put its lines under
+                // the previous badge; show the notes as plain text instead.
+                return nil
             } else {
                 sections[sections.count - 1].1.append(line)
             }
         }
-        guard let last = sections.last else { return nil }
-
-        // The last section ends at its last list line; what follows is trailing.
-        let cut = (last.1.lastIndex(where: isListLine) ?? -1) + 1
-        sections[sections.count - 1].1 = Array(last.1[..<cut])
-        return Self(
-            leading: joined(leading),
-            sections: sections.map { Section(category: $0.0, body: joined($0.1)) },
-            trailing: joined(last.1[cut...])
-        )
+        let filled = sections.map { Section(category: $0.0, body: joined($0.1)) }.filter { !$0.body.isEmpty }
+        guard !filled.isEmpty else { return nil }
+        return Self(leading: joined(leading), sections: filled, trailing: joined(trailing))
     }
 
-    private static func isNotesTitle(_ line: Substring) -> Bool {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        return trimmed == "## What's New" || trimmed == "## What\u{2019}s New"
-    }
-
-    /// A list item, or an indented continuation of one.
-    private static func isListLine(_ line: Substring) -> Bool {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return false }
-        return ["- ", "* ", "+ "].contains { trimmed.hasPrefix($0) } || line.first == " " || line.first == "\t"
+    private static func isNotesTitle(_ trimmed: String) -> Bool {
+        trimmed == "## What's New" || trimmed == "## What\u{2019}s New"
     }
 
     private static func joined(_ lines: some Sequence<Substring>) -> String {

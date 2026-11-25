@@ -152,9 +152,8 @@ struct UpdateAvailableView: View {
                 VStack(alignment: .leading, spacing: Spacing.regular) {
                     MenuLabel(text: section.category.title, systemImage: section.category.systemImage,
                               color: Self.tone(section.category), isMenu: false)
-                    if !section.body.isEmpty {
-                        MarkdownView(text: section.body)
-                    }
+                        .accessibilityAddTraits(.isHeader)
+                    MarkdownView(text: section.body)
                 }
             }
             if !parsed.trailing.isEmpty {
