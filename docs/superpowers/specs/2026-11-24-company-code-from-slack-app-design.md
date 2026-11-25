@@ -128,7 +128,7 @@ followed by the existing disclosures (`slackmanifest`). Steps are numbered when 
 
 Acceptance check on a test publish (the plan's last task, run by the owner): the link on the Marketplace page is clickable and opens Watchtower; the code copies whole; any markup renders. If the link is not clickable, the code block moves above step 2 and step 2 becomes "Paste the code below in …" (D8). `aboutLeadsWithCode` is removed either way; the order follows the check. `about_test.go` covers: the full text; a bundle that needs the download line cut; a 3,000-character bundle (the leading way in kept whole, the second dropped, step 2 worded for the one left); the leading way in never cut.
 
-Existing companies get the new layout on the admin's next **Publish** / `slack app link`; no migration.
+Existing companies get the new layout on the admin's next **Publish** (`company publish`), the only path that writes `AboutText`; `slack app link` writes the Slack-only `slackapp.ConnectBlock` and does not apply it. No migration.
 
 ### Docs
 
