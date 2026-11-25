@@ -11,13 +11,26 @@ package enum WorkchatFeedAdapter {
     /// ChatUI's role of a line that is neither the owner's nor an answer.
     package static let systemRole = "system"
 
-    /// The known entries in order; a kind this build does not know is left out.
-    package static func messages(_ entries: [SessionFeedEntry]) -> [ChatFeed.Message] {
+    /// The known entries in order; a kind this build does not know is left out. An owner line's image paths leave its
+    /// text (`WorkchatOwnerImages`): the bubble shows them as thumbnails (`ownerImages`).
+    package static func messages(
+        _ entries: [SessionFeedEntry],
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> [ChatFeed.Message] {
         entries.compactMap { entry in
             guard let role = role(for: entry.kind) else { return nil }
-            return ChatFeed.Message(id: messageID(entry.id), role: role, text: entry.text,
-                                    createdAt: entry.at ?? .distantPast)
+            let text = entry.kind == "owner" ? WorkchatOwnerImages.split(entry.text, fileExists: fileExists).text
+                : entry.text
+            return ChatFeed.Message(id: messageID(entry.id), role: role, text: text, createdAt: entry.at ?? .distantPast)
         }
+    }
+
+    /// The images an owner line sent, drawn as thumbnails in its bubble; none for any other kind.
+    package static func ownerImages(
+        _ entry: SessionFeedEntry,
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> [WorkchatOwnerImages.ImageFile] {
+        entry.kind == "owner" ? WorkchatOwnerImages.split(entry.text, fileExists: fileExists).images : []
     }
 
     /// The entries that make the dialog: everything but the subagent markers,
