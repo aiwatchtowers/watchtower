@@ -36,6 +36,30 @@ final class EmbeddedChatCenterTests: XCTestCase {
             systemPrompt: { "S" }, emptyHint: "")
     }
 
+    /// A key whose engine is gone (released, or moved by `adopt`) keeps no
+    /// hide clock: hiding a view of it never reads the clock (board #2383).
+    func testHidingAKeyWithNoEngineKeepsNoClock() throws {
+        let spec = try trackSpec()
+        var reads = 0
+        let pool = try XCTUnwrap(self.pool), ai = try XCTUnwrap(self.ai)
+        let counted = EmbeddedChatCenter(idleTTL: 300, clock: { reads += 1; return Date() }, makeEngine: { spec, gate in
+            EmbeddedChatEngine(spec: spec, store: DatabaseEmbeddedChatStore(dbPool: pool, conversationID: spec.key.conversationID ?? 0),
+                               aiService: ai, gate: gate)
+        })
+        _ = counted.engine(for: spec)
+        counted.markShown(spec.key)
+        counted.release(spec.key)
+        reads = 0
+        counted.markHidden(spec.key)
+        XCTAssertEqual(reads, 0, "no clock for a key with no engine")
+
+        _ = counted.engine(for: spec)
+        counted.markShown(spec.key)
+        reads = 0
+        counted.markHidden(spec.key)
+        XCTAssertEqual(reads, 1, "a held engine's hide is timed")
+    }
+
     func testTheSameKeyGivesTheSameEngine() throws {
         let spec = try trackSpec()
         let first = center.engine(for: spec)

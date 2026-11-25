@@ -421,6 +421,37 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         XCTAssertFalse(vm.asks.hiddenSessions().contains(row.id))
     }
 
+    /// A failed delete write brings the row back: it stops being gone for
+    /// the explain chat as soon as the write settled, before the reload
+    /// that lists it again (held here).
+    func testFailedDeleteWriteStopsHidingTheSessionBeforeTheReload() async throws {
+        let p = try await workbench()
+        let row = try await insertSession(p)
+        let vm = makeVM()
+        vm.commitDeleteRequests = { _, _ in throw WriteRefused() }
+        await vm.reload()
+        await vm.delete(row)
+        XCTAssertTrue(vm.asks.hiddenSessions().contains(row.id))
+
+        let reload = WriteGate()
+        defer { reload.open() }
+        let (reached, didReach) = AsyncStream<Void>.makeStream()
+        let read = vm.readWorkbenchSessions
+        vm.readWorkbenchSessions = { projectID in
+            didReach.yield()
+            await reload.wait()
+            return try await read(projectID)
+        }
+        gate.open()
+        var iterator = reached.makeAsyncIterator()
+        _ = await iterator.next()
+        XCTAssertFalse(vm.asks.hiddenSessions().contains(row.id), "the write failed: no longer gone, reload pending")
+
+        reload.open()
+        await vm.deleteCommitTask?.value
+        XCTAssertEqual(vm.sessionErrors[p], "Could not delete the session: database is locked")
+    }
+
     /// Undo in the window: the session is back for the explain chat too.
     func testUndoBringsTheSessionBackForTheExplainChat() async throws {
         let p = try await workbench()
