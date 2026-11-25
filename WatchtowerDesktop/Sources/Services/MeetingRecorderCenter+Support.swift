@@ -2,8 +2,7 @@ import Foundation
 import WatchtowerCore
 
 // Small pieces of `MeetingRecorderCenter` kept out of its main file (its
-// length cap): the default recordings folder, the no-speech message and the
-// batch path's samples.
+// length cap): the default recordings folder and the no-speech message.
 
 extension MeetingRecorderCenter {
     /// `nonisolated` so it can serve as the init's default argument (evaluated
@@ -30,16 +29,5 @@ extension MeetingRecorderCenter {
                 + "and never came back — \(callAudioOutputHint)"
         }
         return "No speech recognized"
-    }
-
-    /// The batch path's samples. A job whose Stop threw `.notFinalized`
-    /// fails with that error whatever the decode would return: an ADTS file
-    /// with no readable packet can be 0 bytes, which decodes to no samples
-    /// (the honest result for a recording that wrote no frames) and would
-    /// pass for "No speech recognized". A Retry builds a fresh job without
-    /// it and decodes the file as it is.
-    func batchSamples(for job: ProcessingJob) throws -> [Float] {
-        if let stopError = job.stopError { throw stopError }
-        return try decode(job.audioURL)
     }
 }
