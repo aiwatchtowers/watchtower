@@ -86,13 +86,20 @@ func (c *Center) ConfirmRequest(device, code, requestID string, ok bool) (linked
 			if _, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID); err != nil {
 				return err
 			}
-			return state.MarkRelaySlotRequestTx(tx, p.deviceID, "", false)
+			return state.MarkRelaySlotRequestTx(tx, p.deviceID, "", false, false)
 		case decisionValid:
 		}
+		// The request's relay id is proven when its slot hello proved it; an
+		// unreadable row proves nothing (the link goes through, unmarked).
+		_, proven, err := state.RelaySlotPendingTx(tx, p.deviceID, p.linkNonce)
+		if err != nil && !errors.Is(err, state.ErrRelaySlotLinksUndecodable) {
+			return err
+		}
+		p.relayProven = proven
 		if err := linkPending(tx, p, now); err != nil {
 			return err
 		}
-		// Linked through a pairing slot only when this request came from one.
+		// A Relay link only when this request came from a slot with its relay id proven.
 		if err := state.ConfirmRelaySlotLinkTx(tx, p.deviceID, p.linkNonce); err != nil {
 			return err
 		}
@@ -146,15 +153,28 @@ func (c *Center) ConfirmRequest(device, code, requestID string, ok bool) (linked
 // code is marked used by it, its row written with its keys and link nonce —
 // a re-link keeps the owner's grants and decision time and restarts its
 // action order — and its refusal, revoked row, rollback marks and held
-// actions are forgotten (they belong to the old link nonce's relay keys). The
-// hello's relay id is its own claim, unproven (protocol §5.7): it is stored
-// only when no other row holds it, so a hello never takes an id from another
-// phone. The database cannot tell a proven id from a claimed one, so a held id
-// is safe either way, and the link goes through without it; a proven device
-// record (takeRelayID) is what moves an id.
+// actions are forgotten (they belong to the old link nonce's relay keys).
+//
+// The writers of devices.relay_device_id and who wins: a proven hello here
+// (p.relayProven, a slot hello whose device data proved the id, #2387) and a
+// proven device record (takeRelayID) take the id off any row that holds it
+// (state.ClearRelayDeviceIDTx, with its admission stamp and lapse), since
+// only the relay_auth key's holder can sign; between two proofs the later
+// write wins, as both name the key's holder. An unproven hello's id
+// (protocol §5.7: an older phone's claim) is stored only when no other row
+// holds it, so it never takes an id from a phone, and the link goes through
+// without it otherwise. An unlink drops its row's id with the row.
 func linkPending(tx *sql.Tx, p pendingDevice, now time.Time) error {
 	id := strings.ToUpper(p.deviceID)
-	if p.relayDeviceID != "" {
+	if p.relayDeviceID != "" && p.relayProven {
+		n, err := state.ClearRelayDeviceIDTx(tx, p.relayDeviceID, id)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			log.Printf("hub link: link request of %s proves its relay id: %s", id, relayIDMoved)
+		}
+	} else if p.relayDeviceID != "" {
 		var holders int
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM devices WHERE relay_device_id = ? AND device_id <> ? COLLATE NOCASE`,
 			p.relayDeviceID, id).Scan(&holders); err != nil {

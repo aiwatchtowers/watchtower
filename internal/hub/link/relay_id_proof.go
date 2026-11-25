@@ -43,7 +43,7 @@ const (
 // the relay id it names (#2387): its device data carries the relay_auth
 // proof (checkRelayIDProof for this hub and device) and the proven id is the
 // hello's relay_device_id. "" is proven, otherwise the class of the refusal.
-// Asked only of a hello that names a relay id.
+// Asked of slot hellos only; one naming no relay id is refused (incomplete).
 func slotRelayIDProof(hubID, deviceID secure.ID, h wire.DeviceHello) string {
 	id, class := checkRelayIDProof(hubID, deviceID, h.Device)
 	switch {

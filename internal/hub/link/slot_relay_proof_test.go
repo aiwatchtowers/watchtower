@@ -3,6 +3,7 @@ package link
 import (
 	"context"
 	"crypto/ed25519"
+	"strings"
 	"testing"
 
 	"watchtower/internal/hub/identity"
@@ -10,6 +11,7 @@ import (
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/logcanary"
 )
 
 // withRelayProof is an upgraded phone's slot hello (#2387): its device data
@@ -29,7 +31,7 @@ func relayIDOf(key ed25519.PrivateKey) string {
 
 // slotHello is p's hello under code read from the named pairing slot (a fresh
 // fake: each call names its own slot), and its sas
-// event (the request waits).
+// event (the request waits; earlier events are drained).
 func (r *rig) slotHello(slot string, p phone, nonce string, edit ...func(*wire.DeviceHello)) PairEvent {
 	r.t.Helper()
 	f := memfake.New(transport.KindRelay, r.clock)
@@ -37,7 +39,11 @@ func (r *rig) slotHello(slot string, p phone, nonce string, edit ...func(*wire.D
 	if err := r.c.OnPairingOpened(context.Background(), f, slot); err != nil {
 		r.t.Fatal(err)
 	}
-	return sasEvent(r.t, r.c)
+	for {
+		if ev := sasEvent(r.t, r.c); ev.DeviceID == p.id.String() {
+			return ev // earlier phones' sas events are skipped
+		}
+	}
 }
 
 // #2387: a slot hello marks the phone as linked over Relay (the switcher's
@@ -67,6 +73,9 @@ func TestASlotHelloIsARelayLinkOnlyWithItsRelayIDProven(t *testing.T) {
 		}, false},
 		{"a proof for another phone", func(r *rig, _ phone) func(*wire.DeviceHello) {
 			return withRelayProof(newRelayKey(t), r.kr.HubID(), newPhone(t))
+		}, false},
+		{"no relay id", func(*rig, phone) func(*wire.DeviceHello) {
+			return func(*wire.DeviceHello) {}
 		}, false},
 		{"a bad signature", func(r *rig, p phone) func(*wire.DeviceHello) {
 			proof := withRelayProof(newRelayKey(t), r.kr.HubID(), p)
@@ -99,10 +108,11 @@ func TestASlotHelloIsARelayLinkOnlyWithItsRelayIDProven(t *testing.T) {
 	}
 }
 
-// #2387: the same phone's hello re-sent with a proof is a change of route
-// (a new request, now marked); re-sent unchanged without one draws nothing
-// and stays unmarked.
+// #2387: the same phone's hello re-sent with a proof is a new request, now
+// marked; re-sent unchanged without one draws nothing, stays unmarked and
+// logs the unproven request once, not per re-send.
 func TestASlotHelloGainingAProofReplacesItsRequest(t *testing.T) {
+	sink := logcanary.Capture(t)
 	r := newRig(t)
 	code := r.issue()
 	p := newPhone(t)
@@ -119,6 +129,9 @@ func TestASlotHelloGainingAProofReplacesItsRequest(t *testing.T) {
 	case ev := <-r.c.Events():
 		t.Fatalf("an unchanged re-send emitted %+v", ev)
 	default:
+	}
+	if n := strings.Count(sink.String(), "not a Relay link"); n != 1 {
+		t.Fatalf("the unproven request logged %d times, want once: %s", n, sink.String())
 	}
 	if ev := r.slotHello("slot2", p, code.Nonce, withRelayProof(key, r.kr.HubID(), p)); !ev.OverRelay {
 		t.Fatalf("the proven re-send's sas: %+v", ev)

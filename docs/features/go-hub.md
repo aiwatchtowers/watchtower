@@ -554,22 +554,34 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   request; iCloud phones without Relay then lose their connection until they subscribe.
   - **`hub_meta.relay_slot_links`** (`internal/hub/state/relay_slot_links.go`, ask #1827) is the positive "linked over
     Relay" signal, since an empty iCloud user alone cannot tell a slot link from a CloudKit link whose owner was
-    unreadable: JSON `{"linked": {id: devices.link_nonce}, "pending": {id: code nonce}}`, ids uppercase. Its writers
-    are `internal/hub/link` only, each in the transaction of the change, under the center's lock: a saved hello marks or
-    clears its pending entry, the confirm promotes the entry whose nonce matches the linked request (any other link, a
-    CloudKit re-link, drops the phone from `linked`), a refusal or expiry drops the pending entry, an unlink both. Every
+    unreadable: JSON `{"v": 2, "linked": {id: devices.link_nonce}, "pending": {id: {"nonce": code nonce, "proven":
+    bool}}}`, ids uppercase (`v` since #2387: a row without it, written by the builds between #2191 and #2387 whose
+    marks never proved a relay id, reads as empty and the next write replaces it). Its writers
+    are `internal/hub/link` only, each in the transaction of the change, under the center's lock: a saved hello writes or
+    clears its pending entry, the confirm promotes a proven entry whose nonce matches the linked request (any other link,
+    a CloudKit re-link or an unproven slot link, drops the phone from `linked`), a refusal or expiry drops the pending entry, an unlink both. Every
     write prunes entries whose `devices`/`pending_devices` row is gone or names another nonce; an undecodable row reads
     as an error (no candidate) and a writer replaces it with an empty one plus its change. Only phones in `linked` can
     move the Mac. No migration.
-  - **A slot hello proves its relay id (#2387).** A slot hello that names a `relay_device_id` is marked only when its
-    `device` part proves that id (`relay_device_id`, `relay_auth_pub`, `relay_id_sig`, the device record's
+  - **A slot hello proves its relay id (#2387).** A slot hello is marked (`proven`) only when its `device` part
+    proves the relay id the hello names (`relay_device_id`, `relay_auth_pub`, `relay_id_sig`, the device record's
     `RelayIDProof` for this hub and device; `link.slotRelayIDProof` = `checkRelayIDProof` plus the proven id equal to
-    the hello's). Anything less (an older phone's hello without a proof, a proof of another id, of another hub or
-    device, a bad signature) is logged by class only (`not marked as a Relay link`) and treated as a CloudKit hello:
-    it waits, links and keeps its id as an unproven claim (stored only when no other row holds it, so a Relay hub can
-    still serve the phone), but it is never a candidate and its `sas` event's `OverRelay` (so `moves_to_relay`) stays
-    false. A hello naming no relay id is marked as before (its row can only gain an id through a proven device
-    record). Pinned by `link/slot_relay_proof_test.go` and the `device_hello` cases' `slot_relay_link` in
+    the hello's, run for slot hellos only). Anything less (an older phone's hello without a proof, a proof of another
+    id, of another hub or device, a bad signature, no relay id at all) still keeps its slot route in the pending entry
+    and waits and links, keeping a named id as an unproven claim, but it is never a candidate and its `sas` event's
+    `OverRelay` (so `moves_to_relay`) stays false; a newly saved request logs it once by class (`proves no relay id
+    (…): not a Relay link`). Route and mark are apart: `savePending` compares both, so a route change (an unproven
+    slot hello then the same hello over CloudKit, which keeps its verified iCloud user, or the other way round) and a
+    gained or lost proof each replace the request. Released phones (v0.29.3 and earlier) send no proof, but they
+    take a slot only for a code of a Mac already on Relay (their `LinkRoutePolicy` predates #2191), where the mark
+    changes nothing, so they lose nothing user-visible.
+  - **Who writes `devices.relay_device_id` and who wins (#2387).** A proven slot hello at the confirm
+    (`linkPending`, the proven flag read from the request's pending entry) and a proven device record
+    (`takeRelayID`) take the id off any row that holds it (`state.ClearRelayDeviceIDTx`, with its admission stamp
+    and lapse; only the `relay_auth` key's holder can sign, so between two proofs the later one wins). An unproven
+    hello's id is stored only when no other row holds it. An unlink drops the row with its id. Pinned by
+    `link/slot_relay_proof_test.go`, `link/slot_relay_route_test.go`, `switcher`'s
+    `TestRelayLinkALegacySlotRowIsNoCandidate` and the `device_hello` cases' `slot_relay_link` in
     `hub_contract_cases.json` (Go `TestHelloFixtureRelayIDRule`, Kit `testHelloCasesRoundTrip`).
   - **The candidate** (`relayLinkCandidates`, in `devices` order): `relay_slot_links.linked[id]` equals the row's
     `link_nonce`, the row has a relay id and no iCloud route, and `linked_at > max(stored relay_link_since,

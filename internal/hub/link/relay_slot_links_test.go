@@ -55,6 +55,30 @@ func (r *rig) slotRow() string {
 	return v
 }
 
+// slotHandle is p's hello read from a pairing slot, proving p's relay id
+// (#2387; the relay_auth key is p's signing key, as hubtest's phone has it,
+// so a re-send proves the same id).
+func (r *rig) slotHandle(p phone, nonce string, edit ...func(*wire.DeviceHello)) Pending {
+	r.t.Helper()
+	return r.handle(p, nonce, append([]func(*wire.DeviceHello){withRelayProof(p.sig, r.kr.HubID(), p)}, edit...)...)
+}
+
+// confirmSlotLinked is confirmLinked through a pairing slot with a proven
+// relay id: a Relay link.
+func (r *rig) confirmSlotLinked(p phone) {
+	r.t.Helper()
+	code := r.issue()
+	if got := r.slotHandle(p, code.Nonce); got.Code == "" {
+		r.t.Fatalf("hello not waiting: %+v", got)
+	}
+	if err := r.c.Confirm(p.id.String(), r.code(p), true); err != nil {
+		r.t.Fatalf("Confirm: %v", err)
+	}
+	if !r.linked(p) {
+		r.t.Fatal("not linked after Confirm")
+	}
+}
+
 // unreadableOwner makes the Mac's iCloud user unknown, so a private hello
 // written as the current user links with no iCloud user (no route).
 func (r *ckRig) unreadableOwner() {
@@ -71,7 +95,7 @@ func TestASlotLinkIsRecordedAndACloudKitLinkIsNot(t *testing.T) {
 	r := newCKRig(t)
 	a, b := newPhone(t), newPhone(t)
 	code := r.issue()
-	r.handle(a, code.Nonce)
+	r.slotHandle(a, code.Nonce)
 	if row := r.slotRow(); row == "" {
 		t.Fatal("the slot request left no mark")
 	}
@@ -98,8 +122,8 @@ func TestOnlyTheRouteChangingReplacesTheRequest(t *testing.T) {
 	r := newCKRig(t)
 	a := newPhone(t)
 	code := r.issue()
-	r.handle(a, code.Nonce) // through a slot
-	r.linkCK(a, code.Nonce) // the same hello over CloudKit, then Link
+	r.slotHandle(a, code.Nonce) // through a slot
+	r.linkCK(a, code.Nonce)     // the same hello over CloudKit, then Link
 	r.wantSlotLinked(a, false)
 	if r.userOf(a) == "" {
 		t.Fatal("the CloudKit request did not replace the slot one")
@@ -110,7 +134,7 @@ func TestOnlyTheRouteChangingReplacesTheRequest(t *testing.T) {
 	if got, err := r.ckHello(b, code.Nonce); err != nil || got.Code == "" {
 		t.Fatalf("CloudKit hello not waiting: %+v %v", got, err)
 	}
-	r.handle(b, code.Nonce) // the same hello through a slot
+	r.slotHandle(b, code.Nonce) // the same hello through a slot
 	if err := r.c.Confirm(b.id.String(), r.code(b), true); err != nil {
 		t.Fatal(err)
 	}
@@ -125,11 +149,11 @@ func TestARouteChangePastTheCapRemovesTheOldRequest(t *testing.T) {
 	a, b, c := newPhone(t), newPhone(t), newPhone(t)
 	code := r.issue()
 	for _, p := range []phone{a, b, c} { // MaxNoncesPerCode slot requests
-		if got := r.handle(p, code.Nonce); got.Code == "" {
+		if got := r.slotHandle(p, code.Nonce); got.Code == "" {
 			t.Fatalf("not waiting: %+v", got)
 		}
 	}
-	got, err := r.ckHello(a, code.Nonce) // a's same hello over CloudKit
+	got, err := r.ckHello(a, code.Nonce, withRelayProof(a.sig, r.kr.HubID(), a)) // a's same hello over CloudKit
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,10 +216,10 @@ func TestARelinkRequestThatEndsKeepsTheSlotMark(t *testing.T) {
 		t.Run(how, func(t *testing.T) {
 			r := newRig(t)
 			a := newPhone(t)
-			r.confirmLinked(a)
+			r.confirmSlotLinked(a)
 			r.wantSlotLinked(a, true)
 			code := r.issue()
-			if got := r.handle(a, code.Nonce); got.Code == "" {
+			if got := r.slotHandle(a, code.Nonce); got.Code == "" {
 				t.Fatalf("the re-pairing request is not waiting: %+v", got)
 			}
 			switch how {
@@ -238,7 +262,7 @@ func TestARelinkRequestThatEndsKeepsTheSlotMark(t *testing.T) {
 func TestARelinkOverCloudKitDropsTheSlotMark(t *testing.T) {
 	r := newCKRig(t)
 	a := newPhone(t)
-	r.confirmLinked(a)
+	r.confirmSlotLinked(a)
 	r.wantSlotLinked(a, true)
 	r.advance(time.Minute)
 	r.linkCK(a, r.issueCK().Nonce)
@@ -248,7 +272,7 @@ func TestARelinkOverCloudKitDropsTheSlotMark(t *testing.T) {
 	// and the same code: the request the owner confirms came over CloudKit.
 	c := newPhone(t)
 	code := r.issue()
-	r.handle(c, code.Nonce)
+	r.slotHandle(c, code.Nonce)
 	r.linkCK(phoneWith(t, c.sig), code.Nonce)
 	r.wantSlotLinked(c, false)
 }
@@ -257,7 +281,7 @@ func TestARelinkOverCloudKitDropsTheSlotMark(t *testing.T) {
 func TestARefusedOrExpiredSlotRequestLeavesNoMark(t *testing.T) {
 	r := newRig(t)
 	a := newPhone(t)
-	r.handle(a, r.issue().Nonce)
+	r.slotHandle(a, r.issue().Nonce)
 	if err := r.c.Confirm(a.id.String(), r.code(a), false); err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +290,7 @@ func TestARefusedOrExpiredSlotRequestLeavesNoMark(t *testing.T) {
 	}
 
 	b := newPhone(t)
-	r.handle(b, r.issue().Nonce)
+	r.slotHandle(b, r.issue().Nonce)
 	r.advance(wire.LinkLifetime + time.Second)
 	if err := r.c.Sweep(); err != nil {
 		t.Fatal(err)
@@ -280,7 +304,7 @@ func TestARefusedOrExpiredSlotRequestLeavesNoMark(t *testing.T) {
 func TestUnlinkDropsTheSlotMark(t *testing.T) {
 	r := newRig(t)
 	a := newPhone(t)
-	r.confirmLinked(a)
+	r.confirmSlotLinked(a)
 	r.wantSlotLinked(a, true)
 	if err := r.c.Unlink(a.id.String()); err != nil {
 		t.Fatal(err)
@@ -296,7 +320,7 @@ func TestUnlinkDropsTheSlotMark(t *testing.T) {
 func TestAStaleSlotMarkIsPrunedByTheNextWrite(t *testing.T) {
 	r := newRig(t)
 	a, b := newPhone(t), newPhone(t)
-	r.confirmLinked(a)
+	r.confirmSlotLinked(a)
 	if err := r.st.WithTx(context.Background(), func(tx *sql.Tx) error {
 		_, err := tx.Exec(`UPDATE devices SET link_nonce = 'relinked' WHERE device_id = ? COLLATE NOCASE`, a.id.String())
 		return err
@@ -304,7 +328,7 @@ func TestAStaleSlotMarkIsPrunedByTheNextWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.wantSlotLinked(a, false)
-	r.confirmLinked(b)
+	r.confirmSlotLinked(b)
 	if _, ok := r.slotLinked()[a.id.String()]; ok {
 		t.Fatalf("the stale mark stayed: %s", r.slotRow())
 	}
@@ -322,7 +346,7 @@ func TestACorruptSlotRowIsReplacedByTheNextWrite(t *testing.T) {
 		t.Fatal("a corrupt row read as a set")
 	}
 	a := newPhone(t)
-	r.confirmLinked(a)
+	r.confirmSlotLinked(a)
 	r.wantSlotLinked(a, true)
 }
 

@@ -36,6 +36,7 @@ func (w *world) relayPhone(pays bool) *hubtest.Phone {
 func (w *world) slotLinked(ph *hubtest.Phone) {
 	w.t.Helper()
 	var row struct {
+		V      int               `json:"v"`
 		Linked map[string]string `json:"linked"`
 	}
 	if raw, ok, err := w.st.Meta(state.MetaRelaySlotLinks); err != nil {
@@ -49,6 +50,7 @@ func (w *world) slotLinked(ph *hubtest.Phone) {
 		row.Linked = map[string]string{}
 	}
 	row.Linked[strings.ToUpper(ph.ID().String())] = ph.Device().LinkNonce
+	row.V = 2 // the row version that marks only proven slot links (#2387)
 	b, err := json.Marshal(row)
 	if err != nil {
 		w.t.Fatal(err)
@@ -483,6 +485,21 @@ func TestRelayLinkACloudKitLinkWithAnEmptyOwnerIsNoCandidate(t *testing.T) {
 	})
 }
 
+// #2387: a v1 row (no "v"), written by the builds between #2191 and #2387,
+// whose marks never proved the phone's relay id, reads as no candidate.
+func TestRelayLinkALegacySlotRowIsNoCandidate(t *testing.T) {
+	eachFlavour(t, func(t *testing.T, w *world) {
+		r := w.relayPhone(true)
+		row := `{"linked":{"` + strings.ToUpper(r.ID().String()) + `":"` + r.Device().LinkNonce + `"}}`
+		if err := w.st.SetMeta(state.MetaRelaySlotLinks, row); err != nil {
+			t.Fatal(err)
+		}
+		w.relayLinkCheck()
+		w.wantReads(0)
+		w.wantActive(transport.KindCloudKit)
+	})
+}
+
 // A slot mark names the link it was written for: a re-link by a writer that
 // never updated the record (the row now carries another link nonce) leaves a
 // mark that does not count, both in the candidates and at the accept.
@@ -508,7 +525,7 @@ func TestRelayLinkAStaleSlotMarkIsNoCandidate(t *testing.T) {
 		eachFlavour(t, func(t *testing.T, w *world) {
 			r := w.relayPhone(true)
 			w.accountReadHook(func() {
-				row := `{"linked":{"` + strings.ToUpper(r.ID().String()) + `":"another-link"}}`
+				row := `{"v":2,"linked":{"` + strings.ToUpper(r.ID().String()) + `":"another-link"}}`
 				if err := w.st.SetMeta(state.MetaRelaySlotLinks, row); err != nil {
 					t.Error(err)
 				}

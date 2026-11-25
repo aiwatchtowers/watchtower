@@ -9,13 +9,27 @@ import (
 )
 
 // MetaRelaySlotLinks is the phones whose link was confirmed through a relay
-// pairing slot, and the requests waiting that came through one: JSON
-// {"linked": {device id: devices.link_nonce of that link}, "pending":
-// {device id: the request's code nonce}}, ids uppercase. A CloudKit link
+// pairing slot with a proven relay id, and the requests waiting that came
+// through one: JSON {"v": 2, "linked": {device id: devices.link_nonce of that
+// link}, "pending": {device id: {"nonce": the request's code nonce,
+// "proven": the hello proved its relay id}}}, ids uppercase. A CloudKit link
 // whose owner could not be read carries no iCloud user, like a slot link
-// (ICloudRoutes cannot tell them apart), so this is the switcher's positive
-// "linked over Relay" signal (relay-link check). No migration: a hub_meta
-// row.
+// (ICloudRoutes cannot tell them apart), so linked is the switcher's
+// positive "linked over Relay" signal (relay-link check). No migration: a
+// hub_meta row.
+//
+// Pending records the route (an entry: the request came through a slot) and
+// the mark apart (#2387): a slot hello is marked (proven) only when its
+// device data proves the relay id the hello names (link's slotRelayIDProof);
+// the route alone, unproven, is what a request replacement and the iCloud
+// user binding compare. Only a proven request is promoted to linked, so an
+// unproven claim (an older phone's, or one naming no relay id) never moves
+// the hub to Relay.
+//
+// The row carries its version (v, relaySlotLinksVersion). A row of another
+// version — v1, written without v by the builds between #2191 and #2387,
+// whose marks were never proven — reads as empty and the next write replaces
+// it: losing entries only takes candidates away.
 //
 // Each entry names the link or request it was written for (the link nonce,
 // the code nonce), and the readers compare it with the row they stand for:
@@ -24,23 +38,19 @@ import (
 //
 // Its writers are internal/hub/link only, each in the transaction of the
 // change it records, all under the link center's lock: a hello's saved
-// request (marks or clears its pending entry), the confirm (promotes the
-// entry whose code nonce matches the linked request, or drops the phone from
-// linked for any other link: a re-link over CloudKit), a refusal or expiry of
-// a waiting request (its pending entry only: a linked phone's link stays),
-// and an unlink (both). Every write also prunes entries whose devices or
-// pending_devices row is gone or names another nonce. The switcher only
-// reads it. A row that cannot be decoded reads as an error here (the
-// switcher logs it and sees no candidate); a writer replaces it, as empty
-// plus its own change: losing entries only takes candidates away.
-//
-// A slot hello is marked only when it names no relay id or proves the one it
-// names (#2387: the relay_auth proof in its device data, link's
-// slotRelayIDProof); an older phone's unproven claim links unmarked, so it
-// never moves the hub to Relay. The mark is not what stores an id: the
-// hello's id is kept only when no other row holds it, and the device
-// record's proof (VerifyRelayIDProof) is what moves an id between rows.
+// request (writes or clears its pending entry), the confirm (promotes a
+// proven entry whose code nonce matches the linked request, or drops the
+// phone from linked for any other link: a re-link over CloudKit or an
+// unproven one), a refusal or expiry of a waiting request (its pending entry
+// only: a linked phone's link stays), and an unlink (both). Every write also
+// prunes entries whose devices or pending_devices row is gone or names
+// another nonce. The switcher only reads it. A row that cannot be decoded
+// reads as an error here (the switcher logs it and sees no candidate); a
+// writer replaces it, as empty plus its own change.
 const MetaRelaySlotLinks = "relay_slot_links"
+
+// relaySlotLinksVersion is the row's version; any other reads as empty.
+const relaySlotLinksVersion = 2
 
 // ErrRelaySlotLinksUndecodable is the relay_slot_links row being there but
 // not decodable (an error of its own, apart from a failed read).
@@ -48,8 +58,15 @@ var ErrRelaySlotLinksUndecodable = errors.New("state: relay_slot_links cannot be
 
 // relaySlotLinks is the row's content.
 type relaySlotLinks struct {
-	Linked  map[string]string `json:"linked,omitempty"`
-	Pending map[string]string `json:"pending,omitempty"`
+	V       int                    `json:"v"`
+	Linked  map[string]string      `json:"linked,omitempty"`
+	Pending map[string]slotRequest `json:"pending,omitempty"`
+}
+
+// slotRequest is a waiting request that came through a pairing slot.
+type slotRequest struct {
+	Nonce  string `json:"nonce"`
+	Proven bool   `json:"proven,omitempty"`
 }
 
 // slotID is the row's form of a device id; every reader and writer uses it.
@@ -60,6 +77,15 @@ func readRelaySlotLinks(q querier) (relaySlotLinks, error) {
 	if err != nil || !ok || raw == "" {
 		return relaySlotLinks{}, err
 	}
+	var version struct {
+		V int `json:"v"`
+	}
+	if err := json.Unmarshal([]byte(raw), &version); err != nil {
+		return relaySlotLinks{}, fmt.Errorf("%w: %w", ErrRelaySlotLinksUndecodable, err)
+	}
+	if version.V != relaySlotLinksVersion {
+		return relaySlotLinks{}, nil // a v1 row's marks were never proven
+	}
 	var r relaySlotLinks
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
 		return relaySlotLinks{}, fmt.Errorf("%w: %w", ErrRelaySlotLinksUndecodable, err)
@@ -68,9 +94,9 @@ func readRelaySlotLinks(q querier) (relaySlotLinks, error) {
 }
 
 // RelaySlotLinked is the linked phones confirmed through a relay pairing
-// slot, each with the link nonce of that link (uppercase ids). A caller
-// counts a phone only while its devices row carries the same link nonce. An
-// undecodable row is an error.
+// slot with a proven relay id, each with the link nonce of that link
+// (uppercase ids). A caller counts a phone only while its devices row
+// carries the same link nonce. An undecodable row is an error.
 func (s *Store) RelaySlotLinked() (map[string]string, error) {
 	r, err := readRelaySlotLinks(s.db)
 	if err != nil {
@@ -84,7 +110,8 @@ func (s *Store) RelaySlotLinked() (map[string]string, error) {
 }
 
 // RelaySlotLinkedTx is whether device's link under linkNonce was confirmed
-// through a pairing slot, inside the caller's transaction.
+// through a pairing slot with a proven relay id, inside the caller's
+// transaction.
 func RelaySlotLinkedTx(tx *sql.Tx, device, linkNonce string) (bool, error) {
 	r, err := readRelaySlotLinks(tx)
 	if err != nil {
@@ -98,23 +125,30 @@ func RelaySlotLinkedTx(tx *sql.Tx, device, linkNonce string) (bool, error) {
 	return false, nil
 }
 
-// RelaySlotPendingTx is whether device's waiting request under the code
-// nonce came through a pairing slot. The nonce is compared, not just the
-// device: a request that a writer which does not know the row replaced
-// under another code never inherits the mark. An undecodable row is
+// RelaySlotPendingTx is how device's waiting request under the code nonce
+// came in: through a pairing slot (slot) and, if so, with its relay id
+// proven (proven). The nonce is compared, not just the device: a request
+// that a writer which does not know the row replaced under another code
+// never inherits the entry. An undecodable row is
 // ErrRelaySlotLinksUndecodable (the route is unknown), a failed read its own
 // error.
-func RelaySlotPendingTx(tx *sql.Tx, device, nonce string) (bool, error) {
+func RelaySlotPendingTx(tx *sql.Tx, device, nonce string) (slot, proven bool, err error) {
 	r, err := readRelaySlotLinks(tx)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
-	return nonce != "" && r.Pending[slotID(device)] == nonce, nil
+	e, ok := r.Pending[slotID(device)]
+	if nonce == "" || !ok || e.Nonce != nonce {
+		return false, false, nil
+	}
+	return true, e.Proven, nil
 }
 
 // MarkRelaySlotRequestTx records how device's request, just saved under the
-// code nonce, came in: through a pairing slot (slot) or not (its entry goes).
-func MarkRelaySlotRequestTx(tx *sql.Tx, device, nonce string, slot bool) error {
+// code nonce, came in: through a pairing slot (slot), with its relay id
+// proven or not, or not through one (its entry goes; proven is then
+// ignored).
+func MarkRelaySlotRequestTx(tx *sql.Tx, device, nonce string, slot, proven bool) error {
 	return updateRelaySlotLinks(tx, func(r *relaySlotLinks) {
 		id := slotID(device)
 		if !slot {
@@ -122,23 +156,25 @@ func MarkRelaySlotRequestTx(tx *sql.Tx, device, nonce string, slot bool) error {
 			return
 		}
 		if r.Pending == nil {
-			r.Pending = map[string]string{}
+			r.Pending = map[string]slotRequest{}
 		}
-		r.Pending[id] = nonce
+		r.Pending[id] = slotRequest{Nonce: nonce, Proven: proven}
 	})
 }
 
 // ConfirmRelaySlotLinkTx is the confirm that linked device under the code
 // nonce (which is also the link's devices.link_nonce): linked through a slot
-// when its waiting request was marked under that nonce, otherwise (a
-// CloudKit link or re-link) not. The pending entry goes either way.
+// when its waiting request came through one under that nonce with its relay
+// id proven, otherwise (a CloudKit link or re-link, an unproven slot link)
+// not. The pending entry goes either way.
 func ConfirmRelaySlotLinkTx(tx *sql.Tx, device, nonce string) error {
 	return updateRelaySlotLinks(tx, func(r *relaySlotLinks) {
 		id := slotID(device)
-		slot := nonce != "" && r.Pending[id] == nonce
+		e, ok := r.Pending[id]
+		marked := ok && nonce != "" && e.Nonce == nonce && e.Proven
 		delete(r.Pending, id)
 		delete(r.Linked, id)
-		if slot {
+		if marked {
 			if r.Linked == nil {
 				r.Linked = map[string]string{}
 			}
@@ -180,14 +216,15 @@ func updateRelaySlotLinks(tx *sql.Tx, change func(*relaySlotLinks)) error {
 			delete(r.Linked, id)
 		}
 	}
-	for id, nonce := range r.Pending {
-		if n, ok := waiting[slotID(id)]; !ok || n != nonce {
+	for id, e := range r.Pending {
+		if n, ok := waiting[slotID(id)]; !ok || n != e.Nonce {
 			delete(r.Pending, id)
 		}
 	}
 	if len(r.Linked) == 0 && len(r.Pending) == 0 {
 		return DeleteMetaTx(tx, MetaRelaySlotLinks)
 	}
+	r.V = relaySlotLinksVersion
 	b, err := json.Marshal(r) // map keys sorted: the row is stable
 	if err != nil {
 		return err
