@@ -244,6 +244,26 @@ struct SpacingPage: View {
                 }
             }
             plansLayout
+            thumbnail
+        }
+    }
+
+    private func thumbnailSample(_ name: String, width: CGFloat, height: CGFloat) -> some View {
+        VStack(spacing: Spacing.small) {
+            RoundedRectangle(cornerRadius: Radius.row, style: .continuous).fill(Fill.card).frame(width: width, height: height)
+            Text("\(name) \(Int(width))").font(.caption.monospacedDigit())
+        }
+    }
+
+    private var thumbnail: some View {
+        PageSection("Thumbnail") {
+            Sample("A chat bubble's image at its largest (a narrower pane shrinks it), and the square while it decodes",
+                   usage: ".frame(maxWidth: size.width, maxHeight: size.height) // after .scaledToFit(), size ≤ Thumbnail.maxSide") {
+                HStack(alignment: .bottom, spacing: Spacing.large) {
+                    thumbnailSample("maxSide", width: Thumbnail.maxSide, height: Thumbnail.maxSide * 0.625)
+                    thumbnailSample("placeholder", width: Thumbnail.placeholder, height: Thumbnail.placeholder)
+                }
+            }
         }
     }
 
