@@ -448,6 +448,45 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(notifier.failedReasons.count, 1)
     }
 
+    func testUnfinalizedRecordingFailsWithItsOwnReasonNotNoSpeech() async throws {
+        // A file whose writer was never closed decodes to nothing; the job
+        // must say so rather than blame the meeting for having no speech.
+        let finalized = try AACFixture.write(durationSec: 2)
+        let audio = try AACFixture.unfinalizedCopy(of: finalized)
+        defer {
+            try? FileManager.default.removeItem(at: finalized)
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 2)
+        let notifier = FakeNotifier()
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [""])) },
+            decode: AudioFileDecoder.decodePCM16k(url:),
+            runnerResolver: { runner },
+            notifier: notifier,
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        await center.startRecording(eventID: nil, title: "Ad hoc")
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        guard case .failed(let reason) = center.phase else {
+            return XCTFail("expected .failed, got \(center.phase)")
+        }
+        XCTAssertTrue(reason.contains("not finalized"), "got: \(reason)")
+        XCTAssertFalse(reason.contains("No speech recognized"))
+        XCTAssertEqual(center.pendingAudioURL, audio, "the audio must be kept for recovery")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path))
+        XCTAssertEqual(runner.invocations.count, 0)
+    }
+
     func testMissingRunnerFailsVisiblyAfterRecorderStopped() async throws {
         let audio = try makeDummyAudioFile()
         defer {
