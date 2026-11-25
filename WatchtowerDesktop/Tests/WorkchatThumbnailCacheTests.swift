@@ -70,7 +70,7 @@ final class WorkchatThumbnailCacheTests: XCTestCase {
         XCTAssertEqual(size(CGSize(width: 100, height: 40), 1), CGSize(width: 100, height: 40))
         XCTAssertEqual(size(CGSize(width: 440, height: 275), 2), CGSize(width: 220, height: 137.5), "the decode's cap")
         XCTAssertEqual(size(CGSize(width: 440, height: 880), 1), CGSize(width: 110, height: 220), "shrunk to fit")
-        XCTAssertEqual(size(CGSize(width: 0, height: 0), 2), .zero)
+        XCTAssertEqual(size(.zero, 2), .zero)
     }
 
     func testRewrittenFileIsDecodedAgain() async throws {
