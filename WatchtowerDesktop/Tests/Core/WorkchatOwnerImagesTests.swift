@@ -62,6 +62,16 @@ final class WorkchatOwnerImagesTests: XCTestCase {
         XCTAssertEqual(shown("look \(pasted)\(second)."), "look [Image #1] [Image #2].")
     }
 
+    /// Two pastes the sender joins by punctuation with no space (`([Image #1])→([Image #2])`) read back as typed.
+    func testPathsJoinedByPunctuationReadAsTwoTokens() {
+        let second = pasted.replacingOccurrences(of: "-1.png", with: "-2.png")
+        let draft = "([Image #1])→([Image #2])"
+        let sent = PasteTokens.expand(draft, payloads: [1: .image(path: pasted), 2: .image(path: second)],
+                                      imagePath: WorkchatOutgoing.quoted)
+        XCTAssertEqual(shown(sent), draft, sent)
+        XCTAssertEqual(shown("\(pasted),\(second)"), "[Image #1],[Image #2]")
+    }
+
     func testQuotedPathWithSpacesAndEscapes() {
         let weird = root + "/1/a \"b\" \\c.png"
         let text = "first \(WorkchatOutgoing.quoted(spaced)) then \(WorkchatOutgoing.quoted(weird))"
@@ -111,6 +121,14 @@ final class WorkchatOwnerImagesTests: XCTestCase {
         XCTAssertEqual(WorkchatOwnerImages.shown("\(pasted): a bug", markdown: true), "\\[Image #1]: a bug")
         XCTAssertEqual(WorkchatOwnerImages.shown("\(pasted) a bug", markdown: true), "[Image #1] a bug")
         XCTAssertEqual(shown("\(pasted): a bug"), "[Image #1]: a bug", "plain text needs no escape")
+        for (text, escaped) in [
+            ("- \(pasted): before", "- \\[Image #1]: before"),
+            ("> \(pasted): note", "> \\[Image #1]: note"),
+            ("1. \(pasted): first", "1. \\[Image #1]: first"),
+            ("see \(pasted): here", "see [Image #1]: here")
+        ] {
+            XCTAssertEqual(WorkchatOwnerImages.shown(text, markdown: true), escaped, text)
+        }
     }
 
     func testAdapterShowsOwnerTokensAndKeepsOthers() {

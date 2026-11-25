@@ -38,9 +38,9 @@ package enum WorkchatOwnerImages {
                 let glued = index + 1 < found.count && found[index + 1].range.lowerBound == token.range.upperBound
                 kept.replaceSubrange(token.range, with: "[Image #\(numbers[token.path] ?? 0)]" + (glued ? " " : ""))
             }
-            if markdown, kept.drop(while: \.isWhitespace).hasPrefix("[Image #"),
-               let close = kept.firstIndex(of: "]"), kept[close...].dropFirst().first == ":" {
-                kept.insert("\\", at: kept.firstIndex(of: "[") ?? kept.startIndex)
+            if markdown, let match = linkDefinitionStart?.firstMatch(in: kept, range: NSRange(kept.startIndex..., in: kept)),
+               let label = Range(match.range(at: 1), in: kept) {
+                kept.insert("\\", at: label.lowerBound)
             }
             lines.append((kept, true))
         }
@@ -48,6 +48,11 @@ package enum WorkchatOwnerImages {
         lines.removeAll { !$0.labelled && WorkchatOutgoing.isImageMarker($0.text.trimmingCharacters(in: .whitespaces)) }
         return lines.map(\.text).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// A label where Markdown would read a link definition: opening the line, or a list item's or a quote's text.
+    private static let linkDefinitionStart = try? NSRegularExpression(
+        pattern: #"^(?:[ \t]*(?:>|[-*+]|\d{1,9}[.)])(?=[ \t]))*[ \t]*(\[Image #\d+\]:)"#
+    )
 
     private static func isImage(_ path: String, alone: Bool) -> Bool {
         guard path.hasPrefix("/"),
@@ -102,8 +107,10 @@ package enum WorkchatOwnerImages {
         return rest.first.map(\.isWhitespace) ?? true
     }
 
-    /// A bare path, or several glued end to end (`/…/a-1.png/…/a-2.png`, two pastes sent with no space between them
-    /// by an older build): split after each image extension a `/` follows.
+    /// A bare path, or several in one word: glued end to end (`/…/a-1.png/…/a-2.png`, two pastes an older build sent
+    /// with no space between them) or joined by punctuation (`(/…/a.png)→(/…/b.png)`, as `PasteTokens.expand` sends
+    /// `([Image #1])→([Image #2])`): split after each image extension a later `/` in the word follows, the text up to
+    /// that `/` left as it is.
     private static func bareTokens(in line: String, at start: String.Index) -> [Token] {
         guard line[start] == "/" else { return [] }
         var end = line[start...].firstIndex(where: \.isWhitespace) ?? line.endIndex
@@ -116,15 +123,16 @@ package enum WorkchatOwnerImages {
         for match in gluedImageEnd?.matches(in: line, range: word) ?? [] {
             guard let cut = Range(match.range, in: line)?.upperBound else { continue }
             tokens.append(Token(range: from..<cut, raw: line[from..<cut], path: String(line[from..<cut])))
-            from = cut
+            from = line[cut..<end].firstIndex(of: "/") ?? cut
         }
         tokens.append(Token(range: from..<end, raw: line[from..<end], path: String(line[from..<end])))
         return tokens
     }
 
-    /// An image extension a `/` follows: where one glued path ends and the next begins.
+    /// An image extension a later `/` follows in the same word: where one path ends and the next begins.
     private static let gluedImageEnd = try? NSRegularExpression(
-        pattern: "\\.(?:" + imageExtensions.sorted().joined(separator: "|") + ")(?=/)", options: .caseInsensitive
+        pattern: "\\.(?:" + imageExtensions.sorted().joined(separator: "|") + ")(?=[^\\s/]*/)",
+        options: .caseInsensitive
     )
 
     private static func quotedToken(in line: String, at start: String.Index) -> Token? {
