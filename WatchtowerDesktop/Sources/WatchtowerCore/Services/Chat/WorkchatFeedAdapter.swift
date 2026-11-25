@@ -13,22 +13,22 @@ package enum WorkchatFeedAdapter {
 
     /// The known entries in order; a kind this build does not know is left out. An owner line's image paths leave its
     /// text (`WorkchatOwnerImages`, `attachmentsRoot` its attachments folder): the bubble shows them as thumbnails or
-    /// chips (`ownerImages`).
+    /// chips.
     package static func messages(_ entries: [SessionFeedEntry], attachmentsRoot: String? = nil) -> [ChatFeed.Message] {
-        entries.compactMap { entry in
-            guard let role = role(for: entry.kind) else { return nil }
-            let text = entry.kind == "owner" ? WorkchatOwnerImages.split(entry.text, attachmentsRoot: attachmentsRoot).text
-                : entry.text
-            return ChatFeed.Message(id: messageID(entry.id), role: role, text: text, createdAt: entry.at ?? .distantPast)
-        }
+        messages(entries) { WorkchatOwnerImages.split($0.text, attachmentsRoot: attachmentsRoot) }
     }
 
-    /// The images an owner line sent, drawn in its bubble; none for any other kind.
-    package static func ownerImages(
-        _ entry: SessionFeedEntry,
-        attachmentsRoot: String? = nil
-    ) -> [WorkchatOwnerImages.ImageFile] {
-        entry.kind == "owner" ? WorkchatOwnerImages.split(entry.text, attachmentsRoot: attachmentsRoot).images : []
+    /// `messages` with each owner line split by `ownerSplit` (the pane's memo, `SessionFeedMarkdownCache.ownerImages`,
+    /// which the bubble's images read too).
+    package static func messages(
+        _ entries: [SessionFeedEntry],
+        ownerSplit: (SessionFeedEntry) -> WorkchatOwnerImages
+    ) -> [ChatFeed.Message] {
+        entries.compactMap { entry in
+            guard let role = role(for: entry.kind) else { return nil }
+            let text = entry.kind == "owner" ? ownerSplit(entry).text : entry.text
+            return ChatFeed.Message(id: messageID(entry.id), role: role, text: text, createdAt: entry.at ?? .distantPast)
+        }
     }
 
     /// The entries that make the dialog: everything but the subagent markers,

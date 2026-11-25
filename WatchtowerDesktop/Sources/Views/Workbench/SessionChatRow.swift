@@ -51,7 +51,12 @@ struct WorkchatFeed {
         return (session, session.flatMap { transcriptDirs[$0] })
     }
 
-    var messages: [ChatFeed.Message] { WorkchatFeedAdapter.messages(entries, attachmentsRoot: attachmentsRoot) }
+    var messages: [ChatFeed.Message] { WorkchatFeedAdapter.messages(entries, ownerSplit: ownerImages) }
+
+    /// An owner line's shown text and images, split once per entry text (`SessionFeedMarkdownCache.ownerImages`).
+    func ownerImages(_ entry: SessionFeedEntry) -> WorkchatOwnerImages {
+        markdown.ownerImages(id: entry.id, text: entry.text, attachmentsRoot: attachmentsRoot)
+    }
 
     /// The entry behind each message id.
     var entriesByMessage: [Int64: SessionFeedEntry] {
@@ -98,14 +103,13 @@ struct WorkchatFeed {
                 })
             }
         }
-        let attachmentsRoot = attachmentsRoot
-        context.ownerFooter = { message in
-            guard let entry = byID[message.id] else { return nil }
-            let images = WorkchatFeedAdapter.ownerImages(entry, attachmentsRoot: attachmentsRoot)
-            return images.isEmpty ? nil : AnyView(WorkchatOwnerImagesView(images: images))
-        }
         let (markdown, expanded, toggle) = (markdown, expandedEvents, onToggle)
         let (openArtifact, feed) = (onOpenArtifact, self)
+        context.ownerFooter = { message in
+            guard let entry = byID[message.id], entry.kind == "owner" else { return nil }
+            let images = feed.ownerImages(entry).images
+            return images.isEmpty ? nil : AnyView(WorkchatOwnerImagesView(images: images))
+        }
         context.systemRow = { message in
             guard let entry = byID[message.id] else { return AnyView(EmptyView()) }
             let source = feed.outputSource(entry)

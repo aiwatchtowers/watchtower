@@ -158,8 +158,24 @@ final class WorkchatOwnerImagesTests: XCTestCase {
         ]
         let messages = WorkchatFeedAdapter.messages(entries, attachmentsRoot: root)
         XCTAssertEqual(messages.map(\.text), ["why", "Saved to \(pasted)"], "only the owner's lines lose their paths")
-        XCTAssertEqual(WorkchatFeedAdapter.ownerImages(entries[0], attachmentsRoot: root), [paste(pasted)])
-        XCTAssertEqual(WorkchatFeedAdapter.ownerImages(entries[1], attachmentsRoot: root), [])
+    }
+
+    /// The shown text and the bubble's images come from one split per entry text, kept across renders.
+    @MainActor
+    func testPaneSplitsAnOwnerLineOnce() {
+        let cache = SessionFeedMarkdownCache()
+        let entries = [SessionFeedEntry(id: "o1", kind: "owner", text: "\(pasted) why"),
+                       SessionFeedEntry(id: "a1", kind: "agent", text: "ok")]
+        let root = root
+        let split: (SessionFeedEntry) -> WorkchatOwnerImages = {
+            cache.ownerImages(id: $0.id, text: $0.text, attachmentsRoot: root)
+        }
+        XCTAssertEqual(WorkchatFeedAdapter.messages(entries, ownerSplit: split).map(\.text), ["why", "ok"])
+        XCTAssertEqual(split(entries[0]).images, [paste(pasted)])
+        _ = WorkchatFeedAdapter.messages(entries, ownerSplit: split)
+        XCTAssertEqual(cache.splitCount, 1, "agent lines are not split; the owner's once")
+        _ = cache.ownerImages(id: "o1", text: "\(pasted) why not", attachmentsRoot: root)
+        XCTAssertEqual(cache.splitCount, 2, "a changed text splits again")
     }
 
     func testEchoStillMatchesTheSentLine() {
