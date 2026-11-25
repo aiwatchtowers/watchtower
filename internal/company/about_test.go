@@ -20,12 +20,12 @@ func TestConnectLink(t *testing.T) {
 func fullAboutText(company, link, code string) string {
 	return "Watchtower for " + company + "\n\n" +
 		"How to connect\n" +
-		"1. Install Watchtower: " + slackapp.ReleasePage + "\n" +
-		"2. Open Watchtower.\n" +
-		"3. Click this link: " + link + "\n" +
+		"1. Open Watchtower.\n" +
+		"2. Click this link: " + link + "\n" +
 		"   If it does not open, paste the code below in Watchtower → Connections → Company code.\n\n" +
 		"Company code\n" +
-		code
+		code + "\n\n" +
+		"No Watchtower yet? Download it: " + slackapp.ReleasePage
 }
 
 func TestAboutText_FullLayout(t *testing.T) {
@@ -33,22 +33,22 @@ func TestAboutText_FullLayout(t *testing.T) {
 	assert.Equal(t, fullAboutText("Acme", link, "eyJ2IjoxfQ"), AboutText("Acme", link, "eyJ2IjoxfQ"))
 }
 
-func TestAboutText_CutsInstallStepFirst(t *testing.T) {
-	keptCodeWithoutInstall := false
+func TestAboutText_CutsDownloadFirst(t *testing.T) {
+	keptCodeWithoutDownload := false
 	for n := 1000; n <= 3000; n += 10 {
 		wire := strings.Repeat("A", n)
 		link := ConnectLink(wire)
 		text := AboutText("Acme", link, wire)
 		if strings.Contains(text, "Company code\n"+wire) &&
 			strings.Contains(text, "1. Open Watchtower.\n2. Click this link: "+link) &&
-			!strings.Contains(text, "Install Watchtower") {
-			keptCodeWithoutInstall = true
+			!strings.Contains(text, "No Watchtower yet?") {
+			keptCodeWithoutDownload = true
 		}
-		if strings.Contains(text, "Install Watchtower") {
-			assert.Contains(t, text, "Company code\n", "the install step never outlives the code (n=%d)", n)
+		if strings.Contains(text, "No Watchtower yet?") {
+			assert.Contains(t, text, "Company code\n", "the download line never outlives the code (n=%d)", n)
 		}
 	}
-	assert.True(t, keptCodeWithoutInstall, "some size keeps the code and drops only the install step")
+	assert.True(t, keptCodeWithoutDownload, "some size keeps the code and drops only the download line")
 }
 
 func TestAboutText_LargeBundleKeepsTheLinkOnly(t *testing.T) {
@@ -65,7 +65,7 @@ func TestAboutText_LinkNeverCut(t *testing.T) {
 		wire := strings.Repeat("A", n)
 		link := ConnectLink(wire)
 		text := AboutText("Acme", link, wire)
-		assert.Contains(t, text, "Click this link: "+link, n)
+		assert.Contains(t, text, "2. Click this link: "+link, n)
 		if n <= 2900 {
 			_, err := slackmanifest.Description(text)
 			assert.NoError(t, err, n)

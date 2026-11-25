@@ -21,31 +21,31 @@ func ConnectLink(wire string) string {
 //	Watchtower for <company>
 //
 //	How to connect
-//	1. Install Watchtower: <release page>
-//	2. Open Watchtower.
-//	3. Click this link: <link>
+//	1. Open Watchtower.
+//	2. Click this link: <link>
 //	   If it does not open, paste the code below in Watchtower → Connections → Company code.
 //
 //	Company code
 //	<code>
 //
+//	No Watchtower yet? Download it: <release page>
+//
 // When the text and the scope and AI disclosures do not fit Slack's
-// long_description cap, the install step goes first, then the code (its
-// fallback line and the Company code section); the link is never cut. The
-// steps are renumbered after a cut. When nothing fits, the last, shortest
-// candidate is returned and the caller's own check against the cap
-// (slackmanifest.Description) reports it.
+// long_description cap, the download paragraph goes first, then the code
+// (its fallback line and the Company code section); the link is never cut.
+// When nothing fits, the last, shortest candidate is returned and the
+// caller's own check against the cap (slackmanifest.Description) reports it.
 func AboutText(company, link, code string) string {
 	header := "Watchtower for " + company + "\n\nHow to connect\n"
+	open := "Open Watchtower."
 	clickStep := "Click this link: " + link
 	withCode := clickStep + "\n   If it does not open, paste the code below in Watchtower → Connections → Company code."
-	codeSection := "\n\nCompany code\n" + code
-	install := "Install Watchtower: " + slackapp.ReleasePage
-	open := "Open Watchtower."
+	withCodeSection := header + numberedSteps(open, withCode) + "\n\nCompany code\n" + code
+	download := "\n\nNo Watchtower yet? Download it: " + slackapp.ReleasePage
 
 	candidates := []string{
-		header + numberedSteps(install, open, withCode) + codeSection,
-		header + numberedSteps(open, withCode) + codeSection,
+		withCodeSection + download,
+		withCodeSection,
 		header + numberedSteps(open, clickStep),
 	}
 	for _, text := range candidates {
