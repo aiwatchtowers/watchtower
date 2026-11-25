@@ -162,7 +162,9 @@ enum AudioFileDecoder {
     /// against the recorder's own timeline (the `.activity` bins) and the
     /// player's (the precise asset trims it). The count is read from an
     /// encoder for the file's own format, the one that wrote it, rather
-    /// than hard-coded. Internal for tests.
+    /// than hard-coded. That is exact for the app's own recordings, which
+    /// that same Apple AAC-LC encoder wrote; an `.aac` from another encoder
+    /// (different priming) may decode tens of ms off. Internal for tests.
     static func adtsPrimingFrames(of file: AVAudioFile, at url: URL) -> AVAudioFramePosition {
         guard AudioFileIntegrity.fileType(url: url) == kAudioFileAAC_ADTSType else { return 0 }
         let encoded = file.fileFormat
