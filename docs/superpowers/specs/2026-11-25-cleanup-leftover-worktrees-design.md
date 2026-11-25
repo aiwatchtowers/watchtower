@@ -18,8 +18,8 @@ On 2026-11-25 the owner's repository held 99 linked worktrees, 201 GB, under `.c
 - Locked worktrees: the build output goes, and the worktree itself goes once its branch is merged into the default branch with commits and nothing else keeps it; this must not slow down builds — ask #1850 (owner's words: "п1 норм, тока оно не должно замедлить сборки").
 - A repository-wide pass covers worktrees no finished session owns — ask #1850.
 - Language servers do not keep a worktree — ask #1850.
-- **Proposed, the owner confirms or rejects it in this review (ask #1851):** "must not slow down builds" is read as: a build folder is removed only from a worktree idle for 3 days (§2, "Last activity") with no live session and no blocking process in it, so a build in use or used recently is never thrown away. The same 3 days gate the removal of a locked worktree and the repository pass.
-- **Proposed, the owner confirms or rejects it in this review (ask #1851):** orphan directories and loose files under `.claude/worktrees/` (~2 GB) are not part of this spec; they get their own low-priority target, #2404, shown in the Clean Up screen and removed only by the owner's tick.
+- **Proposed by the author, owner approved in ask #1853:** "must not slow down builds" is read as: a build folder is removed only from a worktree idle for 3 days (§2, "Last activity") with no live session and no blocking process in it, so a build in use or used recently is never thrown away. The same 3 days gate the removal of a locked worktree and the repository pass.
+- **Proposed by the author, owner approved in ask #1853:** orphan directories and loose files under `.claude/worktrees/` (~2 GB) are not part of this spec; they get their own low-priority target, #2404, shown in the Clean Up screen and removed only by the owner's tick.
 - Global level: the fix lives in Watchtower's cleanup (`internal/sessioncleanup`, the daemon), not in this repository's rules; project-specific build habits are #2403 — conversation.
 
 ## Design
