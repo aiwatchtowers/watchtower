@@ -462,21 +462,26 @@ func fetchBase(ctx context.Context, o Options, r *repo, url, sha string) error {
 func removeScratch(r *repo, dir string) {
 	ctx, cancel := context.WithTimeout(context.Background(), FetchTimeout)
 	defer cancel()
+	p, err := r.locatePaths(ctx)
+	if err != nil {
+		return
+	}
+	unlock, err := lockWorktrees(ctx, p.commonDir)
+	if err != nil {
+		return
+	}
+	defer unlock()
 	if _, err := os.Lstat(dir); err == nil {
 		_, _ = r.git(ctx, "worktree", "remove", "--force", dir)
 		_ = os.RemoveAll(dir)
 	}
-	forgetWorktree(ctx, r, dir)
+	forgetWorktree(p, dir)
 }
 
 // forgetWorktree removes the registration (<common dir>/worktrees/<name>)
 // whose work tree is dir, if one is left — the entry `worktree remove`
 // could not drop because the folder was already gone — and no other.
-func forgetWorktree(ctx context.Context, r *repo, dir string) {
-	p, err := r.locatePaths(ctx)
-	if err != nil {
-		return
-	}
+func forgetWorktree(p paths, dir string) {
 	want := map[string]bool{filepath.Clean(dir): true}
 	if parent, err := filepath.EvalSymlinks(filepath.Dir(dir)); err == nil {
 		want[filepath.Join(parent, filepath.Base(dir))] = true
@@ -508,7 +513,17 @@ func forgetWorktree(ctx context.Context, r *repo, dir string) {
 // req.Delete, the file's removal) and commits that one file with the
 // repository's identity and no hooks.
 func commitInScratch(ctx context.Context, r *repo, dir string, req PublishRequest) error {
-	if _, err := r.git(ctx, "worktree", "add", "--detach", "--no-checkout", dir, req.BaseSHA); err != nil {
+	p, err := r.locatePaths(ctx)
+	if err != nil {
+		return failure(nil, err)
+	}
+	unlock, err := lockWorktrees(ctx, p.commonDir)
+	if err != nil {
+		return failure(nil, err)
+	}
+	_, err = r.git(ctx, "worktree", "add", "--detach", "--no-checkout", dir, req.BaseSHA)
+	unlock()
+	if err != nil {
 		return failure(nil, err)
 	}
 	s := &repo{o: r.o, bin: r.bin}

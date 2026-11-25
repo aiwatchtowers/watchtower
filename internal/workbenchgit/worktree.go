@@ -102,7 +102,14 @@ func CreateWorktree(ctx context.Context, o Options, req WorktreeRequest) (res Wo
 	if err := ensureExcludeLine(p.commonDir, worktreeExcludeLine); err != nil {
 		res.Warning = clip("adding the exclude line: " + err.Error())
 	}
-	if _, err := r.git(ctx, "worktree", "add", "-b", res.Branch, res.Path, res.Base); err != nil {
+	unlock, err := lockWorktrees(ctx, p.commonDir)
+	if err != nil {
+		res.Error = gitError(err)
+		return res
+	}
+	_, err = r.git(ctx, "worktree", "add", "-b", res.Branch, res.Path, res.Base)
+	unlock()
+	if err != nil {
 		res.Error = gitError(err)
 		return res
 	}
@@ -233,11 +240,17 @@ func EnsureWorktree(ctx context.Context, o Options, path, branch string) (res Wo
 	// first. `worktree prune` drops every prunable entry, not only ours, which
 	// is acceptable here only because a prunable entry is one whose directory
 	// is already gone: nothing on disk is touched.
-	if _, err := r.git(ctx, "worktree", "prune"); err != nil {
+	unlock, err := lockWorktrees(ctx, st.CommonDir)
+	if err != nil {
 		res.Error = gitError(err)
 		return res
 	}
-	if _, err := r.git(ctx, "worktree", "add", path, branch); err != nil {
+	_, err = r.git(ctx, "worktree", "prune")
+	if err == nil {
+		_, err = r.git(ctx, "worktree", "add", path, branch)
+	}
+	unlock()
+	if err != nil {
 		res.Error = gitError(err)
 		return res
 	}

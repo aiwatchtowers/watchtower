@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/fsutil"
 	"watchtower/internal/gitbin"
 	"watchtower/internal/workbenchcheck"
 )
@@ -180,6 +181,27 @@ func (r *repo) git(ctx context.Context, args ...string) ([]byte, error) {
 // run is git with its exit code.
 func (r *repo) run(ctx context.Context, args ...string) ([]byte, int, error) {
 	return r.o.Run(ctx, r.o.Folder, nil, r.bin, args...)
+}
+
+// worktreeLockName is the flock file in the common dir that serializes this
+// repository's worktree registrations across goroutines and Watchtower
+// processes (the daemon's coach publish, a CLI starting a session): `git
+// worktree add` reads every <common dir>/worktrees/* entry and fails on one
+// another add is still writing ("failed to read …/commondir", #2394).
+const worktreeLockName = "watchtower-worktree.lock"
+
+// lockWorktrees takes that lock, waiting until ctx is done. A lock file that
+// cannot be opened (a read-only .git) is no failure: git then runs
+// unserialized, as before the lock existed.
+func lockWorktrees(ctx context.Context, commonDir string) (func(), error) {
+	unlock, err := fsutil.LockFile(ctx, filepath.Join(commonDir, worktreeLockName))
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		return func() {}, nil
+	}
+	return unlock, nil
 }
 
 // paths is where the folder's repository lives.
