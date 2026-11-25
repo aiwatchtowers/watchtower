@@ -136,8 +136,11 @@ func (c *Center) OnPairingOpened(ctx context.Context, t transport.Transport, slo
 		}
 		if err != nil {
 			// The hellos decided so far are still answered below; the
-			// cursor stays, so the batch is read again (a decided hello
-			// re-read changes nothing).
+			// cursor stays, so the batch is read again. A decided hello
+			// re-read changes nothing, unless the same phone's request was
+			// replaced meanwhile by the same hello over CloudKit: then the
+			// re-read slot hello replaces it again and takes the slot
+			// route back (savePending compares the route).
 			failed = err
 			break
 		}

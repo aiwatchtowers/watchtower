@@ -71,6 +71,25 @@ type SubagentRef struct {
 	StartedAt time.Time `json:"-"`
 }
 
+// TaskRef is the structured form of a Claude Code task notification (an
+// agent or a background command finished), on an event entry of type task.
+// Result is "" when the notification carries only the delivery boilerplate;
+// the feed builder then fills it from the matching subagent's report.
+type TaskRef struct {
+	TaskID     string `json:"task_id"`
+	ToolUseID  string `json:"tool_use_id"`
+	Status     string `json:"status"`
+	Summary    string `json:"summary"`
+	Result     string `json:"result"`
+	OutputFile string `json:"output_file"`
+	Tokens     int    `json:"tokens"`
+	ToolUses   int    `json:"tool_uses"`
+	DurationMS int    `json:"duration_ms"`
+	// Kind is "agent" or "command".
+	Kind     string `json:"kind"`
+	ExitCode *int   `json:"exit_code,omitempty"`
+}
+
 // Entry is one chat line. An entry can be re-emitted with the same ID and
 // new content (streamed message grows); callers upsert by ID.
 type Entry struct {
@@ -84,6 +103,7 @@ type Entry struct {
 	EventType    string       `json:"event_type,omitempty"`
 	Subagent     *SubagentRef `json:"subagent,omitempty"`
 	Peer         *PeerRef     `json:"peer,omitempty"`
+	Task         *TaskRef     `json:"task,omitempty"`
 	Conversation string       `json:"conversation,omitempty"`
 }
 

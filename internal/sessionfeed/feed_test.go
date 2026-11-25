@@ -3,6 +3,7 @@ package sessionfeed
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -234,4 +235,109 @@ func TestFindSubagent_SidecarOnlyMarker(t *testing.T) {
 
 	_, _, err = FindSubagent([]Conversation{a}, "tu-missing")
 	assert.ErrorContains(t, err, "not found")
+}
+
+const taskNoticeText = "<task-notification>\n<task-id>t1</task-id>\n<tool-use-id>tu1</tool-use-id>\n<status>completed</status>\n<summary>Agent \"A\" finished</summary>\n<result>This agent's report was delivered to you as a message from \"t1\".</result>\n</task-notification>"
+
+func noticeAt(uuid, ts string) string {
+	return jsonLine(map[string]any{"type": "user", "uuid": uuid, "timestamp": ts,
+		"message": map[string]any{"role": "user", "content": taskNoticeText}})
+}
+
+func handbackAt(uuid, ts, msg string) string {
+	return sideRec(jsonLine(map[string]any{"type": "assistant", "uuid": uuid, "timestamp": ts,
+		"message": map[string]any{"id": "m" + uuid, "role": "assistant", "content": []map[string]any{{
+			"type": "tool_use", "id": "t" + uuid, "name": "SubagentHandback", "input": map[string]any{"message": msg}}}}}))
+}
+
+// taskBuildFx builds a feed with the given parent notices and sidecar handbacks.
+func taskBuildFx(t *testing.T, meta string, notices []string, sidecar string) *Feed {
+	t.Helper()
+	dir := t.TempDir()
+	launch := `{"type":"user","uuid":"r1","timestamp":"2026-10-01T10:00:07Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"Async agent launched successfully."}]}}` + "\n"
+	a := writeConv(t, dir, "A", join(userStr("u1", "go"),
+		assistantRec("a1", "m1", agentCall("tu1", "Explore", "look")), launch, join(notices...)))
+	writeSub(t, filepath.Join(dir, "A"), "ag1", meta, sidecar)
+	f, err := Build([]Conversation{a}, nil, nil)
+	require.NoError(t, err)
+	return f
+}
+
+func oneNotice(t *testing.T, meta, report string) *Feed {
+	t.Helper()
+	side := ""
+	if report != "" {
+		side = handbackAt("h1", "2026-10-01T10:00:20Z", report)
+	}
+	return taskBuildFx(t, meta, []string{noticeAt("n1", "2026-10-01T10:00:30Z")}, side)
+}
+
+func taskOf(t *testing.T, f *Feed) *TaskRef {
+	t.Helper()
+	for _, e := range f.Entries {
+		if e.Task != nil {
+			return e.Task
+		}
+	}
+	t.Fatal("no task entry")
+	return nil
+}
+
+const bgMeta = `{"toolUseId":"tu1","finished":true,"requestShape":"background"}`
+
+func TestBuild_TaskResultFromHandback(t *testing.T) {
+	f := oneNotice(t, bgMeta, "First paragraph.\n\nSecond paragraph.")
+	assert.Equal(t, "First paragraph.", taskOf(t, f).Result)
+}
+
+func TestBuild_TaskResultMissingMetaStaysEmpty(t *testing.T) {
+	f := oneNotice(t, "", "")
+	assert.Equal(t, "", taskOf(t, f).Result, "the launch notice must never become the result")
+}
+
+func TestBuild_TaskResultNoHandbackStaysEmpty(t *testing.T) {
+	f := oneNotice(t, bgMeta, "")
+	assert.Equal(t, "", taskOf(t, f).Result)
+}
+
+func TestBuild_TaskResultCapsAndSplitsOnWhitespaceLine(t *testing.T) {
+	f := oneNotice(t, bgMeta, "Line one\r\nline two\r\n   \r\nrest")
+	assert.Equal(t, "Line one\nline two", taskOf(t, f).Result)
+	long := strings.Repeat("я", 700)
+	f = oneNotice(t, bgMeta, long)
+	assert.Len(t, []rune(taskOf(t, f).Result), 600)
+}
+
+func tasksOf(f *Feed) []*TaskRef {
+	var out []*TaskRef
+	for _, e := range f.Entries {
+		if e.Task != nil {
+			out = append(out, e.Task)
+		}
+	}
+	return out
+}
+
+func TestBuild_TaskResultPicksHandbackBeforeNotice(t *testing.T) {
+	side := handbackAt("h1", "2026-10-01T10:00:20Z", "first report") + handbackAt("h2", "2026-10-01T10:01:20Z", "second report")
+	f := taskBuildFx(t, bgMeta, []string{noticeAt("n1", "2026-10-01T10:00:30Z"), noticeAt("n2", "2026-10-01T10:01:30Z")}, side)
+	ts := tasksOf(f)
+	require.Len(t, ts, 2)
+	assert.Equal(t, "first report", ts[0].Result)
+	assert.Equal(t, "second report", ts[1].Result)
+}
+
+func TestBuild_TaskResultNoHandbackYetIsEmpty(t *testing.T) {
+	f := taskBuildFx(t, bgMeta, []string{noticeAt("n1", "2026-10-01T10:00:10Z")}, handbackAt("h1", "2026-10-01T10:00:20Z", "later"))
+	assert.Equal(t, "", taskOf(t, f).Result)
+}
+
+func TestBuild_SidecarReadOnceForSeveralNotices(t *testing.T) {
+	opens := 0
+	orig := openSidecar
+	openSidecar = func(p string) (*os.File, error) { opens++; return os.Open(p) }
+	t.Cleanup(func() { openSidecar = orig })
+	side := handbackAt("h1", "2026-10-01T10:00:20Z", "first report") + handbackAt("h2", "2026-10-01T10:01:20Z", "second report")
+	taskBuildFx(t, bgMeta, []string{noticeAt("n1", "2026-10-01T10:00:30Z"), noticeAt("n2", "2026-10-01T10:01:30Z")}, side)
+	assert.Equal(t, 1, opens)
 }

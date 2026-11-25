@@ -69,6 +69,14 @@ final class TokenTests: XCTestCase {
         XCTAssertEqual(Tone.now, .orange)
     }
 
+    func testSyntaxTintIsAMutedForegroundPerKind() {
+        XCTAssertEqual(SyntaxTint.opacity, 0.7)
+        XCTAssertEqual(SyntaxTint.ref, Color.accentColor.opacity(0.7))
+        XCTAssertEqual(SyntaxTint.hash, Color.purple.opacity(0.7))
+        XCTAssertEqual(SyntaxTint.path, Color.orange.opacity(0.7))
+        XCTAssertEqual(SyntaxTint.command, Color.green.opacity(0.7))
+    }
+
     func testIconSizes() {
         XCTAssertEqual(
             [IconSize.chevron, IconSize.header, IconSize.composer, IconSize.composerLarge, IconSize.tile],
@@ -79,8 +87,8 @@ final class TokenTests: XCTestCase {
     func testPaneWidths() {
         XCTAssertEqual(
             [PaneWidth.sideListMin, PaneWidth.sideListIdeal, PaneWidth.sideListMax,
-             PaneWidth.detailMin, PaneWidth.narrowPage, PaneWidth.gridCardMin],
-            [170, 220, 360, 260, 420, 240]
+             PaneWidth.detailMin, PaneWidth.narrowPage, PaneWidth.gridCardMin, PaneWidth.noticeColumn],
+            [170, 220, 360, 260, 420, 240, 480]
         )
     }
 

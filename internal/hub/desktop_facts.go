@@ -2,10 +2,12 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/cloudkit"
 )
 
 // What Settings → Mobile and the Desktop's keep-awake read of a running hub
@@ -40,6 +42,20 @@ type throttleReporter interface{ ThrottledSince() time.Time }
 // change) and holds or releases the
 // CloudKit side by it (applyICloudHold); a failed read keeps the last
 // answer.
+//
+// The log names a run of failed reads once, and again only when their class
+// changes; the next answer after a logged run says so once (#2192). Before
+// this run's first answer, a read that finds no bridge listening
+// (cloudkit.ErrBridgeNotListening) is not logged until the bridge's launch
+// was seen by two houseEvery ticks in a row (bridgeStarting): the bridge
+// starts after the hub, and its supervisor reports it running as soon as the
+// process starts, before it serves its socket, so a start's first reads (the
+// pass, the housekeeping and the link upkeep's pass, all kicked at once)
+// find none yet. A bridge that runs and never serves it is logged at the
+// second tick after its launch; one that does not start or keeps exiting is
+// logged by its supervisor. Any other failure (a connection that dropped
+// included) is logged at once. The silent failure's class is still
+// recorded.
 func (h *hubRuntime) refreshCloudKitAccount(ctx context.Context) {
 	s, ok := h.shares()
 	if !ok || h.sup.o.Desktop == nil {
@@ -49,13 +65,85 @@ func (h *hubRuntime) refreshCloudKitAccount(ctx context.Context) {
 	a, err := s.AccountStatus(cctx)
 	cancel()
 	if err != nil {
-		log.Printf("hub: reading the iCloud account failed (%s): retried next cycle", errClass(err))
+		class := errClass(err)
+		starting := errors.Is(err, cloudkit.ErrBridgeNotListening) && h.ckAccountUnread() && h.bridgeStarting()
+		h.ckReadFail = class
+		if starting || class == h.ckReadLogged {
+			return
+		}
+		h.ckReadLogged = class
+		log.Printf("hub: reading the iCloud account failed (%s): retried next cycle", class)
 		return
 	}
+	if h.ckReadLogged != "" {
+		log.Printf("hub: the iCloud account read again (%s)", a)
+	}
+	h.ckReadFail, h.ckReadLogged = "", ""
 	h.mu.Lock()
 	h.ckAccount = a
 	h.mu.Unlock()
 	h.applyICloudHold()
+}
+
+// bridgeLaunches is the bridge's launch generation (0 = none, or no bridge).
+func (h *hubRuntime) bridgeLaunches() uint64 {
+	if h.bridge == nil {
+		return 0
+	}
+	return h.bridge.Launches()
+}
+
+// noteBridgeLaunch is a houseEvery tick's look at the bridge's launch
+// generation (before its housekeeping reads the account): settled when the
+// previous tick saw the same launch already. The start's and the daemon
+// cycles' housekeepings do not count: they can run back to back. A
+// relaunch during a pass that spans a tick can settle a launch one interval
+// early; the worst case is one extra log line, hiding nothing.
+func (h *hubRuntime) noteBridgeLaunch() {
+	g := h.bridgeLaunches()
+	h.ckLaunchSettled = g != 0 && g == h.ckLaunchSeen
+	h.ckLaunchSeen = g
+}
+
+// bridgeStarting: the current bridge launch (if any) has not yet been seen
+// by two houseEvery ticks in a row — a whole houseEvery interval may not
+// have passed since it, so a missing socket may only mean it is not served
+// yet. A relaunch starts it over.
+func (h *hubRuntime) bridgeStarting() bool {
+	return !h.ckLaunchSettled || h.bridgeLaunches() != h.ckLaunchSeen
+}
+
+// bridgeStartGrace bounds how long an unreadable iCloud account counts as
+// the bridge still starting (iCloudStarting): a healthy bridge serves its
+// socket within seconds of its launch.
+const bridgeStartGrace = 30 * time.Second
+
+// iCloudStarting: an unreadable iCloud account may only mean the bridge is
+// not serving yet — the hub started less than bridgeStartGrace ago, or the
+// bridge runs a process launched less than that ago. A bridge that never
+// launched, that waits to restart (a crash loop between its runs) or whose
+// running process is older is past its start: its unreadable account is
+// unusable. Measured on the hub's clock, which is monotonic in production,
+// so wall-clock steps do not count. If the clock reads earlier than the
+// reference time, it was stepped back; that case counts as outside the
+// grace, so a step never extends it. The bridge's state is read before the
+// clock, so a launch in between is never "in the future". Safe off the
+// worker.
+func (h *hubRuntime) iCloudStarting() bool {
+	running := h.bridge != nil && h.bridge.Running()
+	var last time.Time
+	if running {
+		last = h.bridge.LastLaunch()
+	}
+	now := h.sup.o.Clock()
+	within := func(since time.Time) bool {
+		d := now.Sub(since)
+		return d >= 0 && d < bridgeStartGrace
+	}
+	if within(h.startedAt) {
+		return true
+	}
+	return running && !last.IsZero() && within(last)
 }
 
 // cloudKitStatus is the running hub's "cloudkit" block (Signed is set by

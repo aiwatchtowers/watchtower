@@ -313,7 +313,8 @@ extension CloudKitTransport: ConditionalTransport {
         }
     }
 
-    private func conditionalDatabase() -> any ConditionalDatabase {
+    /// The scope's database for calls outside the engine (`ConditionalDatabase`), built once.
+    func conditionalDatabase() -> any ConditionalDatabase {
         if let conditionalDatabaseStorage { return conditionalDatabaseStorage }
         let database = scope.database(in: CKContainer(identifier: containerID))
         conditionalDatabaseStorage = database

@@ -62,6 +62,147 @@ final class WorkchatOutgoingTests: XCTestCase {
         XCTAssertFalse(WorkchatOutgoing.matches(undated, line: sent), "no time, no match")
     }
 
+    /// Fix round 1: a line sent together with the prompt's text matches the one
+    /// owner entry that records both, ending in the line; another line does not.
+    func testALineSentTogetherMatchesTheEntryEndingInIt() {
+        var sent = line("Run the  linter")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("fix the Run the linter"), line: sent))
+        sent.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the Run the linter"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix theRun the linter"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("Run the linter"), line: sent), "alone, if the text was gone")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Run the linters"), line: sent), "not its whole words")
+    }
+
+    /// #2386 (codex #7): the caret was not at the end of the prompt's text — the line was pasted mid-draft, so the
+    /// entry holds it as a whole word sequence with the owner's text on both sides.
+    func testALineSentTogetherMidDraftMatchesItsWordsInside() {
+        var sent = line("Run the  linter")
+        sent.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix Run the linter the tests"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("Run the linter later"), line: sent), "pasted before the text")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("fix reRun the linters"), line: sent), "only inside other words")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Run the tests"), line: sent))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("fix Run the linter the tests", after: -1), line: sent),
+                       "still bounded by its send")
+    }
+
+    /// #2386 final review (codex #4): a line pasted mid-draft right before punctuation is still held as whole words.
+    func testALineSentTogetherMidDraftMatchesBeforePunctuation() {
+        var sent = line("run tests")
+        sent.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("Please run tests, then deploy"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("Please (run tests) then deploy"), line: sent))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Please rerun tests, then deploy"), line: sent), "inside a word")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Please run testsuite, then deploy"), line: sent), "inside a word")
+        var linter = line("Run the linter")
+        linter.sentTogetherAt = sentAt
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Run the linters"), line: linter), "not its whole words")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("Run the linters, then go"), line: linter), "not its whole words")
+    }
+
+    /// #2386 (T7 minors): a files-only line sent together — a path followed by punctuation matches; one pasted
+    /// straight after the prompt's text (no space) matches; a bare path that is only the start of a longer quoted
+    /// name, or the tail of a longer absolute path, does not.
+    func testAFilesOnlyLineSentTogetherPathEdges() {
+        var image = WorkchatOutgoing(
+            id: UUID(), text: "/x/1.png", sentAt: sentAt, state: .typed, typedText: "", attachmentPaths: ["/x/1.png"]
+        )
+        image.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("look at /x/1.png."), line: image), "a full stop after it")
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("look at /x/1.png, please"), line: image))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("(see /x/1.png)"), line: image))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("look at /x/1.png.bak"), line: image), "a longer name")
+
+        var pdf = WorkchatOutgoing(
+            id: UUID(), text: "/tmp/report.pdf", sentAt: sentAt, state: .typed, typedText: "",
+            attachmentPaths: ["/tmp/report.pdf"]
+        )
+        pdf.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("review/tmp/report.pdf"), line: pdf), "pasted right after the text")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("open /var/tmp/report.pdf"), line: pdf), "another absolute path")
+        // #2386 fix round 1: a path head without a `/` is still a path, not the owner's word.
+        for other in ["open ~/tmp/report.pdf", "open ./tmp/report.pdf", "open ../tmp/report.pdf",
+                      "open $HOME/tmp/report.pdf", "open ${TMP}/tmp/report.pdf", "open ~acme/tmp/report.pdf",
+                      "open .hidden/tmp/report.pdf", "open $(pwd)/tmp/report.pdf", "open $1/tmp/report.pdf",
+                      "open $@/tmp/report.pdf", "open ~+/tmp/report.pdf", "open ~-/tmp/report.pdf"] {
+            XCTAssertFalse(WorkchatOutgoing.matches(owner(other), line: pdf), other)
+        }
+        // Fix round 2: prose that only looks like a path head is still the owner's word.
+        for prose in ["wait .../tmp/report.pdf", "it costs $19.99/tmp/report.pdf", "port to .NET:/tmp/report.pdf"] {
+            XCTAssertTrue(WorkchatOutgoing.matches(owner(prose), line: pdf), prose)
+        }
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("open \"/tmp/report.pdf draft\""), line: pdf),
+                       "the start of a longer quoted name")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("open '/tmp/report.pdf draft'"), line: pdf))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("open '/tmp/report.pdf'"), line: pdf), "quoted whole")
+    }
+
+    /// Fix round 2 (codex N3): the suffix match counts only entries from the Send
+    /// together on — a short queued "look" claims no earlier "take a look".
+    func testASentTogetherMatchIsBoundedByItsAttempt() {
+        var sent = line("look")
+        sent.sentTogetherAt = sentAt.addingTimeInterval(60)
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("take a look", after: 30), line: sent), "before the click")
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("take a look", after: 61), line: sent))
+    }
+
+    /// Fix round 2 (codex N2): a line of files only, sent together, matches the
+    /// entry that holds one of its paths or an image marker.
+    func testAFilesOnlyLineSentTogetherMatchesItsPathOrMarker() {
+        var sent = WorkchatOutgoing(
+            id: UUID(), text: "/x/1.png", sentAt: sentAt, state: .typed, typedText: "", attachmentPaths: ["/x/1.png"]
+        )
+        sent.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the /x/1.png"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the [Image #1]"), line: sent))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("fix the"), line: sent), "no file in it")
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix the \"/x/1.png\""), line: sent), "quoted")
+    }
+
+    /// Fix round 3 (codex M1): the path must be a whole token, and an image
+    /// marker counts only for a line that sent an image.
+    func testAFilesOnlyLineSentTogetherNeedsItsWholePath() {
+        var pdf = WorkchatOutgoing(
+            id: UUID(), text: "/tmp/report.pdf", sentAt: sentAt, state: .typed, typedText: "",
+            attachmentPaths: ["/tmp/report.pdf"]
+        )
+        pdf.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("review /tmp/report.pdf"), line: pdf))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("review /tmp/report.pdf now"), line: pdf))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("review /tmp/report.pdf.bak"), line: pdf), "a longer path")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("review x/y/tmp/report.pdf"), line: pdf), "the tail of a longer path")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("look at [image]"), line: pdf), "no image was sent")
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("look at [Image #1]"), line: pdf))
+
+        var spaced = WorkchatOutgoing(
+            id: UUID(), text: "\"/x/a b.png\"", sentAt: sentAt, state: .typed, typedText: "",
+            attachmentPaths: ["/x/a b.png"]
+        )
+        spaced.sentTogetherAt = sentAt
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("see \"/x/a b.png\""), line: spaced))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("see [image]"), line: spaced), "an image was sent")
+    }
+
+    /// Spec §6.3: a queued line's caption says why it waits; the hold reason
+    /// counts only while it is queued.
+    func testHoldCaptionsSayWhyTheLineWaits() {
+        func caption(_ reason: WorkchatOutgoing.HoldReason, working: Bool = false, holds: Bool = false) -> String? {
+            WorkchatOutgoing.caption(state: .queued, working: working, holdsUntilIdle: holds, holdReason: reason)
+        }
+        XCTAssertEqual(caption(.needsApproval), "Waiting: answer the permission prompt in the terminal")
+        XCTAssertEqual(caption(.agentBusy), "Queued · sends in a moment")
+        XCTAssertEqual(caption(.agentBusy, working: true), "Queued · sends in a moment", "an agent that takes the line")
+        XCTAssertEqual(caption(.agentBusy, working: true, holds: true), "Queued · sends when the agent stops")
+        XCTAssertEqual(caption(.promptHasText), "Waiting: the terminal prompt holds text")
+        XCTAssertEqual(caption(.promptHasText, working: true), "Waiting: the terminal prompt holds text")
+        XCTAssertEqual(WorkchatOutgoing.caption(state: .typed, working: false, holdsUntilIdle: false,
+                                                holdReason: .promptHasText),
+                       "Typed into the terminal, not sent: press Return there ·", "only a queued line")
+        XCTAssertEqual(WorkchatOutgoing.sendTogether, "Send together")
+        XCTAssertEqual(WorkchatOutgoing.cancel, "Cancel")
+    }
+
     /// Each state's caption under the line (#2065 moved them out of the view):
     /// nil where the bubble shows the send time.
     func testCaptionStrings() {

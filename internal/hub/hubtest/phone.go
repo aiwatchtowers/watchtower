@@ -880,6 +880,17 @@ func FromLink(l wire.LinkPayload, f Records, clock func() time.Time) (*Phone, er
 	return p, nil
 }
 
+// UseLink points the phone's next Hello at link code l of the same hub (the
+// phone scanning another code with the same device keys).
+func (p *Phone) UseLink(l wire.LinkPayload) error {
+	nonce, err := base64.RawURLEncoding.DecodeString(l.Nonce)
+	if err != nil {
+		return fmt.Errorf("hubtest: link nonce: %w", err)
+	}
+	p.nonce = nonce
+	return nil
+}
+
 // voucher is a phone record store that can vouch for a hub on the relay
 // (RelayStore).
 type voucher interface {

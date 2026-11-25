@@ -1037,11 +1037,11 @@ final class AppRootWiringTests: XCTestCase {
 
         let fetched = await root.fetchKeybox(hubID: TestHub.acme, deviceID: device.deviceID)
 
-        XCTAssertEqual(fetched, Keybox(grant: grant, keys: keys), "the grant and the epoch keys")
+        XCTAssertEqual(fetched, .read(Keybox(grant: grant, keys: keys)), "the grant and the epoch keys")
         let other = await root.fetchKeybox(hubID: TestHub.acme, deviceID: UUID().uuidString)
-        XCTAssertNil(other)
+        XCTAssertEqual(other, .read(nil), "an absence, read")
         let noSession = await root.fetchKeybox(hubID: TestHub.home, deviceID: device.deviceID)
-        XCTAssertNil(noSession)
+        guard case .unavailable = noSession else { return XCTFail("no session reads as unavailable: \(noSession)") }
     }
 
     /// A Workbench choice made before linking reaches the Mac with the link
@@ -2007,7 +2007,7 @@ final class AppRootWiringTests: XCTestCase {
 
         let keybox = await root.fetchKeybox(hubID: e2eHub, deviceID: device.deviceID)
 
-        XCTAssertNil(keybox, "never stored, so never read")
+        XCTAssertEqual(keybox, .read(nil), "never stored, so never read")
         XCTAssertGreaterThanOrEqual(hub.store.rejectedCount(), 1, "refused at apply: bad signature")
         XCTAssertEqual(try registry.row(e2eHub)?.state, .linked, "nothing frozen")
         XCTAssertEqual(try keyStore.hubLink(e2eHub)?.epochs.map(\.epoch), [1])

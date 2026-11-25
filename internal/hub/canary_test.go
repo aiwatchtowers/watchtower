@@ -536,8 +536,12 @@ var hubMetaKeys = map[string]string{
 	state.MetaWorkAlertsAwaySince: "timestamp",
 	state.MetaServingNobodySince:  "timestamp",
 	state.MetaReaderLostOwed:      "id", // device ids with their link times
-	"handlers_held_asks":          "id", // ask, session and run ids
-	"hygiene_last_run":            "timestamp",
+	// The phones linked through a Relay pairing slot with their link
+	// nonces, and the waiting requests that came through one with the open
+	// code's nonce, which pending_devices already holds (#2191).
+	state.MetaRelaySlotLinks: "id, nonce",
+	"handlers_held_asks":     "id", // ask, session and run ids
+	"hygiene_last_run":       "timestamp",
 }
 
 // sidecarDB opens the stopped hub's sidecar read-only.

@@ -322,4 +322,210 @@ final class PastingTextViewTests: XCTestCase {
 
         XCTAssertEqual(view.string, "fix [Image #1")
     }
+
+    // MARK: - The menu path (#2201 §4): Edit ▸ Paste and ⌘V are enabled by validation before `paste(_:)` runs
+
+    /// The view as the key window's first responder, invisible, so `NSApp.sendAction(_:to: nil, …)` reaches it.
+    /// macOS pulls an off-screen `.titled` window back onto the screen, so the window is transparent instead.
+    private func inKeyWindow(_ view: PastingTextView) -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 300, height: 100),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
+        addTeardownBlock { window.close() }
+        window.contentView = view
+        XCTAssertTrue(window.makeFirstResponder(view))
+        return window
+    }
+
+    private func pasteItem() -> NSMenuItem {
+        NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    }
+
+    /// What the menu does on ⌘V: validate the item (both entry points AppKit may use), and only when it is
+    /// enabled send the action down the responder chain. xctest's app is never active, so its window never
+    /// becomes key and `to: nil` would find no responder: the action goes to the window's first responder.
+    @discardableResult
+    private func menuPaste(_ view: PastingTextView) -> Bool {
+        let enabled = view.validateUserInterfaceItem(pasteItem())
+        XCTAssertEqual(view.validateMenuItem(pasteItem()), enabled, "the menu's own entry point agrees")
+        guard enabled, let responder = view.window?.firstResponder else { return false }
+        return NSApp.sendAction(#selector(NSText.paste(_:)), to: responder, from: nil)
+    }
+
+    /// The cause (#2201 §4): a plain-text view reads no image type, so AppKit's stock rule disables Paste for a
+    /// screenshot-only pasteboard and ⌘V never reaches `paste(_:)`.
+    func testPlainTextViewReadsNoImageType() throws {
+        pasteboard.setData(try onePixelPNG(), forType: .png)
+        let stock = NSTextView(frame: .zero)
+        stock.isRichText = false
+        XCTAssertNil(pasteboard.availableType(from: stock.readablePasteboardTypes))
+        XCTAssertNotNil(pasteboard.availableType(from: makeView().readablePasteboardTypes))
+    }
+
+    func testScreenshotPasteIsEnabledAndAttaches() async throws {
+        pasteboard.setData(try onePixelPNG(), forType: .png)
+        let view = makeInlineView(label: "[Image #1]")
+        _ = inKeyWindow(view)
+
+        guard menuPaste(view) else { return XCTFail("a PNG-only pasteboard enables Paste") }
+
+        let asked = await eventually { !self.inlinePastes.isEmpty }
+        XCTAssertTrue(asked)
+        guard case .image? = inlinePastes.first else { return XCTFail("no image paste") }
+    }
+
+    /// A screenshot taken to the clipboard (⌃⇧⌘4) is TIFF only.
+    func testTIFFOnlyPasteIsEnabled() throws {
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: try onePixelPNG()))
+        pasteboard.setData(try XCTUnwrap(rep.tiffRepresentation), forType: .tiff)
+        let view = makeInlineView(label: "[Image #1]")
+        XCTAssertTrue(view.validateUserInterfaceItem(pasteItem()))
+    }
+
+    /// Finder writes each copied file as a file reference URL (`file:///.file/id=…`) plus its name as text.
+    /// The file's canonical path (`realpath`: `/var` and `/private/var` are one folder), for comparing files.
+    private static func realPath(_ url: URL) throws -> String {
+        let resolved = try XCTUnwrap(realpath(url.path, nil))
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    func testFinderFilePasteAttaches() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("wt-paste-\(UUID().uuidString).png")
+        try Data([1]).write(to: file)
+        addTeardownBlock { try? FileManager.default.removeItem(at: file) }
+        // Through NSURL: bridging to `URL` would turn the reference back into a path URL.
+        let reference = try XCTUnwrap(
+            (file as NSURL).perform(#selector(NSURL.fileReferenceURL))?.takeUnretainedValue() as? NSURL
+        )
+        let item = NSPasteboardItem()
+        item.setString(try XCTUnwrap(reference.absoluteString), forType: .fileURL)
+        item.setString(file.lastPathComponent, forType: .string)
+        pasteboard.writeObjects([item])
+        let view = makeInlineView(label: nil)
+        _ = inKeyWindow(view)
+
+        XCTAssertTrue(menuPaste(view))
+
+        let attached = attachedFiles.flatMap { $0 }
+        XCTAssertEqual(attached.count, 1)
+        XCTAssertFalse(attached.contains { $0.path.hasPrefix("/.file/") }, "the reference is resolved to a path")
+        XCTAssertEqual(try Self.realPath(XCTUnwrap(attached.first)), try Self.realPath(file), "the copied file itself")
+        XCTAssertEqual(view.string, "", "the file name is not typed in")
+    }
+
+    /// A plain file URL beside the file's name and its icon as TIFF (another shape a Finder copy takes): the file.
+    func testFinderFileWithNameAndIconPastesTheFile() throws {
+        let file = URL(fileURLWithPath: "/tmp/report.pdf")
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: try onePixelPNG()))
+        let item = NSPasteboardItem()
+        item.setString(file.absoluteString, forType: .fileURL)
+        item.setString(file.lastPathComponent, forType: .string)
+        item.setData(try XCTUnwrap(rep.tiffRepresentation), forType: .tiff)
+        pasteboard.writeObjects([item])
+        let view = makeInlineView(label: "[Image #1]")
+        _ = inKeyWindow(view)
+
+        XCTAssertTrue(menuPaste(view))
+
+        XCTAssertEqual(attachedFiles, [[file]])
+        XCTAssertTrue(inlinePastes.isEmpty, "the icon is not pasted as an image")
+        XCTAssertEqual(view.string, "")
+    }
+
+    /// GIF or WebP alone: types `PasteClassifier.isImageType` accepts beyond the readable list.
+    func testGIFAndWebPOnlyPasteIsEnabled() {
+        let view = makeView()
+        for type in ["com.compuserve.gif", "org.webmproject.webp"] {
+            pasteboard.clearContents()
+            pasteboard.setData(Data([0x47, 0x49, 0x46]), forType: NSPasteboard.PasteboardType(type))
+            XCTAssertTrue(view.validateUserInterfaceItem(pasteItem()), type)
+            XCTAssertTrue(view.validateMenuItem(pasteItem()), type)
+        }
+        let unwired = makeView(wired: false)
+        XCTAssertFalse(unwired.validateUserInterfaceItem(pasteItem()), "a field without attachments takes no GIF")
+    }
+
+    /// The paperclip's "Paste …" item: a new `pasteRequest` pastes into the field, once.
+    func testPasteRequestPastesOnce() async {
+        pasteboard.setString("hello", forType: .string)
+        let view = makeView()
+        let window = inKeyWindow(view)
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        XCTAssertFalse(window.firstResponder === view, "the field starts without the keyboard")
+        var seen: UUID?
+        let request = UUID()
+
+        XCTAssertTrue(ExpandingTextInput.takePasteRequest(request, seen: &seen, into: view))
+        XCTAssertFalse(ExpandingTextInput.takePasteRequest(request, seen: &seen, into: view), "the same request again")
+        XCTAssertFalse(ExpandingTextInput.takePasteRequest(nil, seen: &seen, into: view))
+
+        let pasted = await eventually { view.string == "hello" }
+        XCTAssertTrue(pasted)
+        XCTAssertTrue(view.window?.firstResponder === view)
+    }
+
+    /// A file URL alone, with no name beside it.
+    func testFileURLOnlyPasteIsEnabled() throws {
+        let item = NSPasteboardItem()
+        item.setString(URL(fileURLWithPath: "/tmp/a.png").absoluteString, forType: .fileURL)
+        pasteboard.writeObjects([item])
+        let view = makeView()
+        XCTAssertTrue(view.validateUserInterfaceItem(pasteItem()))
+    }
+
+    /// Without `onPasteData` the field reads only the stock plain-text types (checked on its private pasteboard:
+    /// the app's `.general` branch goes to `super`, which a test cannot drive without the owner's clipboard).
+    func testUnwiredViewDoesNotEnableImagePaste() throws {
+        pasteboard.setData(try onePixelPNG(), forType: .png)
+        let view = makeView(wired: false)
+        XCTAssertFalse(view.validateUserInterfaceItem(pasteItem()))
+    }
+
+    func testReadOnlyFieldDoesNotEnablePaste() throws {
+        pasteboard.setData(try onePixelPNG(), forType: .png)
+        let view = makeView()
+        view.isEditable = false
+        XCTAssertFalse(view.validateUserInterfaceItem(pasteItem()))
+    }
+
+    func testImageSaveFailureShowsErrorAndInsertsNothing() async throws {
+        let blocker = FileManager.default.temporaryDirectory.appendingPathComponent("wt-paste-\(UUID().uuidString)")
+        try Data([0]).write(to: blocker)
+        addTeardownBlock { try? FileManager.default.removeItem(at: blocker) }
+        let model = WorkchatModel(
+            sessionID: 1, control: NoControl(), lineDelivery: SessionLineDelivery(terminalCenter: nil),
+            attachmentStore: WorkchatAttachmentStore(root: blocker)
+        ) { .claude }
+        pasteboard.setData(try onePixelPNG(), forType: .png)
+        let view = makeView()
+        view.onPasteData = { await model.attach(data: $0, name: $1) }
+        view.onInlinePaste = { await model.paste($0) }
+        view.string = "fix"
+        view.setSelectedRange(NSRange(location: 3, length: 0))
+        _ = inKeyWindow(view)
+
+        guard menuPaste(view) else { return XCTFail("a PNG-only pasteboard enables Paste") }
+
+        let failed = await eventually { model.attachmentError != nil }
+        XCTAssertTrue(failed)
+        let error = try XCTUnwrap(model.attachmentError)
+        XCTAssertTrue(error.hasPrefix("Could not save the pasted file: "), error)
+        XCTAssertEqual(view.string, "fix")
+        XCTAssertTrue(model.pastes.isEmpty)
+        XCTAssertTrue(model.attachments.isEmpty)
+    }
+
+    /// A Workchat control that reads nothing and sends nothing.
+    private final class NoControl: WorkchatControl {
+        func lineCheck(_ sessionID: Int64) -> SessionControl.LineCheck { .sessionGone }
+        func workchatLineCheck(_ sessionID: Int64) -> SessionControl.LineCheck { .sessionGone }
+        func isWorking(_ sessionID: Int64) -> Bool { false }
+        func interrupt(_ sessionID: Int64) async throws -> SessionControl.InterruptResult { .notRunning }
+        func pendingPermission(_ sessionID: Int64) async throws -> SessionControl.PermissionPrompt? { nil }
+        func answerPermission(requestID: Int64, sessionID: Int64, allow: Bool, decidedBy: String) async throws
+            -> SessionControl.PermissionAnswer { .notFound }
+    }
 }

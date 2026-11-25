@@ -24,6 +24,10 @@ final class FakeConditionalDatabase: ConditionalDatabase, @unchecked Sendable {
     var recordFailures: [String: CKError] = [:]
     /// Thrown while a call carries more than this many records (a request-level `limitExceeded`).
     var maxRecordsPerCall = Int.max
+    /// The next calls answer with no result for these record names (the record is not saved).
+    var missingResults: Set<String> = []
+    /// Runs while each modify call or fetch is in flight, before it answers (another request landing meanwhile).
+    var duringRequest: (@Sendable () async -> Void)?
 
     var calls: [Call] { lock.withLock { _calls } }
     /// The record IDs fetched, in order.
@@ -43,12 +47,14 @@ final class FakeConditionalDatabase: ConditionalDatabase, @unchecked Sendable {
         saves: [CKRecord.ID: Result<CKRecord, Error>],
         deletes: [CKRecord.ID: Result<Void, Error>]
     ) {
-        try lock.withLock {
+        await duringRequest?()
+        return try lock.withLock {
             _calls.append(Call(saves: saving, deletes: deleting))
             if !callFailures.isEmpty { throw callFailures.removeFirst() }
             if saving.count + deleting.count > maxRecordsPerCall { throw CKError(.limitExceeded) }
             var saves: [CKRecord.ID: Result<CKRecord, Error>] = [:]
             for record in saving {
+                if missingResults.remove(record.recordID.recordName) != nil { continue }
                 if let failure = recordFailures.removeValue(forKey: record.recordID.recordName) {
                     saves[record.recordID] = .failure(failure)
                     continue
@@ -82,7 +88,8 @@ final class FakeConditionalDatabase: ConditionalDatabase, @unchecked Sendable {
     }
 
     func fetchRecord(_ id: CKRecord.ID) async throws -> CKRecord? {
-        try lock.withLock {
+        await duringRequest?()
+        return try lock.withLock {
             _fetches.append(id)
             if !fetchFailures.isEmpty { throw fetchFailures.removeFirst() }
             return records[id]
@@ -138,18 +145,22 @@ extension CloudKitTransport {
         store: TransportStore,
         database: FakeConditionalDatabase,
         scope: CloudDatabaseScope = .shared(ownerName: "_owner-acme"),
-        role: TransportRole = .phone
+        role: TransportRole = .phone,
+        energy: EnergyCounter? = nil,
+        entitled: Bool = true,
+        sleep: @escaping @Sendable (TimeInterval) async -> Void = { _ in }
     ) -> CloudKitTransport {
         CloudKitTransport(
             store: store,
             scope: scope,
             hubID: HubZones.testHubID,
             role: role,
-            entitlementPresent: { true },
+            entitlementPresent: { entitled },
             zoneAdmin: FakeZoneAdmin(),
             engineFactory: { _, _ in FakeSyncEngine() },
             now: { Date() },
-            sleep: { _ in },
+            sleep: sleep,
+            energy: energy,
             conditionalDatabase: database
         )
     }

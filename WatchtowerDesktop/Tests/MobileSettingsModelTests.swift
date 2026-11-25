@@ -217,6 +217,113 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertNil(model.pairing)
     }
 
+    /// F7 (#2191, ask #1813): a Mac whose iCloud is unusable keeps Link when
+    /// the hub has a relay (the hub issues a Relay code); without one it stays off.
+    func testLinkStaysOnWithoutICloudOnlyWithARelay() async {
+        XCTAssertTrue(Model.accountAllowsLinking(transport: "cloudkit", account: "no_account", hasRelay: true))
+        XCTAssertTrue(Model.accountAllowsLinking(transport: "cloudkit", account: "restricted", hasRelay: true))
+        XCTAssertFalse(Model.accountAllowsLinking(transport: "cloudkit", account: "no_account", hasRelay: false))
+        let cloud = #""cloudkit":{"account":"no_account","throttled_since":"","signed":true}"#
+        let paused = #"{"state":"paused","reason":"no_icloud","transport":"cloudkit","name":"Work Mac","#
+
+        cli.status(paused + cloud + #","relay":{"state":"connected"}}"#)
+        cli.phones("[]")
+        let withRelay = makeModel()
+        await withRelay.load()
+        XCTAssertTrue(withRelay.canLink, "a relay links without iCloud")
+        // One line replaces the pause line and the account line (ask #1829).
+        let offLine = "iCloud is off on this Mac. A phone with Relay can still link; linking moves this Mac to Relay."
+        XCTAssertEqual(Model.noICloudRelayLine("no_account"), offLine)
+        XCTAssertEqual(withRelay.hubLine, Model.HubLine(text: offLine, tone: .warning))
+        XCTAssertNil(withRelay.accountLine)
+        withRelay.linkPhone()
+        XCTAssertNotNil(withRelay.pairing)
+
+        cli.status(paused + cloud + "}")
+        cli.phones("[]")
+        let withoutRelay = makeModel()
+        await withoutRelay.load()
+        XCTAssertFalse(withoutRelay.canLink, "no relay, no iCloud: no code")
+        XCTAssertEqual(withoutRelay.hubLine, Model.HubLine(
+            text: "Paused until iCloud is available on this Mac. It goes on by itself.", tone: .warning
+        ), "without a relay the old lines stay")
+        XCTAssertEqual(withoutRelay.accountLine, "Mobile isn't available on this Mac: iCloud is off.")
+
+        cli.status(#"{"state":"paused","reason":"stopping","transport":"cloudkit","relay":{"state":"connected"}}"#)
+        cli.phones("[]")
+        let otherPause = makeModel()
+        await otherPause.load()
+        XCTAssertFalse(otherPause.canLink, "only the iCloud pause keeps Link")
+    }
+
+    /// The relay line opens with why iCloud can't be used, in the account
+    /// line's own words; without a relay each state keeps its old two lines.
+    func testTheRelayLineSaysWhyICloudCannotBeUsed() async {
+        let cases = [
+            ("no_account", "iCloud is off on this Mac.", "Mobile isn't available on this Mac: iCloud is off."),
+            ("restricted", "iCloud is restricted by your organization on this Mac.",
+             "Mobile isn't available on this Mac: iCloud is restricted by your organization."),
+            ("temporarily_unavailable", "iCloud is temporarily unavailable on this Mac.",
+             "Mobile isn't available on this Mac: iCloud account temporarily unavailable")
+        ]
+        let pause = Model.HubLine(text: "Paused until iCloud is available on this Mac. It goes on by itself.", tone: .warning)
+        for (account, opening, oldAccountLine) in cases {
+            let cloud = #""cloudkit":{"account":"\#(account)","throttled_since":"","signed":true}"#
+            let paused = #"{"state":"paused","reason":"no_icloud","transport":"cloudkit","#
+
+            cli.status(paused + cloud + #","relay":{"state":"connected"}}"#)
+            cli.phones("[]")
+            let withRelay = makeModel()
+            await withRelay.load()
+            let line = opening + " A phone with Relay can still link; linking moves this Mac to Relay."
+            XCTAssertEqual(Model.noICloudRelayLine(account), line, account)
+            XCTAssertEqual(withRelay.hubLine, Model.HubLine(text: line, tone: .warning), account)
+            XCTAssertNil(withRelay.accountLine, account)
+            XCTAssertTrue(withRelay.canLink, account)
+
+            cli.status(paused + cloud + "}")
+            cli.phones("[]")
+            let withoutRelay = makeModel()
+            await withoutRelay.load()
+            XCTAssertEqual(withoutRelay.hubLine, pause, account)
+            XCTAssertEqual(withoutRelay.accountLine, oldAccountLine, account)
+            XCTAssertFalse(withoutRelay.canLink, account)
+        }
+    }
+
+    /// An account not read yet (no `cloudkit` object, or an empty account)
+    /// on a no_icloud hub with a relay reads as off, with Link on.
+    func testTheRelayLineWithAnAccountNotReadYet() async {
+        let off = "iCloud is off on this Mac. A phone with Relay can still link; linking moves this Mac to Relay."
+        XCTAssertEqual(Model.noICloudRelayLine(""), off)
+        let statuses = [
+            #"{"state":"paused","reason":"no_icloud","transport":"cloudkit","relay":{"state":"connected"}}"#,
+            #"{"state":"paused","reason":"no_icloud","transport":"cloudkit","#
+                + #""cloudkit":{"account":"","throttled_since":"","signed":true},"relay":{"state":"connected"}}"#
+        ]
+        for status in statuses {
+            cli.status(status)
+            cli.phones("[]")
+            let model = makeModel()
+            await model.load()
+            XCTAssertEqual(model.hubLine, Model.HubLine(text: off, tone: .warning), status)
+            XCTAssertNil(model.accountLine, status)
+            XCTAssertTrue(model.canLink, status)
+        }
+    }
+
+    /// The pairing sheet names the Mac in the Relay warning (#2191).
+    func testThePairingSheetKnowsTheMacName() async {
+        cli.status(#"{"state":"running","transport":"cloudkit","name":"Work Mac"}"#)
+        cli.phones("[]")
+        let model = makeModel()
+        await model.load()
+        model.linkPhone()
+        let sheet = model.pairing
+        sheet?.receive(#"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827","moves_to_relay":true}"#)
+        XCTAssertEqual(sheet?.relayMoveWarning, MobilePairingModel.relayMoveWarning("Work Mac"))
+    }
+
     /// Reads give up after 15 s and writes after 30 s, so a hung call never
     /// leaves the tab loading or a row busy.
     func testEveryCallHasATimeout() async {
@@ -702,7 +809,7 @@ final class MobileSettingsModelTests: XCTestCase {
             if await sleeps.count >= 2 { withUnsafeCurrentTask { $0?.cancel() } }
         }
         let model = makeModel(sleep: twice)
-        await Task { await model.windowVisibility(true) }.value
+        await Task { await model.windowVisibility(.onScreen) }.value
         let recorded = await sleeps.all
         XCTAssertEqual(recorded, [Model.refreshInterval, Model.refreshInterval])
         XCTAssertEqual(cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count, 2)
@@ -714,7 +821,7 @@ final class MobileSettingsModelTests: XCTestCase {
             withUnsafeCurrentTask { $0?.cancel() }
         }
         let starting = makeModel(sleep: once)
-        await Task { await starting.windowVisibility(true) }.value
+        await Task { await starting.windowVisibility(.onScreen) }.value
         let first = await fast.all
         XCTAssertEqual(first, [Model.startingRefreshInterval], "5 s while the hub starts")
     }
@@ -734,8 +841,8 @@ final class MobileSettingsModelTests: XCTestCase {
         await sheet?.start()
         XCTAssertEqual(streamer.sessions.count, 1)
 
-        await model.windowVisibility(false)
-        XCTAssertNil(model.pairing, "a hidden window closes the pairing")
+        await model.windowVisibility(.gone)
+        XCTAssertNil(model.pairing, "a closed or ordered-out window closes the pairing")
         XCTAssertTrue(streamer.sessions[0].stopped)
 
         model.linkPhone()
@@ -744,6 +851,89 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertNil(model.pairing, "turning Mobile off closes the pairing")
         XCTAssertTrue(streamer.sessions[1].stopped)
         XCTAssertEqual(Model.linkTitle, "Link a phone…")
+    }
+
+    /// #2188: a covered Settings window (another app in front, another Space,
+    /// the display asleep) must not close the code the phone is scanning.
+    func testACoveredWindowKeepsThePairingAndOnlyStopsThePolling() async {
+        runningWith()
+        let streamer = FakePairStreamer()
+        let once: @Sendable (Duration) async -> Void = { _ in withUnsafeCurrentTask { $0?.cancel() } }
+        let model = makeModel(streamer: streamer, sleep: once)
+        await model.load()
+        model.linkPhone()
+        defer { model.pairingDismissed() }
+        await model.pairing?.start()
+        let reads = cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count
+
+        await model.windowVisibility(.occluded)
+        XCTAssertNotNil(model.pairing, "a covered window leaves the sheet open")
+        XCTAssertFalse(streamer.sessions[0].stopped, "the stream, and so the code, stays open")
+        XCTAssertEqual(cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count, reads, "no read while covered")
+
+        await Task { await model.windowVisibility(.onScreen) }.value
+        XCTAssertGreaterThan(cli.invocations.filter { $0 == MobileHubCLI.statusArgs }.count, reads, "back on screen the reads resume")
+        XCTAssertNotNil(model.pairing, "and the open pairing is untouched")
+        XCTAssertFalse(streamer.sessions[0].stopped)
+    }
+
+    /// The reader boundary (#2188): a window that was never shown reads as gone,
+    /// `willClose` reports gone, an app hide/unhide re-evaluates, and a removed
+    /// view stops reporting.
+    func testWindowVisibilityViewReportsFromWindowNotifications() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let view = WindowVisibilityView()
+        var reports: [WindowPresence] = []
+        view.onChange = { reports.append($0) }
+        window.contentView = view
+        XCTAssertEqual(reports, [.gone], "a window that was never ordered in is not on screen")
+
+        NotificationCenter.default.post(name: NSApplication.didHideNotification, object: nil)
+        NotificationCenter.default.post(name: NSApplication.didUnhideNotification, object: nil)
+        XCTAssertEqual(reports.count, 3, "each app hide/unhide re-evaluates")
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        XCTAssertEqual(reports.last, .gone)
+        XCTAssertEqual(reports.count, 4)
+
+        view.stopObserving()
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        XCTAssertEqual(reports.count, 4, "a stopped view reports nothing")
+    }
+
+    /// A visible window that is then ordered out posts no notification but
+    /// `isVisible` (KVO); `willClose` reports gone although the window still
+    /// reads visible.
+    func testWindowVisibilityViewFollowsIsVisibleAndWillClose() {
+        let window = StubVisibilityWindow()
+        let view = WindowVisibilityView()
+        var reports: [WindowPresence] = []
+        view.onChange = { reports.append($0) }
+        window.shown = true
+        window.contentView = view
+        XCTAssertEqual(reports, [.occluded], "visible but not in the occlusion state: covered, not gone")
+
+        window.shown = false
+        XCTAssertEqual(reports.last, .gone, "ordered out while covered: only the isVisible KVO tells")
+
+        window.shown = true
+        XCTAssertEqual(reports.last, .occluded)
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        XCTAssertEqual(reports.last, .gone, "closing reports gone while the window still reads visible")
+        view.stopObserving()
+    }
+
+    func testTheTabLeavingTheScreenClosesThePairing() async {
+        runningWith()
+        let streamer = FakePairStreamer()
+        let model = makeModel(streamer: streamer)
+        await model.load()
+        model.linkPhone()
+        await model.pairing?.start()
+        model.disappeared()
+        XCTAssertNil(model.pairing)
+        XCTAssertTrue(streamer.sessions[0].stopped)
     }
 
     // MARK: - Relay indicators (go hub plan 4 Task 8)
@@ -1112,4 +1302,19 @@ private actor SleepLog {
     private(set) var all: [Duration] = []
     var count: Int { all.count }
     func add(_ duration: Duration) { all.append(duration) }
+}
+
+/// A window never ordered in whose `isVisible` the test controls.
+private final class StubVisibilityWindow: NSWindow {
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        isReleasedWhenClosed = false
+    }
+
+    var shown = false {
+        willSet { willChangeValue(forKey: "visible") }
+        didSet { didChangeValue(forKey: "visible") }
+    }
+
+    override var isVisible: Bool { shown }
 }

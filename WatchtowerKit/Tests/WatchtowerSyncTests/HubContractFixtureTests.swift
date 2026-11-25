@@ -250,7 +250,7 @@ final class HubContractFixtureTests: XCTestCase {
     /// Owner approval 5: a v4 code decodes on this phone. `v4_desktop` offers both routes, `v4_headless` the relay
     /// only; both carry the relay identity their seed derives.
     func testV4LinksDecodeOnThisPhone() throws {
-        for name in ["v4_desktop", "v4_headless"] {
+        for name in ["v4_desktop", "v4_desktop_relay_switch", "v4_headless"] {
             let fixtureCase = try linkCase(name)
             let url = try XCTUnwrap(URL(string: try XCTUnwrap(fixtureCase["url"] as? String)), name)
             let payload = try LinkPayload.parse(url).get()
@@ -266,6 +266,8 @@ final class HubContractFixtureTests: XCTestCase {
             XCTAssertEqual(payload.relayAuthPub, kit["relay_auth_pub"] as? String, name)
             XCTAssertEqual(payload.dataShare, kit["data_share"] as? String, name)
             XCTAssertEqual(payload.relayShare, kit["relay_share"] as? String, name)
+            // `relay_switch` (#2191, ask #1827): a current Mac sends it; a case without the key reads false.
+            XCTAssertEqual(payload.switchesToRelay, kit["relay_switch"] as? Bool ?? false, name)
             let pair = try relayPair(seed: fixtureCase["relay_auth_seed"])
             XCTAssertEqual(payload.relayAuthPub, pair.pub, name)
             XCTAssertEqual(payload.relayDeviceID, pair.id, name)

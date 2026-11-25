@@ -141,73 +141,119 @@ final class GitRefsWatcherTests: XCTestCase {
         XCTAssertNil(refused)
     }
 
-    private func watch(latency: TimeInterval = 0.1, onChange: @escaping @MainActor () -> Void) -> GitRefsWatcher {
-        let watcher = GitRefsWatcher(gitDir: gitDir.path, commonDir: gitDir.path, latency: latency) { _ in onChange() }
+    private func watch(onChange: @escaping @MainActor (GitRefsChange) -> Void) -> GitRefsWatcher {
+        let watcher = GitRefsWatcher(gitDir: gitDir.path, commonDir: gitDir.path, onChange: onChange)
         watchers.append(watcher)
         return watcher
     }
 
-    /// The way git updates a ref: write `<ref>.lock`, rename it into place.
-    private func updateRef(_ name: String) throws {
-        let ref = gitDir.appendingPathComponent(name)
-        let lock = gitDir.appendingPathComponent(name + ".lock")
-        try Data("0123456789abcdef0123456789abcdef01234567\n".utf8).write(to: lock)
-        _ = try FileManager.default.replaceItemAt(ref, withItemAt: lock)
+    /// One batch through the stream's own callback, the way fseventsd hands
+    /// it over (a CFArray of paths, C arrays of flags and ids), with ids
+    /// newer than the stream's start. The real fseventsd is not waited on: on
+    /// a busy machine it delivers seconds late (#2389).
+    private func deliver(_ watcher: GitRefsWatcher, _ names: [String], flag: Int = kFSEventStreamEventFlagItemRenamed) throws {
+        try feed(watcher.relay, paths: names.map { realGitDir + "/" + $0 }, flag: flag,
+                 ids: names.indices.map { watcher.startEventID + 1 + FSEventStreamEventId($0) })
     }
 
-    /// Lets fseventsd journal the fixture's own writes before a watcher
-    /// starts, and a new stream get going before the test writes.
-    private func settle(_ duration: Duration = .milliseconds(300)) async {
-        try? await Task.sleep(for: duration)
+    private func feed(_ relay: GitRefsWatcher.Relay, paths: [String], flag: Int, ids: [FSEventStreamEventId]) throws {
+        let flags = paths.map { _ in FSEventStreamEventFlags(flag) }
+        let info = Unmanaged.passUnretained(relay).toOpaque()
+        // The callback ignores the stream argument.
+        let stream = try XCTUnwrap(OpaquePointer(bitPattern: 1))
+        let cfPaths = paths as CFArray
+        try withExtendedLifetime((relay, cfPaths)) {
+            try flags.withUnsafeBufferPointer { flagBuffer in
+                try ids.withUnsafeBufferPointer { idBuffer in
+                    GitRefsWatcher.streamCallback(stream, info, paths.count,
+                                                  Unmanaged.passUnretained(cfPaths).toOpaque(),
+                                                  try XCTUnwrap(flagBuffer.baseAddress), try XCTUnwrap(idBuffer.baseAddress))
+                }
+            }
+        }
     }
 
-    func testARefUpdateFiresOnce() async throws {
+    /// FSEvents reports `/private/var/…`, not the temp dir's `/var/…`.
+    /// (`resolvingSymlinksInPath` would strip `/private` again.)
+    private var realGitDir: String {
+        guard let resolved = realpath(gitDir.path, nil) else { return gitDir.path }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    /// Per-file events (the header's paths are files), the first change at
+    /// once, a rescan when `.git` is replaced, paths the callback can read.
+    func testTheStreamFlags() {
+        let flags = GitRefsWatcher.streamFlags
+        for flag in [kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagNoDefer,
+                     kFSEventStreamCreateFlagWatchRoot, kFSEventStreamCreateFlagUseCFTypes] {
+            XCTAssertNotEqual(flags & FSEventStreamCreateFlags(flag), 0, "flag \(flag)")
+        }
+    }
+
+    func testTheWatcherStartsAStreamOnTheGitDir() {
+        XCTAssertTrue(watch { _ in }.isWatching)
+    }
+
+    /// The way git updates a ref: `<ref>.lock` written, then renamed into
+    /// place — one batch, one call.
+    func testARefUpdateFiresOnce() throws {
+        var changes: [GitRefsChange] = []
+        let watcher = watch { changes.append($0) }
+        try deliver(watcher, ["refs/heads/x.lock", "refs/heads/x"])
+        XCTAssertEqual(changes, [GitRefsChange(mayMoveWorktrees: true)])
+    }
+
+    /// One call per notifying batch, however many relevant paths it holds;
+    /// two batches call twice (`latency` is what coalesces them), and a
+    /// batch of only the folder's own HEAD leaves the other worktrees alone.
+    func testEachNotifyingBatchIsOneCall() throws {
+        var changes: [GitRefsChange] = []
+        let watcher = watch { changes.append($0) }
+        try deliver(watcher, ["HEAD", "refs/heads/x", "packed-refs"])
+        try deliver(watcher, ["refs/heads/x.lock"])
+        try deliver(watcher, ["HEAD"])
+        XCTAssertEqual(changes, [GitRefsChange(mayMoveWorktrees: true), GitRefsChange(mayMoveWorktrees: false)])
+    }
+
+    func testObjectWritesDoNotFire() throws {
         var fired = 0
-        let first = expectation(description: "fired")
-        await settle(.seconds(1))
-        _ = watch { fired += 1; if fired == 1 { first.fulfill() } }
-        await settle()
-        try updateRef("refs/heads/x")
-        await fulfillment(of: [first], timeout: 5)
-        let more = expectation(description: "no second batch")
-        more.isInverted = true
-        await fulfillment(of: [more], timeout: 1)
-        XCTAssertEqual(fired, 1)
-    }
-
-    func testObjectWritesDoNotFire() async throws {
-        let never = expectation(description: "no fire")
-        never.isInverted = true
-        await settle(.seconds(1))
-        _ = watch { never.fulfill() }
-        await settle()
-        try Data("blob".utf8).write(to: gitDir.appendingPathComponent("objects/ab/cd"))
-        try Data("log".utf8).write(to: gitDir.appendingPathComponent("logs/HEAD"))
-        await fulfillment(of: [never], timeout: 1.5)
+        let watcher = watch { _ in fired += 1 }
+        XCTAssertTrue(watcher.isWatching)
+        try deliver(watcher, ["objects/ab/cd", "logs/HEAD"])
+        XCTAssertEqual(fired, 0)
     }
 
     /// `.git` moved away and a new one put in its place (a re-clone, a
     /// worktree recreated): FSEvents says RootChanged, with event id 0.
-    func testReplacingTheWatchedDirFires() async throws {
-        let fired = expectation(description: "fired")
-        fired.assertForOverFulfill = false
-        await settle(.seconds(1))
-        _ = watch { fired.fulfill() }
-        await settle()
-        let moved = root.appendingPathComponent("git-moved", isDirectory: true)
-        try FileManager.default.moveItem(at: gitDir, to: moved)
-        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
-        await fulfillment(of: [fired], timeout: 5)
+    func testReplacingTheWatchedDirFires() throws {
+        var fired = 0
+        let watcher = watch { _ in fired += 1 }
+        try feed(watcher.relay, paths: [realGitDir], flag: kFSEventStreamEventFlagRootChanged, ids: [0])
+        XCTAssertEqual(fired, 1)
     }
 
-    func testStopSilencesTheWatcher() async throws {
-        let never = expectation(description: "no fire after stop")
-        never.isInverted = true
-        await settle(.seconds(1))
-        let watcher = watch { never.fulfill() }
-        await settle()
+    func testStopSilencesTheWatcher() throws {
+        var fired = 0
+        let watcher = watch { _ in fired += 1 }
+        XCTAssertTrue(watcher.isWatching)
         watcher.stop()
-        try updateRef("refs/heads/y")
-        await fulfillment(of: [never], timeout: 1.5)
+        XCTAssertFalse(watcher.isWatching)
+        try deliver(watcher, ["refs/heads/y"])
+        XCTAssertEqual(fired, 0)
+    }
+
+    /// A batch FSEvents had in flight when the watcher went away finds the
+    /// relay pointing at nothing.
+    func testABatchAfterTheWatcherIsGoneIsDropped() throws {
+        var fired = 0
+        let relay: GitRefsWatcher.Relay
+        do {
+            let watcher = GitRefsWatcher(gitDir: gitDir.path, commonDir: gitDir.path) { _ in fired += 1 }
+            relay = watcher.relay
+        }
+        XCTAssertNil(relay.watcher)
+        try feed(relay, paths: [realGitDir + "/refs/heads/z"], flag: kFSEventStreamEventFlagItemRenamed, ids: [.max])
+        XCTAssertEqual(fired, 0)
     }
 }

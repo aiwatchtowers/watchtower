@@ -47,6 +47,22 @@ final class TransportFollowerPolicyTests: XCTestCase {
         XCTAssertNil(next.leftTransport)
     }
 
+    /// A phone that linked an iCloud Mac over Relay (#2191) is already on the relay when the hub's switch to Relay
+    /// arrives on that route: it moves in place and acks, nothing to resend and nothing left to drain.
+    func testSwitchedToTheRouteItIsOnAcksTheEpoch() {
+        let (next, commands) = TransportFollowerPolicy.decide(
+            switched(to: .relay, epoch: 2, on: .relay), state: state(route: .relay, epoch: 1), now: base)
+        XCTAssertEqual(commands, [
+            .mergeKeybox,
+            .moveRoute(to: .relay, epoch: 2, by: "phone-a", at: base),
+            .sendEpochAck(2),
+            .markHandled(controlID: "c-1")
+        ])
+        XCTAssertFalse(commands.contains(.resendUnechoedOnNewTransport))
+        XCTAssertEqual(next.newestEpoch, 2)
+        XCTAssertNil(next.leftTransport)
+    }
+
     func testAnOlderOrEqualEpochIsOnlyHandled() {
         let start = state(route: .cloudKit, epoch: 4)
         for epoch: UInt32 in [3, 4] {

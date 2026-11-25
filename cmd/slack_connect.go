@@ -84,6 +84,9 @@ type slackConnectDeps struct {
 	// chainLogins are the company chain's non-Slack sign-ins; nil is the
 	// production children (execVendorLogins).
 	chainLogins map[string]vendorLogin
+	// connState, when set, is the listener's http.Server ConnState hook (a
+	// test learns when a request is active, so a shutdown must wait for it).
+	connState func(net.Conn, http.ConnState)
 }
 
 // newSlackConnectDeps returns the production edges: port 18551, Slack's
@@ -508,7 +511,7 @@ func connectSlackOnce(ctx context.Context, cfg *config.Config, database *db.DB, 
 		return 0, slackconnect.Result{}, "", err
 	}
 	events := make(chan slackconnect.Event)
-	shutdown := serveSlackConnectListener(ln, reg, events, make(chan struct{}), nil)
+	shutdown := serveSlackConnectListener(ln, reg, events, make(chan struct{}), nil, nil)
 	defer shutdown(false)
 	if noOpen {
 		fmt.Fprintf(errOut, "Open this URL to connect Slack:\n%s\n", authorizeURL)
@@ -581,7 +584,7 @@ const slackConnectDrain = 2 * time.Second
 // writes its result page rather than "check the app"; stop is closed after.
 // company, when set (serve), takes the company link's paths.
 func serveSlackConnectListener(ln net.Listener, reg *slackconnect.Registry, events chan<- slackconnect.Event,
-	stop chan struct{}, company http.Handler) (shutdown func(stopFirst bool)) {
+	stop chan struct{}, company http.Handler, connState func(net.Conn, http.ConnState)) (shutdown func(stopFirst bool)) {
 	handler := slackconnect.Handler(reg, events, ln.Addr().String(), stop)
 	if company != nil {
 		handler = withCompanyPaths(handler, company)
@@ -589,6 +592,7 @@ func serveSlackConnectListener(ln net.Listener, reg *slackconnect.Registry, even
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ConnState:         connState,
 	}
 	served := make(chan struct{})
 	go func() {

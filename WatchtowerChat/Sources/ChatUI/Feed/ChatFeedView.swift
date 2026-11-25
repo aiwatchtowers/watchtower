@@ -87,6 +87,9 @@ public struct ChatFeedContext {
     /// Follows the newest content only while the reader is at the bottom, stops when they scroll up and offers "Jump
     /// to latest" (`ChatFollowTracker`); nil keeps the plain behaviour (every new message scrolls into view).
     public var follow: ChatFeedFollow?
+    /// Colours the agent's refs, hashes, file paths and commands as an IDE colours code (Workchat, spec
+    /// 2026-11-24-workchat-polish §2); off keeps the agent's text plain (the AI chat, the phone).
+    public var highlightsAgentText = false
 
     public init(
         provider: String? = nil,
@@ -300,7 +303,8 @@ public struct ChatFeedRows: View {
             isAnswerable: ChatFeedLayout.isAnswerable(message.id, in: messages, isTurnRunning: context.isTurnRunning),
             answerText: ChatFeedLayout.ownerReply(after: message.id, in: messages),
             runningTurnID: context.runningTurnID,
-            actions: context.partActions
+            actions: context.partActions,
+            highlightsAgentText: context.highlightsAgentText
         )
     }
 

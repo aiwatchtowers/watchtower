@@ -9,8 +9,10 @@
 // Only a person switches (rule 8): a phone's transport_switch, or the relay
 // entitlement lapsing (by = "entitlement_expired"), which is also what the
 // relay's answer that no phone pays for the hub moves it by (nopayer.go, G2,
-// by ruling, two fresh answers and every phone with an iCloud route); a
-// transport failure never does. Toward the relay a switch is accepted at
+// by ruling, two fresh answers and every phone with an iCloud route), or the
+// owner's Link of a phone that paired over Relay, once a fresh account read
+// lists it as paying (relaylink.go, by = that phone); a transport failure
+// never does. Toward the relay a switch is accepted at
 // least AntiFlap after the previous one; toward CloudKit always (rules 9–10),
 // a lapse's only once a fresh account read says nobody else pays (rule 16). The
 // last accepted request wins. A pass reads nothing from the relay: what needs
@@ -53,6 +55,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"watchtower/internal/hub/actions"
@@ -86,12 +89,16 @@ const (
 // time (seconds since 1970 as a decimal string, like enabled_at) and who
 // asked (a device id or wire.SwitchedByEntitlement), and the switch record
 // (switchRecord, JSON). metaAdoptedAt is the adoption's (internal/hub/adopt).
+// MetaRelayLinkSince is when the first build carrying the relay-link check
+// started the hub (stamp format, relaylink.go): a phone linked over a pairing
+// slot before it never moves the Mac by itself (spec Q5).
 const (
-	MetaTransport  = "transport"
-	MetaSwitchedAt = "switched_at"
-	MetaSwitchedBy = "switched_by"
-	metaSwitch     = "transport_switch"
-	metaAdoptedAt  = "adopted_at"
+	MetaTransport      = "transport"
+	MetaSwitchedAt     = "switched_at"
+	MetaSwitchedBy     = "switched_by"
+	MetaRelayLinkSince = "relay_link_since"
+	metaSwitch         = "transport_switch"
+	metaAdoptedAt      = "adopted_at"
 )
 
 // Config wires a Switcher. Relay may be nil (a desktop host without a relay
@@ -168,6 +175,9 @@ type Switcher struct {
 	np      noPayer
 	dpMu    sync.Mutex // the departure check (departed.go)
 	dp      departures
+	rlMu    sync.Mutex  // the relay-link check (relaylink.go)
+	rl      relayLink   // its throttle, under rlMu
+	rlSoon  atomic.Bool // RelayLinkSoon asked for the next check
 
 	boMu    sync.Mutex // the failed-Step backoff
 	boDelay time.Duration
@@ -212,6 +222,7 @@ func New(c Config) (*Switcher, error) {
 		return nil, err
 	}
 	s.active = active
+	s.markRelayLinkSince()
 	r, ok, err := s.record()
 	if err != nil {
 		return nil, err
@@ -476,9 +487,10 @@ func (s *Switcher) PollOther(ctx context.Context) {
 	// G2 reads first on its tick: on an unvouched hub the reader answers a
 	// read inside its window from the last one, and G2 alone refuses that
 	// (a lapse recheck first would make every G2 read land in the window).
-	s.checkNoPayer(ctx)  // G2: nobody pays any more
-	s.checkDeparted(ctx) // a phone gone from its slot while the hub stays
-	s.recheckLapsed(ctx) // sim rule 16: a lapsed phone that pays again
+	s.checkNoPayer(ctx)   // G2: nobody pays any more
+	s.checkRelayLink(ctx) // a phone linked over Relay pays: CloudKit → relay
+	s.checkDeparted(ctx)  // a phone gone from its slot while the hub stays
+	s.recheckLapsed(ctx)  // sim rule 16: a lapsed phone that pays again
 	if s.Pending() && s.stepDue() {
 		s.Kick()
 	}

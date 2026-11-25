@@ -55,7 +55,8 @@ func FindSubagent(convs []Conversation, toolUseID string) (*Result, string, erro
 			}
 			continue
 		}
-		feed, err := Build([]Conversation{c}, nil, nil)
+		// Only the subagent list is used: no task results to read.
+		feed, _, err := build([]Conversation{c}, nil, nil)
 		if err != nil {
 			return nil, "", err
 		}

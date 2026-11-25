@@ -25,6 +25,8 @@ struct ChatComposerTextInput: View {
     var onOptionArrowDown: (() -> Bool)?
     var autoFocus: Bool
     var focusRequest: UUID?
+    /// The Mac's paperclip "Paste …" item; the phone has none.
+    var pasteRequest: UUID?
     let onSubmit: () -> Void
 
     var body: some View {

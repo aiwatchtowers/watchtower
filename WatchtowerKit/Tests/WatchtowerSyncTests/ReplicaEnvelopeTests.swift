@@ -331,6 +331,11 @@ final class ReplicaEnvelopeTests: XCTestCase {
         XCTAssertThrowsError(try read(store) { db in try store.keybox(deviceID: deviceID, from: db) }) { error in
             XCTAssertEqual(error as? KeyStoreError, .locked)
         }
+        // #2189: the sealed envelope as stored, whatever the keys, for the link flow's fingerprint of one that does
+        // not open; nil only when absent.
+        let envelope = try read(store) { db in try store.keyboxEnvelope(deviceID: deviceID, from: db) }
+        XCTAssertNotNil(envelope)
+        XCTAssertNil(try read(store) { db in try store.keyboxEnvelope(deviceID: TestE2E.strangerDeviceID, from: db) })
     }
 
     func testAnotherPhonesKeyboxIsDroppedAtApply() async throws {

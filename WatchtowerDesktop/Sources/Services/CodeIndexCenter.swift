@@ -98,28 +98,46 @@ final class CodeIndexCenter {
     }
 
     /// A view shows the root: the first show (or one after a failure) starts
-    /// a full run. Balanced by `markHidden`.
-    func markShown(root: CodeRoot) {
+    /// a full run. `rescan`: the root's folder was not watched since it was
+    /// last shown, so an index kept within its idle time runs in full again
+    /// (a first show's run already covers it). Balanced by `markHidden`.
+    func markShown(root: CodeRoot, rescan: Bool = false) {
         watchRulesFile()
-        // The workbench moved to another folder: nothing of its old main
-        // index holds.
-        for stale in sessions.keys where stale.isMain && root.isMain && stale.workbenchID == root.workbenchID && stale != root {
+        // The workbench (or one of its bench folders) moved to another
+        // folder: nothing of that folder's old main index holds. Another
+        // bench folder's main root is no stale one (#2201 T2 review).
+        for stale in sessions.keys where stale.isMain && root.isMain && stale.workbenchID == root.workbenchID
+            && stale.folderID == root.folderID && stale != root {
             releaseIndex(stale)
         }
         let session = sessions[root] ?? CodeIndexSession(folder: root.folder, index: index(for: root))
         sessions[root] = session
         session.shownCount += 1
         session.hiddenSince = nil
-        switch session.index.state {
-        case .idle, .failed:
-            guard session.run == nil else { return }
-            session.fullPending = true
-        case .indexing, .ready:
-            break
+        // A first show or one after a failure runs in full once no run is in
+        // flight; a rescan whatever the state (fix round 1).
+        if rescan {
+            queueFullRun(session)
+        } else if session.run == nil {
+            switch session.index.state {
+            case .idle, .failed: session.fullPending = true
+            case .indexing, .ready: break
+            }
         }
         // A first show, one after a failure, or one after the rules file
         // changed while the root was hidden.
         if session.fullPending { startNextRun(session) }
+    }
+
+    /// Whether another full run waits behind the root's current one (tests).
+    func fullRunPending(root: CodeRoot) -> Bool {
+        sessions[root]?.fullPending == true
+    }
+
+    /// Whether changed paths wait out the root's debounce (tests).
+    func debouncePending(root: CodeRoot) -> Bool {
+        guard let session = sessions[root] else { return false }
+        return session.debounceTask != nil || !session.debouncing.isEmpty
     }
 
     func markHidden(root: CodeRoot) {
@@ -135,10 +153,7 @@ final class CodeIndexCenter {
     func applyWatcherBatch(_ batch: FolderWatcher.Batch, root: CodeRoot) {
         guard let session = sessions[root] else { return }
         if batch.mustRescan {
-            session.debounceTask?.cancel()
-            session.debounceTask = nil
-            session.debouncing = []
-            session.fullPending = true
+            queueFullRun(session)
             startNextRun(session)
             return
         }
@@ -152,9 +167,27 @@ final class CodeIndexCenter {
         session.debounceTask = Task { @MainActor [weak self, weak session, debounceSleep] in
             try? await debounceSleep(wait)
             guard !Task.isCancelled, let self, let session else { return }
+            session.debounceTask = nil
             session.queued.formUnion(session.debouncing)
             session.debouncing = []
             startNextRun(session)
+        }
+    }
+
+    /// A full run waits (started by `startNextRun` once none is in flight):
+    /// it covers every change still waiting out the debounce, so those go.
+    private func queueFullRun(_ session: CodeIndexSession) {
+        session.debounceTask?.cancel()
+        session.debounceTask = nil
+        session.debouncing = []
+        session.fullPending = true
+    }
+
+    /// The workbench was deleted: its indexes go now, not after `idleTTL` —
+    /// a new workbench may get its id (fix round 1).
+    func releaseWorkbench(_ workbenchID: Int64) {
+        for root in Set(sessions.keys).union(indexes.keys) where root.workbenchID == workbenchID {
+            releaseIndex(root)
         }
     }
 
@@ -314,7 +347,7 @@ final class CodeIndexCenter {
             session.run = nil
             if case .failed = index.state, session.fullRunFinished { index.state = .ready }
             startNextRun(session)
-        } onExit: { [weak session] exit, _ in
+        } onExit: { [weak self, weak session] exit, _ in
             guard let session, session.serve === process else { return }
             session.serve = nil
             NSLog("CodeIndexCenter: code index --serve for %@ exited: %@", session.folder.path, exit.stderr)
@@ -324,6 +357,9 @@ final class CodeIndexCenter {
             session.run = nil
             session.queued.formUnion(paths)
             index.state = .failed(exit.failureMessage(command: "code index --serve"))
+            // A full run that waited on this update (a show-time rescan) starts
+            // now; queued paths alone still wait for the next change (#2386).
+            if session.fullPending { self?.startNextRun(session) }
         }
         return process
     }

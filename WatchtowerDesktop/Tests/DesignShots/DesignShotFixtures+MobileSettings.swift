@@ -38,6 +38,10 @@ enum MobileSettingsShotFixtures {
         case undeliveredNoToken = "mobileSettingsUndeliveredNoToken"
         case twoMailboxesFull = "mobileSettingsTwoMailboxesFull"
         case indicatorsNarrow = "mobileSettingsIndicatorsNarrow"
+        // #2191 Task 6 (F7, ask #1813): an iCloud hub paused for iCloud keeps
+        // Link with a relay, and keeps it off without one.
+        case linkWithoutICloudRelay = "mobileSettingsLinkWithoutICloud-relay"
+        case linkWithoutICloudNoRelay = "mobileSettingsLinkWithoutICloud-noRelay"
 
         var name: String {
             switch self {
@@ -62,6 +66,7 @@ enum MobileSettingsShotFixtures {
             case .keptRecordingsNarrow: NSSize(width: 380, height: 900)
             case .loading, .error, .off, .swiftBesideGo: NSSize(width: 640, height: 140)
             case .iCloud: NSSize(width: 640, height: 520)
+            case .linkWithoutICloudRelay, .linkWithoutICloudNoRelay: NSSize(width: 640, height: 780)
             case .empty: NSSize(width: 640, height: 460)
             case .keptRecordings: NSSize(width: 640, height: 740)
             case .busy, .phones: NSSize(width: 640, height: 680)
@@ -89,6 +94,13 @@ enum MobileSettingsShotFixtures {
         case tooMany = "mobilePairingRefused-tooMany"
         case unknownReason = "mobilePairingRefused-unknownReason"
         case failed = "mobilePairingFailed"
+        // #2191 Task 6 (Q6): the Link confirmation that moves the Mac to Relay.
+        // `sas` above is the line-absent state.
+        case relayWarning = "mobilePairingSAS-relayWarning"
+        case relayWarningLongName = "mobilePairingSAS-relayWarningLongName"
+        case reprintAfterLink = "mobilePairingSAS-reprintAfterLink"
+        case confirming = "mobilePairingConfirming"
+        case failedAfterRelayWarning = "mobilePairingFailed-afterRelayWarning"
 
         var refusal: String? {
             switch self {
@@ -128,6 +140,13 @@ enum MobileSettingsShotFixtures {
                 switchedAt: status.switchedAt, switchedBy: status.switchedBy, cloudKit: cloud
             )
             model.present(status: status, phones: [], jobs: nil)
+        case .linkWithoutICloudRelay, .linkWithoutICloudNoRelay:
+            let paused = MobileHubCLI.Status(
+                state: "paused", reason: "no_icloud", transport: "cloudkit", recordings: "on", name: "Work Mac",
+                cloudKit: MobileHubCLI.Status.CloudKit(account: "no_account"),
+                relay: frame == .linkWithoutICloudRelay ? connectedRelay : nil
+            )
+            model.present(status: paused, phones: [phones[1]], jobs: nil)
         case .empty:
             model.present(status: running(), phones: [], jobs: nil)
         case .phones, .narrow:
@@ -152,11 +171,31 @@ enum MobileSettingsShotFixtures {
     }
 
     static func pairing(_ shot: Pairing) -> AnyView {
-        let model = MobilePairingModel(streamer: nil, now: { now }, sleep: { _ in withUnsafeCurrentTask { $0?.cancel() } })
+        let mac = shot == .relayWarningLongName ? "Design Studio Mac Pro (Basement)" : "Work Mac"
+        let model = MobilePairingModel(
+            streamer: nil, macName: mac, now: { now }, sleep: { _ in withUnsafeCurrentTask { $0?.cancel() } }
+        )
         let expires = ISO8601DateFormatter().string(from: now.addingTimeInterval(581))
         let qr = #"{"event":"qr","url":"watchtower://link?d=eyJ2IjoxLCJob3N0IjoiYWNtZSJ9","expires_at":"\#(expires)"}"#
         let sas = #"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827"}"#
+        let warnedSAS = #"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"4827","moves_to_relay":true}"#
         switch shot {
+        case .relayWarning:
+            model.receive(warnedSAS)
+        case .relayWarningLongName:
+            model.receive(#"{"event":"sas","device_id":"AAAA0001","name":"Studio iPhone 17 Pro Max","code":"4827","moves_to_relay":true}"#)
+        case .reprintAfterLink:
+            // Link was pressed on 4827, then the phone's request changed: the
+            // newer line asks again with its own code.
+            model.receive(sas)
+            model.markConfirmed()
+            model.receive(#"{"event":"sas","device_id":"AAAA0001","name":"Phone A","code":"1093","moves_to_relay":true}"#)
+        case .confirming:
+            model.receive(warnedSAS)
+            model.markConfirmed()
+        case .failedAfterRelayWarning:
+            model.receive(warnedSAS)
+            model.streamEnded("The hub is not running.")
         case .starting:
             break
         case .qr:

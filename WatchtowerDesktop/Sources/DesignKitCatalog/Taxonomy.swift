@@ -64,7 +64,8 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
     /// The page's one-line purpose, under its title.
     var summary: String {
         switch self {
-        case .colours: "The app's surfaces, the neutral and accent fills, and the status and priority tones."
+        case .colours: "The app's surfaces, the neutral and accent fills, the status and priority tones, and the "
+            + "Workchat's syntax tints."
         case .spacing: "The closed spacing scale: padding and stack spacing come from these steps only."
         case .radius: "Corner radii by role. Chips and badges are capsules."
         case .strokes: "The hairline between panes and the accent selection outline."
@@ -88,7 +89,7 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
     /// `kit`). `DesignGalleryCatalogTests` checks them against the kit's source.
     var components: [String] {
         switch self {
-        case .colours: ["Surface", "Fill", "Tone", "ChipTint", "detailBackground", "panelBackground"]
+        case .colours: ["Surface", "Fill", "Tone", "ChipTint", "SyntaxTint", "detailBackground", "panelBackground"]
         case .spacing: ["Spacing", "PaneWidth", "ListLayout", "PlansLayout"]
         case .radius: ["Radius"]
         case .strokes: ["Stroke"]

@@ -93,26 +93,64 @@ func (h *hubRuntime) cloudKitCodes() (s transport.Shares, cloudKit, ok bool) {
 	return s, true, ok
 }
 
-// pairCloudKit issues a CloudKit code (link.Center.IssueCloudKit, which
-// emits the qr and waiting events as Issue does) and runs a pass at once
+// pairCloudKit issues a CloudKit code for the pairing stream token
+// (link.Center.IssueCloudKitFor, which emits the qr and waiting events as
+// IssueFor does) and runs a pass at once
 // for the phone's hello. A refusal is answered with its class (LinkErrClass:
 // no_icloud, icloud_unreachable, icloud_changed, else failed); a hub stopping
-// meanwhile answers hub_off. Called off hubMu with the hub held by its wait
-// group.
-func (h *hubRuntime) pairCloudKit(s transport.Shares) (ControlAnswer, string) {
+// meanwhile answers hub_off. The refusal's error is returned with it
+// (supervisor.pair may answer a relay code instead: relayCodeFallback).
+// Called off hubMu with the hub held by its wait group.
+func (h *hubRuntime) pairCloudKit(s transport.Shares, token string) (ControlAnswer, string, error) {
 	ctx, cancel := context.WithTimeout(h.ctx, opTimeout)
 	defer cancel()
-	p, _, err := h.center.IssueCloudKit(ctx, s)
+	p, _, err := h.center.IssueCloudKitFor(ctx, s, token)
 	if err != nil {
 		class := LinkErrClass(err)
 		if h.ctx.Err() != nil {
 			class = ErrClassHubOff
 		}
 		log.Printf("hub: CloudKit code not issued (%s, %s)", class, errClass(err))
-		return ControlAnswer{Error: class}, ""
+		return ControlAnswer{Error: class}, "", err
 	}
 	h.kick(h.passKick)
-	return ControlAnswer{OK: true}, p.Nonce
+	return ControlAnswer{OK: true}, p.Nonce, nil
+}
+
+// relayCodeFallback: a CloudKit code refused with err gives way to a relay
+// code (iCloud is not needed for linking) — only when the hub's relay is
+// connected now (relayConnected), and only when iCloud is really unusable:
+// the bridge answered with an account that refuses linking, or the account
+// or the Mac's iCloud user (ErrOwnerUnknown) could not be read although the
+// bridge is past its start (iCloudStarting: it never launched, waits to
+// restart, or runs past the grace). Such a read inside the grace, an account
+// change and any other failure keep their refusal, so the Mac still says
+// what is wrong with iCloud, or to try again.
+func (h *hubRuntime) relayCodeFallback(err error) bool {
+	if !h.relayConnected() {
+		return false
+	}
+	if errors.Is(err, link.ErrOwnerUnknown) {
+		return !h.iCloudStarting()
+	}
+	var ae *link.AccountError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	return ae.Account != link.AccountUnreadable || !h.iCloudStarting()
+}
+
+// relayConnected: the hub has a relay and it is connected now — by the
+// transport's own live state when it reports one (connectedReporter, the
+// hosted relay), else connected once by the link upkeep (relDown false).
+func (h *hubRuntime) relayConnected() bool {
+	if h.rel == nil {
+		return false
+	}
+	if c, ok := h.rel.(connectedReporter); ok {
+		return c.Connected()
+	}
+	return !h.relDown.Load()
 }
 
 // abandonCode closes, in the background, the link of the CloudKit code
@@ -280,16 +318,29 @@ func (h *hubRuntime) removePhone(device string) error {
 	return nil
 }
 
-// afterConfirm closes the CloudKit link in the background once a confirm
-// linked device (CloseUsed): the public link closes now, the participants
-// after the answer grace. A failure keeps the sweep pending (retried by
-// SweepShares, and by the next start's restart close).
-func (h *hubRuntime) afterConfirm(device string) {
+// afterConfirm follows the owner's answer for device; linkedNow is whether
+// this answer linked it (a refusal, or an expired or used code, did not).
+// A link asks the switcher for its relay-link check at once (a phone that
+// linked over a Relay pairing slot and pays moves a CloudKit hub to the
+// relay now, not at the check's next NoPayerPoll). While device is linked,
+// the CloudKit link closes in the background (CloseUsed): the public link
+// closes now, the participants after the answer grace. A failure keeps the
+// sweep pending (retried by SweepShares, and by the next start's restart
+// close).
+func (h *hubRuntime) afterConfirm(device string, linkedNow bool) {
+	if linkedNow && h.sw != nil {
+		h.sw.RelayLinkSoon()
+	}
 	s, ok := h.shares()
 	if !ok {
 		return
 	}
-	if _, linked, err := h.st.Device(device); err != nil || !linked {
+	_, linked, err := h.st.Device(device)
+	if err != nil {
+		log.Printf("hub: reading the phone after a confirm failed (%s): the link stays open", errClass(err))
+		return
+	}
+	if !linked {
 		return
 	}
 	h.inBackground(func(ctx context.Context) {
