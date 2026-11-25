@@ -67,9 +67,18 @@ struct OwnerAskDrawerKeys {
         return stops[index]
     }
 
+    /// Off while the "Not clear?" chat covers the question (spec 2026-11-24):
+    /// no bare key and no ⌘↩ acts on the hidden question.
+    private var enabled: Bool { !asks.isExplaining(ask.id) }
+
+    /// ⌘↩ / ⌘⇧↩ for the key catcher: `perform`, or nil under the chat.
+    func answerKey(_ perform: @escaping (Bool) -> Void) -> ((Bool) -> Void)? {
+        enabled ? perform : nil
+    }
+
     /// True when the key acted; false leaves it to the window.
     func press(_ press: OwnerAskKeyMap.Press) -> Bool {
-        guard asks.drawerKeysActive.contains(ask.projectID) else { return false }
+        guard enabled, asks.drawerKeysActive.contains(ask.projectID) else { return false }
         let place = OwnerAskKeyMap.Place.drawer(choices: current?.stop.choices(in: ask) ?? 0, isReview: ask.kind == .review)
         guard let action = OwnerAskKeyMap.mappedAction(for: press, at: place) else { return false }
         if !draftKeys, Self.writesDraft(action) { return false }

@@ -294,10 +294,14 @@ struct EmbeddedChatComposer: View {
     var density: ChatDensity = .regular
     var onEscape: (() -> Void)?
     var autoFocus = false
+    /// The surface shows the banner's failure itself, with its own Retry
+    /// (the "Not clear?" chat's first turn that never started): the status
+    /// line leaves it out, so it shows once.
+    var hidesError = false
 
     var body: some View {
         ChatComposerBar(
-            status: status,
+            status: Self.status(of: engine, hidesError: hidesError),
             onCancelQueued: { engine.cancelQueued() },
             input: ChatComposerField(
                 text: $engine.draft,
@@ -322,9 +326,10 @@ struct EmbeddedChatComposer: View {
         if let onEscape { onEscape() } else { engine.stop() }
     }
 
-    private var status: ChatComposerStatus? {
+    static func status(of engine: EmbeddedChatEngine, hidesError: Bool = false) -> ChatComposerStatus? {
         if engine.isQueued { return .queued }
         if engine.isApplyingChanges { return .finishing }
+        if hidesError { return nil }
         return engine.bannerError.map { .error($0) }
     }
 }

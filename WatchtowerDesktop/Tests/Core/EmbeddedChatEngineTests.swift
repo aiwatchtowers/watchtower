@@ -963,6 +963,29 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertNotNil(engine.bannerError, "only \"not found\" is swallowed")
     }
 
+    /// A hidden turn that cannot start says so until the next turn starts;
+    /// an owner send that cannot start never does.
+    func testHiddenTurnNotStartedIsReportedForAHiddenTurnOnly() async throws {
+        let store = FlakyStore()
+        let engine = makeEngine(store: store)
+        store.failBegin = true
+        XCTAssertTrue(engine.startFirstTurnIfEmpty(hidden: "Explain."))
+        await engine.finished()
+        XCTAssertTrue(engine.hiddenTurnNotStarted)
+        XCTAssertNotNil(engine.bannerError)
+
+        engine.send("Why?")
+        await engine.finished()
+        XCTAssertFalse(engine.hiddenTurnNotStarted, "the owner's own send failed, not the hidden turn")
+        XCTAssertEqual(engine.draft, "Why?")
+
+        store.failBegin = false
+        XCTAssertTrue(engine.startFirstTurnIfEmpty(hidden: "Explain."))
+        XCTAssertFalse(engine.hiddenTurnNotStarted, "cleared when a turn starts")
+        await engine.finished()
+        XCTAssertFalse(engine.hiddenTurnNotStarted)
+    }
+
     func testFollowUpsComeBackWhenTheirTurnCannotBeSaved() async throws {
         let store = FlakyStore()
         let engine = makeEngine(store: store)
@@ -1312,5 +1335,115 @@ extension EmbeddedChatEngineTests {
             reloaded.retry()
             XCTAssertEqual(ai.calls.count, calls)
         }
+    }
+}
+
+extension EmbeddedChatEngineTests {
+    /// A reopened chat whose stored latest reply ended partial (a quit) or in
+    /// a retryable error offers Retry, rerunning the owner row before it or
+    /// the hidden prompt when it had none (spec 2026-11-24 "The first message").
+    func testStoredPartialReplyOffersRetryOfTheHiddenPrompt() async throws {
+        let conversationID = self.conversationID
+        try await pool.write { db in
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "assistant",
+                                                   text: "Half", status: "partial")
+        }
+        let engine = makeEngine()
+        XCTAssertFalse(engine.canRetry)
+        engine.offerRetryOfStoredReply(hiddenPrompt: "EXPLAIN")
+        XCTAssertTrue(engine.canRetry)
+        engine.retry()
+        await engine.started()
+        XCTAssertTrue(ownTurn(try XCTUnwrap(ai.calls.last?.prompt)).hasSuffix("EXPLAIN"))
+        XCTAssertNil(ai.calls.last?.persist?.ownerText, "no owner row is written again")
+    }
+
+    func testStoredErrorReplyRetriesTheOwnerRowBeforeIt() async throws {
+        let conversationID = self.conversationID
+        try await pool.write { db in
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "user", text: "Why?")
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "assistant",
+                                                   text: "", status: "error")
+        }
+        let engine = makeEngine()
+        engine.offerRetryOfStoredReply(hiddenPrompt: "EXPLAIN")
+        XCTAssertTrue(engine.canRetry)
+        engine.retry()
+        await engine.started()
+        XCTAssertTrue(ownTurn(try XCTUnwrap(ai.calls.last?.prompt)).hasSuffix("Why?"))
+    }
+
+    func testCompletedReplyOffersNoRetry() async throws {
+        let conversationID = self.conversationID
+        try await pool.write { db in
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "assistant", text: "Done")
+        }
+        let engine = makeEngine()
+        engine.offerRetryOfStoredReply(hiddenPrompt: "EXPLAIN")
+        XCTAssertFalse(engine.canRetry)
+    }
+
+    /// provider-fallback's no-replay contract: a reply cut by an exhausted
+    /// quota never replays, `partial` (with text) or `error` alike.
+    func testStoredQuotaReplyOffersNoRetry() async throws {
+        let conversationID = self.conversationID
+        try await pool.write { db in
+            let id = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "assistant",
+                                                        text: "Half", status: "partial")
+            try db.execute(sql: "UPDATE chat_messages SET error_code = 'quota_exhausted', error_message = 'quota' WHERE id = ?",
+                           arguments: [id])
+        }
+        let engine = makeEngine()
+        engine.offerRetryOfStoredReply(hiddenPrompt: "EXPLAIN")
+        XCTAssertFalse(engine.canRetry)
+        engine.retry()
+        await engine.finished()
+        XCTAssertTrue(ai.calls.isEmpty)
+    }
+
+    /// Retry re-sends the nearest owner row before the failed reply, past a
+    /// notice row between them.
+    func testStoredFailedFollowUpRetriesTheNearestOwnerRow() async throws {
+        let conversationID = self.conversationID
+        try await pool.write { db in
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "assistant", text: "Explained")
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "user", text: "And option B?")
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "system", text: "A notice")
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "assistant",
+                                                   text: "", status: "error")
+        }
+        let engine = makeEngine()
+        engine.offerRetryOfStoredReply(hiddenPrompt: "EXPLAIN")
+        XCTAssertTrue(engine.canRetry)
+        engine.retry()
+        await engine.started()
+        let own = ownTurn(try XCTUnwrap(ai.calls.last?.prompt))
+        XCTAssertTrue(own.hasSuffix("And option B?"), own)
+        XCTAssertFalse(own.contains("EXPLAIN"))
+    }
+
+    func testFirstTurnStartsOnlyOnAnEmptyHistory() async throws {
+        let engine = makeEngine()
+        XCTAssertTrue(engine.startFirstTurnIfEmpty(hidden: "EXPLAIN"))
+        XCTAssertFalse(engine.startFirstTurnIfEmpty(hidden: "EXPLAIN"), "busy")
+        await engine.started()
+        XCTAssertEqual(ai.calls.count, 1)
+        XCTAssertNil(ai.calls[0].persist?.ownerText)
+    }
+
+    /// A history whose read failed is not an empty one: the re-read before
+    /// the first turn finds the replies, and nothing starts.
+    func testAFailedHistoryReadNeverStartsAFirstTurnOverReplies() async throws {
+        let store = FlakyStore()
+        try await store.append(role: "assistant", text: "Explained before")
+        store.failLoad = true
+        let engine = makeEngine(store: store)
+        XCTAssertTrue(engine.messages.isEmpty)
+        XCTAssertFalse(engine.startFirstTurnIfEmpty(hidden: "EXPLAIN"), "still unreadable")
+        store.failLoad = false
+        XCTAssertFalse(engine.startFirstTurnIfEmpty(hidden: "EXPLAIN"), "read now: it holds a reply")
+        await engine.finished()
+        XCTAssertTrue(ai.calls.isEmpty)
+        XCTAssertEqual(engine.messages.count, 1)
     }
 }

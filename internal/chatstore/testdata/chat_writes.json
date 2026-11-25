@@ -889,6 +889,179 @@
           ]
         }
       ]
+    },
+    {
+      "name": "new_ask_explain_chat_of_a_live_workbench",
+      "command": "chat.new",
+      "swift": "DatabaseEmbeddedChatStore.conversationID",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (4, 'acme', '/tmp/acme')"
+      ],
+      "params": {
+        "context": {
+          "type": "owner_ask_explain",
+          "id": "4:9",
+          "title": "Ask #9",
+          "reuse": true
+        }
+      },
+      "result": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT title, context_type, context_id FROM chat_conversations",
+          "rows": [
+            [
+              "Ask #9",
+              "owner_ask_explain",
+              "4:9"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_ask_explain_chat_of_a_deleted_workbench_is_refused",
+      "command": "chat.new",
+      "swift": "DatabaseEmbeddedChatStore.conversationID",
+      "seed": [],
+      "params": {
+        "context": {
+          "type": "owner_ask_explain",
+          "id": "4:9",
+          "title": "Ask #9",
+          "reuse": true
+        }
+      },
+      "refusal": "not_found",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "draft_save_of_a_deleted_ask_explain_chat_writes_nothing",
+      "command": "chat.draft.save",
+      "swift": "QueuedDraftQueries.save",
+      "seed": [],
+      "params": {
+        "surface_key": "owner_ask_explain.4:9.5",
+        "text": "And option B?"
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_queued_drafts",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "draft_save_of_an_ask_explain_chat",
+      "command": "chat.draft.save",
+      "swift": "QueuedDraftQueries.save",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (5, 'Ask #9', 'owner_ask_explain', '4:9', 1, 1)"
+      ],
+      "params": {
+        "surface_key": "owner_ask_explain.4:9.5",
+        "text": "And option B?"
+      },
+      "check": [
+        {
+          "sql": "SELECT surface_key, text FROM chat_queued_drafts",
+          "rows": [
+            [
+              "owner_ask_explain.4:9.5",
+              "And option B?"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "draft_save_under_a_merged_ask_explain_key_lands_on_the_current_key",
+      "command": "chat.draft.save",
+      "swift": "QueuedDraftQueries.save",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (5, 'Ask #9', 'owner_ask_explain', '8:9', 1, 1)",
+        "INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES ('owner_ask_explain.8:9.5', 'old', 1)"
+      ],
+      "params": {
+        "surface_key": "owner_ask_explain.4:9.5",
+        "text": "new"
+      },
+      "check": [
+        {
+          "sql": "SELECT surface_key, text FROM chat_queued_drafts",
+          "rows": [
+            [
+              "owner_ask_explain.8:9.5",
+              "new"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "draft_clear_under_a_merged_ask_explain_key_clears_the_current_key",
+      "command": "chat.draft.clear",
+      "swift": "QueuedDraftQueries.clear",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (5, 'Ask #9', 'owner_ask_explain', '8:9', 1, 1)",
+        "INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES ('owner_ask_explain.8:9.5', 'old', 1)",
+        "INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES ('track:3', 'kept', 1)"
+      ],
+      "params": {
+        "surface_key": "owner_ask_explain.4:9.5"
+      },
+      "check": [
+        {
+          "sql": "SELECT surface_key FROM chat_queued_drafts",
+          "rows": [
+            [
+              "track:3"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_ask_explain_chat_with_a_non_canonical_id_is_refused",
+      "command": "chat.new",
+      "swift": "DatabaseEmbeddedChatStore.conversationID",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (4, 'acme', '/tmp/acme')"
+      ],
+      "params": {
+        "context": {
+          "type": "owner_ask_explain",
+          "id": "04:9",
+          "title": "Ask #9",
+          "reuse": true
+        }
+      },
+      "refusal": "unsupported",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
     }
   ]
 }

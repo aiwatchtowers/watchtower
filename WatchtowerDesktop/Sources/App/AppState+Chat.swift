@@ -9,6 +9,15 @@ extension AppState {
     /// code questions) go to Go through the tower (mobile Inbox spec §8).
     var chatWrites: ChatWrites { ChatWrites(tower: towerClient) }
 
+    /// The asks' "Not clear?" chats (spec 2026-11-24) live in the app's
+    /// embedded chat center; they run the assistant through the CLI, so a
+    /// host without one gets none.
+    func wireAskExplain(_ asks: OwnerAsksViewModel, hasCLI: Bool) {
+        guard hasCLI else { return }
+        asks.chats = embeddedChatCenter
+        asks.chatWrites = chatWrites
+    }
+
     /// The main chat's window shell over the engine's client. A new automatic
     /// chat reads the current saved provider preference.
     func makeMainChatViewModel(_ db: DatabaseManager, client: any ChatClient) -> ChatViewModel {
