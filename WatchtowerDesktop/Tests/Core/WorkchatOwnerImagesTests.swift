@@ -132,6 +132,26 @@ final class WorkchatOwnerImagesTests: XCTestCase {
         XCTAssertEqual(kept.text, "look\n[image]", "no thumbnail: the marker is all the owner sees of the image")
     }
 
+    func testImageMarkerLinesOfBothSpellingsGo() {
+        XCTAssertEqual(split("\(pasted) look\n[Image #1]\n  [image]  ").text, "look")
+        XCTAssertEqual(split("\(pasted) look\n[Image #1] and more").text, "look\n[Image #1] and more",
+                       "a marker inside the owner's words stays")
+    }
+
+    /// CRLF line ends: a path on its own line still stands alone.
+    func testCRLFLinesStandAlone() {
+        let result = split("see this\r\n\(dropped)\r\n\(pasted)\r\nok")
+        XCTAssertEqual(result.images, [.init(path: dropped, isAttachment: false), paste(pasted)])
+        XCTAssertEqual(result.text, "see this\nok")
+    }
+
+    func testCyrillicTextAroundAPath() {
+        let result = split("вот скрин \(pasted), глянь\nи ещё:\n\(dropped)")
+        XCTAssertEqual(result.images.map(\.path), [pasted, dropped])
+        XCTAssertEqual(result.text, "вот скрин, глянь\nи ещё:")
+        XCTAssertEqual(split("сохрани в \(dropped) пожалуйста").images, [], "an outside path mid-sentence is prose")
+    }
+
     func testUnchangedTextIsReturnedAsIs() {
         let text = "  keep\n\n  my   spacing  "
         XCTAssertEqual(split(text).text, text)

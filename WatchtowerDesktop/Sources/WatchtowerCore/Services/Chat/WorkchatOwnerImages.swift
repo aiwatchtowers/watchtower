@@ -27,14 +27,14 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
         package var name: String { (path as NSString).lastPathComponent }
     }
 
-    /// The text to show: the image paths taken out, a line left empty by them dropped, and Go's `[image]` marker
-    /// line dropped when a thumbnail stands for it. Unchanged when no image was found.
+    /// The text to show: the image paths taken out, a line left empty by them dropped, and an image marker line
+    /// (Go's `[image]`, Claude Code's `[Image #N]`) dropped when an image stands for it. Unchanged when no image was
+    /// found.
     package let text: String
     /// The images in order of first appearance, each path once.
     package let images: [ImageFile]
 
     package static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "heic"]
-    private static let imageMarker = "[image]"
 
     /// `text` split into what the bubble shows and its images; `attachmentsRoot` is the attachments folder's path
     /// (nil: none known, so every image is a chip).
@@ -43,7 +43,8 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
         let folder = attachmentsRoot.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
         var images: [ImageFile] = []
         var lines: [String] = []
-        for line in text.components(separatedBy: "\n") {
+        // A line ending in `\r\n` stands alone the same as one ending in `\n`.
+        for line in text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n") {
             let tokens = pathTokens(in: line)
             let alone = tokens.count == 1 && tokens[0].raw == line.trimmingCharacters(in: .whitespaces)
             let found = tokens.compactMap { token in
@@ -72,7 +73,7 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
             if !tidy.isEmpty { lines.append(tidy) }
         }
         guard !images.isEmpty else { return Self(text: text, images: []) }
-        lines.removeAll { $0.trimmingCharacters(in: .whitespaces) == imageMarker }
+        lines.removeAll { WorkchatOutgoing.isImageMarker($0.trimmingCharacters(in: .whitespaces)) }
         let shown = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         return Self(text: shown, images: images)
     }
