@@ -9,25 +9,23 @@ Before Step 1, check that `main`'s latest CI run is green (`gh run list --branch
 ## Step 1: Collect the changes and determine the version
 
 1. Get the current version from `cmd/version.go` (the `Version` variable) and the latest tag: `prev=$(git tag -l 'v*' --sort=-v:refname | head -1)`.
-2. List the PRs merged into `main` since the tag, with their bodies:
-   `gh pr list --state merged --base main --limit 200 --search "merged:>=$(git log -1 --format=%cI $prev)" --json number,title,body`
-   (keep only PRs whose merge commit is in `$prev..HEAD`). Direct commits to `main` outside a PR (`git log $prev..HEAD --first-parent --no-merges`, minus the release commit) are classified the same way.
-3. Read each PR's `Changelog:` lines (the "Changelog" section of `.github/pull_request_template.md`): `Changelog: <category> [<area>] — <line for users>`, one line per user-visible change, several allowed. A PR without one gets its category guessed from its title and diff; mark every guessed line `(guessed)` in the ask.
-4. Categories (the keys are fixed — the PR template, this file and the notes use the same ones):
+2. List what landed on `main` since the tag: `git log $prev..HEAD --first-parent --format='%h %s'`. `main` is squash-merged, so each PR is one commit whose subject ends in `(#N)`; read each PR's body with `gh pr view N --json number,title,body`. A commit without `(#N)` was made on `main` directly: classify it from its subject and diff — the previous release's own commits (`release: vX.Y.Z`, `docs(guide): stamp … Learn cards`) are `internal`.
+3. Read each PR's `Changelog:` lines (the "Changelog" section of `.github/pull_request_template.md`), ignoring text inside `<!-- … -->`: `Changelog: <category> [<area>] — <line for users>`, one line per user-visible change, several allowed; the area is optional and written without brackets (`Changelog: fixed mac — The tray icon no longer flickers after sleep.`). A PR with no line, or only the template's unfilled placeholder (`Changelog: <category> — …`), gets its category guessed from its title and diff; mark every guessed line `(guessed)` in the ask. An umbrella PR carries one line per change of all its targets.
+4. Categories, in the order the ask and the notes use (the keys are fixed — the PR template, this file and the notes use the same ones):
 
    | Key | Badge in the notes | What belongs here | Bump |
    |---|---|---|---|
+   | `requirements` | ⚠️ Requirements | A new minimum macOS/iOS, a new permission, a one-way data migration (no downgrade after it) | patch, ⚠️ |
    | `new` | ✨ New | A new entry point: a screen, tab, CLI command, connector or integration | minor |
    | `extended` | ➕ Extended | Inside an existing entry point, the user can now do something they could not before | patch |
    | `improved` | 💅 Improved | The same thing, done better: faster, clearer text, fewer clicks | patch |
    | `changed` | 🔀 Changed | Doing what they did before, the user gets a different result: a new default, a move, a rename, a reworked flow | patch, ⚠️ |
    | `removed` | 🗑 Removed | A feature, setting or command is gone | minor |
-   | `requirements` | ⚠️ Requirements | A new minimum macOS/iOS, a new permission, a one-way data migration (no downgrade after it) | patch, ⚠️ |
    | `security` | 🔒 Security | A security fix | patch |
    | `fixed` | 🐞 Fixed | It did not behave as designed or documented | patch |
    | `internal` | — (not in the notes) | Refactors, tests, CI, build, developer docs: nothing a user sees | none |
 
-   `area` is optional: `mac`, `iphone`, `cli`; a connector-specific change names the connector (`slack`, `jira`, …). A change in several categories takes the line under its main category; the version follows the heaviest one.
+   `area` is optional: `mac`, `iphone`, `cli`; a connector-specific change names the connector (`slack`, `jira`, …). Tie-breaks: if a returning user would look for the thing in its old place or under its old name, it is `changed`, not `improved`; a security bug is `security`, not `fixed`. A change in several categories takes the line under its main category; the version follows the heaviest one.
 5. The version:
    - **No release** if every change is `internal`: tell the user there is nothing to release and stop.
    - **MAJOR** only when the user asks for it.
@@ -37,7 +35,7 @@ Before Step 1, check that `main`'s latest CI run is green (`gh run list --branch
 
 ## Step 2: Generate Release Notes
 
-Build the notes from the confirmed lines, one section per non-empty category, in this order (requirements first — they decide whether a user can update at all; `internal` never appears):
+Build the notes from the confirmed lines, one section per non-empty category, in the table's order (requirements first — they decide whether a user can update at all; `internal` never appears). Nothing else goes into the notes: the Mac app's Software Update window reads these headings to draw its badges.
 
 ```
 ## What's New
@@ -108,7 +106,7 @@ make release-check
 
 If `periphery-check` fails (dead-code count above baseline), either clean up
 the new dead code or — only after a deliberate review — refresh the baseline
-with `make periphery-baseline` and explain in the release notes why.
+with `make periphery-baseline` and explain why in the release commit message (not in the public notes).
 
 ## Step 6: Build
 

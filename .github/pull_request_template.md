@@ -10,12 +10,14 @@
 ## Changelog
 
 <!-- One line per user-visible change; the release collects these into the notes and picks the version.
-     Format: Changelog: <category> [<area>] — <what users can do or notice, in their words>
-     Categories: new · extended · improved · changed · removed · requirements · security · fixed · internal
-     Area (optional): mac · iphone · cli · a connector name. Security lines stay vague (no attack details).
+     Format: category, optional area (no brackets), a dash, then what users can do or notice, in their words.
+     Example: fixed mac — The tray icon no longer flickers after sleep.
+     Categories: requirements · new · extended · improved · changed · removed · security · fixed · internal
+     Area: mac · iphone · cli · a connector name. Security lines stay vague (no attack details).
+     Nothing user-visible: use internal. An unfilled placeholder below counts as no line.
      See .claude/commands/release.md, Step 1, for what each category means. -->
 
-Changelog: internal — 
+Changelog: <category> — <line for users>
 
 ## User guide
 
