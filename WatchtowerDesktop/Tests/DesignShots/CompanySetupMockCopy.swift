@@ -336,8 +336,22 @@ enum CompanySetupMockCopy {
     static let setUpForCompany = "Set up for my company"
     static let connectWithCode = "Connect with a company code"
     static let codePlaceholder = "Company code"
-    static let codeInvalid = "That is not a Watchtower company code. Copy it again from the Slack app's About page "
-        + "or from your admin."
+    static let codeInvalid = "That is not a Watchtower company code. Copy it again from your company's "
+        + "Watchtower app page in Slack, or ask a colleague who uses Watchtower."
+    static let slackHintTitle = "No code? Ask a colleague who uses Watchtower, "
+        + "or find Watchtower in your company's Slack:"
+    static let slackAddressPlaceholder = "acme.slack.com"
+    static let openSlackApps = "Open Slack apps"
+    static let slackHintSteps = [
+        "Search for Watchtower in the list and open it.",
+        "Open App Details.",
+        "Click the connect link, or copy the code and paste it above."
+    ]
+    static let slackHintFallback = "Not in the list, or Slack asks you to sign in? Sign in to Slack in this browser "
+        + "and try again. Still nothing — ask your Slack admin for the Watchtower company code."
+    static let slackAddressInvalid = "Enter your Slack address, like acme.slack.com"
+    static let slackAddressOrganization = "That is your organization's address. Enter your workspace's, like "
+        + "acme.slack.com — it is in Slack's workspace menu."
     static let portBusy = "Company links cannot reach Watchtower: port 18551 is busy. Paste the company code here instead."
     static let companiesLoading = "Reading company setups…"
     static let companiesReadFailed = "Could not read the company setups: acme.json is damaged."

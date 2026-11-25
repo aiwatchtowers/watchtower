@@ -318,12 +318,38 @@ package enum CompanyConnectionsPresentation {
     package static let portBusyLine = "Company links cannot reach Watchtower: port 18551 is busy. "
         + "Paste the company code here instead."
     package static let codePlaceholder = "Company code"
-    package static let codeInvalid = "That is not a Watchtower company code. Copy it again from the Slack app's "
-        + "About page or from your admin."
+    package static let codeInvalid = "That is not a Watchtower company code. Copy it again from your company's "
+        + "Watchtower app page in Slack, or ask a colleague who uses Watchtower."
     package static let connect = "Connect"
     package static let tryAgain = "Try again"
     private static let readFailedPrefix = "Could not read the company setups: "
     package static let draftUnreadable = "Your unfinished setup could not be read — start again"
+
+    // "No code?" under the code field: the Slack address opens the workspace's app list.
+    package static let slackHintTitle = "No code? Ask a colleague who uses Watchtower, "
+        + "or find Watchtower in your company's Slack:"
+    package static let slackAddressPlaceholder = "acme.slack.com"
+    package static let openSlackApps = "Open Slack apps"
+    /// Rendered numbered `1.`–`3.`.
+    package static let slackHintSteps = [
+        "Search for Watchtower in the list and open it.",
+        "Open App Details.",
+        "Click the connect link, or copy the code and paste it above."
+    ]
+    package static let slackHintFallback = "Not in the list, or Slack asks you to sign in? Sign in to Slack in "
+        + "this browser and try again. Still nothing — ask your Slack admin for the Watchtower company code."
+    package static let slackAddressInvalid = "Enter your Slack address, like acme.slack.com"
+    package static let slackAddressOrganization = "That is your organization's address. Enter your workspace's, "
+        + "like acme.slack.com — it is in Slack's workspace menu."
+
+    /// The caption under the Slack address field; nil while it is empty or a workspace.
+    package static func slackAddressCaption(_ address: SlackAddress) -> String? {
+        switch address {
+        case .invalid: slackAddressInvalid
+        case .organization: slackAddressOrganization
+        case .empty, .workspace: nil
+        }
+    }
 
     package static let groupOwnGoogle = "Your own Google project"
     package static let groupOwnGoogleCaption = "Gmail and Calendar through a project you own"
