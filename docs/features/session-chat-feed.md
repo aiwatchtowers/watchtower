@@ -149,7 +149,17 @@ feed must not silently preserve a previous action as current. Older CLI payloads
 `Activity unavailable` with Retry.
 
 The reader bounds the main tail to 4 MiB and returns at most 32 agent records, active first; omitted
-active records are counted in `agents_more`. Each child hint reads at most 256 KiB, without nested
+active records are counted in `agents_more`. A Claude main session's agent set comes from its
+`subagents/agent-*.meta.json` sidecars (every launched agent has one; a launch refused with `is_error`
+has none and counts as finished), so a transcript longer than the window does not make the count
+unknown, and finished agents past the 128-candidate inspection budget are dropped without making it
+unknown either; up to 1024 sidecars are read per poll, more is `unknown` (#2393). Background and foreground launches both
+write a sidecar. An unfinished sidecar whose launch is outside the window and whose own transcript
+(`agent-<id>.jsonl`, or the sidecar itself while that is not written yet) is silent for over an hour
+is an agent killed with its process (its sidecar never gets `finished`) and is not counted; an
+unreadable one makes the state `unknown`. A cut window with no sidecars at all stays
+`unknown`, and so do more than 128 unfinished candidates. Codex and sidechain
+reads still see agents only in the window, so a cut keeps them `unknown`. Each child hint reads at most 256 KiB, without nested
 snapshot recursion. Claude tools pair by tool-use id, with subagent status from sidecar metadata;
 launch tool completion does not finish a background agent. Codex supports response-item function
 and custom calls, legacy `collab_agent_spawn_end`/resume/close/waiting/interaction events, and
