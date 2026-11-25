@@ -15,7 +15,7 @@ final class WorkchatOwnerImagesTests: XCTestCase {
         WorkchatOwnerImages.split(text, attachmentsRoot: root)
     }
 
-    private func paste(_ path: String) -> WorkchatOwnerImages.ImageFile { .init(path: path, isAttachment: true) }
+    private func paste(_ path: String) -> WorkchatOwnerImages.ImageFile { .init(path: path, attachmentsRoot: root) }
 
     func testInlineBarePathLeavesTheText() {
         let result = split("\(pasted) the transcriber does not work")
@@ -84,7 +84,7 @@ final class WorkchatOwnerImagesTests: XCTestCase {
     func testPathOnItsOwnLineDropsTheLine() {
         let result = split("see these\n\(pasted)\n\(WorkchatOutgoing.quoted(dropped))")
         XCTAssertEqual(result.text, "see these")
-        XCTAssertEqual(result.images, [paste(pasted), .init(path: dropped, isAttachment: false)],
+        XCTAssertEqual(result.images, [paste(pasted), .init(path: dropped, attachmentsRoot: nil)],
                        "a dropped image elsewhere is a chip, never read")
     }
 
@@ -99,12 +99,12 @@ final class WorkchatOwnerImagesTests: XCTestCase {
     func testOnlyTheAttachmentsFolderIsAPaste() {
         XCTAssertEqual(split("save the chart to \(dropped) please").images, [],
                        "an image named mid-sentence outside the attachments folder is prose")
-        XCTAssertEqual(split("write it to\n\(dropped)").images, [.init(path: dropped, isAttachment: false)])
+        XCTAssertEqual(split("write it to\n\(dropped)").images, [.init(path: dropped, attachmentsRoot: nil)])
         XCTAssertEqual(split("write it to\n\(dropped)").text, "write it to")
 
         let lookalike = "/Users/example/Desktop/workchat-attachments/1/a.png"
         XCTAssertEqual(split("see \(lookalike) now").images, [], "a folder of the same name elsewhere is not it")
-        XCTAssertEqual(split(lookalike).images, [.init(path: lookalike, isAttachment: false)])
+        XCTAssertEqual(split(lookalike).images, [.init(path: lookalike, attachmentsRoot: nil)])
 
         let escaping = root + "/1/../../../../Desktop/a.png"
         XCTAssertEqual(split("see \(escaping) now").images, [], "a `..` cannot lead out of the folder")
@@ -113,7 +113,7 @@ final class WorkchatOwnerImagesTests: XCTestCase {
 
         XCTAssertEqual(WorkchatOwnerImages.split("see \(pasted) now", attachmentsRoot: nil).images, [],
                        "no attachments folder known: nothing is a paste")
-        XCTAssertEqual(WorkchatOwnerImages.split(pasted, attachmentsRoot: root + "/").images, [paste(pasted)],
+        XCTAssertEqual(WorkchatOwnerImages.split(pasted, attachmentsRoot: root + "/").images.map(\.isAttachment), [true],
                        "a root given with its closing slash")
     }
 
@@ -141,7 +141,7 @@ final class WorkchatOwnerImagesTests: XCTestCase {
     /// CRLF line ends: a path on its own line still stands alone.
     func testCRLFLinesStandAlone() {
         let result = split("see this\r\n\(dropped)\r\n\(pasted)\r\nok")
-        XCTAssertEqual(result.images, [.init(path: dropped, isAttachment: false), paste(pasted)])
+        XCTAssertEqual(result.images, [.init(path: dropped, attachmentsRoot: nil), paste(pasted)])
         XCTAssertEqual(result.text, "see this\nok")
     }
 

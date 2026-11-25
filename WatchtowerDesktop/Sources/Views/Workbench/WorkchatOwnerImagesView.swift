@@ -70,7 +70,7 @@ struct WorkchatImageThumbnail: View {
 
     init(image: WorkchatOwnerImages.ImageFile) {
         self.image = image
-        _load = State(initialValue: WorkchatThumbnailCache.cached(image.path))
+        _load = State(initialValue: WorkchatThumbnailCache.cached(image))
     }
 
     /// The size a thumbnail is drawn at: its pixels at the screen's scale (a small screenshot at its own size, never
@@ -115,7 +115,7 @@ struct WorkchatImageThumbnail: View {
         }
         .task(id: LoadKey(path: image.path, attempt: attempt)) {
             if attempt == 0, case .image? = load { return }
-            load = await WorkchatThumbnailCache.load(image.path)
+            load = await WorkchatThumbnailCache.load(image)
         }
     }
 
@@ -126,7 +126,9 @@ struct WorkchatImageThumbnail: View {
 
 /// The decoded thumbnails of the Workchat's pasted images, by path and modification time: a feed row rebuilt on
 /// scroll or on the next read draws at once instead of decoding again, and a file gone or rewritten is never drawn
-/// from an old decode. Only the attachments folder's files come here (`WorkchatOwnerImages.ImageFile.isAttachment`).
+/// from an old decode. Only the attachments folder's files are read, and only when nothing below that folder on the
+/// way to the file is a symlink (`file(of:)`): a link planted there to a file elsewhere is a chip, its target never
+/// looked at, so no folder Watchtower has no access to asks for permission.
 @MainActor
 enum WorkchatThumbnailCache {
     private static let images: NSCache<NSString, CGImage> = {
@@ -135,6 +137,23 @@ enum WorkchatThumbnailCache {
         return cache
     }()
 
+    /// The file to read for `image`: its path under the attachments folder with the folder's own symlinks resolved,
+    /// once each component below the folder is found not to be a symlink (`lstat`, which never follows one). Nil for
+    /// an image outside the folder or reached through a symlink below it: never read. A component not on disk ends
+    /// the walk; the read then finds the file missing.
+    nonisolated static func file(of image: WorkchatOwnerImages.ImageFile) -> String? {
+        guard let root = image.attachmentsRoot,
+              let parts = WorkchatOwnerImages.components(of: image.path, below: root) else { return nil }
+        var path = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
+        for part in parts {
+            path += "/" + part
+            var info = stat()
+            guard lstat(path, &info) == 0 else { return path }
+            if info.st_mode & S_IFMT == S_IFLNK { return nil }
+        }
+        return path
+    }
+
     /// The file's key, its path and modification time; nil when it is not on disk.
     private static func key(_ path: String) -> NSString? {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
@@ -142,18 +161,20 @@ enum WorkchatThumbnailCache {
         return "\(modified) \(path)" as NSString
     }
 
-    /// What a thumbnail starts as: `.missing` when the file is gone, its image when this version of it was decoded
-    /// before, nil when it has to be decoded.
-    static func cached(_ path: String) -> WorkbenchImageLoad? {
+    /// What a thumbnail starts as: `.missing` when the file is gone, `.undecodable` (a chip that opens it) when it is
+    /// not to be read (`file(of:)`), its image when this version of it was decoded before, nil when it has to be
+    /// decoded.
+    static func cached(_ image: WorkchatOwnerImages.ImageFile) -> WorkbenchImageLoad? {
+        guard let path = file(of: image) else { return .undecodable }
         guard let key = key(path) else { return .missing }
         return images.object(forKey: key).map(WorkbenchImageLoad.image)
     }
 
     /// The file's thumbnail, decoded off the main actor at twice `Thumbnail.maxSide` pixels and kept; a
     /// file that does not decode is not kept, so it is tried again next time.
-    static func load(_ path: String) async -> WorkbenchImageLoad {
-        if let cached = cached(path) { return cached }
-        guard let key = key(path) else { return .missing }
+    static func load(_ image: WorkchatOwnerImages.ImageFile) async -> WorkbenchImageLoad {
+        if let cached = cached(image) { return cached }
+        guard let path = file(of: image), let key = key(path) else { return .missing }
         let url = URL(fileURLWithPath: path)
         let pixels = Int(Thumbnail.maxSide * 2)
         let load = await Task.detached(priority: .userInitiated) {

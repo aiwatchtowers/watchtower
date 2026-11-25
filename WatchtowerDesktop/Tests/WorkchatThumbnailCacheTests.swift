@@ -36,31 +36,72 @@ final class WorkchatThumbnailCacheTests: XCTestCase {
         return url.path
     }
 
+    /// `path` as a paste in the attachments folder `folder`.
+    private func paste(_ path: String) -> WorkchatOwnerImages.ImageFile {
+        .init(path: path, attachmentsRoot: folder.path)
+    }
+
     func testMissingFileIsMissing() async {
         let path = folder.appendingPathComponent("gone.png").path
-        guard case .missing? = WorkchatThumbnailCache.cached(path) else { return XCTFail("starts missing") }
-        guard case .missing = await WorkchatThumbnailCache.load(path) else { return XCTFail("loads missing") }
+        guard case .missing? = WorkchatThumbnailCache.cached(paste(path)) else { return XCTFail("starts missing") }
+        guard case .missing = await WorkchatThumbnailCache.load(paste(path)) else { return XCTFail("loads missing") }
     }
 
     func testUndecodableFileIsNotKept() async throws {
         let path = try file("junk.png", Data("not an image".utf8))
-        guard case .undecodable = await WorkchatThumbnailCache.load(path) else { return XCTFail("undecodable") }
-        XCTAssertNil(WorkchatThumbnailCache.cached(path), "not cached: tried again next time")
+        guard case .undecodable = await WorkchatThumbnailCache.load(paste(path)) else { return XCTFail("undecodable") }
+        XCTAssertNil(WorkchatThumbnailCache.cached(paste(path)), "not cached: tried again next time")
     }
 
     func testValidFileIsKept() async throws {
         let path = try file("shot.png", try png())
-        guard case .image(let image) = await WorkchatThumbnailCache.load(path) else { return XCTFail("decoded") }
+        guard case .image(let image) = await WorkchatThumbnailCache.load(paste(path)) else { return XCTFail("decoded") }
         XCTAssertEqual(image.width, 8, "a small image is never enlarged")
-        guard case .image? = WorkchatThumbnailCache.cached(path) else { return XCTFail("kept") }
+        guard case .image? = WorkchatThumbnailCache.cached(paste(path)) else { return XCTFail("kept") }
     }
 
     func testCachedThenDeletedIsMissing() async throws {
         let path = try file("swept.png", try png())
-        guard case .image = await WorkchatThumbnailCache.load(path) else { return XCTFail("decoded") }
+        guard case .image = await WorkchatThumbnailCache.load(paste(path)) else { return XCTFail("decoded") }
         try FileManager.default.removeItem(atPath: path)
-        guard case .missing? = WorkchatThumbnailCache.cached(path) else { return XCTFail("gone before the cache") }
-        guard case .missing = await WorkchatThumbnailCache.load(path) else { return XCTFail("loads missing") }
+        guard case .missing? = WorkchatThumbnailCache.cached(paste(path)) else { return XCTFail("gone before the cache") }
+        guard case .missing = await WorkchatThumbnailCache.load(paste(path)) else { return XCTFail("loads missing") }
+    }
+
+    /// A symlink in the attachments folder to a file elsewhere (a file or a folder) is never followed: the image is
+    /// not decoded, so a protected folder's file is never read through it.
+    func testSymlinkOutOfTheFolderIsNotRead() async throws {
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent("wt-outside-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let target = outside.appendingPathComponent("private.png")
+        try png().write(to: target)
+        let link = folder.appendingPathComponent("link.png")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("7"), withDestinationURL: outside)
+        for path in [link.path, folder.appendingPathComponent("7/private.png").path] {
+            XCTAssertNil(WorkchatThumbnailCache.file(of: paste(path)), path)
+            guard case .undecodable? = WorkchatThumbnailCache.cached(paste(path)) else { return XCTFail(path) }
+            guard case .undecodable = await WorkchatThumbnailCache.load(paste(path)) else { return XCTFail(path) }
+        }
+    }
+
+    /// The attachments folder's own path may go through a symlink (a temporary folder under `/var`): a file in it is
+    /// still read.
+    func testSymlinkedFolderStillReads() async throws {
+        let alias = FileManager.default.temporaryDirectory.appendingPathComponent("wt-alias-\(UUID().uuidString)")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: folder)
+        defer { try? FileManager.default.removeItem(at: alias) }
+        _ = try file("shot.png", try png())
+        let image = WorkchatOwnerImages.ImageFile(path: alias.path + "/shot.png", attachmentsRoot: alias.path)
+        guard case .image = await WorkchatThumbnailCache.load(image) else { return XCTFail("decoded") }
+    }
+
+    func testImageOutsideTheFolderIsNotRead() async throws {
+        let path = try file("shot.png", try png())
+        let chip = WorkchatOwnerImages.ImageFile(path: path, attachmentsRoot: nil)
+        XCTAssertNil(WorkchatThumbnailCache.file(of: chip))
+        guard case .undecodable = await WorkchatThumbnailCache.load(chip) else { return XCTFail("not read") }
     }
 
     /// A thumbnail is drawn at its own point size on this screen, never enlarged, at most `Thumbnail.maxSide`.
@@ -75,11 +116,11 @@ final class WorkchatThumbnailCacheTests: XCTestCase {
 
     func testRewrittenFileIsDecodedAgain() async throws {
         let path = try file("again.png", try png())
-        guard case .image = await WorkchatThumbnailCache.load(path) else { return XCTFail("decoded") }
+        guard case .image = await WorkchatThumbnailCache.load(paste(path)) else { return XCTFail("decoded") }
         try png(width: 4, height: 4).write(to: URL(fileURLWithPath: path))
         try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: path)
-        XCTAssertNil(WorkchatThumbnailCache.cached(path), "another modification time: not the old decode")
-        guard case .image(let image) = await WorkchatThumbnailCache.load(path) else { return XCTFail("decoded") }
+        XCTAssertNil(WorkchatThumbnailCache.cached(paste(path)), "another modification time: not the old decode")
+        guard case .image(let image) = await WorkchatThumbnailCache.load(paste(path)) else { return XCTFail("decoded") }
         XCTAssertEqual(image.width, 4)
     }
 }

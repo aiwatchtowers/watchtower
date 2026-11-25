@@ -34,7 +34,7 @@ enum WorkchatPastedImageShotFixtures {
         try sampleScreenshot().write(to: URL(fileURLWithPath: echoed))
         try sampleScreenshot(wide: false).write(to: URL(fileURLWithPath: sending))
         for path in [echoed, sending] {
-            _ = await WorkchatThumbnailCache.load(path)
+            _ = await WorkchatThumbnailCache.load(.init(path: path, attachmentsRoot: attachments.path))
         }
 
         let now = Date()

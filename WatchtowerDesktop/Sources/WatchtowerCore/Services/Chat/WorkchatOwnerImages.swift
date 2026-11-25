@@ -15,14 +15,18 @@ import Foundation
 package struct WorkchatOwnerImages: Equatable, Sendable {
     package struct ImageFile: Equatable, Hashable, Sendable {
         package let path: String
-        /// In the attachments folder: drawn as a thumbnail (a chip when gone or not decodable). Anywhere else: a
-        /// chip only, its file never read.
-        package let isAttachment: Bool
+        /// The attachments folder `path` lies in by its text (nil: anywhere else). The thumbnail reads the file only
+        /// once it has checked, on disk, that nothing below this folder is a symlink (`WorkchatThumbnailCache`).
+        package let attachmentsRoot: String?
 
-        package init(path: String, isAttachment: Bool) {
+        package init(path: String, attachmentsRoot: String?) {
             self.path = path
-            self.isAttachment = isAttachment
+            self.attachmentsRoot = attachmentsRoot
         }
+
+        /// In the attachments folder: drawn as a thumbnail (a chip when gone, not decodable or reached through a
+        /// symlink). Anywhere else: a chip only, its file never read.
+        package var isAttachment: Bool { attachmentsRoot != nil }
 
         package var name: String { (path as NSString).lastPathComponent }
     }
@@ -40,7 +44,6 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
     /// (nil: none known, so every image is a chip).
     package static func split(_ text: String, attachmentsRoot: String?) -> Self {
         guard text.contains("/") else { return Self(text: text, images: []) }
-        let folder = attachmentsRoot.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
         var images: [ImageFile] = []
         var lines: [String] = []
         // A line ending in `\r\n` stands alone the same as one ending in `\n`.
@@ -48,7 +51,7 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
             let tokens = pathTokens(in: line)
             let alone = tokens.count == 1 && tokens[0].raw == line.trimmingCharacters(in: .whitespaces)
             let found = tokens.compactMap { token in
-                image(token.path, alone: alone, attachments: folder).map { (token, $0) }
+                image(token.path, alone: alone, attachmentsRoot: attachmentsRoot).map { (token, $0) }
             }
             guard !found.isEmpty else {
                 lines.append(line)
@@ -78,18 +81,22 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
         return Self(text: shown, images: images)
     }
 
-    private static func image(_ path: String, alone: Bool, attachments folder: String?) -> ImageFile? {
+    private static func image(_ path: String, alone: Bool, attachmentsRoot root: String?) -> ImageFile? {
         guard path.hasPrefix("/"),
               imageExtensions.contains((path as NSString).pathExtension.lowercased()) else { return nil }
-        if let folder, isInside(path, folder) { return ImageFile(path: path, isAttachment: true) }
-        return alone ? ImageFile(path: path, isAttachment: false) : nil
+        if let root, components(of: path, below: root) != nil { return ImageFile(path: path, attachmentsRoot: root) }
+        return alone ? ImageFile(path: path, attachmentsRoot: nil) : nil
     }
 
-    /// `path` lies under `folder` (ending in `/`) by its text alone: a `.` or `..` component, which could lead out of
-    /// it, never counts.
-    private static func isInside(_ path: String, _ folder: String) -> Bool {
-        guard path.hasPrefix(folder) else { return false }
-        return !path.dropFirst(folder.count).split(separator: "/").contains { $0 == "." || $0 == ".." }
+    /// The components of `path` below `root` by its text alone; nil when it is not under `root`, names `root` itself
+    /// or has a `.` or `..` component, which could lead out of it. Symlinks are not looked at here (no file is
+    /// touched): the read checks them (`WorkchatThumbnailCache`).
+    package static func components(of path: String, below root: String) -> [Substring]? {
+        let folder = root.hasSuffix("/") ? root : root + "/"
+        guard path.hasPrefix(folder) else { return nil }
+        let parts = path.dropFirst(folder.count).split(separator: "/")
+        guard !parts.isEmpty, !parts.contains(where: { $0 == "." || $0 == ".." }) else { return nil }
+        return parts
     }
 
     private struct Token {
