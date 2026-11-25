@@ -1035,6 +1035,33 @@
           ]
         }
       ]
+    },
+    {
+      "name": "new_ask_explain_chat_with_a_non_canonical_id_is_refused",
+      "command": "chat.new",
+      "swift": "DatabaseEmbeddedChatStore.conversationID",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (4, 'acme', '/tmp/acme')"
+      ],
+      "params": {
+        "context": {
+          "type": "owner_ask_explain",
+          "id": "04:9",
+          "title": "Ask #9",
+          "reuse": true
+        }
+      },
+      "refusal": "unsupported",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
     }
   ]
 }

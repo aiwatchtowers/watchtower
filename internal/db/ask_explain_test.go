@@ -22,6 +22,10 @@ func TestAskExplainWorkbenchID(t *testing.T) {
 		{"4:x", 0, false},
 		{"0:9", 0, false},
 		{"", 0, false},
+		{"04:9", 0, false},
+		{"4:09", 0, false},
+		{"+4:9", 0, false},
+		{"4:-9", 0, false},
 	} {
 		got, ok := AskExplainWorkbenchID(tc.in)
 		assert.Equal(t, tc.ok, ok, tc.in)

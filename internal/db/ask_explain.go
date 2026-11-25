@@ -16,17 +16,29 @@ import (
 const AskExplainContextType = "owner_ask_explain"
 
 // AskExplainWorkbenchID is the workbench of an ask explain chat's context id
-// `<workbench>:<ask>`; false when contextID is not of that form.
+// `<workbench>:<ask>`; false when contextID is not of that form. Both ids
+// must be canonical (no sign, no leading zero): DeleteWorkbench and the
+// merge match the `<workbench>:` prefix as FormatInt writes it, so `04:9`
+// would be checked against bench 4 yet never deleted with it.
 func AskExplainWorkbenchID(contextID string) (int64, bool) {
 	wb, ask, ok := strings.Cut(contextID, ":")
 	if !ok {
 		return 0, false
 	}
-	id, err := strconv.ParseInt(wb, 10, 64)
-	if err != nil || id <= 0 {
+	id, ok := canonicalID(wb)
+	if !ok {
 		return 0, false
 	}
-	if _, err := strconv.ParseInt(ask, 10, 64); err != nil {
+	if _, ok := canonicalID(ask); !ok {
+		return 0, false
+	}
+	return id, true
+}
+
+// canonicalID parses a positive id written exactly as FormatInt writes it.
+func canonicalID(s string) (int64, bool) {
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != s {
 		return 0, false
 	}
 	return id, true
