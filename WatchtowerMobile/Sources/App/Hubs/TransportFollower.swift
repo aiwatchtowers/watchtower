@@ -13,6 +13,9 @@ protocol TransportFollowerHost: AnyObject {
     /// Whether this phone may use the relay to reach `link`'s Mac, asked at the switch: `.unknown` when the relay
     /// did not answer.
     func relayUse(for link: LinkRecord) async -> RelayUse
+    /// This phone's iCloud account (its user record name), read now; nil when it cannot be read (signed out,
+    /// restricted, the read failed).
+    func iCloudAccount() async -> String?
     /// The keybox of a `transport_switched`, opened with the hub's session; nil when it does not open.
     func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox?
     /// Merges `keybox`'s epoch keys into the Keychain; false when they could not be stored.
@@ -129,7 +132,12 @@ final class TransportFollower {
         return await decision.value
     }
 
-    private func decide(_ input: FollowerInput) async -> Bool {
+    /// Whose iCloud account the phone is on, read only for a Relay-made link's move to CloudKit (#2381).
+    private enum Account {
+        case unread, owner, another
+    }
+
+    private func decide(_ input: FollowerInput, account: Account = .unread) async -> Bool {
         guard let host, let asked = host.followerLink(hubID: hubID) else { return false }
         let canUseRelay = await relayUse(input, asked, host)
         // Read again after the relay call: the row may have moved meanwhile.
@@ -141,13 +149,42 @@ final class TransportFollower {
         let state = FollowerState(
             route: link.transport ?? .cloudKit, newestEpoch: epoch, canUseRelay: canUseRelay,
             leftTransport: link.leftTransport, relaySwitchRequested: Self.upgradeRequested(link),
-            hasOtherRoute: link.offersCloudKit, macMovedEpoch: link.macMoved)
+            hasOtherRoute: link.offersCloudKit && account != .another, macMovedEpoch: link.macMoved)
         let (next, commands) = TransportFollowerPolicy.decide(input, state: state, now: now())
+        if account == .unread, Self.ownerAccountDecides(input, state: state, commands: commands, link: link) {
+            guard let read = await host.iCloudAccount() else {
+                Self.logger.notice("a move to iCloud waits for the phone's iCloud account")
+                return false
+            }
+            // Decided again on the row as it stands after the read.
+            return await decide(input, account: !link.ownerName.isEmpty && read == link.ownerName ? .owner : .another)
+        }
         guard !commands.isEmpty else {
             Self.logger.notice("transport input left for a later pass")
             return false
         }
         return await execute(commands, next: next, link: link, input: input, canUseRelay: canUseRelay, host: host)
+    }
+
+    /// A link made over a Relay pairing slot (no `userRecordName`) reaches its Mac's iCloud only on the Mac owner's
+    /// Apple ID (#2381). When the policy would move it to CloudKit only because the hub offers CloudKit, the phone's
+    /// account decides: another account would open its own private database and lose the tower, so the link is left
+    /// behind as one with no other route (S59); an account that cannot be read decides nothing yet, and the input is
+    /// handed again (the feed's next cycle, the hydrator's next pass, the next slot check).
+    private static func ownerAccountDecides(
+        _ input: FollowerInput, state: FollowerState, commands: [FollowerCommand], link: LinkRecord
+    ) -> Bool {
+        guard link.userRecordName.isEmpty, state.hasOtherRoute, movesToCloudKit(commands) else { return false }
+        var without = state
+        without.hasOtherRoute = false
+        return !movesToCloudKit(TransportFollowerPolicy.decide(input, state: without, now: .distantPast).commands)
+    }
+
+    private static func movesToCloudKit(_ commands: [FollowerCommand]) -> Bool {
+        commands.contains { command in
+            if case .moveRoute(to: .cloudKit, _, _, _) = command { return true }
+            return false
+        }
     }
 
     /// An upgrade's `transport_switch{relay}` waits for its answer (relay client Phase 3b Task 19): the policy then

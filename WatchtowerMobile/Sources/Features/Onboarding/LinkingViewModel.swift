@@ -100,7 +100,7 @@ final class LinkingViewModel {
     @ObservationIgnored weak var host: (any LinkHost)? {
         didSet { refreshLinks() }
     }
-    @ObservationIgnored private let access: any LinkAccess
+    @ObservationIgnored let access: any LinkAccess
     @ObservationIgnored private let store: LinkStore
     /// The device id is filled in when the link flow creates the device keys.
     @ObservationIgnored private var identity: DeviceIdentity

@@ -1327,6 +1327,16 @@ extension AppRoot: TransportFollowerHost {
         await linking.relayUse(for: link)
     }
 
+    func iCloudAccount() async -> String? {
+        guard await linking.access.availability() == .available else { return nil }
+        do {
+            return try await linking.access.identity()
+        } catch {
+            Self.logger.warning("iCloud account read failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox? {
         await env.session(hubID)?.openSwitchKeybox(sealed)
     }

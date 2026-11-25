@@ -127,4 +127,81 @@ final class MacMovedWiringTests: XCTestCase {
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
         XCTAssertNil(try bed.row()?.link.macMoved)
     }
+
+    // MARK: - A link made over Relay follows only on the Mac owner's Apple ID (#2381)
+
+    /// The phone's Apple ID is the Mac owner's: it follows the Mac to iCloud, by marker and by `transport_switched`.
+    func testARelayMadeLinkOnTheOwnersAppleIDFollowsTheMacToICloud() async throws {
+        for byMarker in [false, true] {
+            let bed = try await Bed.make(self, on: .relay, linkedOverRelay: true)
+            let session = try await bed.orderedSession()
+            let asks = bed.access.accountAsks
+
+            let decided = byMarker
+                ? await session.transportSignals.marker(marker(.cloudKit, epoch: 2))
+                : await session.transportSignals.control(try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .relay))
+            await bed.root.routeMoves[hubID]?.value
+
+            XCTAssertTrue(decided, "by marker: \(byMarker)")
+            XCTAssertGreaterThan(bed.access.accountAsks, asks, "the phone's account was read")
+            XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
+            XCTAssertNil(try bed.row()?.link.macMoved)
+            XCTAssertEqual(try bed.row()?.link.userRecordName, "", "the account is not written into the link")
+        }
+    }
+
+    /// Another Apple ID would open its own private database: the link stays on the relay, left behind (S59).
+    func testARelayMadeLinkOnAnotherAppleIDStaysOnTheRelay() async throws {
+        for byMarker in [false, true] {
+            let bed = try await Bed.make(self, on: .relay, linkedOverRelay: true)
+            bed.access.userRecordNameValue = "_another-acme"
+            let session = try await bed.orderedSession()
+            let epochs = try bed.keys.hubLink(hubID)?.epochs.map(\.epoch)
+
+            let decided = byMarker
+                ? await session.transportSignals.marker(marker(.cloudKit, epoch: 2))
+                : await session.transportSignals.control(try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .relay))
+
+            XCTAssertTrue(decided, "by marker: \(byMarker)")
+            XCTAssertEqual(try bed.row()?.link.transport, .relay)
+            XCTAssertNil(bed.root.routeMoves[hubID], "no session move")
+            XCTAssertEqual(try bed.row()?.link.macMoved, 2, "S59")
+            XCTAssertEqual(try bed.keys.hubLink(hubID)?.epochs.map(\.epoch), epochs, "no epoch adopted")
+        }
+    }
+
+    /// An account that cannot be read moves nothing and decides nothing; the marker handed again once it reads follows.
+    func testARelayMadeLinkWithAnUnknownAccountDoesNotMove() async throws {
+        let bed = try await Bed.make(self, on: .relay, linkedOverRelay: true)
+        bed.access.status = .noAccount
+        let session = try await bed.orderedSession()
+
+        let decided = await session.transportSignals.marker(marker(.cloudKit, epoch: 2))
+
+        XCTAssertFalse(decided, "left for a later pass")
+        XCTAssertEqual(try bed.row()?.link.transport, .relay)
+        XCTAssertNil(bed.root.routeMoves[hubID], "no session move")
+        XCTAssertNil(try bed.row()?.link.macMoved, "not left behind either")
+
+        bed.access.status = .available
+        let again = await session.transportSignals.marker(marker(.cloudKit, epoch: 2))
+        await bed.root.routeMoves[hubID]?.value
+        XCTAssertTrue(again)
+        XCTAssertEqual(try bed.row()?.link.transport, .cloudKit, "the owner's account follows once read")
+    }
+
+    /// A link made over iCloud carries its own account: it follows whatever account the phone reads now.
+    func testAnICloudMadeLinkFollowsWithoutTheAccountCheck() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        bed.access.userRecordNameValue = "_another-acme"
+        let session = try await bed.orderedSession()
+        let asks = bed.access.accountAsks
+
+        _ = await session.transportSignals.marker(marker(.cloudKit, epoch: 2))
+        await bed.root.routeMoves[hubID]?.value
+
+        XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
+        XCTAssertNil(try bed.row()?.link.macMoved)
+        XCTAssertEqual(bed.access.accountAsks, asks, "no account read")
+    }
 }

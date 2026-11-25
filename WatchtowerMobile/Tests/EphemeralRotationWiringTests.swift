@@ -527,6 +527,7 @@ private final class FollowerMergeFails: TransportFollowerHost {
     func followerLink(hubID: String) -> LinkRecord? { root.followerLink(hubID: hubID) }
     func newestEpoch(hubID: String) -> UInt32? { root.newestEpoch(hubID: hubID) }
     func relayUse(for link: LinkRecord) async -> RelayUse { await root.relayUse(for: link) }
+    func iCloudAccount() async -> String? { await root.iCloudAccount() }
     func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox? { await root.openSwitchKeybox(sealed, hubID: hubID) }
     func persistRoute(_ link: LinkRecord) -> Bool { root.persistRoute(link) }
     func moveSession(hubID: String) { root.moveSession(hubID: hubID) }

@@ -22,7 +22,7 @@ A phone with no subscription gets no updates from a Mac on Relay. A Relay you ca
 
 A Mac moves back to iCloud on its own in two ways. When it hears that a subscription ended, it moves if no other subscribed phone holds it, whether or not those phones work over iCloud. If it never hears, it moves only after Relay has listed no subscribed phone for it on two checks 5 minutes apart, and only when every linked phone also works over iCloud; a Relay-only phone keeps it on Relay until the Mac hears after all (a refused write, Relay's notice, or the phone's request), and then it moves by the first rule and that phone loses its connection until you link it again.
 
-A Mac with nothing to send hears nothing and stays. A phone that lost its iCloud since linking can lose its connection when the Mac moves: link it again, or switch the Mac back to Relay from a subscribed phone.
+A Mac with nothing to send hears nothing and stays. A phone linked over Relay on another Apple ID, or one that lost its iCloud, loses its connection when the Mac moves: link it again, or switch the Mac back to Relay from a subscribed phone.
 
 On the Mac, Settings → **Mobile** lists each phone as **iCloud**, **Relay** or **Waiting for Relay**, and who switched it last. Its **Relay** row says whether the Mac is connected.
 
