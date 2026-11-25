@@ -517,9 +517,18 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   (`pairListener.token`, `stream-<n>`); every issue path runs for the asking stream's token (`IssueFor`,
   `IssueCloudKitFor`). The `qr` and `waiting` events carry the token and the code's nonce and go to that stream only,
   which records the nonce (at most `link.KeptCodes`); a phone's `sas`, `linked` and `refused` carry the nonce of the
-  code its hello came in under and go only to the streams holding it. An event naming neither (an issue no stream
-  asked for) goes to every stream. The center emits a code's `qr` under its lock before any hello under that code can be
-  decided, so a stream always holds the nonce first.
+  code its hello came in under. `sas` and `linked` go only to the streams holding it. `refused` (a hello under an old
+  code, `used_code` after another phone linked, an expired or declined request) goes only to the streams that showed
+  that phone's `sas` under that code, or whose newest code it is (`pairListener.refusalFor`, #2385): a stream that asked
+  again (a relay code after its iCloud code) is not ended when a phone it never showed scans the replaced code. A
+  refusal no stream matches, or one without a nonce, is sent to none (logged while a pairing stream is open). Any other
+  event naming neither token nor nonce (an issue no stream asked for) goes to every stream. The center emits a code's
+  `qr` under its lock before any hello under that code can be decided, so a stream always holds the nonce first. A hello
+  under a replaced code is decided after the new code's `qr`, so its refusal finds the asking stream's newest code moved
+  on: it reaches the streams that showed the phone, and any other stream that still shows the replaced code as its
+  newest. The issue of a relay code itself refuses the requests waiting under the CloudKit code it replaces before it emits
+  the new `qr`; those phones had a `sas`, so the stream that showed it hears the refusal, the asking stream included
+  when it asked for both codes.
 - **`hub pair --json --stream` and a replaced request** (#2191). The `sas` line carries `moves_to_relay` (below) and
   `request` (`link.RequestID`, opaque; a replacement has a new one even when it drew the same four digits). The CLI
   reads the stream while the owner decides (`pairStream`) and prints the `sas` line again whenever the request of the
