@@ -224,18 +224,62 @@ extension MacMovedWiringTests {
     }
 
     /// The link left behind on another account ends its open request toward iCloud: the Mac moved without it.
-    func testALeftBehindMoveClearsAnOpenRequest() async throws {
+    func testALeftBehindMoveWithdrawsAndClearsAnOpenRequest() async throws {
         let bed = try await Bed.make(self, on: .relay, relayLinkOwner: "_owner-acme")
         bed.access.userRecordNameValue = "_another-acme"
         let session = try await bed.orderedSession()
-        var link = try XCTUnwrap(try bed.row()?.link)
-        link.transportRequest = TransportRequestRecord(target: .cloudKit, controlID: "C", reason: nil, at: Bed.switchedAt)
-        XCTAssertTrue(bed.root.persistRoute(link))
+        await session.outbox.holdFlushes() // the relay never took it: the row is still queued
+        _ = await session.requestTransport(reason: nil)
+        let request = try XCTUnwrap(try bed.row()?.link.transportRequest)
+        let queuedBefore = try await queuedRequests(session)
+        XCTAssertEqual(queuedBefore, [request.controlID])
+        let copiesBefore = try await bed.cloudControls(.transportSwitch)
+        XCTAssertEqual(copiesBefore.map(\.id), [request.controlID])
 
         _ = await session.transportSignals.marker(marker(.cloudKit, epoch: 2))
 
         XCTAssertEqual(try bed.row()?.link.macMoved, 2)
         XCTAssertNil(try bed.row()?.link.transportRequest)
+        let queuedAfter = try await queuedRequests(session)
+        XCTAssertTrue(queuedAfter.isEmpty, "the queued row is withdrawn")
+        let copiesAfter = try await bed.cloudControls(.transportSwitch)
+        XCTAssertTrue(copiesAfter.isEmpty, "the iCloud copy is withdrawn")
+    }
+
+    /// A marker leaves the phone behind first; the switch of the same move, its keybox not opened, is then handled.
+    func testASwitchAfterItsMarkerIsHandledWithoutItsKeybox() async throws {
+        let bed = try await Bed.make(self, on: .relay, relayLinkOwner: "_owner-acme")
+        bed.access.userRecordNameValue = "_another-acme"
+        let session = try await bed.orderedSession()
+        _ = await session.transportSignals.marker(marker(.cloudKit, epoch: 2))
+        XCTAssertEqual(try bed.row()?.link.macMoved, 2)
+
+        let decided = await session.transportSignals.control(switched(to: .cloudKit, epoch: 2))
+
+        XCTAssertTrue(decided, "handled, not retried for ever")
+        XCTAssertEqual(try bed.row()?.link.transport, .relay)
+        XCTAssertEqual(try bed.row()?.link.macMoved, 2)
+    }
+
+    /// Any move to iCloud ends a stale mark, an owner-less follow with no account read included.
+    func testAnOwnerlessFollowClearsAStaleMacMoved() async throws {
+        let bed = try await Bed.make(self, on: .relay, relayLinkOwner: "")
+        let session = try await bed.orderedSession()
+        var link = try XCTUnwrap(try bed.row()?.link)
+        link.macMoved = 2
+        XCTAssertTrue(bed.root.persistRoute(link))
+
+        _ = await session.transportSignals.marker(marker(.cloudKit, epoch: 3))
+        await bed.root.routeMoves[hubID]?.value
+
+        XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
+        XCTAssertNil(try bed.row()?.link.macMoved)
+    }
+
+    private func queuedRequests(_ session: HubSession) async throws -> [String] {
+        try await session.store.reader.read { db in
+            try String.fetchAll(db, sql: "SELECT control_id FROM outbound_controls WHERE kind = 'transport_switch'")
+        }
     }
 
     /// A move marked while the phone was on another account ends when the owner's account follows the next one.

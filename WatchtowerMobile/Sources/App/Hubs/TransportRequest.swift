@@ -170,6 +170,7 @@ final class TransportRequester {
         self.host = host
         self.now = now
         follower.onRequestSwitch = { [weak self] target, reason in await self?.requested(target, reason: reason) }
+        follower.onRequestLeftBehind = { [weak self] request in await self?.leftBehind(request) ?? false }
     }
 
     /// The hub's row.
@@ -472,23 +473,41 @@ final class TransportRequester {
     }
 
     /// Takes an owner's request back, best effort: the queued row and the iCloud copy (whether or not its write was
-    /// saved: a copy a lost commit left would move the Mac later).
-    private func withdraw(_ request: TransportRequestRecord, link: LinkRecord) async {
-        guard !stopped, let host, let session else { return }
+    /// saved: a copy a lost commit left would move the Mac later). true once both are gone (a link with no other route
+    /// has no copy).
+    @discardableResult
+    private func withdraw(_ request: TransportRequestRecord, link: LinkRecord) async -> Bool {
+        guard !stopped, let host, let session else { return false }
+        var withdrawn = true
         do {
             try await session.outbox.withdrawControl(id: request.controlID)
         } catch {
             Self.logger.warning("the queued request was not withdrawn: \(String(describing: type(of: error)), privacy: .public)")
+            withdrawn = false
         }
-        guard let other = link.otherRoute, !stopped, host.followerLink(hubID: hubID) != nil else { return }
-        await withSide(other, host: host, session: session) { secure in
+        guard let other = link.otherRoute else { return withdrawn }
+        guard !stopped, host.followerLink(hubID: hubID) != nil else { return false }
+        let copyGone = await withSide(other, host: host, session: session) { secure in
             do {
                 let wire = try secure.wireName(plain: "c-\(request.controlID)", zone: .relay)
                 _ = try await secure.deleteSealed([ConditionalDelete(recordName: wire, zone: .relay, expect: .none)])
+                return true
             } catch {
                 Self.logger.notice("the request's iCloud copy was not withdrawn: \(String(describing: type(of: error)), privacy: .public)")
+                return false
             }
         }
+        return withdrawn && copyGone == true
+    }
+
+    /// A move to iCloud left this phone behind (#2381): the open request is withdrawn on the requests' chain, after any
+    /// pass in flight, its queued row and its iCloud copy. true once both are gone; the follower then clears it.
+    private func leftBehind(_ request: TransportRequestRecord) async -> Bool {
+        let outcome = await run {
+            guard let link = self.link, link.transportRequest == request else { return .refused(.unavailable) }
+            return await self.withdraw(request, link: link) ? .underWay : .refused(.unavailable)
+        }
+        return outcome == .underWay
     }
 
     // MARK: - The other transport

@@ -69,6 +69,9 @@ final class TransportFollower {
     private let now: @MainActor () -> Date
     /// Executes the policy's `requestSwitch` (a lapse's request toward iCloud): set by the hub's `TransportRequester`.
     var onRequestSwitch: (@MainActor (TransportKind, String) async -> Void)?
+    /// Withdraws an open request toward iCloud once a move to iCloud left this phone behind (#2381): its queued row and
+    /// its iCloud copy; true once both are gone. Set by the hub's `TransportRequester`.
+    var onRequestLeftBehind: (@MainActor (TransportRequestRecord) async -> Bool)?
     /// Called once a decision has ended `hubOnRelayAt` on the row (a later move, or the hub's answer for where it runs):
     /// the session forgets the `hub_on_relay` it read (`HubSession.forgetHubOnRelay`), set by `AppRoot.wire`.
     var onHubOnRelayEnded: (@MainActor () -> Void)?
@@ -160,8 +163,8 @@ final class TransportFollower {
             // Decided again on the row as it stands after the read.
             return await decide(input, account: read == link.ownerName ? .owner : .another)
         }
-        // The owner's move to iCloud ends a move marked while the phone was on another account, which parks the feed.
-        if account == .owner, link.macMoved != nil, Self.movesToCloudKit(commands) { commands.append(.clearMoved) }
+        // A move to iCloud ends a move marked before (while the phone was on another account, say), which parks the feed.
+        if link.macMoved != nil, Self.movesToCloudKit(commands), !commands.contains(.clearMoved) { commands.append(.clearMoved) }
         guard !commands.isEmpty else {
             Self.logger.notice("transport input left for a later pass")
             return false
@@ -185,9 +188,14 @@ final class TransportFollower {
         without.hasOtherRoute = false
         let alone = TransportFollowerPolicy.decide(input, state: without, now: .distantPast).commands
         if movesToCloudKit(commands) { return !movesToCloudKit(alone) }
-        return commands.isEmpty && alone.contains { command in
-            if case .markMoved = command { return true }
-            return false
+        // Left behind without the keybox: the move marked now, or already marked (a marker read first), when the
+        // control is only handled.
+        guard commands.isEmpty, !alone.isEmpty else { return false }
+        return alone.allSatisfy { command in
+            switch command {
+            case .withdrawUnechoed, .markMoved, .markHandled: return true
+            default: return false
+            }
         }
     }
 
@@ -291,7 +299,7 @@ final class TransportFollower {
         }
         guard await moveOutbox(plan, moves: moves) else { return false }
         await keySource(input, plan, host: host)
-        let effects = RequestEffects(plan: plan, moves: moves)
+        let effects = RequestEffects(plan: plan, moves: moves, endedRequest: await requestLeftBehind(plan, link: link))
         if let move = plan.move, !persist(move, next: next, effects: effects, host: host) {
             // Nothing moved: the session goes on on its route, so its outbox writes there again.
             if moves { await outbox.releaseFlushes() }
@@ -459,8 +467,11 @@ final class TransportFollower {
     /// Task 5), written with the move when there is one.
     private struct RequestEffects {
         /// The request is over: the hub moved (so the route is no longer the one it was made on), answered with the
-        /// transport it runs on, stays on the relay without this phone, or moved to iCloud without it (S59, #2381).
+        /// transport it runs on, or stays on the relay without this phone.
         let clearsRequest: Bool
+        /// The request a move to iCloud left behind (S59, #2381) and that was withdrawn: cleared while the row still
+        /// holds it.
+        let endedRequest: TransportRequestRecord?
         /// The hub stays on the relay for another paying phone (`hub_on_relay`, or a move to the relay this phone
         /// cannot follow): only `withoutHub` lists the unechoed actions as Not delivered.
         let setsHubOnRelay: Bool
@@ -472,13 +483,14 @@ final class TransportFollower {
         let moved: UInt32?
         let clearsMoved: Bool
 
-        init(plan: Plan, moves: Bool) {
+        init(plan: Plan, moves: Bool, endedRequest: TransportRequestRecord?) {
+            self.endedRequest = endedRequest
             refused = plan.refused
             moved = plan.moved
             clearsMoved = plan.clearsMoved
             let routeMoved = plan.move != nil
             setsHubOnRelay = plan.listUndelivered
-            clearsRequest = moves || plan.answered || plan.listUndelivered || plan.moved != nil
+            clearsRequest = moves || plan.answered || plan.listUndelivered
             // A newer-epoch move or marker toward the route the phone is already on (an iCloud phone, the Mac back on
             // iCloud) moves nothing but still ends it.
             clearsHubOnRelay = !plan.listUndelivered && (routeMoved || plan.answered)
@@ -488,13 +500,20 @@ final class TransportFollower {
             if let refused, link.relayRefused == nil { link.relayRefused = RelayRefusedRecord(since: date, cause: refused) }
             if let moved, moved > (link.macMoved ?? 0) { link.macMoved = moved }
             if clearsMoved { link.macMoved = nil }
-            if clearsRequest { link.transportRequest = nil }
+            if clearsRequest || (endedRequest != nil && link.transportRequest == endedRequest) { link.transportRequest = nil }
             if setsHubOnRelay {
                 link.hubOnRelayAt = date
             } else if clearsHubOnRelay {
                 link.hubOnRelayAt = nil
             }
         }
+    }
+
+    /// The open request a move to iCloud left behind (#2381), once withdrawn (queued row, iCloud copy); nil when none
+    /// is open or it could not be withdrawn (it then stays, and ends by the day limit).
+    private func requestLeftBehind(_ plan: Plan, link: LinkRecord) async -> TransportRequestRecord? {
+        guard plan.moved != nil, let request = link.transportRequest, await onRequestLeftBehind?(request) == true else { return nil }
+        return request
     }
 
     /// The request and `hubOnRelayAt` of a decision that moves nothing, on the row as it stands now (the request
