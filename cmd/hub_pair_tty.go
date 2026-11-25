@@ -373,22 +373,23 @@ func (p *pairTTY) handle(a hub.ControlAnswer) (end bool, err error) {
 		if a.Op == hub.OpConfirm && a.Error == hub.ErrClassCodeChanged {
 			// The phone's request was replaced before the answer reached the
 			// hub: the newer request is asked about, or, while its sas is
-			// still on its way, awaited with no prompt open.
-			p.println(hubPairCodeChanged)
+			// still on its way, awaited with no prompt open. The
+			// after-confirm deadline is replaced before anything is printed:
+			// a stalled terminal write must not let it lapse.
 			if p.shown == p.sent {
 				p.awaiting, p.answered = true, false
 				if !p.expires.IsZero() {
-					// The wait is the code's, not the answer's: the
-					// after-confirm deadline would end it early.
+					// The wait is the code's, not the answer's.
 					p.deadline(p.expires.Add(hubPairGrace))
 					if p.expiry == nil {
 						p.expiry = time.After(time.Until(p.expires))
 					}
 				}
-				p.println(hubPairAwaitingNew)
+				p.println(hubPairCodeChanged, hubPairAwaitingNew)
 				return false, nil
 			}
-			p.println(`"` + p.name + `" wants to link.`)
+			p.deadline(time.Time{}) // the prompt below is open
+			p.println(hubPairCodeChanged, `"`+p.name+`" wants to link.`)
 			return false, p.prompt()
 		}
 		if err := hubAnswerError(a); err != nil {

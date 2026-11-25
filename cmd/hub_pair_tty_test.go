@@ -138,19 +138,22 @@ func startPairTTY(t *testing.T, cols uint16) *ttyPair {
 	rootCmd.SetArgs([]string{"hub", "pair"})
 	go func() { r.done <- rootCmd.Execute() }()
 	t.Cleanup(func() {
-		// One line ends a prompt still waiting for the owner (a test that
-		// failed early) and releases a reader a prompt that ended without
-		// the owner's line (expiry, Ctrl-C) left blocked on the terminal,
-		// which would keep the pty open past the closes below. Ctrl-C first
-		// ends a run that never reached a prompt (a test that failed early).
+		// Ctrl-C ends a run still going (a test that failed early): the
+		// run's loop always takes it and returns, so the wait cannot hang.
+		// The buffer of one is full only with an interrupt the run takes
+		// anyway. Only once the run is over is a line typed: it releases a
+		// reader a prompt that ended without the owner's line (expiry,
+		// Ctrl-C) left blocked on the terminal, which would keep the pty
+		// open past the closes below; typed earlier, a prompt's flush could
+		// drop it.
 		select {
 		case r.sigs <- os.Interrupt:
 		default:
 		}
-		_, _ = io.WriteString(ptm, "\n")
 		if !r.finished {
 			<-r.done
 		}
+		_, _ = io.WriteString(ptm, "\n")
 		_ = tty.Close()
 		_ = ptm.Close()
 		<-copied
