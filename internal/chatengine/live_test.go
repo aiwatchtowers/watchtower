@@ -323,6 +323,19 @@ func TestChat04_ListenTurnContentOnlyOnSocket(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o700), dir.Mode().Perm())
 }
 
+// TestChatengine_StopDuringBindDialIsErrClosed: a stop that lands while a
+// spawned session's dial is under way (not in the retry wait) is still the
+// engine closing, so listenStart leaves the session running and its turn's
+// lease for the next engine (#2388: the canceled dial was a hard error that
+// killed the session and ended the turn as an error).
+func TestChatengine_StopDuringBindDialIsErrClosed(t *testing.T) {
+	g := newLiveRig(t)
+	e := g.engine()
+	e.stopCancel() // the dial's context is already done when it runs
+	_, err := e.dialSpawned(filepath.Join(g.ws, "nobody.sock"), make(chan struct{}))
+	require.ErrorIs(t, err, ErrClosed)
+}
+
 // TestChatengine_DetachWhileBindingKeepsTheTurn: the engine goes away while
 // a new turn's session is still starting (before it bound its socket); the
 // session is left running, and the next engine adopts it once it listens,
