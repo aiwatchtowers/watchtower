@@ -111,13 +111,15 @@ struct WorkchatOutgoingBubble: View {
     var holdPreview: String?
     /// Send together, offered for a line held for the prompt's text (`WorkchatModel.sendTogether`).
     var onSendTogether: (() -> Void)?
+    /// The Workchat's attachments folder (`WorkchatFeed.attachmentsRoot`).
+    var attachmentsRoot: String?
     let onCancel: () -> Void
     let onShowTerminal: () -> Void
 
     var body: some View {
-        // The image paths sent in place of the paste tokens read as thumbnails, as in the echo (the line itself,
-        // `line.text`, went to the terminal unchanged).
-        let shown = WorkchatOwnerImages.split(line.text)
+        // The image paths sent in place of the paste tokens read as thumbnails or chips, as in the echo (the line
+        // itself, `line.text`, went to the terminal unchanged).
+        let shown = WorkchatOwnerImages.split(line.text, attachmentsRoot: attachmentsRoot)
         HStack {
             Spacer(minLength: 48)
             VStack(alignment: .trailing, spacing: Spacing.tight) {

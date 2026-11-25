@@ -2,23 +2,26 @@ import Foundation
 
 /// The images in an owner's Workchat line, read off its text for display only: a pasted image goes to the agent as
 /// its saved file's path (`WorkchatOutgoing.quoted`, in place of its `[Image #N]` token), a dropped image file as its
-/// path on a line of its own. The bubble shows each as a thumbnail and the text without those paths; what was sent,
-/// the feed's entry and the echo match are untouched.
+/// path on a line of its own. The bubble shows each as a thumbnail or a chip and the text without those paths; what
+/// was sent, the feed's entry and the echo match are untouched.
 ///
 /// A path counts when it is absolute, ends in an image extension and stands as a whole token (bare, or in double
-/// quotes with `\"` and `\\` escaped), and either sits in a `workchat-attachments` folder (Watchtower's own pastes,
-/// inline or on their own line; a swept one is still an image, shown missing) or is a file that exists and stands on
-/// a line of its own (a dropped or picked image). Any other image path — one named mid-sentence, one not on disk — is
-/// the owner's prose and stays text.
+/// quotes with `\"` and `\\` escaped; punctuation around it is the owner's text), and either lies in Watchtower's own
+/// attachments folder (`WorkchatAttachmentStore.root`: a paste, inline or on its own line — the only file whose
+/// contents the bubble reads, as a thumbnail) or stands on a line of its own (a dropped or picked image anywhere
+/// else: a chip with its name, never read nor even looked up, so no folder Watchtower has no access to asks for it).
+/// Any other image path — one named mid-sentence outside the attachments folder — is the owner's prose and stays
+/// text. Pure: no file is touched here.
 package struct WorkchatOwnerImages: Equatable, Sendable {
     package struct ImageFile: Equatable, Hashable, Sendable {
         package let path: String
-        /// The file is on disk now; a missing one shows as a chip with its name.
-        package let exists: Bool
+        /// In the attachments folder: drawn as a thumbnail (a chip when gone or not decodable). Anywhere else: a
+        /// chip only, its file never read.
+        package let isAttachment: Bool
 
-        package init(path: String, exists: Bool) {
+        package init(path: String, isAttachment: Bool) {
             self.path = path
-            self.exists = exists
+            self.isAttachment = isAttachment
         }
 
         package var name: String { (path as NSString).lastPathComponent }
@@ -31,21 +34,20 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
     package let images: [ImageFile]
 
     package static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "heic"]
-    private static let pastesFolder = "/workchat-attachments/"
     private static let imageMarker = "[image]"
 
-    package static func split(
-        _ text: String,
-        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
-    ) -> Self {
+    /// `text` split into what the bubble shows and its images; `attachmentsRoot` is the attachments folder's path
+    /// (nil: none known, so every image is a chip).
+    package static func split(_ text: String, attachmentsRoot: String?) -> Self {
         guard text.contains("/") else { return Self(text: text, images: []) }
+        let folder = attachmentsRoot.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
         var images: [ImageFile] = []
         var lines: [String] = []
         for line in text.components(separatedBy: "\n") {
             let tokens = pathTokens(in: line)
             let alone = tokens.count == 1 && tokens[0].raw == line.trimmingCharacters(in: .whitespaces)
             let found = tokens.compactMap { token in
-                image(token.path, alone: alone, fileExists: fileExists).map { (token, $0) }
+                image(token.path, alone: alone, attachments: folder).map { (token, $0) }
             }
             guard !found.isEmpty else {
                 lines.append(line)
@@ -75,11 +77,18 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
         return Self(text: shown, images: images)
     }
 
-    private static func image(_ path: String, alone: Bool, fileExists: (String) -> Bool) -> ImageFile? {
+    private static func image(_ path: String, alone: Bool, attachments folder: String?) -> ImageFile? {
         guard path.hasPrefix("/"),
               imageExtensions.contains((path as NSString).pathExtension.lowercased()) else { return nil }
-        if path.contains(pastesFolder) { return ImageFile(path: path, exists: fileExists(path)) }
-        return alone && fileExists(path) ? ImageFile(path: path, exists: true) : nil
+        if let folder, isInside(path, folder) { return ImageFile(path: path, isAttachment: true) }
+        return alone ? ImageFile(path: path, isAttachment: false) : nil
+    }
+
+    /// `path` lies under `folder` (ending in `/`) by its text alone: a `.` or `..` component, which could lead out of
+    /// it, never counts.
+    private static func isInside(_ path: String, _ folder: String) -> Bool {
+        guard path.hasPrefix(folder) else { return false }
+        return !path.dropFirst(folder.count).split(separator: "/").contains { $0 == "." || $0 == ".." }
     }
 
     private struct Token {

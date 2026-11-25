@@ -6,8 +6,9 @@ import WatchtowerCore
 @testable import WatchtowerDesktop
 
 /// A pasted image in the Workchat feed: the echoed owner line and the outgoing bubble show a thumbnail instead of the
-/// saved file's path, and a pasted file swept from disk is a chip with its name. The image is drawn into a temporary
-/// `workchat-attachments` folder at prepare time and decoded into the thumbnail cache, so the render shows it.
+/// saved file's path, a pasted file swept from disk is a chip with its name, and an image outside the attachments
+/// folder (a dropped file) is a chip that is never read. The image is drawn into a temporary `workchat-attachments`
+/// folder at prepare time and decoded into the thumbnail cache, so the render shows it.
 @MainActor
 enum WorkchatPastedImageShotFixtures {
     static let shots: [DesignShot] = [
@@ -24,7 +25,8 @@ enum WorkchatPastedImageShotFixtures {
     private static func view() async throws -> AnyView {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("wt-shot-\(UUID().uuidString)")
         folder = root
-        let pastes = root.appendingPathComponent("acme/workchat-attachments/7")
+        let attachments = root.appendingPathComponent("acme/workchat-attachments")
+        let pastes = attachments.appendingPathComponent("7")
         try FileManager.default.createDirectory(at: pastes, withIntermediateDirectories: true)
         let echoed = pastes.appendingPathComponent("20261125-101500-1.png").path
         let sending = pastes.appendingPathComponent("20261125-102000-1.png").path
@@ -32,24 +34,27 @@ enum WorkchatPastedImageShotFixtures {
         try sampleScreenshot().write(to: URL(fileURLWithPath: echoed))
         try sampleScreenshot(wide: false).write(to: URL(fileURLWithPath: sending))
         for path in [echoed, sending] {
-            _ = await WorkchatThumbnailCache.load(.init(path: path, exists: true))
+            _ = await WorkchatThumbnailCache.load(.init(path: path, isAttachment: true))
         }
 
         let now = Date()
         let entries = [
             SessionFeedEntry(id: "o1", kind: "owner", at: now - 600, text: "\(swept) the old one, for comparison"),
             SessionFeedEntry(id: "a1", kind: "agent", at: now - 590, text: "That file is gone; paste it again if you need it."),
+            SessionFeedEntry(id: "o3", kind: "owner", at: now - 500, text: "and the mockup\n/Users/example/Desktop/mockup.png"),
             SessionFeedEntry(id: "o2", kind: "owner", at: now - 300,
                              text: "\(echoed) the transcriber does not work\n[image]"),
             SessionFeedEntry(id: "a2", kind: "agent", at: now - 280,
                              text: "I see the error banner in the screenshot. Checking the recorder logs.")
         ]
-        let feed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
+        var feed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
+        feed.attachmentsRoot = attachments.path
         var context = feed.context()
         let line = WorkchatOutgoing(id: UUID(), text: "\(sending) and this one after the fix", sentAt: now,
                                     state: .sending, typedText: "[Image #1] and this one after the fix",
                                     attachmentPaths: [sending])
-        context.footer = AnyView(WorkchatOutgoingBubble(line: line, onCancel: {}, onShowTerminal: {}))
+        context.footer = AnyView(WorkchatOutgoingBubble(line: line, attachmentsRoot: attachments.path, onCancel: {},
+                                                        onShowTerminal: {}))
         return AnyView(
             ChatUI.ChatFeedView(messages: feed.messages, context: context)
                 .macChatStyle(hooks: .app, look: .workchat)

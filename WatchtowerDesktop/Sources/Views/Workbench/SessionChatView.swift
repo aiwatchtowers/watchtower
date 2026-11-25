@@ -80,6 +80,9 @@ struct SessionChatView: View {
         vm.session(sessionID, projectID: projectID).map { vm.sessionState($0).kind }
     }
 
+    /// The Workchat's attachments folder: the owner's images there show as thumbnails.
+    private var attachmentsRoot: String? { vm.attachmentStore?.root.path }
+
     /// The session's composer (#711); nil without the app's `SessionControl`.
     private var workchat: WorkchatModel? { vm.workchat(sessionID: sessionID) }
 
@@ -330,6 +333,7 @@ struct SessionChatView: View {
                 parentConversation: store.subagents.first { $0.subagent?.toolUseID == path.stack.first?.toolUseID }?
                     .conversation,
                 paneKey: "session-\(sessionID)/\(subagent.toolUseID)",
+                attachmentsRoot: attachmentsRoot,
                 memory: vm.paneMemory,
                 status: { currentSubagentStatus(subagent) },
                 isActive: { isActive },
@@ -436,6 +440,7 @@ struct SessionChatView: View {
         highlightProbe?(handlers, highlights)
         workchatFeed.onHighlight = handlers.open
         workchatFeed.resolvesPath = handlers.resolvesPath
+        workchatFeed.attachmentsRoot = attachmentsRoot
         var context = workchatFeed.context()
         context.hasEarlier = Self.hasEarlier(windowHasEarlier: window.hasEarlier(total: total),
                                              hasEarlierPage: store.hasEarlierPage,
@@ -545,6 +550,7 @@ struct SessionChatView: View {
                     holdsUntilIdle: workchat.holdsUntilIdle,
                     holdPreview: workchat.holdPreview(for: line.id),
                     onSendTogether: { Task { await workchat.sendTogether(line.id) } },
+                    attachmentsRoot: attachmentsRoot,
                     onCancel: { workchat.cancel(line.id) },
                     onShowTerminal: showInTerminal
                 )

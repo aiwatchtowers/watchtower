@@ -12,25 +12,23 @@ package enum WorkchatFeedAdapter {
     package static let systemRole = "system"
 
     /// The known entries in order; a kind this build does not know is left out. An owner line's image paths leave its
-    /// text (`WorkchatOwnerImages`): the bubble shows them as thumbnails (`ownerImages`).
-    package static func messages(
-        _ entries: [SessionFeedEntry],
-        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
-    ) -> [ChatFeed.Message] {
+    /// text (`WorkchatOwnerImages`, `attachmentsRoot` its attachments folder): the bubble shows them as thumbnails or
+    /// chips (`ownerImages`).
+    package static func messages(_ entries: [SessionFeedEntry], attachmentsRoot: String? = nil) -> [ChatFeed.Message] {
         entries.compactMap { entry in
             guard let role = role(for: entry.kind) else { return nil }
-            let text = entry.kind == "owner" ? WorkchatOwnerImages.split(entry.text, fileExists: fileExists).text
+            let text = entry.kind == "owner" ? WorkchatOwnerImages.split(entry.text, attachmentsRoot: attachmentsRoot).text
                 : entry.text
             return ChatFeed.Message(id: messageID(entry.id), role: role, text: text, createdAt: entry.at ?? .distantPast)
         }
     }
 
-    /// The images an owner line sent, drawn as thumbnails in its bubble; none for any other kind.
+    /// The images an owner line sent, drawn in its bubble; none for any other kind.
     package static func ownerImages(
         _ entry: SessionFeedEntry,
-        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+        attachmentsRoot: String? = nil
     ) -> [WorkchatOwnerImages.ImageFile] {
-        entry.kind == "owner" ? WorkchatOwnerImages.split(entry.text, fileExists: fileExists).images : []
+        entry.kind == "owner" ? WorkchatOwnerImages.split(entry.text, attachmentsRoot: attachmentsRoot).images : []
     }
 
     /// The entries that make the dialog: everything but the subagent markers,
