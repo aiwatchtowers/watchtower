@@ -18,8 +18,8 @@ On 2026-11-25 the owner's repository held 99 linked worktrees, 201 GB, under `.c
 - Locked worktrees: the build output goes, and the worktree itself goes once its branch is merged into the default branch with commits and nothing else keeps it; this must not slow down builds — ask #1850 (owner's words: "п1 норм, тока оно не должно замедлить сборки").
 - A repository-wide pass covers worktrees no finished session owns — ask #1850.
 - Language servers do not keep a worktree — ask #1850.
-- "Must not slow down builds" is read as: a build folder is removed only from a worktree idle for 3 days with no live session and no blocking process in it, so a build in use or used recently is never thrown away — conversation (this spec; the owner confirms it in the spec review).
-- Orphan directories and loose files under `.claude/worktrees/` are not part of this spec; they get their own target — conversation.
+- **Proposed, the owner confirms or rejects it in this review (ask #1851):** "must not slow down builds" is read as: a build folder is removed only from a worktree idle for 3 days (§2, "Last activity") with no live session and no blocking process in it, so a build in use or used recently is never thrown away. The same 3 days gate the removal of a locked worktree and the repository pass.
+- **Proposed, the owner confirms or rejects it in this review (ask #1851):** orphan directories and loose files under `.claude/worktrees/` (~2 GB) are not part of this spec; they get their own low-priority target, #2404, shown in the Clean Up screen and removed only by the owner's tick.
 - Global level: the fix lives in Watchtower's cleanup (`internal/sessioncleanup`, the daemon), not in this repository's rules; project-specific build habits are #2403 — conversation.
 
 ## Design
@@ -43,14 +43,20 @@ The apply passes `RequireEnded: false` for such a row (it is ended by this rule,
 
 After the session applies, each pass runs one **repository pass** per distinct repository of the workbenches' folders (keyed by the git common dir, under the same repository cleanup lock, `TryLock`; busy → next pass).
 
-**Scope.** Linked worktrees whose root is under `<main checkout>/.claude/worktrees/` — the folder Watchtower's placement and Claude Code's `isolation: worktree` both create worktrees in. A worktree anywhere else (one the owner made by hand) is never touched by this pass.
+**Scope.** Linked worktrees whose root is under `<main checkout>/.claude/worktrees/` — the folder Watchtower's placement and Claude Code's `isolation: worktree` both create worktrees in. A worktree anywhere else is never touched by this pass: outside that folder Watchtower cannot tell an agent's worktree from one the owner made and works in by hand, and the owner's own worktrees are the owner's. Those stay reachable through the Clean Up screen's sweep, as today.
 
 **Skip.** A worktree is skipped (not evaluated) when any of these hold:
 
 - a session working in it (W6's rule: live in the session host, or a not-ended row reporting from inside within 24 h);
 - it is **not idle**: its last activity is less than `idleFor` (3 days) old.
 
-**Last activity of a worktree** is the newest of: the mtimes of its admin dir's `HEAD`, `index` and `logs/HEAD` (`<common dir>/worktrees/<name>/`), the mtime of each regenerable build folder at its root (`.build`, `DerivedData`, `build`), and the newest `terminal_session_worktrees.last_at` of any session for that root. A stat that fails counts as "now" (fail closed: the worktree is not idle).
+**Last activity of a worktree** is the newest of:
+
+- the mtimes of its admin dir's `HEAD`, `index` and `logs/HEAD` (`<common dir>/worktrees/<name>/`);
+- the newest `terminal_session_worktrees.last_at` of any session for that root;
+- for **every** build folder the prune would find in it (§4 — at any depth, e.g. `WatchtowerDesktop/.build`, not only at the root): the newest mtime of the folder and of the directories inside it down to `buildActivityDepth` (8) levels, skipping the fetched-package folders (`checkouts`, `repositories`, `artifacts`, `SourcePackages`). A compiler writes its outputs by create-and-rename, which moves the containing directory's mtime, so an incremental build shows up here even when the build folder's own mtime does not move. Only directories are stat-ed, not files, under the walk budget W9 already uses.
+
+A stat that fails, or a walk over its budget, counts as "now" (fail closed: the worktree is not idle, nothing is pruned or removed).
 
 **Evaluate.** The pass plans the idle worktrees in sweep mode — the catches of the owner's Clean Up sweep (`Request.Sweep`), which already judge a worktree without a session — and then:
 
@@ -70,17 +76,20 @@ W3 changes from "locked → keep" to "locked → keep, unless **merged and idle*
 
 When both hold, W3 does not keep it and the other catches decide. If every catch passes, the apply runs `git worktree unlock` and then `git worktree remove` (no `--force`), re-checking every catch right before the unlock. If the remove then fails, the worktree is locked again (`git worktree lock --reason "<the old reason>"`) and kept as `check_failed`.
 
-The same rule applies in a session apply, in the automatic pass and in the owner's Clean Up screen (one catch, one meaning).
+The same rule applies in a session apply, in the automatic pass and in the owner's Clean Up screen (one catch, one meaning). The Clean Up screen needs no change: it shows a removable worktree as removable (no reason) and a kept one with its reason label (`SessionCleanupPresentation`, `locked` stays as is); the unlock is a step inside the Go apply, not a row of its own. Its Go side is covered by `TestProj18_SweepUnlocksOnlyRightBeforeTheRemove`.
+
+**Undoing an interrupted unlock.** Before it unlocks, the apply writes the old lock reason to `<admin dir>/watchtower-unlocked` (the worktree's own admin dir, which git deletes with the worktree). Every apply and every pass first walks the repository's admin dirs: a marker whose worktree still exists is turned back into a lock (`git worktree lock --reason <saved reason>`) and the marker deleted, before anything is evaluated. So a pass interrupted between the unlock and the remove leaves the worktree locked again on the next run, whichever catch keeps it then. If the relock fails, the marker stays and the worktree is kept as `check_failed` (the marker still counts as locked for W3).
 
 ### 4. Build prune
 
 - `pruneReasons` gains `locked`: a locked worktree's build output goes even when the worktree stays.
+- **An Xcode DerivedData folder is recognised by its content, whatever its name.** Today only a folder named `DerivedData` counts; `-derivedDataPath` folders named otherwise (seen: `.build-mobile-dd`, `.derived`, `.derived-mobile`, 1.7–2.9 GB each) stay. A directory at the worktree's root, or one level below it, holding `info.plist`, `Build/` and at least one of `Logs/`, `Index.noindex/`, `ModuleCache.noindex/` is a DerivedData folder for the prune and for W10's cache exemption (so it does not count as unsaved ignored work either). The same content check guards it as today's `DerivedData` kind (`buildKind.files`/`dirs`).
 - `pruneCatches` drops `catchLocked` and gains an **idle** check: a build folder is pruned only from a worktree idle for `idleFor`. This applies to the new paths (a locked worktree, the repository pass). The existing prune at a session's end (#2131, ask #1695) is unchanged.
 - The live-process and session-in-it checks stay in `pruneCatches`, so a build in use is never removed.
 
 ### 5. Language servers
 
-A process whose executable's base name is `gopls`, `sourcekit-lsp` or `clangd` no longer keeps a worktree (W5, `catchProcesses`) and is never signalled. Any other process keeps it, as today. The list is a fixed set in code, not configurable.
+A process whose executable's base name is a known **native** language server — `gopls`, `sourcekit-lsp`, `clangd`, `rust-analyzer`, `jdtls`, `lua-language-server`, `zls` — no longer keeps a worktree (W5, `catchProcesses`) and is never signalled. Any other process keeps it, as today. Servers that run under `node` or `python` (`tsserver`, `pyright`, `pylsp`) cannot be told apart from a build or a dev server by the executable, so they keep the worktree: being wrong there removes a worktree under a running build. The list is a fixed set in code (a new server is a one-line change with its test), not a setting: an owner-editable list would let a typo unblock removals.
 
 ## Failure modes
 
@@ -88,8 +97,10 @@ A process whose executable's base name is `gopls`, `sourcekit-lsp` or `clangd` n
 |---|---|---|
 | Daemon stops (quit, crash, update) mid-pass | The ctx cancels; the current git command finishes or is killed; the next pass re-plans from scratch. A worktree half-removed by `git worktree remove` shows as `prunable` and is pruned by the existing rule. | `TestAutoRun_StoppedMidRepositoryPassReplans` |
 | Unlock succeeded, remove failed | Re-locked with its old reason, kept as `check_failed`. | `TestProj18_LockedMergedRemoveFailureRelocks` |
-| Unlock succeeded, daemon killed before remove or relock | The worktree stays unlocked and merged; the next pass removes it if every catch still passes, or keeps it for the catch that holds. It is never left half-deleted. | `TestProj18_UnlockedByAnInterruptedPassIsReEvaluated` |
+| Unlock succeeded, daemon killed before remove or relock | The `watchtower-unlocked` marker is left; the next apply or pass relocks the worktree with its old reason first, then evaluates it as usual. It is never left half-deleted or silently unlocked. | `TestProj18_UnlockedByAnInterruptedPassIsRelocked` |
+| Relock from a marker fails | Marker kept, worktree kept as `check_failed`, retried next pass. | `TestProj18_FailedRelockKeepsTheWorktree` |
 | A session starts in a worktree between plan and remove | Every catch is re-checked right before the unlock and the remove; W6 keeps it. | `TestProj18_SessionStartedBeforeTheRemoveKeepsIt` |
+| An incremental build yesterday deep in `WatchtowerDesktop/.build` | The nested build folder's directory mtimes count as activity: not idle, not pruned. | `TestIdle_NestedIncrementalBuildCountsAsActivity` |
 | A build starts during the prune | A build is a process inside the worktree: the prune re-checks before each folder (existing `PruneRechecksBeforeEachFolder`), and idle no longer holds once `.build` is touched. | `TestProj18_BuildStartedDuringThePruneStops` |
 | The session host cannot be asked for live runs | The session apply skips that row (today); the repository pass skips the whole repository for this pass. | `TestAutoRun_RepositoryPassNeedsLiveRuns` |
 | An activity stat fails | Counts as "now": not idle, not pruned, not removed. | `TestIdle_UnreadableStatIsNotIdle` |
@@ -109,7 +120,8 @@ The PROJ-18 Observable gains:
 - the automatic pass also evaluates idle linked worktrees under `.claude/worktrees/` that no finished session owns, in sweep mode;
 - a locked worktree is kept unless its branch is merged with commits of its own and it is idle for 3 days; then it is unlocked right before its removal and re-locked if the removal fails;
 - a build folder of a kept, locked or unowned worktree is pruned only when the worktree is idle for 3 days;
-- `gopls`, `sourcekit-lsp` and `clangd` do not keep a worktree and are never signalled.
+- a native language server (§5's fixed list) does not keep a worktree and is never signalled;
+- an Xcode DerivedData folder is recognised by its content, whatever its name.
 
 Guard tests:
 
@@ -117,7 +129,7 @@ Guard tests:
 - `TestProj18_LiveProcessKeepsTheWorktree` is unchanged; `TestProj18_LanguageServerDoesNotKeepTheWorktree` is added.
 - `TestProj18_BuildOfAWorktreeInUseStays` is unchanged; `TestProj18_IdleLockedWorktreeLosesItsBuild` and `TestProj18_RecentBuildStays` are added.
 - `TestProj18_AutoCleanupOfAResumedSessionRemovesNothing` is unchanged and gains a case for a quiet row that became active again.
-- New: `TestProj18_QuietSessionIsCleanedUp`, `TestProj18_LiveQuietSessionIsSkipped`, `TestProj18_RepositoryPassStaysUnderClaudeWorktrees`, `TestProj18_RepositoryPassSkipsActiveWorktrees`, `TestProj18_RepositoryPassRemovesAnUnownedMergedWorktree`, `TestProj18_CommitlessLockedBranchStays`.
+- New: `TestProj18_SweepUnlocksOnlyRightBeforeTheRemove`, `TestProj18_UnlockedByAnInterruptedPassIsRelocked`, `TestProj18_FailedRelockKeepsTheWorktree`, `TestProj18_RenamedDerivedDataIsABuild`, `TestProj18_QuietSessionIsCleanedUp`, `TestProj18_LiveQuietSessionIsSkipped`, `TestProj18_RepositoryPassStaysUnderClaudeWorktrees`, `TestProj18_RepositoryPassSkipsActiveWorktrees`, `TestProj18_RepositoryPassRemovesAnUnownedMergedWorktree`, `TestProj18_CommitlessLockedBranchStays`.
 
 No existing guard is relaxed: every current case keeps its assertion.
 
@@ -126,9 +138,11 @@ No existing guard is relaxed: every current case keeps its assertion.
 | Promise | Task | Test |
 |---|---|---|
 | Quiet sessions are cleaned up (§1) | 1 | `TestProj18_QuietSessionIsCleanedUp`, `TestProj18_LiveQuietSessionIsSkipped`, `TestEndedSessionsForCleanup_*` (db) |
-| Idle detection (§2) | 2 | `TestIdle_*` |
+| Idle detection (§2), nested builds included | 2 | `TestIdle_*`, `TestIdle_NestedIncrementalBuildCountsAsActivity` |
 | Language servers do not keep (§5) | 2 | `TestProj18_LanguageServerDoesNotKeepTheWorktree` |
 | Locked + merged + idle goes, with unlock/relock (§3) | 3 | `TestProj18_LockedMergedIdleWorktreeGoes`, `TestProj18_CommitlessLockedBranchStays`, `TestProj18_LockedMergedRemoveFailureRelocks`, `TestProj18_UnlockedByAnInterruptedPassIsReEvaluated` |
+| DerivedData recognised by content (§4) | 3 | `TestProj18_RenamedDerivedDataIsABuild` |
+| Interrupted unlock is undone (§3) | 3 | `TestProj18_UnlockedByAnInterruptedPassIsRelocked`, `TestProj18_FailedRelockKeepsTheWorktree`, `TestProj18_SweepUnlocksOnlyRightBeforeTheRemove` |
 | Build prune in locked/idle worktrees only (§4) | 3 | `TestProj18_IdleLockedWorktreeLosesItsBuild`, `TestProj18_RecentBuildStays`, `TestProj18_BuildStartedDuringThePruneStops` |
 | Repository pass (§2) | 4 | `TestProj18_RepositoryPass*`, `TestAutoRun_RepositoryPass*`, `TestAutoRun_StoppedMidRepositoryPassReplans` |
 | Contract and docs updated | 5 | `go test ./docs/guide` (if the guide changes), inventory entry reviewed |
