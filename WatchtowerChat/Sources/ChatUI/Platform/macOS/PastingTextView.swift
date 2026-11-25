@@ -28,7 +28,7 @@ public final class PastingTextView: NSTextView {
     }
     /// A live token's tone: the info chip's blue (`Tone.artifact(.info)`), not the accent, which is grey for an
     /// owner on the Graphite accent and would leave the token as grey-on-grey as plain text.
-    static let tokenTone = NSColor.systemBlue
+    static let tokenTone = NSColor(Tone.artifact(.info))
     /// The live tokens' ranges as last drawn: each one a pill (`restyleTokens`).
     private(set) var tokenRanges: [NSRange] = []
     private var inlinePastes: Bool { onInlinePaste != nil }

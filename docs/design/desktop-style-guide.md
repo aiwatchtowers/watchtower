@@ -28,6 +28,7 @@ Use the token, never the number. The scale is closed: a screen that needs a new 
 | `Tone` | `status(_:)` and `priority(_:)` colour map |
 | `SyntaxTint` | the Workchat's IDE-style text colours, foreground only at `opacity` 0.7: `ref` accent, `hash` purple, `path` orange, `command` green |
 | `PaneWidth` | split side list `sideListMin` 170, `sideListIdeal` 220, `sideListMax` 360 beside `detailMin` 260; `narrowPage` 420 (a centred status page); `gridCardMin` 240, the least card width in an adaptive grid. A readable text column is `ReadableColumn.maxLineWidth` (760) |
+| `Thumbnail` | an image in a chat bubble: `maxSide` 220, `placeholder` 110 (the square while it decodes) |
 | `ListLayout` | a column list: `rowMinHeight` 28, `lineMinHeight` 22 (a progress line above it), `markColumn` 26, `numberColumn` 84, `dateColumn` 104, `textColumn` 190, `progressBar` 160 |
 | `IconSize` | `stateDot` 7, `chevron` 8, `header` 14, `composer` 16, `composerLarge` 24, `tile` 26 |
 | `Tracking` | `caps` 0.6 (small uppercase labels) |

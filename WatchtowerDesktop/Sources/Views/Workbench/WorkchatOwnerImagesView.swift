@@ -72,9 +72,6 @@ struct WorkchatImageThumbnail: View {
         _load = State(initialValue: WorkchatThumbnailCache.cached(image.path))
     }
 
-    /// The longest side a thumbnail is drawn at, in points; the decode asks twice that in pixels.
-    static let maxSide: CGFloat = 220
-
     private struct LoadKey: Hashable {
         let path: String
         let attempt: Int
@@ -85,7 +82,7 @@ struct WorkchatImageThumbnail: View {
             switch load {
             case .image(let cgImage)?:
                 Button { open() } label: {
-                    // Decoded at twice the points (a Retina screen): drawn at half its pixels, at most `maxSide`.
+                    // Decoded at twice the points (a Retina screen): drawn at half its pixels, at most `Thumbnail.maxSide`.
                     Image(decorative: cgImage, scale: 2)
                         .clipShape(RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
                 }
@@ -99,7 +96,7 @@ struct WorkchatImageThumbnail: View {
             case nil:
                 RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
                     .fill(Fill.card)
-                    .frame(width: Self.maxSide / 2, height: Self.maxSide / 2)
+                    .frame(width: Thumbnail.placeholder, height: Thumbnail.placeholder)
             }
         }
         .task(id: LoadKey(path: image.path, attempt: attempt)) {
@@ -138,13 +135,13 @@ enum WorkchatThumbnailCache {
         return images.object(forKey: key).map(WorkbenchImageLoad.image)
     }
 
-    /// The file's thumbnail, decoded off the main actor at twice `WorkchatImageThumbnail.maxSide` pixels and kept; a
+    /// The file's thumbnail, decoded off the main actor at twice `Thumbnail.maxSide` pixels and kept; a
     /// file that does not decode is not kept, so it is tried again next time.
     static func load(_ path: String) async -> WorkbenchImageLoad {
         if let cached = cached(path) { return cached }
         guard let key = key(path) else { return .missing }
         let url = URL(fileURLWithPath: path)
-        let pixels = Int(WorkchatImageThumbnail.maxSide * 2)
+        let pixels = Int(Thumbnail.maxSide * 2)
         let load = await Task.detached(priority: .userInitiated) {
             WorkbenchImageLoader.load(at: url, maxPixel: pixels)
         }.value

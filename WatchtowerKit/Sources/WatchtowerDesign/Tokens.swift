@@ -85,6 +85,14 @@ public enum PaneWidth {
     public static let noticeColumn: CGFloat = 480
 }
 
+/// An image drawn in a chat bubble (the Workchat's pasted screenshots).
+public enum Thumbnail {
+    /// The longest side a thumbnail is drawn at.
+    public static let maxSide: CGFloat = 220
+    /// The side of the placeholder square while one decodes.
+    public static let placeholder: CGFloat = 110
+}
+
 /// A column list's layout (the Clean Up screen's): its rows' and inline
 /// lines' least height, its fixed columns' widths and an inline progress
 /// bar's width.
