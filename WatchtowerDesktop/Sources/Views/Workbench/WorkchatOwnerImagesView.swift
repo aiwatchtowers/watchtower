@@ -37,9 +37,11 @@ struct WorkchatImageChip: View {
     let name: String
     let path: String
     let missing: Bool
+    /// The file would not open (gone meanwhile): the owner looks again.
+    var onOpenFailed: () -> Void = {}
 
     var body: some View {
-        Button { WorkchatOwnerImagesView.open(path) } label: {
+        Button { if !WorkchatOwnerImagesView.open(path) { onOpenFailed() } } label: {
             HStack(spacing: Spacing.compact) {
                 Image(systemName: "photo").foregroundStyle(.secondary)
                 Text(name).lineLimit(1).truncationMode(.middle)
@@ -58,16 +60,25 @@ struct WorkchatImageChip: View {
 /// One pasted image of an owner line: decoded off the main actor, downscaled to the thumbnail's size.
 struct WorkchatImageThumbnail: View {
     let image: WorkchatOwnerImages.ImageFile
-    /// What decoding gave; nil while it runs. A thumbnail decoded before (the row scrolled back in) starts drawn.
+    /// What decoding gave; nil while it runs. A file gone starts as missing, a thumbnail decoded before (the row
+    /// scrolled back in) starts drawn.
     @State private var load: WorkbenchImageLoad?
+    /// Bumped when a click finds the file will not open: the load runs again, so a file gone meanwhile turns into
+    /// the missing chip.
+    @State private var attempt = 0
 
     init(image: WorkchatOwnerImages.ImageFile) {
         self.image = image
-        _load = State(initialValue: WorkchatThumbnailCache.cached(image.path).map(WorkbenchImageLoad.image))
+        _load = State(initialValue: WorkchatThumbnailCache.cached(image.path))
     }
 
     /// The longest side a thumbnail is drawn at, in points; the decode asks twice that in pixels.
     static let maxSide: CGFloat = 220
+
+    private struct LoadKey: Hashable {
+        let path: String
+        let attempt: Int
+    }
 
     var body: some View {
         Group {
@@ -84,26 +95,27 @@ struct WorkchatImageThumbnail: View {
             case .missing?:
                 WorkchatImageChip(name: image.name, path: image.path, missing: true)
             case .undecodable?:
-                WorkchatImageChip(name: image.name, path: image.path, missing: false)
+                WorkchatImageChip(name: image.name, path: image.path, missing: false) { attempt += 1 }
             case nil:
                 RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
                     .fill(Fill.card)
                     .frame(width: Self.maxSide / 2, height: Self.maxSide / 2)
             }
         }
-        .task(id: image) {
-            if case .image? = load { return }
-            load = await WorkchatThumbnailCache.load(image)
+        .task(id: LoadKey(path: image.path, attempt: attempt)) {
+            if attempt == 0, case .image? = load { return }
+            load = await WorkchatThumbnailCache.load(image.path)
         }
     }
 
     private func open() {
-        WorkchatOwnerImagesView.open(image.path)
+        if !WorkchatOwnerImagesView.open(image.path) { attempt += 1 }
     }
 }
 
-/// The decoded thumbnails of the Workchat's owner images, by path: a feed row rebuilt on scroll or on the next read
-/// draws at once instead of decoding again. A pasted file's name is unique to its paste, so a path keeps its image.
+/// The decoded thumbnails of the Workchat's pasted images, by path and modification time: a feed row rebuilt on
+/// scroll or on the next read draws at once instead of decoding again, and a file gone or rewritten is never drawn
+/// from an old decode. Only the attachments folder's files come here (`WorkchatOwnerImages.ImageFile.isAttachment`).
 @MainActor
 enum WorkchatThumbnailCache {
     private static let images: NSCache<NSString, CGImage> = {
@@ -112,19 +124,31 @@ enum WorkchatThumbnailCache {
         return cache
     }()
 
-    static func cached(_ path: String) -> CGImage? {
-        images.object(forKey: path as NSString)
+    /// The file's key, its path and modification time; nil when it is not on disk.
+    private static func key(_ path: String) -> NSString? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
+        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0
+        return "\(modified) \(path)" as NSString
     }
 
-    /// The image's thumbnail, decoded off the main actor at twice `WorkchatImageThumbnail.maxSide` pixels and kept.
-    static func load(_ image: WorkchatOwnerImages.ImageFile) async -> WorkbenchImageLoad {
-        if let cached = cached(image.path) { return .image(cached) }
-        let url = URL(fileURLWithPath: image.path)
+    /// What a thumbnail starts as: `.missing` when the file is gone, its image when this version of it was decoded
+    /// before, nil when it has to be decoded.
+    static func cached(_ path: String) -> WorkbenchImageLoad? {
+        guard let key = key(path) else { return .missing }
+        return images.object(forKey: key).map(WorkbenchImageLoad.image)
+    }
+
+    /// The file's thumbnail, decoded off the main actor at twice `WorkchatImageThumbnail.maxSide` pixels and kept; a
+    /// file that does not decode is not kept, so it is tried again next time.
+    static func load(_ path: String) async -> WorkbenchImageLoad {
+        if let cached = cached(path) { return cached }
+        guard let key = key(path) else { return .missing }
+        let url = URL(fileURLWithPath: path)
         let pixels = Int(WorkchatImageThumbnail.maxSide * 2)
         let load = await Task.detached(priority: .userInitiated) {
             WorkbenchImageLoader.load(at: url, maxPixel: pixels)
         }.value
-        if case let .image(decoded) = load { images.setObject(decoded, forKey: image.path as NSString) }
+        if case let .image(decoded) = load { images.setObject(decoded, forKey: key) }
         return load
     }
 }
