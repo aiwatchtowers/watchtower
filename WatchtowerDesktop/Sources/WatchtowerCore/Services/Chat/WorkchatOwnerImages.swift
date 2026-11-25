@@ -107,9 +107,12 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
 
     /// Punctuation that may open before a path and stays text: `(/…/a.png)`.
     private static let openers: Set<Character> = ["(", "[", "{"]
-    /// Punctuation that may close after a path and stays text: `see /…/a.png.`, `"/…/a b.png",`.
-    private static let closers: Set<Character> = [".", ",", ";", ":", "!", "?", ")", "]", "}"]
-    private static let pairs: [Character: Character] = ["(": ")", "[": "]", "{": "}"]
+    /// What a path may start right after, mid-word too: an opening bracket or a quote, as `PasteTokens.expand`
+    /// leaves a pasted path touching it (`compare([Image #1])` is sent as `compare(/…/a.png)`).
+    private static let leads: Set<Character> = ["(", "[", "{", "\"", "'"]
+    /// Punctuation that may close after a path and stays text: `see /…/a.png.`, `"/…/a b.png",`, `'/…/a.png'`.
+    private static let closers: Set<Character> = [".", ",", ";", ":", "!", "?", ")", "]", "}", "'"]
+    private static let pairs: [Character: Character] = ["(": ")", "[": "]", "{": "}", "'": "'"]
 
     /// What leaves the line with a path, and what takes its place: the path, the brackets around it when they held
     /// only it, and the spaces before it when punctuation follows (`see /…/a.png.` reads `see.`); a space otherwise.
@@ -133,12 +136,14 @@ package struct WorkchatOwnerImages: Equatable, Sendable {
 
     /// The whole-token absolute paths of one line: bare (`/…` up to whitespace, closing punctuation left out) or
     /// double-quoted with `\"` and `\\` escaped (`"/…"` followed by whitespace, closing punctuation or the end), each
-    /// starting the line or after whitespace, past any opening bracket.
+    /// starting the line, after whitespace or right after an opening bracket or quote (`leads`), past any opening
+    /// bracket.
     private static func pathTokens(in line: String) -> [Token] {
         var tokens: [Token] = []
         var index = line.startIndex
         while index < line.endIndex {
-            let atBoundary = index == line.startIndex || line[line.index(before: index)].isWhitespace
+            let atBoundary = index == line.startIndex
+                || line[line.index(before: index)].isWhitespace || leads.contains(line[line.index(before: index)])
             guard atBoundary else {
                 index = line.index(after: index)
                 continue

@@ -1,5 +1,6 @@
 import ChatWire
 import Foundation
+import WatchtowerChatText
 @testable import WatchtowerCore
 import XCTest
 
@@ -54,6 +55,27 @@ final class WorkchatOwnerImagesTests: XCTestCase {
         XCTAssertEqual(partial.text, "look (at) here")
         XCTAssertEqual(split("[\(pasted)]").images.map(\.path), [pasted])
         XCTAssertEqual(split("{\(pasted)}").text, "")
+    }
+
+    /// A token pasted right after an opening bracket or quote mid-word expands with no space (`PasteTokens.expand`
+    /// lets those touch a path), so the path starts after the bracket or quote: still an image, and brackets or
+    /// quotes that held only it go with it.
+    func testExpandedTokenAfterAnOpenerMidWord() {
+        for (draft, path, shown) in [
+            ("compare([Image #1])", pasted, "compare"),
+            ("compare[Image #1]", pasted, "compare"),
+            ("see (\"[Image #1]\")", pasted, "see"),
+            ("see \"[Image #1]\" now", pasted, "see now"),
+            ("see '[Image #1]', ok", pasted, "see, ok"),
+            ("a{[Image #1]} b", pasted, "a b"),
+            ("compare([Image #1])", spaced, "compare")
+        ] {
+            let sent = PasteTokens.expand(draft, payloads: [1: .image(path: path)], imagePath: WorkchatOutgoing.quoted)
+            let result = split(sent)
+            XCTAssertEqual(result.images.map(\.path), [path], sent)
+            XCTAssertEqual(result.text, shown, sent)
+        }
+        XCTAssertEqual(split("compare(\(dropped))").images, [], "an image elsewhere, mid-word, is prose")
     }
 
     func testPunctuationAfterAQuotedPath() {
