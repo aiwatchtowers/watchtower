@@ -24,7 +24,7 @@ func sessionCleanupPass(cfg *config.Config, database *db.DB, port *sessionstart.
 	return func(ctx context.Context) {
 		res, err := sessioncleanup.AutoRun(ctx, sessioncleanup.AutoDeps{
 			Deps:       cleanupDeps(database),
-			Candidates: database.FinishedSessionsForCleanup,
+			Candidates: sessioncleanup.DBCandidates(database, time.Now),
 			Live: func(ctx context.Context) (map[int64]bool, error) {
 				return liveRows(port.Runs(ctx))
 			},

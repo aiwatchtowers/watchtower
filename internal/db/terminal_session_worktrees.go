@@ -294,46 +294,84 @@ func (db *DB) ListTerminalSessionActivity(ctx context.Context) ([]TerminalSessio
 }
 
 // FinishedSessionForCleanup is one session the automatic cleanup may apply
-// (board #2131): its workbench, finish and last cleanup (zero / "" = none).
+// (board #2131, #2402): its workbench, when it ended, whether it ended by
+// going quiet rather than by finish_session, its finish (zero for a quiet
+// row) and last cleanup (zero / "" = none). The name is kept from before
+// quiet sessions counted; EndedAt is finished_at, else the last activity.
 type FinishedSessionForCleanup struct {
 	SessionID, WorkbenchID int64
-	FinishedAt, CleanupAt  time.Time
-	CleanupResult          string
+	EndedAt                time.Time
+	// Quiet: finished_at is NULL and the row has been idle since EndedAt.
+	Quiet                 bool
+	FinishedAt, CleanupAt time.Time
+	CleanupResult         string
 }
 
-// FinishedSessionsForCleanup is every agent session of a workbench that
-// finished at or after since and is not being deleted (the Desktop's
-// background cleanup owns those), the ones never cleaned up first, then by
-// their last cleanup, oldest first. A finished_at that does not parse is
-// skipped (its row is not known to have finished); an unreadable cleanup_at
-// reads as never.
-func (db *DB) FinishedSessionsForCleanup(ctx context.Context, since time.Time) ([]FinishedSessionForCleanup, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id, project_id, finished_at, COALESCE(cleanup_at, ''),
-		COALESCE(cleanup_result, '') FROM terminal_sessions
-		WHERE project_id IS NOT NULL AND kind IN `+agentkind.SQLKinds()+` AND finished_at IS NOT NULL AND finished_at >= ?
-		AND `+NotDeletingSQL+`
+// EndedSessionsForCleanup is every agent session of a workbench that ended
+// at or after since and is not being deleted (the Desktop's background
+// cleanup owns those): finished (finish_session), or never finished but
+// quiet — its newest of last_active_at, agent_state_at and closed_at is at
+// or before quietBefore. The never-cleaned first, then by last cleanup,
+// oldest first. The stamps have different layouts (last_active_at has
+// whole seconds, agent_state_at milliseconds), so quietness is decided in
+// Go, not by string order; a stamp that does not parse skips its row (it
+// is not known to have ended), an unreadable cleanup_at reads as never.
+func (db *DB) EndedSessionsForCleanup(ctx context.Context, since, quietBefore time.Time) ([]FinishedSessionForCleanup, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, project_id, COALESCE(finished_at, ''), COALESCE(last_active_at, ''),
+		COALESCE(agent_state_at, ''), COALESCE(closed_at, ''), COALESCE(cleanup_at, ''), COALESCE(cleanup_result, '')
+		FROM terminal_sessions
+		WHERE project_id IS NOT NULL AND kind IN `+agentkind.SQLKinds()+`
+		AND (finished_at IS NULL OR finished_at >= ?) AND `+NotDeletingSQL+`
 		ORDER BY cleanup_at IS NOT NULL, cleanup_at, id`, AgentStateStamp(since))
 	if err != nil {
-		return nil, fmt.Errorf("reading finished sessions: %w", err)
+		return nil, fmt.Errorf("reading ended sessions: %w", err)
 	}
 	defer rows.Close()
 	var out []FinishedSessionForCleanup
 	for rows.Next() {
 		var s FinishedSessionForCleanup
-		var finished, cleaned string
-		if err := rows.Scan(&s.SessionID, &s.WorkbenchID, &finished, &cleaned, &s.CleanupResult); err != nil {
-			return nil, fmt.Errorf("reading finished sessions: %w", err)
+		var finished, active, state, closed, cleaned string
+		if err := rows.Scan(&s.SessionID, &s.WorkbenchID, &finished, &active, &state, &closed, &cleaned, &s.CleanupResult); err != nil {
+			return nil, fmt.Errorf("reading ended sessions: %w", err)
 		}
-		at, ok := ParseAgentStateStamp(finished)
-		if !ok {
-			continue
+		if finished != "" {
+			at, ok := ParseAgentStateStamp(finished)
+			if !ok {
+				continue
+			}
+			s.FinishedAt, s.EndedAt = at, at
+		} else {
+			at, ok := lastActivity(active, state, closed)
+			if !ok || at.After(quietBefore) || at.Before(since) {
+				continue
+			}
+			s.EndedAt, s.Quiet = at, true
 		}
-		s.FinishedAt = at
 		s.CleanupAt, _ = ParseAgentStateStamp(cleaned)
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading finished sessions: %w", err)
+		return nil, fmt.Errorf("reading ended sessions: %w", err)
 	}
 	return out, nil
+}
+
+// lastActivity is the newest of the given stamps (RFC 3339, whole seconds
+// or fractions; "" = absent); false when none is present or one does not
+// parse.
+func lastActivity(stamps ...string) (time.Time, bool) {
+	var newest time.Time
+	for _, st := range stamps {
+		if st == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, st)
+		if err != nil {
+			return time.Time{}, false
+		}
+		if at.After(newest) {
+			newest = at
+		}
+	}
+	return newest, !newest.IsZero()
 }

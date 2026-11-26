@@ -101,10 +101,11 @@ func (b *builder) sessionFinished() bool {
 }
 
 // sessionEnded: the planned session finished (finish_session) or is being
-// deleted — the end of the session the prune waits for.
+// deleted, or quiet for 24 h (Request.Quiet) — the end of the session the
+// prune waits for. The one place that honours Request.Quiet.
 func (b *builder) sessionEnded() bool {
 	a, ok := b.activity[b.req.SessionID]
-	return ok && (a.Finished || a.DeleteRequested)
+	return ok && (a.Finished || a.DeleteRequested || b.req.Quiet)
 }
 
 // pruneBuilds deletes the build output of every worktree the apply kept

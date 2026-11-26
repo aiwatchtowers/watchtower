@@ -465,42 +465,112 @@ func TestSessionLedgerCwdWritersOnMigratedSchema(t *testing.T) {
 	}
 }
 
-// TestFinishedSessionsForCleanup lists finished agent rows of a workbench
-// since the given time, not being deleted, never-cleaned first (#2131).
-func TestFinishedSessionsForCleanup(t *testing.T) {
-	ctx := context.Background()
+// endedFixture is a workbench with a way to add agent rows and set columns.
+type endedFixture struct {
+	t   *testing.T
+	d   *DB
+	wb  int64
+	now time.Time
+	n   int
+}
+
+func newEndedFixture(t *testing.T) *endedFixture {
+	t.Helper()
 	d := openTestDB(t)
-	wb := newTestWorkbench(t, d)
-	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	row := func(uuid string) int64 { return newAgentStateRow(t, d, wb, "claude", uuid) }
-	set := func(id int64, sql string, args ...any) {
-		t.Helper()
-		if _, err := d.Exec(`UPDATE terminal_sessions SET `+sql+` WHERE id = ?`, append(args, id)...); err != nil {
-			t.Fatal(err)
+	return &endedFixture{t: t, d: d, wb: newTestWorkbench(t, d), now: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)}
+}
+
+func (f *endedFixture) row(sql string, args ...any) int64 {
+	f.t.Helper()
+	f.n++
+	id := newAgentStateRow(f.t, f.d, f.wb, "claude", fmt.Sprintf("%08d-1111-4111-8111-111111111111", f.n))
+	if sql != "" {
+		if _, err := f.d.Exec(`UPDATE terminal_sessions SET `+sql+` WHERE id = ?`, append(args, id)...); err != nil {
+			f.t.Fatal(err)
 		}
 	}
-	cleaned := row("11111111-1111-4111-8111-111111111111")
-	set(cleaned, `finished_at = ?, cleanup_at = ?, cleanup_result = '{}'`,
-		AgentStateStamp(now.Add(-2*time.Hour)), AgentStateStamp(now.Add(-time.Hour)))
-	never := row("22222222-2222-4222-8222-222222222222")
-	set(never, `finished_at = ?`, AgentStateStamp(now.Add(-3*time.Hour)))
-	old := row("33333333-3333-4333-8333-333333333333")
-	set(old, `finished_at = ?`, AgentStateStamp(now.Add(-30*24*time.Hour)))
-	deleting := row("44444444-4444-4444-8444-444444444444")
-	set(deleting, `finished_at = ?, delete_requested_at = ?`, AgentStateStamp(now), now.Format(time.RFC3339))
-	row("55555555-5555-4555-8555-555555555555") // not finished
+	return id
+}
 
-	got, err := d.FinishedSessionsForCleanup(ctx, now.Add(-14*24*time.Hour))
+func (f *endedFixture) list() []FinishedSessionForCleanup {
+	f.t.Helper()
+	got, err := f.d.EndedSessionsForCleanup(context.Background(), f.now.Add(-14*24*time.Hour), f.now.Add(-24*time.Hour))
 	if err != nil {
-		t.Fatal(err)
+		f.t.Fatal(err)
 	}
+	return got
+}
+
+// TestEndedSessionsForCleanup_Finished lists finished agent rows of a
+// workbench since the given time, not being deleted, never-cleaned first
+// (#2131).
+func TestEndedSessionsForCleanup_Finished(t *testing.T) {
+	f := newEndedFixture(t)
+	cleaned := f.row(`finished_at = ?, cleanup_at = ?, cleanup_result = '{}'`,
+		AgentStateStamp(f.now.Add(-2*time.Hour)), AgentStateStamp(f.now.Add(-time.Hour)))
+	never := f.row(`finished_at = ?`, AgentStateStamp(f.now.Add(-3*time.Hour)))
+	f.row(`finished_at = ?`, AgentStateStamp(f.now.Add(-30*24*time.Hour)))
+	got := f.list()
 	if len(got) != 2 || got[0].SessionID != never || got[1].SessionID != cleaned {
 		t.Fatalf("got %+v", got)
 	}
-	if got[0].WorkbenchID != wb || !got[0].CleanupAt.IsZero() || !got[0].FinishedAt.Equal(now.Add(-3*time.Hour)) {
+	if got[0].WorkbenchID != f.wb || !got[0].CleanupAt.IsZero() || got[0].Quiet ||
+		!got[0].FinishedAt.Equal(f.now.Add(-3*time.Hour)) || !got[0].EndedAt.Equal(got[0].FinishedAt) {
 		t.Fatalf("never-cleaned row %+v", got[0])
 	}
-	if !got[1].CleanupAt.Equal(now.Add(-time.Hour)) || got[1].CleanupResult != "{}" {
+	if !got[1].CleanupAt.Equal(f.now.Add(-time.Hour)) || got[1].CleanupResult != "{}" {
 		t.Fatalf("cleaned row %+v", got[1])
+	}
+}
+
+// TestEndedSessionsForCleanup_Quiet: a never-finished row idle for 24 h or
+// more is listed as quiet, ended at its newest activity of the three
+// columns (whatever their layouts); one active within 24 h is not.
+func TestEndedSessionsForCleanup_Quiet(t *testing.T) {
+	f := newEndedFixture(t)
+	quiet := f.row(`last_active_at = ?, agent_state_at = ?, closed_at = ?`,
+		f.now.Add(-60*time.Hour).Format(time.RFC3339), AgentStateStamp(f.now.Add(-30*time.Hour)),
+		f.now.Add(-50*time.Hour).Format(time.RFC3339))
+	f.row(`last_active_at = ?, agent_state_at = ?`, f.now.Add(-60*time.Hour).Format(time.RFC3339),
+		AgentStateStamp(f.now.Add(-time.Hour))) // a hook wrote an hour ago
+	f.row(`last_active_at = ?`, f.now.Add(-time.Hour).Format(time.RFC3339))
+	got := f.list()
+	if len(got) != 1 || got[0].SessionID != quiet || !got[0].Quiet || !got[0].FinishedAt.IsZero() ||
+		!got[0].EndedAt.Equal(f.now.Add(-30*time.Hour)) {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// TestEndedSessionsForCleanup_QuietOutsideWindow: a quiet row whose last
+// activity is older than the window is not listed.
+func TestEndedSessionsForCleanup_QuietOutsideWindow(t *testing.T) {
+	f := newEndedFixture(t)
+	f.row(`last_active_at = ?`, f.now.Add(-20*24*time.Hour).Format(time.RFC3339))
+	if got := f.list(); len(got) != 0 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// TestEndedSessionsForCleanup_DeletingExcluded: a row with
+// delete_requested_at is the Desktop's, finished or quiet.
+func TestEndedSessionsForCleanup_DeletingExcluded(t *testing.T) {
+	f := newEndedFixture(t)
+	f.row(`finished_at = ?, delete_requested_at = ?`, AgentStateStamp(f.now), f.now.Format(time.RFC3339))
+	f.row(`last_active_at = ?, delete_requested_at = ?`, f.now.Add(-48*time.Hour).Format(time.RFC3339), f.now.Format(time.RFC3339))
+	if got := f.list(); len(got) != 0 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// TestEndedSessionsForCleanup_UnparsableStampSkipsTheRow: a stamp that does
+// not parse means the row is not known to have ended.
+func TestEndedSessionsForCleanup_UnparsableStampSkipsTheRow(t *testing.T) {
+	f := newEndedFixture(t)
+	f.row(`finished_at = 'garbage'`)
+	f.row(`last_active_at = 'garbage'`)
+	f.row(`last_active_at = ?, agent_state_at = 'garbage'`, f.now.Add(-48*time.Hour).Format(time.RFC3339))
+	f.row(`last_active_at = ?, closed_at = 'garbage'`, f.now.Add(-48*time.Hour).Format(time.RFC3339))
+	if got := f.list(); len(got) != 0 {
+		t.Fatalf("got %+v", got)
 	}
 }

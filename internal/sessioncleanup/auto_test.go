@@ -406,6 +406,127 @@ func TestProj18_AutoCleanupOfAResumedSessionRemovesNothing(t *testing.T) {
 	}
 }
 
+// quietSession registers the session as never finished (no finish_session),
+// quiet since ended, and lists it as a quiet candidate.
+func (a *autoFixture) quietSession(ended time.Time) {
+	a.store.activity = append(a.store.activity, SessionActivity{ID: testSession, WorkbenchID: testWorkbench, Title: "the session"})
+	a.cands = []AutoCandidate{{SessionID: testSession, WorkbenchID: testWorkbench, EndedAt: ended, Quiet: true}}
+}
+
+// TestProj18_QuietSessionIsCleanedUp (#2402): a session that never called
+// finish_session but has been quiet for 24 h is applied like a finished one:
+// its pushed work goes, and the kept worktree loses its build.
+func TestProj18_QuietSessionIsCleanedUp(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	pushed := a.pushedWork("wt-pushed", "feat/pushed")
+	a.record(pushed, "feat/pushed")
+	kept := a.worktree("wt-kept", "feat/kept")
+	a.commit(kept, ".gitignore", ".build/\n")
+	a.record(kept, "feat/kept")
+	build := swiftBuild(t, filepath.Join(kept, ".build"))
+	now := time.Now()
+	a.quietSession(now.Add(-30 * time.Hour))
+
+	res, err := a.run(now)
+	if err != nil || res.Applied != 1 || res.Failed != 0 || res.Changed != 1 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if exists(pushed) || a.branchExists("feat/pushed") {
+		t.Fatal("the pushed work of the quiet session stayed")
+	}
+	if !a.listsWorktree(kept) || exists(build) {
+		t.Fatalf("kept worktree listed %v, build exists %v (the quiet session's build must go)", a.listsWorktree(kept), exists(build))
+	}
+}
+
+// TestProj18_QuietSessionLosesKeptWorktreesBuild: a quiet session's kept
+// (unpushed) worktree loses its build in the same apply, the work stays.
+func TestProj18_QuietSessionLosesKeptWorktreesBuild(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root, builds := a.unpushedWithBuild()
+	now := time.Now()
+	a.quietSession(now.Add(-25 * time.Hour))
+
+	if res, err := a.run(now); err != nil || res.Failed != 0 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if !a.listsWorktree(root) || !a.branchExists("feat/x") {
+		t.Fatal("the unpushed work went")
+	}
+	for _, b := range builds {
+		if exists(b) {
+			t.Fatalf("build %s survived", b)
+		}
+	}
+}
+
+// TestProj18_LiveQuietSessionIsSkipped: a quiet row that is live in the host
+// is skipped for this pass (not a failure), nothing of it is touched.
+func TestProj18_LiveQuietSessionIsSkipped(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root := a.pushedWork("wt", "feat/x")
+	a.record(root, "feat/x")
+	now := time.Now()
+	a.quietSession(now.Add(-30 * time.Hour))
+	a.live[testSession] = true
+
+	res, err := a.run(now)
+	if err != nil || res != (AutoResult{}) {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if !a.listsWorktree(root) || !a.branchExists("feat/x") || len(a.locked) != 0 {
+		t.Fatal("something of the live quiet session was touched")
+	}
+}
+
+// TestProj18_QuietCandidateActiveAgainRemovesNothing: a quiet row that is
+// active again by the apply (its terminal reopened, or it lists no longer
+// quiet) loses nothing — the host's live set read right before the apply
+// skips it, a candidate under 24 h is not due.
+func TestProj18_QuietCandidateActiveAgainRemovesNothing(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		ended time.Duration
+		live  bool
+	}{"reopened before the apply": {ended: 30 * time.Hour, live: true}, "active within 24 h": {ended: 2 * time.Hour}} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a := newAutoFixture(t)
+			root := a.pushedWork("wt", "feat/x")
+			a.record(root, "feat/x")
+			now := time.Now()
+			a.quietSession(now.Add(-tc.ended))
+			a.live[testSession] = tc.live
+			if res, err := a.run(now); err != nil || res.Changed != 0 || res.Failed != 0 {
+				t.Fatalf("res %+v, err %v", res, err)
+			}
+			if !a.listsWorktree(root) || !a.branchExists("feat/x") {
+				t.Fatal("something of the active session went")
+			}
+		})
+	}
+}
+
+// TestAutoDue_QuietMeasuresFromEndedAt: a quiet row's retry and "cleaned
+// since it ended" read from EndedAt, not the zero FinishedAt.
+func TestAutoDue_QuietMeasuresFromEndedAt(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	ended := now.Add(-30 * time.Hour)
+	if !autoDue(AutoCandidate{Quiet: true, EndedAt: ended, CleanupAt: ended.Add(-time.Minute), CleanupResult: "{}"}, now) {
+		t.Error("cleaned before it went quiet: due")
+	}
+	if autoDue(AutoCandidate{Quiet: true, EndedAt: ended, CleanupAt: now.Add(-time.Hour), CleanupResult: "{}"}, now) {
+		t.Error("cleaned after, nothing left: not due")
+	}
+	if autoDue(AutoCandidate{Quiet: true, EndedAt: now.Add(-time.Hour)}, now) {
+		t.Error("quiet for under autoQuiet: not due")
+	}
+}
+
 // TestAutoRun_RetryDoesNotWalkCheckedBuilds (review round 3): a retry after
 // a cleanup that, since the finish, checked a kept worktree's builds does
 // not walk them again; after a new finish it does.

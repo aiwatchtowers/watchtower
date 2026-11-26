@@ -59,6 +59,12 @@ type Request struct {
 	// resumed since it was listed loses nothing. The automatic apply sets
 	// it (#2131).
 	RequireEnded bool
+	// Quiet: the session never called finish_session but has been quiet
+	// for 24 h (#2402), so it counts as ended for the build prune like a
+	// finished one. Only the automatic pass sets it, for a quiet row
+	// (with RequireEnded off: there is no finish to re-check); the CLI
+	// never does.
+	Quiet bool
 	// BuildsChecked are worktree roots whose build folders an earlier
 	// automatic apply, since the session's finish, already found nothing
 	// left to delete in: the prune does not walk them again.
