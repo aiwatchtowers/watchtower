@@ -456,7 +456,7 @@ func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 		a.fail(it, err)
 	} else {
 		if b, ok := a.recheckClear(ctx, it, root, "process in use: ", true); ok {
-			a.removeWorktreeNow(ctx, it, root, b.repo.adminDirs[root])
+			a.removeWorktreeNow(ctx, it, root, b.lockedWhenListed(root))
 		}
 		unlock()
 	}

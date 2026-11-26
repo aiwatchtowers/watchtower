@@ -184,14 +184,29 @@ func isLocked(admin string) (bool, error) {
 	return false, fmt.Errorf("reading the lock in %s: %w", admin, err)
 }
 
-// unlockForRemoval unlocks root, when it is locked now, for the removal
-// that follows at once: the lock file is saved in the marker (written and
-// synced first), then `git worktree unlock`. true when it unlocked (the
-// caller relocks if the removal fails). A failure leaves the worktree
-// locked as it was (relock) and is returned: the worktree stays.
+// lockedWhenListed is root's admin dir when the listing these facts were
+// read from (the final re-check's, before its catches) showed root locked,
+// "" otherwise. Only such a lock — the one W3 then judged — is ever
+// unlocked: a lock that appears after that listing is someone else's, and
+// git's refusal of the remove keeps the worktree for them.
+func (b *builder) lockedWhenListed(root string) string {
+	for _, w := range b.repo.worktrees {
+		if w.Root == root && w.Locked {
+			return b.repo.adminDirs[root]
+		}
+	}
+	return ""
+}
+
+// unlockForRemoval unlocks root for the removal that follows at once, when
+// admin is set (lockedWhenListed) and root is still locked: the lock file
+// is saved in the marker (written and synced first), then `git worktree
+// unlock`. true when it unlocked (the caller relocks if the removal
+// fails). A failure leaves the worktree locked as it was (relock) and is
+// returned: the worktree stays.
 func (a *applier) unlockForRemoval(ctx context.Context, root, admin string) (bool, error) {
 	if admin == "" {
-		return false, nil // W3 let it pass only unlocked; git refuses a locked one
+		return false, nil // not locked when listed: a lock now is someone else's, and git refuses the remove
 	}
 	body, err := os.ReadFile(filepath.Join(admin, lockFile))
 	switch {
@@ -238,10 +253,11 @@ func writeMarker(path string, body []byte) (err error) {
 }
 
 // removeWorktreeNow runs `git worktree remove` (no --force) on root right
-// after the final re-check. A worktree locked now — W3 let it pass: merged
-// and idle — is unlocked first (unlockForRemoval) and locked again when
-// the removal fails; it is then kept as check_failed, and a failure that is
-// not git's own refusal stops the apply, as settleGit does.
+// after the final re-check. A worktree that re-check listed locked — W3
+// let it pass: merged and idle; admin is its admin dir (lockedWhenListed)
+// — is unlocked first (unlockForRemoval) and locked again when the removal
+// fails; it is then kept as check_failed, and a failure that is not git's
+// own refusal stops the apply, as settleGit does.
 func (a *applier) removeWorktreeNow(ctx context.Context, it *Item, root, admin string) {
 	unlocked, err := a.unlockForRemoval(ctx, root, admin)
 	if err != nil {

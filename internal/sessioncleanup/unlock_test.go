@@ -409,3 +409,33 @@ func gitBinOrSkip(t *testing.T) string {
 	}
 	return bin
 }
+
+// TestLocked_AgentLockAfterTheFinalCheckWins: a worktree the final re-check
+// listed unlocked is never unlocked by the apply, even when an agent locks
+// it right after (here during the final re-check's status, after W3): git
+// refuses the remove and the agent's lock stays.
+func TestLocked_AgentLockAfterTheFinalCheckWins(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.mergedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.clock = idleLater()
+	log := &opLog{}
+	statuses := 0
+	f.git = &loggingGit{log: log, before: func(args []string) *gitAnswer {
+		if len(args) > 2 && args[0] == "status" && args[2] == "--untracked-files=normal" {
+			// W4's status: the evaluation's, the first re-check's, the final one's.
+			if statuses++; statuses == 3 {
+				f.lock(root)
+			}
+		}
+		return nil
+	}}
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonGitRefused, false)
+	wantLocked(t, root)
+	if slices.ContainsFunc(log.list(), func(op string) bool { return strings.Contains(op, "worktree unlock") }) {
+		t.Fatal("the apply unlocked the agent's lock")
+	}
+}
