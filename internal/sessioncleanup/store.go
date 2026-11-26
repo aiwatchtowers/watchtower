@@ -174,14 +174,33 @@ func (s DBStore) AllSessionActivity(ctx context.Context) ([]SessionActivity, err
 	}
 	out := make([]SessionActivity, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, SessionActivity{
-			ID: r.ID, WorkbenchID: r.WorkbenchID, Title: r.Title, AgentCwd: r.AgentCwd,
-			ReportedAt: activityStamp(r.AgentStateAt, now, db.ParseActivityStamp),
-			LastActive: activityStamp(r.LastActiveAt, now, db.ParseActivityStamp),
-			Finished:   r.Finished, DeleteRequested: r.DeleteRequested,
-		})
+		out = append(out, activityOf(r, now))
 	}
 	return out, nil
+}
+
+// SessionActivityOf is AllSessionActivity's row of one session, read by id
+// (the last check before a destructive step); false when there is no row.
+func (s DBStore) SessionActivityOf(ctx context.Context, id int64) (SessionActivity, bool, error) {
+	r, ok, err := s.DB.TerminalSessionActivityOf(ctx, id)
+	if err != nil || !ok {
+		return SessionActivity{}, false, err //nolint:wrapcheck // names the read
+	}
+	now := time.Now
+	if s.Now != nil {
+		now = s.Now
+	}
+	return activityOf(r, now), true, nil
+}
+
+// activityOf reads a stored row, the stamps by the one shared rule.
+func activityOf(r db.TerminalSessionActivity, now func() time.Time) SessionActivity {
+	return SessionActivity{
+		ID: r.ID, WorkbenchID: r.WorkbenchID, Title: r.Title, AgentCwd: r.AgentCwd,
+		ReportedAt: activityStamp(r.AgentStateAt, now, db.ParseActivityStamp),
+		LastActive: activityStamp(r.LastActiveAt, now, db.ParseActivityStamp),
+		Finished:   r.Finished, DeleteRequested: r.DeleteRequested,
+	}
 }
 
 // activityStamp reads a stored stamp: zero when none is stored, now when

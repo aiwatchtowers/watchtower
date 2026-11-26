@@ -595,6 +595,79 @@ func TestProj18_QuietSessionReopenedDuringTheFinalChecksKeepsItsWorktree(t *test
 	}
 }
 
+// flipOnGit runs flip once, before the first git command match accepts.
+type flipOnGit struct {
+	SystemGit
+	mu    sync.Mutex
+	match func(args []string) bool
+	flip  func()
+	done  bool
+}
+
+func (g *flipOnGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	g.mu.Lock()
+	if !g.done && g.match(args) {
+		g.done = true
+		g.flip()
+	}
+	g.mu.Unlock()
+	return g.SystemGit.RunGit(ctx, dir, bin, args...)
+}
+
+// TestProj18_QuietSessionReopenedDuringTheBranchChecksKeepsItsBranch: the
+// session reopens while the branch is checked one last time (the re-listing
+// of worktrees right before the ref delete); the branch stays.
+func TestProj18_QuietSessionReopenedDuringTheBranchChecksKeepsItsBranch(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root := a.pushedWork("wt", "feat/x")
+	a.record(root, "feat/x")
+	now := time.Now()
+	a.quietSession(now.Add(-30 * time.Hour))
+	lists := 0
+	a.git = &flipOnGit{
+		match: func(args []string) bool {
+			if slices.Equal(args, []string{"worktree", "list", "--porcelain"}) {
+				lists++
+				return lists == 5 // the re-listing in notCheckedOutNow, after the worktree went
+			}
+			return false
+		},
+		flip: func() { a.store.activity[0].LastActive = now.Add(-time.Minute) },
+	}
+	if _, err := a.run(now); err != nil {
+		t.Fatal(err)
+	}
+	if !a.branchExists("feat/x") {
+		t.Fatalf("the reopened session's branch went (lists seen %d)", lists)
+	}
+}
+
+// TestProj18_QuietSessionReopenedDuringLsFilesKeepsItsBuild: the session
+// reopens while git lists what it tracks in a build folder (right before the
+// folder is moved aside); the build stays.
+func TestProj18_QuietSessionReopenedDuringLsFilesKeepsItsBuild(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	_, builds := a.unpushedWithBuild()
+	now := time.Now()
+	a.quietSession(now.Add(-30 * time.Hour))
+	a.git = &flipOnGit{
+		match: func(args []string) bool {
+			return len(args) > 0 && args[0] == "ls-files" && slices.ContainsFunc(args, func(s string) bool { return strings.HasPrefix(s, ":(literal)") })
+		},
+		flip: func() { a.store.activity[0].LastActive = now.Add(-time.Minute) },
+	}
+	if _, err := a.run(now); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range builds {
+		if !exists(b) {
+			t.Fatalf("build %s went", b)
+		}
+	}
+}
+
 // TestAutoDue_QuietMeasuresFromEndedAt: a quiet row's retry and "cleaned
 // since it ended" read from EndedAt, not the zero FinishedAt.
 func TestAutoDue_QuietMeasuresFromEndedAt(t *testing.T) {

@@ -736,6 +736,16 @@ func (a *applier) deleteBranch(ctx context.Context, it *Item) {
 	if !ok || !a.notCheckedOutNow(ctx, it) {
 		return
 	}
+	// The last thing before the ref delete: a quiet session's activity read
+	// afresh (the evaluation above and the re-listing can take long).
+	switch ok, err := a.quietStillStands(ctx); {
+	case err != nil:
+		a.fail(it, err)
+		return
+	case !ok:
+		a.fail(it, ErrSessionNotEnded)
+		return
+	}
 	gctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 	_, code, err := a.git.run.RunGit(gctx, a.folder, a.git.bin, "update-ref", "-d", "refs/heads/"+it.Name, tip)

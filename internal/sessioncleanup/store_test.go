@@ -206,3 +206,23 @@ func TestDBStore_AllSessionActivityReadsWholeSecondAgentState(t *testing.T) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 }
+
+// TestDBStore_SessionActivityOf reads one session by id with the same stamp
+// rule as AllSessionActivity; a missing row is reported as absent.
+func TestDBStore_SessionActivityOf(t *testing.T) {
+	s, _, id := storeFixture(t)
+	if _, err := s.DB.Exec(`UPDATE terminal_sessions SET agent_state_at = '2026-10-10T12:00:00Z' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.AllSessionActivity(context.Background())
+	if err != nil || len(all) != 1 {
+		t.Fatalf("all %+v, %v", all, err)
+	}
+	got, ok, err := s.SessionActivityOf(context.Background(), id)
+	if err != nil || !ok || got != all[0] {
+		t.Fatalf("got %+v, %v, %v; want %+v", got, ok, err, all[0])
+	}
+	if _, ok, err := s.SessionActivityOf(context.Background(), id+100); ok || err != nil {
+		t.Fatalf("missing row: ok %v, err %v", ok, err)
+	}
+}

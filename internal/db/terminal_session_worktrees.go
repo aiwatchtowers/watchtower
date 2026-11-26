@@ -293,6 +293,24 @@ func (db *DB) ListTerminalSessionActivity(ctx context.Context) ([]TerminalSessio
 	return out, nil
 }
 
+// TerminalSessionActivityOf is the activity row of one session (the columns
+// ListTerminalSessionActivity reads); false when there is no such row.
+func (db *DB) TerminalSessionActivityOf(ctx context.Context, id int64) (TerminalSessionActivity, bool, error) {
+	var a TerminalSessionActivity
+	err := db.QueryRowContext(ctx, `SELECT id, COALESCE(project_id, 0), title, COALESCE(agent_cwd, ''),
+		COALESCE(agent_state_at, ''), last_active_at, finished_at IS NOT NULL,
+		delete_requested_at IS NOT NULL
+		FROM terminal_sessions WHERE id = ?`, id).Scan(&a.ID, &a.WorkbenchID, &a.Title, &a.AgentCwd,
+		&a.AgentStateAt, &a.LastActiveAt, &a.Finished, &a.DeleteRequested)
+	if errors.Is(err, sql.ErrNoRows) {
+		return a, false, nil
+	}
+	if err != nil {
+		return a, false, fmt.Errorf("reading terminal session %d activity: %w", id, err)
+	}
+	return a, true, nil
+}
+
 // FinishedSessionForCleanup is one session the automatic cleanup may apply
 // (board #2131, #2402): its workbench, when it ended, whether it ended by
 // going quiet rather than by finish_session, its finish (zero for a quiet

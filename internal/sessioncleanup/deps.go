@@ -156,6 +156,10 @@ type Store interface {
 	// standalone ones): an agent of another workbench over the same
 	// repository can work inside a worktree too (W6).
 	AllSessionActivity(ctx context.Context) ([]SessionActivity, error)
+	// SessionActivityOf is one session's row of AllSessionActivity, read
+	// by id; false when there is none. The last read before a quiet
+	// session's destructive step (Request.Quiet).
+	SessionActivityOf(ctx context.Context, id int64) (SessionActivity, bool, error)
 }
 
 // Proc is one process of the scan. Cwd and Exe "" = unknown. Name is ps's

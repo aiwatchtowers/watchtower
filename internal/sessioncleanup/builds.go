@@ -135,16 +135,11 @@ func (a *applier) quietStillStands(ctx context.Context) (bool, error) {
 	if !a.req.Quiet {
 		return true, nil
 	}
-	acts, err := a.deps.DB.AllSessionActivity(ctx)
+	s, ok, err := a.deps.DB.SessionActivityOf(ctx, a.req.SessionID)
 	if err != nil {
 		return false, fmt.Errorf("re-reading the session's activity: %w", err)
 	}
-	for _, s := range acts {
-		if s.ID == a.req.SessionID {
-			return quietStands(a.req, s, true), nil
-		}
-	}
-	return false, nil
+	return quietStands(a.req, s, ok), nil
 }
 
 // sessionEnded: the planned session finished (finish_session) or is being
@@ -225,7 +220,7 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 		if holder := b.worktreeInside(f.path); holder != "" {
 			continue // a linked worktree lives in it: its work is not build output
 		}
-		removed, err := b.pruneBuildDir(ctx, root, f)
+		removed, err := b.pruneBuildDir(ctx, root, f, a.quietStillStands)
 		if err != nil {
 			it.BuildError = err.Error()
 			return
@@ -319,9 +314,6 @@ func (a *applier) mayPrune(ctx context.Context, root string) (*builder, bool, er
 			return nil, false, nil
 		}
 	}
-	if ok, err := a.quietStillStands(ctx); err != nil || !ok {
-		return nil, false, err
-	}
 	return b, true, nil
 }
 
@@ -364,7 +356,8 @@ type foundBuild struct {
 // git tracks a file in (its path matched literally) stays (it is the repository's, not build output); a
 // build folder is moved aside and deleted (removeBuildDir), a marked trash
 // leftover deleted as it is.
-func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) (bool, error) {
+func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild,
+	lastCheck func(context.Context) (bool, error)) (bool, error) {
 	rel, err := filepath.Rel(root, f.path)
 	if err != nil {
 		return false, fmt.Errorf("locating %s: %w", f.path, err)
@@ -388,6 +381,12 @@ func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) 
 	}
 	if len(out) > 0 {
 		return false, nil
+	}
+	// The last thing before the move or the delete: the session's activity
+	// read afresh (the ls-files above can take long). It stays on a
+	// failed read.
+	if ok, err := lastCheck(ctx); err != nil || !ok {
+		return false, err
 	}
 	if f.trash {
 		return true, finishTrash(f.path, f.kind.name, os.RemoveAll)

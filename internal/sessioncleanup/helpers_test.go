@@ -277,6 +277,15 @@ func (s *fakeStore) AllSessionActivity(context.Context) ([]SessionActivity, erro
 	return s.activity, nil
 }
 
+func (s *fakeStore) SessionActivityOf(_ context.Context, id int64) (SessionActivity, bool, error) {
+	for _, a := range s.activity {
+		if a.ID == id {
+			return a, true, nil
+		}
+	}
+	return SessionActivity{}, false, nil
+}
+
 // fakeProcs returns a fixed scan and records every Terminate.
 type fakeProcs struct {
 	list       []Proc
