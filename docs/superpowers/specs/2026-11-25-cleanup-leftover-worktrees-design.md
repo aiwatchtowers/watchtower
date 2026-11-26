@@ -47,7 +47,7 @@ After the session applies, each pass runs one **repository pass** per distinct r
 
 **Skip.** A worktree is skipped (not evaluated) when any of these hold:
 
-- a session working in it (W6's rule: live in the session host, or a not-ended row reporting from inside within 24 h);
+- a session working in it (W6's rule: live in the session host, or a not-ended row reporting from inside within 24 h). In this pass a live plain shell holds a tree only when it was opened inside it; a live agent session that has not reported its directory yet holds every tree of the repository. A shell that later cd's into a tree is a process there, covered by the process scan (W5) in the final re-check;
 - it is **not idle**: its last activity is less than `idleFor` (3 days) old.
 
 **Last activity of a worktree** is the newest of:
@@ -63,7 +63,7 @@ A stat that fails, or a walk over its budget, counts as "now" (fail closed: the 
 - removable → applied by name (the sweep apply already takes named items only), its branch with it when the branch item is removable;
 - kept for a reason the build prune accepts (§4) → its build output is pruned.
 
-At most `sweepBatch` (20) worktrees are applied per repository per pass, oldest activity first; the rest wait for the next pass. The repository pass runs after the session applies with its own budget (10 min), so long session applies never starve it; when its budget runs out it stops, and the next pass starts again from scratch.
+At most `sweepBatch` (20) worktrees are removed per repository per pass, oldest activity first; the rest wait for the next pass. Candidates are evaluated in batches of 20, each batch under its own `TryLock` of the repository lock, so 20 kept worktrees cannot starve the ones behind them. A half-removed (`prunable`) worktree is never a candidate; it is left for the owner's Clean Up. The repository pass runs after the session applies with its own budget (10 min), so long session applies never starve it; when its budget runs out it stops, and the next pass starts again from scratch.
 
 The repository pass makes the "settled" reasons of a session scope matter less: a worktree a session will never claim (`existed_before_session`, `created_unknown`, an `agent-*` without a record) is reached here once it is idle.
 
@@ -96,7 +96,7 @@ A process whose executable's base name is a known **native** language server —
 
 | Situation | What happens | Test |
 |---|---|---|
-| Daemon stops (quit, crash, update) mid-pass | The ctx cancels; the current git command finishes or is killed; the next pass re-plans from scratch. A worktree half-removed by `git worktree remove` shows as `prunable` and is pruned by the existing rule. | `TestAutoRun_StoppedMidRepositoryPassReplans` |
+| Daemon stops (quit, crash, update) mid-pass | The ctx cancels; the current git command finishes or is killed; the next pass re-plans from scratch. A worktree half-removed by `git worktree remove` shows as `prunable`; the unattended repository pass never touches it (a prunable entry is also what an unmounted or unreadable folder looks like, and pruning detaches it without any check), so it is left for the owner's Clean Up. | `TestAutoRun_StoppedMidRepositoryPassReplans` |
 | Unlock succeeded, remove failed | Re-locked with its old reason, kept as `check_failed`. | `TestProj18_LockedMergedRemoveFailureRelocks` |
 | Unlock succeeded, daemon killed before remove or relock | The `watchtower-unlocked` marker is left; the next apply or pass relocks the worktree with its old reason first, then evaluates it as usual. It is never left half-deleted or silently unlocked. | `TestProj18_UnlockedByAnInterruptedPassIsRelocked` |
 | Relock from a marker fails | Marker kept, worktree kept as `check_failed`, retried next pass. | `TestProj18_FailedRelockKeepsTheWorktree` |
@@ -141,7 +141,7 @@ No existing guard is relaxed: every current case keeps its assertion.
 | Quiet sessions are cleaned up (§1) | 1 | `TestProj18_QuietSessionIsCleanedUp`, `TestProj18_LiveQuietSessionIsSkipped`, `TestEndedSessionsForCleanup_*` (db) |
 | Idle detection (§2), nested builds included | 2 | `TestIdle_*`, `TestIdle_NestedIncrementalBuildCountsAsActivity` |
 | Language servers do not keep (§5) | 2 | `TestProj18_LanguageServerDoesNotKeepTheWorktree` |
-| Locked + merged + idle goes, with unlock/relock (§3) | 3 | `TestProj18_LockedMergedIdleWorktreeGoes`, `TestProj18_CommitlessLockedBranchStays`, `TestProj18_LockedMergedRemoveFailureRelocks`, `TestProj18_UnlockedByAnInterruptedPassIsReEvaluated` |
+| Locked + merged + idle goes, with unlock/relock (§3) | 3 | `TestProj18_LockedMergedIdleWorktreeGoes`, `TestProj18_CommitlessLockedBranchStays`, `TestProj18_LockedMergedRemoveFailureRelocks`, `TestProj18_UnlockedByAnInterruptedPassIsRelocked` |
 | DerivedData recognised by content (§4) | 3 | `TestProj18_RenamedDerivedDataIsABuild` |
 | Interrupted unlock is undone (§3) | 3 | `TestProj18_UnlockedByAnInterruptedPassIsRelocked`, `TestProj18_FailedRelockKeepsTheWorktree`, `TestProj18_SweepUnlocksOnlyRightBeforeTheRemove` |
 | Build prune in locked/idle worktrees only (§4) | 3 | `TestProj18_IdleLockedWorktreeLosesItsBuild`, `TestProj18_RecentBuildStays`, `TestProj18_BuildStartedDuringThePruneStops` |
@@ -149,6 +149,12 @@ No existing guard is relaxed: every current case keeps its assertion.
 | Contract and docs updated | 5 | `go test ./docs/guide` (if the guide changes), inventory entry reviewed |
 
 Task 5 updates `docs/inventory/workbench.md` (PROJ-18 amendment + changelog line), `docs/features/workbench.md` (the #2131 entry), `docs/features/README.md` summary, and the user guide page on cleanup if it describes what is kept.
+
+## Known limits
+
+- A W3 worktree that carries a leftover `watchtower-unlocked` marker shows as `check_failed` in a plan made before any apply (the marker is undone by the next apply or pass, not by a plan, which writes nothing).
+- The lock identity check compares content, mtime and inode. On a file system with coarse mtimes that reuses inodes, a lock dropped and retaken with the same text within one tick reads as the same lock. APFS is not affected.
+- A FIFO in place of a lock file delays `git worktree list` by at most its 30 s timeout; the cleanup fails closed when that happens (the repository's worktrees are all kept).
 
 ## Out of scope
 
