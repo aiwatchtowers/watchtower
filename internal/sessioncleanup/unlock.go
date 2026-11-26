@@ -108,7 +108,7 @@ func readSmallFile(path string, maxSize int64) ([]byte, fs.FileInfo, error) {
 	if err != nil {
 		return nil, nil, err //nolint:wrapcheck // callers name the file
 	}
-	defer f.Close() //nolint:errcheck // read only
+	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
 		return nil, nil, err //nolint:wrapcheck // callers name the file
