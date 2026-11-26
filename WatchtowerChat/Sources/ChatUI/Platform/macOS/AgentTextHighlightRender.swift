@@ -46,20 +46,25 @@ enum AgentTextHighlightRender {
     private struct Key: Hashable {
         let text: NSAttributedString
         let resolvedPaths: Set<String>
+        let clickable: Bool
     }
 
     private static let scans = MarkdownMemo<NSAttributedString, [Found]>(totalCostLimit: 1 << 16)
     private static let memo = MarkdownMemo<Key, NSAttributedString>(totalCostLimit: 4 << 20)
 
-    static func highlighted(_ text: NSAttributedString, resolvesPath: (String) -> Bool) -> NSAttributedString {
+    /// `clickable` false (a feed with no span action) leaves the click attribute off every span: colour only.
+    static func highlighted(
+        _ text: NSAttributedString, clickable: Bool = true, resolvesPath: (String) -> Bool
+    ) -> NSAttributedString {
         let found = scans.value(for: text, cost: { max($0.count, 1) }, build: { scan(text) })
         var resolved = Set<String>()
         for item in found where item.span.kind == .path && !resolved.contains(item.span.text) {
             if resolvesPath(item.span.text) { resolved.insert(item.span.text) }
         }
-        return memo.value(for: Key(text: text, resolvedPaths: resolved), cost: { $0.length }, build: {
+        let key = Key(text: text, resolvedPaths: resolved, clickable: clickable)
+        return memo.value(for: key, cost: { $0.length }, build: {
             let kept = kept(found, resolved: resolved)
-            return kept.isEmpty ? text : apply(kept, to: text)
+            return kept.isEmpty ? text : apply(kept, to: text, clickable: clickable)
         })
     }
 
@@ -131,11 +136,11 @@ enum AgentTextHighlightRender {
         return out
     }
 
-    private static func apply(_ found: [Found], to text: NSAttributedString) -> NSAttributedString {
+    private static func apply(_ found: [Found], to text: NSAttributedString, clickable: Bool) -> NSAttributedString {
         let out = NSMutableAttributedString(attributedString: text)
         for item in found {
             out.addAttribute(.foregroundColor, value: color(item.span.kind), range: item.range)
-            if item.span.kind.opens {
+            if clickable, item.span.kind.opens {
                 out.addAttribute(.agentHighlight, value: AgentTextHighlightBox(item.span), range: item.range)
             }
             // Inline code already has its monospaced font.
@@ -157,6 +162,15 @@ enum AgentTextHighlightRender {
         font.fontDescriptor.withDesign(.monospaced).flatMap { NSFont(descriptor: $0, size: font.pointSize) } ?? font
     }
 }
+extension MessageHighlighting {
+    /// A run of this message's text coloured (`AgentTextHighlightRender`): its paths through the feed's resolver, its
+    /// spans clickable only when the feed acts on them.
+    @MainActor
+    func highlighted(_ text: NSAttributedString) -> NSAttributedString {
+        AgentTextHighlightRender.highlighted(text, clickable: open != nil, resolvesPath: resolvesPath)
+    }
+}
+
 /// When a click on a highlighted span runs its action (review round 1): a plain single click — no modifier, no
 /// double or triple click, nothing selected — that went up on the span it went down on. Anything else is AppKit's:
 /// a drag selects, a double click selects the word, a control-click opens the menu.

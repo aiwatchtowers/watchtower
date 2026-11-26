@@ -111,7 +111,7 @@ public enum AgentTextHighlights {
     private static let datePattern = regex(#"(?<![\w.:#-])\d{4}-(\d{2})-(\d{2})(?![\w:/-]|\.\d)"#)
     /// `HH:MM`, 00:00–23:59, not glued to a word, a ratio, a ref's `#` (`#12:30` is the ref), seconds (`10:05:33`) or
     /// a dotted number (`10:05.1`); a sentence's full stop after it leaves it a time (`at 10:05.`).
-    private static let clockPattern = regex(#"(?<![\w.:/#-])([01]\d|2[0-3]):[0-5]\d(?![\w:/-]|\.\d|:\d)"#)
+    private static let clockPattern = regex(#"(?<![\w.:/#-])([01]\d|2[0-3]):[0-5]\d(?![\w:/-]|\.\d)"#)
     /// A run of path characters not glued to a scheme's `:` or another path character.
     private static let pathToken = regex(#"(?<![\w.+@~/:-])[\w.+@~/-]+"#)
 

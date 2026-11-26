@@ -12,14 +12,14 @@ import WatchtowerDesign
 public struct NativeMarkdownView: View {
     let text: String
     /// The agent's text in a feed that highlights it (Workchat).
-    var highlighting: AgentTextHighlighting?
+    var highlighting: MessageHighlighting?
     @Environment(\.markdownCodeLinks) private var codeLinks
 
     public init(text: String) {
         self.text = text
     }
 
-    init(text: String, highlighting: AgentTextHighlighting?) {
+    init(text: String, highlighting: MessageHighlighting?) {
         self.text = text
         self.highlighting = highlighting
     }
@@ -38,7 +38,7 @@ struct MarkdownSegmentsView: View {
     let blocks: [MarkdownBlock]
     /// Colours the runs' refs, hashes, paths and commands (`AgentTextHighlightRender`); code blocks and tables stay
     /// as they are.
-    var highlighting: AgentTextHighlighting?
+    var highlighting: MessageHighlighting?
     @Environment(\.markdownCodeLinks) private var codeLinks
     @Environment(\.markdownNavScreens) private var navScreens
 
@@ -63,7 +63,7 @@ struct MarkdownSegmentsView: View {
     private func runText(_ run: MarkdownRun, links: InlineLinkContext) -> NSAttributedString {
         let text = MarkdownRunText.attributed(run, links: links)
         guard let highlighting else { return text }
-        return AgentTextHighlightRender.highlighted(text, resolvesPath: highlighting.resolvesPath)
+        return highlighting.highlighted(text)
     }
 }
 
@@ -741,7 +741,7 @@ struct ChatAnswerText: View {
     let isFinal: Bool
     let isOwner: Bool
     /// The agent's text in a feed that highlights it (Workchat); nil keeps it plain.
-    var highlighting: AgentTextHighlighting?
+    var highlighting: MessageHighlighting?
     @Environment(\.chatAnswerRegions) private var answerRegions
 
     var body: some View {

@@ -64,11 +64,12 @@ enum WorkchatHighlightShotFixtures {
     private static func feed(_ highlights: WorkchatHighlights, root: CodeRoot, index: WorkbenchCodeIndex) -> some View {
         let entries = [SessionFeedEntry(id: "a", kind: "agent", text: agentText)]
         var workchatFeed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
-        workchatFeed.resolvesPath = { path, messageID in
-            highlights.resolves(path, messageID: messageID, root: root, epoch: 1, revision: index.filesRevision,
-                                indexFiles: index.files)
-        }
-        workchatFeed.onHighlight = { _, _ in }
+        workchatFeed.highlighting = AgentTextHighlighting(
+            resolvesPath: { path, messageID in
+                highlights.resolves(path, messageID: messageID, root: root, epoch: 1, revision: index.filesRevision,
+                                    indexFiles: index.files)
+            },
+            openHighlight: { _, _ in })
         var context = workchatFeed.context()
         var follow = ChatFeedFollow(conversationID: 1)
         follow.anchorsBottom = true

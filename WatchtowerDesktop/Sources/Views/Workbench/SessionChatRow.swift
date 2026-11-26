@@ -30,10 +30,9 @@ struct WorkchatFeed {
     var transcriptDirs: [String: String] = [:]
     /// The conversation of rows that carry none: a subagent's run takes its parent's.
     var parentConversation: String?
-    /// A click on a highlighted span of the agent's text (`WorkchatHighlights`); nil = the spans are only coloured.
-    var onHighlight: ((AgentTextHighlights.Span, Int64) -> Void)?
-    /// Whether a path in an agent message (by id) is a file of the session's folders: only such a path is coloured.
-    var resolvesPath: ((String, Int64) -> Bool)?
+    /// The agent's text in IDE-style colours (spec 2026-11-24-workchat-polish §2): the span click and path lookup
+    /// (`WorkchatHighlights`); nil keeps the agent's text plain.
+    var highlighting: AgentTextHighlighting?
 
     /// Puts `text` on the general pasteboard (a row's Copy, a highlighted hash or command).
     static func copy(_ text: String) {
@@ -67,15 +66,12 @@ struct WorkchatFeed {
         partActions.copy = rowActions.copy
         partActions.showsSources = false
         partActions.offersContinue = false
-        partActions.openHighlight = onHighlight
-        partActions.resolvesPath = resolvesPath
         if let onAnswer { partActions.sendFixedText = onAnswer }
         var context = ChatFeedContext(isTurnRunning: onAnswer == nil || isWorking || answerPending,
                                       partActions: partActions,
                                       rowActions: rowActions)
         context.compact = true
-        // The agent's refs, hashes, paths and commands in IDE-style colours (spec 2026-11-24-workchat-polish §2).
-        context.highlightsAgentText = true
+        context.agentTextHighlighting = highlighting
         context.margins = EdgeInsets(top: Spacing.medium, leading: Spacing.medium, bottom: Spacing.medium,
                                      trailing: Spacing.medium)
         context.captionView = { message in

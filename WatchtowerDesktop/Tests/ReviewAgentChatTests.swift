@@ -1,4 +1,5 @@
 import AppKit
+import ChatUI
 import SwiftUI
 import XCTest
 import GRDB
@@ -120,7 +121,7 @@ final class ReviewAgentChatHostedTests: XCTestCase {
 
     /// What the rendered feed handed its rows.
     private final class Probe {
-        var handlers: WorkchatHighlightHandlers?
+        var handlers: AgentTextHighlighting?
         var highlights: WorkchatHighlights?
     }
 
@@ -191,11 +192,13 @@ final class ReviewAgentChatHostedTests: XCTestCase {
 
         let handlers = try XCTUnwrap(probe.handlers, "the rendered Author chat built its feed")
         let highlights = try XCTUnwrap(probe.highlights)
-        _ = handlers.resolvesPath("src/a.go", 1)
+        let resolvesPath = try XCTUnwrap(handlers.resolvesPath)
+        let openHighlight = try XCTUnwrap(handlers.openHighlight)
+        _ = resolvesPath("src/a.go", 1)
         await highlights.lookupsFinished()
-        XCTAssertTrue(handlers.resolvesPath("src/a.go", 1))
+        XCTAssertTrue(resolvesPath("src/a.go", 1))
         let text = "src/a.go"
-        handlers.open(AgentTextHighlights.Span(range: text.startIndex..<text.endIndex, kind: .path, text: text), 1)
+        openHighlight(AgentTextHighlights.Span(range: text.startIndex..<text.endIndex, kind: .path, text: text), 1)
         await highlights.clickFinished()
 
         XCTAssertEqual(Set(vm.layout(projectID: projectID).visiblePanes), [.files, .changes(sessionID)],

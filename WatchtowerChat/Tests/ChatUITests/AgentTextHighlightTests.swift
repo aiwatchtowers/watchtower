@@ -88,9 +88,9 @@ final class AgentTextHighlightTests: XCTestCase {
         XCTAssertEqual(kind(of: "docs/missing.md", in: both), .path)
     }
 
-    private func context(role: String, highlights: Bool) -> ChatPartContext {
+    private func context(role: String, highlighting: AgentTextHighlighting?) -> ChatPartContext {
         ChatPartContext(message: ChatFeed.Message(id: 1, role: role, text: "#1", createdAt: .distantPast),
-                        highlightsAgentText: highlights)
+                        agentTextHighlighting: highlighting)
     }
 
     /// A path candidate that does not resolve leaves the ref inside it coloured; one that resolves takes it.
@@ -247,28 +247,67 @@ final class AgentTextHighlightTests: XCTestCase {
     }
 
     func testOnlyTheAgentsTextInAHighlightingFeed() {
-        XCTAssertNotNil(AgentTextHighlighting(context(role: "assistant", highlights: true)))
-        XCTAssertNil(AgentTextHighlighting(context(role: "assistant", highlights: false)))
-        XCTAssertNil(AgentTextHighlighting(context(role: "user", highlights: true)))
-        XCTAssertFalse(ChatFeedContext().highlightsAgentText, "the AI chat and the phone stay plain by default")
+        XCTAssertNotNil(MessageHighlighting(context(role: "assistant", highlighting: AgentTextHighlighting())))
+        XCTAssertNil(MessageHighlighting(context(role: "assistant", highlighting: nil)))
+        XCTAssertNil(MessageHighlighting(context(role: "user", highlighting: AgentTextHighlighting())))
+        XCTAssertNil(ChatFeedContext().agentTextHighlighting, "the AI chat and the phone stay plain by default")
     }
 
     func testAFeedPassesItsFlagToThePartContext() {
-        var actions = ChatPartActions()
         var opened: [AgentTextHighlights.Span] = []
-        actions.openHighlight = { span, messageID in
-            XCTAssertEqual(messageID, 1)
-            opened.append(span)
-        }
-        actions.resolvesPath = { path, messageID in path == "a/b.go" && messageID == 1 }
-        let highlighting = AgentTextHighlighting(ChatPartContext(
+        let value = AgentTextHighlighting(
+            resolvesPath: { path, messageID in path == "a/b.go" && messageID == 1 },
+            openHighlight: { span, messageID in
+                XCTAssertEqual(messageID, 1)
+                opened.append(span)
+            })
+        let highlighting = MessageHighlighting(ChatPartContext(
             message: ChatFeed.Message(id: 1, role: "assistant", text: "", createdAt: .distantPast),
-            actions: actions, highlightsAgentText: true))
+            agentTextHighlighting: value))
         XCTAssertEqual(highlighting?.resolvesPath("a/b.go"), true)
         XCTAssertEqual(highlighting?.resolvesPath("c.go"), false)
         let span = AgentTextHighlights.spans(inPlain: "#7")[0]
         highlighting?.open?(span)
         XCTAssertEqual(opened, [span])
+    }
+
+    /// Spec 2026-11-26 "Opt-in": a chat that opts in with the empty value gets the colours, no paths and no clicks.
+    func testAnEmptyValueColoursWithoutPathsOrClicks() throws {
+        let highlighting = try XCTUnwrap(MessageHighlighting(context(role: "assistant",
+                                                                     highlighting: AgentTextHighlighting())))
+        XCTAssertNil(highlighting.open)
+        let text = highlighting.highlighted(runText(markdown))
+        XCTAssertEqual(color(of: "67a59755a", in: text), NSColor(SyntaxTint.hash))
+        XCTAssertNotEqual(color(of: "internal/a.go", in: text), NSColor(SyntaxTint.path))
+        text.enumerateAttribute(.agentHighlight, in: NSRange(location: 0, length: text.length)) { value, _, _ in
+            XCTAssertNil(value, "no span carries a click")
+        }
+    }
+
+    /// C3: a ref in inline code takes the ref tint and a click, as in plain text.
+    func testInlineCodeRefGetsItsTintAndClick() {
+        let text = AgentTextHighlightRender.highlighted(runText("Merged `#2188` today")) { _ in false }
+        XCTAssertEqual(color(of: "#2188", in: text), NSColor(SyntaxTint.ref))
+        XCTAssertEqual(kind(of: "#2188", in: text), .ref(2188))
+    }
+
+    /// C3: a path in inline code is coloured only when it resolves.
+    func testInlineCodePathIsColouredOnlyWhenItResolves() {
+        let base = runText("Edited `internal/a.go` now")
+        let resolved = AgentTextHighlightRender.highlighted(base) { $0 == "internal/a.go" }
+        XCTAssertEqual(color(of: "internal/a.go", in: resolved), NSColor(SyntaxTint.path))
+        XCTAssertEqual(kind(of: "internal/a.go", in: resolved), .path)
+        let unresolved = AgentTextHighlightRender.highlighted(base) { _ in false }
+        XCTAssertNotEqual(color(of: "internal/a.go", in: unresolved), NSColor(SyntaxTint.path))
+        XCTAssertNil(kind(of: "internal/a.go", in: unresolved))
+    }
+
+    /// A hash in inline code keeps the code's own font: no second monospace pass.
+    func testAHashInInlineCodeKeepsTheCodesFont() {
+        let base = runText("Landed as `4d434597` today")
+        let text = AgentTextHighlightRender.highlighted(base) { _ in false }
+        XCTAssertEqual(attributes(of: "4d434597", in: text)[.font] as? NSFont,
+                       attributes(of: "4d434597", in: base)[.font] as? NSFont)
     }
 }
 #endif

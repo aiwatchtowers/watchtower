@@ -13,7 +13,7 @@ struct TextPartView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
             ChatAnswerText(text: payload.text, isFinal: context.isFinal, isOwner: context.message.role == "user",
-                           highlighting: AgentTextHighlighting(context))
+                           highlighting: MessageHighlighting(context))
             if payload.textCut {
                 Text(hostText.messageCut)
                     .font(.caption)
@@ -23,9 +23,9 @@ struct TextPartView: View {
     }
 }
 
-/// How the agent's text is coloured and what its spans do (spec 2026-11-24-workchat-polish §2): only in a feed that
-/// highlights (`ChatFeedContext.highlightsAgentText`) and only on the agent's own text.
-struct AgentTextHighlighting {
+/// How one message's text is coloured and what its spans do (spec 2026-11-24-workchat-polish §2): only in a feed that
+/// highlights (`ChatFeedContext.agentTextHighlighting`) and only on the agent's own text.
+struct MessageHighlighting {
     /// Whether a path candidate of this message is a file of the session's folders.
     let resolvesPath: (String) -> Bool
     /// A click on a span; nil keeps the spans inert (coloured only: no hand, clicks select as usual).
@@ -33,10 +33,10 @@ struct AgentTextHighlighting {
 
     /// Nil unless the feed highlights and the message is the agent's.
     init?(_ context: ChatPartContext) {
-        guard context.highlightsAgentText, context.message.role == "assistant" else { return nil }
+        guard let highlighting = context.agentTextHighlighting, context.message.role == "assistant" else { return nil }
         let messageID = context.message.id
-        let resolves = context.actions.resolvesPath
+        let resolves = highlighting.resolvesPath
         resolvesPath = { path in resolves?(path, messageID) ?? false }
-        open = context.actions.openHighlight.map { open in { span in open(span, messageID) } }
+        open = highlighting.openHighlight.map { open in { span in open(span, messageID) } }
     }
 }
