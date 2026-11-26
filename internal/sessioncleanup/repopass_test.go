@@ -379,10 +379,16 @@ func TestAutoRun_RepositoryPassKeptWorktreesDoNotStarveTheRest(t *testing.T) {
 	newer := a.claudeWorktree("agent-new", "worktree-agent-new")
 	ageWorktree(t, newer, base.Add(time.Hour))
 
-	a.busyAfter = 1 // another cleanup takes the lock once the first batch let it go
+	// Another cleanup takes the lock once the first batch let it go: the
+	// restore's short hold and the first batch get it, the second batch
+	// does not (residual Q4).
+	a.busyAfter = 2
 	res, err := a.run(time.Now())
 	if err != nil || res.RepoFailed != 0 || !a.listsWorktree(newer) {
 		t.Fatalf("lock taken between batches: res %+v, err %v", res, err)
+	}
+	if want := filepath.Join(a.repo, ".git"); !slices.Equal(a.locked, []string{want, want}) {
+		t.Fatalf("locked %v: want the restore's hold and the first batch before the refusal", a.locked)
 	}
 	a.busyAfter = 0
 	res, err = a.run(time.Now())
