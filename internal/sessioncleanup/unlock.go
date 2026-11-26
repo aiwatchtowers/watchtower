@@ -408,7 +408,8 @@ func isLocked(admin string) (bool, error) {
 // no lock, so a lock now is someone else's and git's refusal of the remove
 // keeps the worktree for them): the lock file, read again, must be that
 // one (errLockChanged otherwise); it is saved in the marker (written and
-// synced first), then `git worktree unlock`. true when it unlocked (the
+// synced first), read once more and must still be that one (the marker
+// goes otherwise), then `git worktree unlock`. true when it unlocked (the
 // caller relocks if the removal fails). A failure leaves the worktree
 // locked as it was (relock) and is returned: the worktree stays.
 func (a *applier) unlockForRemoval(ctx context.Context, root, admin string, judged lockSeen, ok bool) (bool, error) {
@@ -424,8 +425,26 @@ func (a *applier) unlockForRemoval(ctx context.Context, root, admin string, judg
 	case !now.same(judged):
 		return false, errLockChanged
 	}
-	if err := writeMarker(filepath.Join(admin, unlockMarker), []byte(now.body)); err != nil {
+	marker := filepath.Join(admin, unlockMarker)
+	if err := writeMarker(marker, []byte(now.body)); err != nil {
 		return false, fmt.Errorf("saving the lock of %s: %w", root, err)
+	}
+	if a.deps.markerWritten != nil {
+		a.deps.markerWritten(admin)
+	}
+	// The lock's last read, right before the unlock (final review C3): one
+	// dropped or swapped while the marker was written is not the one judged.
+	// Nothing was unlocked yet: the marker, ours, goes and the worktree
+	// stays as it is (a marker that cannot go is undone by the next
+	// restore, which finds the worktree locked).
+	if again, err := readLockFile(admin); err != nil || !again.same(judged) {
+		if err == nil {
+			err = errLockChanged
+		}
+		if rerr := os.Remove(marker); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+			return false, fmt.Errorf("%w (deleting %s: %v)", err, marker, rerr)
+		}
+		return false, err
 	}
 	uctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	_, _, err = a.git.run.RunGit(uctx, a.folder, a.git.bin, "worktree", "unlock", root)

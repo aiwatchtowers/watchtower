@@ -894,3 +894,33 @@ func TestLocked_OwnCommitCheckFailureKeepsTheLock(t *testing.T) {
 	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonLocked, false)
 	wantLocked(t, root)
 }
+
+// TestLocked_LockSwappedWhileTheMarkerIsWrittenIsKept (final review C3): a
+// lock dropped and taken again by someone else between the marker's write
+// and the unlock is not the one W3 judged: the apply never unlocks it, the
+// worktree stays as a locked keep with that new lock, and the marker goes.
+func TestLocked_LockSwappedWhileTheMarkerIsWrittenIsKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.mergedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.lock(root)
+	f.clock = idleLater()
+	log := &opLog{}
+	f.git = &loggingGit{log: log}
+
+	res := f.apply(Request{}, nil, func(d *Deps) {
+		d.markerWritten = func(string) {
+			gitIn(t, f.repo, "worktree", "unlock", root)
+			gitIn(t, f.repo, "worktree", "lock", "--reason", "agent B", root)
+		}
+	})
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonLocked, false)
+	if reason, ok := lockOf(t, root); !ok || reason != "agent B\n" {
+		t.Fatalf("lock %v %q", ok, reason)
+	}
+	if exists(filepath.Join(adminOf(t, root), unlockMarker)) ||
+		slices.ContainsFunc(log.list(), func(op string) bool { return strings.Contains(op, "worktree unlock") }) {
+		t.Fatal("the apply unlocked the new lock, or left its marker")
+	}
+}

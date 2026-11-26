@@ -345,6 +345,9 @@ type Deps struct {
 	// OrphanGrace is how long an apply waits for SIGTERMed orphans to exit
 	// before it keeps the worktree; 0 = 5 s (spec §7).
 	OrphanGrace time.Duration
+	// markerWritten, when set (tests), runs right after an unlock marker
+	// was written and synced, before the lock's last read.
+	markerWritten func(admin string)
 }
 
 // OrphansIn splits the processes inside one of roots into orphans and
