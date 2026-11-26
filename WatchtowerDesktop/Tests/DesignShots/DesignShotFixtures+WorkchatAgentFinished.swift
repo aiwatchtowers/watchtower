@@ -53,8 +53,7 @@ enum WorkchatAgentFinishedShotFixtures {
     }
 
     private static var feed: some View {
-        var workchatFeed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: ["t2"]) { _ in }
-        workchatFeed.highlighting = .workchatShot
+        let workchatFeed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: ["t2"]) { _ in }
         var context = workchatFeed.context()
         var follow = ChatFeedFollow(conversationID: 1)
         follow.anchorsBottom = true

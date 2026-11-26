@@ -190,10 +190,11 @@ final class ReviewAgentChatHostedTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
 
-        let handlers = try XCTUnwrap(probe.handlers, "the rendered Author chat built its feed")
+        let handlers = try XCTUnwrap(probe.handlers, "the rendered Author chat's feed context highlights the agent's text")
         let highlights = try XCTUnwrap(probe.highlights)
-        let resolvesPath = try XCTUnwrap(handlers.resolvesPath)
-        let openHighlight = try XCTUnwrap(handlers.openHighlight)
+        // The context's resolver and click are the screen's handlers: they act through its highlights.
+        let resolvesPath = try XCTUnwrap(handlers.resolvesPath, "the feed context carries the screen's path resolver")
+        let openHighlight = try XCTUnwrap(handlers.openHighlight, "the feed context carries the screen's click")
         _ = resolvesPath("src/a.go", 1)
         await highlights.lookupsFinished()
         XCTAssertTrue(resolvesPath("src/a.go", 1))

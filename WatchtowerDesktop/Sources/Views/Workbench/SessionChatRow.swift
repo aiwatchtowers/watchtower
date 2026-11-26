@@ -30,9 +30,10 @@ struct WorkchatFeed {
     var transcriptDirs: [String: String] = [:]
     /// The conversation of rows that carry none: a subagent's run takes its parent's.
     var parentConversation: String?
-    /// The agent's text in IDE-style colours (spec 2026-11-24-workchat-polish §2): the span click and path lookup
-    /// (`WorkchatHighlights`); nil keeps the agent's text plain.
-    var highlighting: AgentTextHighlighting?
+    /// The agent's text in IDE-style colours (spec 2026-11-24-workchat-polish §2), always on: the colours never
+    /// depend on the screen remembering to opt in; the span click and path lookup (`WorkchatHighlights`) are the
+    /// screen's, and without them the spans are colour only and no path is coloured.
+    var highlighting = AgentTextHighlighting()
 
     /// Puts `text` on the general pasteboard (a row's Copy, a highlighted hash or command).
     static func copy(_ text: String) {

@@ -24,8 +24,7 @@ final class WorkchatOpenBenchmarkTests: XCTestCase {
         let window = SessionFeedWindow()
         let total = store.entries.count
         let shown = Array(store.entries[window.range(total: total)])
-        var feed = WorkchatFeed(entries: shown, markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
-        feed.highlighting = .workchatShot
+        let feed = WorkchatFeed(entries: shown, markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
         let messages = feed.messages
         trace.mark(.adapter)
         let view = ChatUI.ChatFeedView(messages: messages, context: feed.context())

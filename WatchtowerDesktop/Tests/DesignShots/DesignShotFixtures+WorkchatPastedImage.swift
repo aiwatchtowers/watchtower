@@ -25,8 +25,7 @@ enum WorkchatPastedImageShotFixtures {
             SessionFeedEntry(id: "a2", kind: "agent", at: now - 280,
                              text: "I see the error banner in the first screenshot. Checking the recorder logs.")
         ]
-        var feed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
-        feed.highlighting = .workchatShot
+        let feed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
         var context = feed.context()
         let sending = "\(pastes)/20261125-102000-1.png"
         let line = WorkchatOutgoing(id: UUID(), text: "\(sending) and this one after the fix", sentAt: now,

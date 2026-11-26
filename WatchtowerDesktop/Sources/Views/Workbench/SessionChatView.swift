@@ -432,10 +432,9 @@ struct SessionChatView: View {
         workchatFeed.answerPending = !(workchat?.outgoing.isEmpty ?? true)
         workchatFeed.onOpenArtifact = { artifact = $0 }
         workchatFeed.transcriptDirs = store.transcriptDirs
-        let handlers = highlightHandlers()
-        highlightProbe?(handlers, highlights)
-        workchatFeed.highlighting = handlers
+        workchatFeed.highlighting = highlightHandlers()
         var context = workchatFeed.context()
+        highlightProbe?(context.agentTextHighlighting, highlights)
         context.hasEarlier = Self.hasEarlier(windowHasEarlier: window.hasEarlier(total: total),
                                              hasEarlierPage: store.hasEarlierPage,
                                              pageFailed: store.earlierPageError != nil)

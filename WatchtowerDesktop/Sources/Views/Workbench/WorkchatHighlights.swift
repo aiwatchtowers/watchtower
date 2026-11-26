@@ -215,9 +215,10 @@ final class WorkchatHighlights {
 }
 
 extension EnvironmentValues {
-    /// Tests only: a rendered Workchat feed reports the span handlers it hands its rows, with the highlights they act
-    /// through, so a hosted test can click a span of the real view (final review: Branch review's Author chat).
-    @Entry var workchatHighlightProbe: (@MainActor (AgentTextHighlighting, WorkchatHighlights) -> Void)?
+    /// Tests only: a rendered Workchat feed reports the highlighting its feed context hands its rows
+    /// (`ChatFeedContext.agentTextHighlighting`), with the highlights its handlers act through, so a hosted test can
+    /// click a span of the real view (final review: Branch review's Author chat).
+    @Entry var workchatHighlightProbe: (@MainActor (AgentTextHighlighting?, WorkchatHighlights) -> Void)?
 }
 
 /// The Workchat holds its session root while it is on screen (`CodeFilesCenter.startHolding`, reviews rounds 2–4): the

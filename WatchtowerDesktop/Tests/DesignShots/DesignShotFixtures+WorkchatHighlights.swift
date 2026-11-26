@@ -84,11 +84,3 @@ enum WorkchatHighlightShotFixtures {
             .detailBackground()
     }
 }
-
-extension AgentTextHighlighting {
-    /// The highlighting the real Workchat sets (`SessionChatView`), for a shot or benchmark whose agent text names no
-    /// file of a session folder: no path resolves, a click does nothing.
-    static var workchatShot: AgentTextHighlighting {
-        AgentTextHighlighting(resolvesPath: { _, _ in false }, openHighlight: { _, _ in })
-    }
-}

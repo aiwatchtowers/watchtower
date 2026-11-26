@@ -175,6 +175,18 @@ final class SessionChatViewTests: XCTestCase {
             .agentTextHighlighting)
     }
 
+    /// Final review A2: the Workchat colours the agent's text with no setup — a feed that sets no handlers still
+    /// highlights (colour only, no path), so the colours never switch off silently; the AI chat stays plain.
+    func testAWorkchatFeedHighlightsWithoutSetup() {
+        let feed = WorkchatFeed(entries: [SessionFeedEntry(id: "a", kind: "agent", text: "#12")],
+                                markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
+        let highlighting = feed.context().agentTextHighlighting
+        XCTAssertNotNil(highlighting)
+        XCTAssertNil(highlighting?.resolvesPath)
+        XCTAssertNil(highlighting?.openHighlight)
+        XCTAssertNil(ChatFeedContext().agentTextHighlighting, "the AI chat's default stays plain")
+    }
+
     private func span(_ text: String, _ kind: AgentTextHighlights.Kind) -> AgentTextHighlights.Span {
         AgentTextHighlights.Span(range: text.startIndex..<text.endIndex, kind: kind, text: text)
     }
