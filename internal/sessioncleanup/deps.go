@@ -350,6 +350,9 @@ type Deps struct {
 	// markerWritten, when set (tests), runs right after an unlock marker
 	// was written and synced, before the lock's last read.
 	markerWritten func(admin string)
+	// rechecking, when set (tests), runs at the start of every re-check
+	// (applier.fresh): the phase right after the batch's selection.
+	rechecking func()
 }
 
 // OrphansIn splits the processes inside one of roots into orphans and

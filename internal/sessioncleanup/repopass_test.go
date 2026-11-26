@@ -1251,7 +1251,9 @@ func TestGitArgv_RepositoryPassChecksNameTheLockedRepository(t *testing.T) {
 // round 3 R3-3, round 4 R4-5): a tree git starts to list as prunable after
 // the pass chose it — its directory moved aside, as an unmounted volume's
 // contents vanish; no privilege can see through that — is rejected by the
-// re-check: no bundle is unregistered and no `worktree remove` runs.
+// re-check: no bundle is unregistered and no `worktree remove` runs. The
+// tree moves at the first re-check (residual R4: a phase signal, not a
+// count of listings), which the test checks was reached.
 func TestAutoRun_RepositoryPassTreeGonePrunableAfterSelectionStays(t *testing.T) {
 	t.Parallel()
 	a := newRepoPassFixture(t)
@@ -1259,25 +1261,24 @@ func TestAutoRun_RepositoryPassTreeGonePrunableAfterSelectionStays(t *testing.T)
 	aside := root + ".aside"
 	ops := &opLog{}
 	a.ls = &fakeLS{log: ops}
-	lists := 0
-	a.git = &loggingGit{log: ops, before: func(args []string) *gitAnswer {
-		// Listings: the batch's facts, then the first re-check's.
-		if len(args) > 1 && args[len(args)-2] == "list" && args[len(args)-1] == "--porcelain" {
-			if lists++; lists == 2 {
-				if err := os.Rename(root, aside); err != nil {
-					t.Error(err)
-				}
+	a.git = &loggingGit{log: ops}
+	var once sync.Once
+	reached := false
+	a.rechecking = func() {
+		once.Do(func() {
+			reached = true
+			if err := os.Rename(root, aside); err != nil {
+				t.Error(err)
 			}
-		}
-		return nil
-	}}
+		})
+	}
 
 	if _, err := a.run(time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if lists < 2 || !exists(filepath.Join(aside, "agent-1.txt")) || !a.listsWorktree(root) ||
+	if !reached || !exists(filepath.Join(aside, "agent-1.txt")) || !a.listsWorktree(root) ||
 		!a.branchExists("worktree-agent-1") {
-		t.Fatalf("acted on a tree that turned prunable (%d listings)", lists)
+		t.Fatalf("acted on a tree that turned prunable (re-check reached: %v)", reached)
 	}
 	for _, op := range ops.list() {
 		if strings.Contains(op, "lsregister -u") || strings.Contains(op, "worktree remove") {
@@ -1289,12 +1290,14 @@ func TestAutoRun_RepositoryPassTreeGonePrunableAfterSelectionStays(t *testing.T)
 // TestAutoRun_RepositoryPassUnreadableSessionsAtAPruneStopTheRepository
 // (#2402, fix round 3 R3-4): the sessions or the ledger's owners that the
 // prune's fresh re-check cannot read stop the repository's pass as
-// unreadable live runs do: no later build goes on an older read.
+// unreadable live runs do: no later build goes on an older read. The read
+// fails from the first re-check on (residual R4: a phase signal, not a
+// count of reads), which the test checks was reached.
 func TestAutoRun_RepositoryPassUnreadableSessionsAtAPruneStopTheRepository(t *testing.T) {
 	t.Parallel()
 	for name, fail := range map[string]func(*fakeStore){
-		"activity": func(s *fakeStore) { s.activityFailAt = 2 },
-		"owners":   func(s *fakeStore) { s.ownersFailAt = 2 },
+		"activity": func(s *fakeStore) { s.activityFailAt = s.activityReads + 1 },
+		"owners":   func(s *fakeStore) { s.ownersFailAt = s.ownersReads + 1 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -1306,11 +1309,15 @@ func TestAutoRun_RepositoryPassUnreadableSessionsAtAPruneStopTheRepository(t *te
 				builds = append(builds, swiftBuild(t, filepath.Join(root, ".build")))
 				ageWorktree(t, root, time.Now().Add(-time.Duration(48-i)*time.Hour))
 			}
-			// Read 1 is the batch's facts, read 2 the first prune's re-check.
-			fail(a.store)
+			rechecks := 0
+			a.rechecking = func() {
+				if rechecks++; rechecks == 1 {
+					fail(a.store)
+				}
+			}
 			res, err := a.run(time.Now())
-			if err != nil || res.RepoFailed != 1 {
-				t.Fatalf("res %+v, err %v", res, err)
+			if err != nil || res.RepoFailed != 1 || rechecks != 1 {
+				t.Fatalf("res %+v, err %v, re-checks %d (want the first prune's, then a stop)", res, err, rechecks)
 			}
 			for _, b := range builds {
 				if !exists(filepath.Join(b, buildMarker)) {

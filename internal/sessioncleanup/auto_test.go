@@ -100,6 +100,9 @@ type autoFixture struct {
 	liveCtx func(context.Context)
 	// ls is Deps.LS; nil = none.
 	ls LaunchServices
+	// rechecking is Deps.rechecking: it runs at the start of every
+	// re-check, right after the batch's selection; nil = none.
+	rechecking func()
 	// held is whether a run holds the repository lock right now.
 	held atomic.Bool
 }
@@ -114,6 +117,7 @@ func (a *autoFixture) run(now time.Time) (AutoResult, error) {
 	d := a.deps()
 	d.Results = a.results
 	d.LS = a.ls
+	d.rechecking = a.rechecking
 	d.Lock = func(context.Context, string) (func(), error) {
 		a.t.Error("the pass took the waiting lock")
 		return func() {}, nil

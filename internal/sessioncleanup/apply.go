@@ -435,6 +435,9 @@ func (a *applier) worktreeRemovedOn(branch string) bool {
 
 // fresh is a new evaluation of the request: the re-check's facts.
 func (a *applier) fresh(ctx context.Context) (*builder, error) {
+	if a.deps.rechecking != nil {
+		a.deps.rechecking()
+	}
 	if err := benchFolderGone(ctx, a.deps, a.req); err != nil {
 		return nil, fmt.Errorf("re-checking: %w", err)
 	}
