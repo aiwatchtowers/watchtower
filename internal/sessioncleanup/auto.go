@@ -130,6 +130,9 @@ func AutoRun(ctx context.Context, ad AutoDeps, now time.Time) (AutoResult, error
 		switch {
 		case errors.Is(applyErr, errCleanupBusy):
 			continue
+		case c.Quiet && errors.Is(applyErr, ErrSessionNotEnded):
+			// Active again since it was listed: nothing removed, no failure.
+			continue
 		case applyErr != nil:
 			out.Failed++
 			ad.logf("session cleanup: session %d: %v", c.SessionID, applyErr)
@@ -170,7 +173,7 @@ func autoApply(ctx context.Context, ad AutoDeps, c AutoCandidate, live []int64, 
 		return unlock, nil
 	}
 	res, err := Apply(ctx, d, Request{SessionID: c.SessionID, WorkbenchID: c.WorkbenchID, LiveSessions: live,
-		NoSize: true, PruneBuilds: true, NoTerminate: true, RequireEnded: !c.Quiet, Quiet: c.Quiet, BuildsChecked: checkedRoots(c),
+		NoSize: true, PruneBuilds: true, NoTerminate: true, RequireEnded: !c.Quiet, Quiet: c.Quiet, QuietBefore: now.Add(-autoQuiet), BuildsChecked: checkedRoots(c),
 		Now: now}, nil)
 	if err != nil {
 		return res, fmt.Errorf("applying: %w", err)

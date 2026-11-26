@@ -510,6 +510,41 @@ func TestProj18_QuietCandidateActiveAgainRemovesNothing(t *testing.T) {
 	}
 }
 
+// TestProj18_QuietSessionReopenedAfterListingKeepsItsWork: a quiet row whose
+// stored activity moved forward after the candidate list was read (a reopen
+// writes last_active_at before the host run exists, so the live set is
+// still empty) loses nothing and is no failure; the same when the activity
+// moves between the apply's evaluation and its removals.
+func TestProj18_QuietSessionReopenedAfterListingKeepsItsWork(t *testing.T) {
+	t.Parallel()
+	for name, late := range map[string]bool{"before the apply": false, "during the apply": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a := newAutoFixture(t)
+			root := a.pushedWork("wt", "feat/x")
+			a.commit(root, ".gitignore", ".build/\n")
+			gitIn(t, root, "push", "-q", "origin", "feat/x")
+			a.record(root, "feat/x")
+			build := swiftBuild(t, filepath.Join(root, ".build"))
+			now := time.Now()
+			a.quietSession(now.Add(-30 * time.Hour))
+			reopen := func() { a.store.activity[0].LastActive = now.Add(-time.Minute) }
+			if late {
+				a.git = &flipGit{flip: reopen}
+			} else {
+				reopen()
+			}
+			res, err := a.run(now)
+			if err != nil || res.Changed != 0 || (!late && res.Failed != 0) {
+				t.Fatalf("res %+v, err %v", res, err)
+			}
+			if !a.listsWorktree(root) || !a.branchExists("feat/x") || !exists(filepath.Join(build, buildMarker)) {
+				t.Fatal("something of the reopened session went")
+			}
+		})
+	}
+}
+
 // TestAutoDue_QuietMeasuresFromEndedAt: a quiet row's retry and "cleaned
 // since it ended" read from EndedAt, not the zero FinishedAt.
 func TestAutoDue_QuietMeasuresFromEndedAt(t *testing.T) {

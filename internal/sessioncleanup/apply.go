@@ -116,7 +116,7 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 	if err != nil {
 		return res, err
 	}
-	if r.RequireEnded && !r.Sweep && !parts[0].sessionFinished() {
+	if (r.RequireEnded || r.Quiet) && !r.Sweep && !parts[0].endStands() {
 		return res, fmt.Errorf("session %d: %w", r.SessionID, ErrSessionNotEnded)
 	}
 	reportListing(parts)
@@ -419,7 +419,7 @@ var ErrSessionNotEnded = errors.New("the session is no longer finished")
 // session no longer finished stops the apply (check_failed, the rest
 // not_attempted).
 func (a *applier) stillEnded(it *Item, b *builder) bool {
-	if !a.req.RequireEnded || b.sessionFinished() {
+	if b.endStands() {
 		return true
 	}
 	a.fail(it, ErrSessionNotEnded)

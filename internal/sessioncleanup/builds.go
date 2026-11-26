@@ -100,6 +100,24 @@ func (b *builder) sessionFinished() bool {
 	return ok && a.Finished && !a.DeleteRequested
 }
 
+// endStands: the end the apply was started for still stands on the facts b
+// holds: the finish for RequireEnded; for a Quiet request the session is
+// not being deleted and is finished or still quiet (Request.QuietBefore);
+// anything else has nothing to re-check.
+func (b *builder) endStands() bool {
+	switch {
+	case b.req.RequireEnded:
+		return b.sessionFinished()
+	case b.req.Quiet:
+		a, ok := b.activity[b.req.SessionID]
+		if !ok || a.DeleteRequested {
+			return false
+		}
+		return a.Finished || (!a.ReportedAt.After(b.req.QuietBefore) && !a.LastActive.After(b.req.QuietBefore))
+	}
+	return true
+}
+
 // sessionEnded: the planned session finished (finish_session) or is being
 // deleted, or quiet for 24 h (Request.Quiet) — the end of the session the
 // prune waits for. The one place that honours Request.Quiet.
@@ -256,7 +274,7 @@ func (a *applier) mayPrune(ctx context.Context, root string) (*builder, bool, er
 	if err != nil {
 		return nil, false, err
 	}
-	if !b.sessionEnded() || (a.req.RequireEnded && !b.sessionFinished()) {
+	if !b.sessionEnded() || !b.endStands() {
 		return nil, false, nil
 	}
 	w, ok := b.listedWorktree(root)

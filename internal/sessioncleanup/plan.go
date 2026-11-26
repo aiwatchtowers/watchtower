@@ -65,6 +65,12 @@ type Request struct {
 	// (with RequireEnded off: there is no finish to re-check); the CLI
 	// never does.
 	Quiet bool
+	// QuietBefore: with Quiet, the session stands as ended only while
+	// its newest activity (last_active_at, agent_state_at) is at or before
+	// this, re-read under the repository lock and before each removal; a
+	// session that reopened since it was listed loses nothing. A row that
+	// got finished meanwhile still stands as ended.
+	QuietBefore time.Time
 	// BuildsChecked are worktree roots whose build folders an earlier
 	// automatic apply, since the session's finish, already found nothing
 	// left to delete in: the prune does not walk them again.
