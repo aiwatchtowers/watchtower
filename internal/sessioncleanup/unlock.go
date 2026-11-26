@@ -200,7 +200,7 @@ var errLockNotRestored = errors.New("its lock could not be restored; the next cl
 // someone dropped it and locked it again since.
 var errLockChanged = errors.New("locked again since the check; that lock is not the one judged")
 
-// lockedMayGo is W3's exception: the worktree's branch is merged with a
+// lockedMayGo is W3's exception: the worktree's branch is merged and has a
 // commit of its own (mergedWithOwnWork) and the worktree has been idle for
 // idleFor. Any doubt — no admin dir, a detached HEAD, a failed check — is
 // "no".
@@ -211,9 +211,9 @@ func (b *builder) lockedMayGo(ctx context.Context, w worktree, admin string) boo
 // mergedWithOwnWork: branch is merged into the default branch by the drift
 // check's own detection (workbenchcheck.OpenRepositoryAgainst), under
 // which a branch cut from the base with no commit of its own is not
-// merged. git runs through the cleanup's runner, a stdin (the squash
-// check's `git patch-id`) through its GitInputRunner; a runner without one
-// fails that call. A detached HEAD (""), an unknown default branch or a
+// merged, and it has a commit of its own (hasOwnCommit). git runs through
+// the cleanup's runner, a stdin (the squash check's `git patch-id`) through
+// its GitInputRunner; a runner without one fails that call. A detached HEAD (""), an unknown default branch or a
 // verdict git could not reach is not merged.
 func (b *builder) mergedWithOwnWork(ctx context.Context, branch string) bool {
 	if branch == "" || b.repo.defaultBranch == "" {
@@ -236,7 +236,45 @@ func (b *builder) mergedWithOwnWork(ctx context.Context, branch string) bool {
 		return in.RunGitInput(ctx, dir, g.bin, stdin, args...)
 	}
 	repo := workbenchcheck.OpenRepositoryAgainst(ctx, b.repo.folder, b.repo.defaultBranch, run)
-	return repo.BranchMerge(ctx, branch) == workbenchcheck.BranchMerged
+	return repo.BranchMerge(ctx, branch) == workbenchcheck.BranchMerged && b.hasOwnCommit(ctx, branch)
+}
+
+// hasOwnCommit is W3's evidence that a branch the merge check let pass has
+// a commit of its own (final review C2). The merge check is patch
+// equivalence: a branch cut from a pushed feature tip with no commit of its
+// own reads as merged once that feature is squash-merged, yet every commit
+// of it is the feature's. So: a commit of branch outside the default branch
+// that no other local branch and no remote-tracking ref but origin's copy
+// of branch reaches is its own; when none is, branch still has one only if
+// it has no commit outside the default branch at all (merged by a merge or
+// a fast-forward, which the merge check judges by itself). Commits inside
+// the default branch are never weighed against other branches: every branch
+// cut from it since reaches them. Branch names hold no glob character (git
+// check-ref-format), so each pattern matches its ref alone. An error — git
+// cannot run, the branch is gone — is no evidence.
+func (b *builder) hasOwnCommit(ctx context.Context, branch string) bool {
+	g, dir := b.repo.git, b.repo.folder
+	own, err := g.output(ctx, dir, "rev-list", "-1", "refs/heads/"+branch, "--not",
+		"--exclude="+branch, "--branches", "--exclude=origin/"+branch, "--remotes")
+	if err != nil {
+		return false
+	}
+	if strings.TrimSpace(string(own)) != "" {
+		return true
+	}
+	// Against the default branch's refs that exist; none: every commit is
+	// outside, so no evidence.
+	args := []string{"rev-list", "-1", "refs/heads/" + branch, "--not"}
+	for _, ref := range []string{"refs/heads/" + b.repo.defaultBranch, "refs/remotes/origin/" + b.repo.defaultBranch} {
+		switch _, code, err := g.exitCode(ctx, dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); {
+		case err != nil:
+			return false
+		case code == 0:
+			args = append(args, ref)
+		}
+	}
+	outside, err := g.output(ctx, dir, args...)
+	return err == nil && strings.TrimSpace(string(outside)) == ""
 }
 
 // restoreScope runs restoreLocks in every repository whose lock the apply

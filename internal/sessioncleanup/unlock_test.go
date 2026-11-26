@@ -851,3 +851,46 @@ func TestRestoreLocks_UnreadableTreeIsRelocked(t *testing.T) {
 		t.Fatal("the marker stayed")
 	}
 }
+
+// TestLocked_BranchCutFromASquashMergedFeatureStays (final review C2): a
+// locked branch cut from a pushed feature tip, with no commit of its own,
+// reads as merged once its parent is squash-merged (patch equivalence) —
+// but every commit of it is also its parent's: no commit of its own, so the
+// idle locked worktree stays locked.
+func TestLocked_BranchCutFromASquashMergedFeatureStays(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	parent := f.worktree("wt-parent", "feat/parent")
+	f.commit(parent, "a.txt", "a\n")
+	gitIn(t, parent, "push", "-q", "origin", "feat/parent")
+	root := filepath.Join(f.base, "wt-child")
+	gitIn(t, f.repo, "worktree", "add", "-q", "-b", "feat/child", root, "feat/parent")
+	gitIn(t, root, "push", "-q", "origin", "feat/child")
+	gitIn(t, f.repo, "merge", "-q", "--squash", "feat/parent")
+	gitIn(t, f.repo, "commit", "-q", "-m", "feat/parent squashed")
+	gitIn(t, f.repo, "push", "-q", "origin", "main")
+	f.record(root, "feat/child")
+	f.lock(root)
+	f.clock = idleLater()
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonLocked, false)
+	wantLocked(t, root)
+}
+
+// TestLocked_OwnCommitCheckFailureKeepsTheLock (final review C2): when git
+// cannot tell whether the branch has a commit of its own, the merged idle
+// locked worktree stays locked.
+func TestLocked_OwnCommitCheckFailureKeepsTheLock(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.mergedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.lock(root)
+	f.clock = idleLater()
+	f.git = failGitOn("rev-list", "-1", "refs/heads/feat/x")
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonLocked, false)
+	wantLocked(t, root)
+}
