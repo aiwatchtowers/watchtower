@@ -68,7 +68,7 @@ The line under a session shows where its agent works: **main folder · main**, *
 
 A session on a task with a branch shows the branch the work merges into, such as **⎇ feature/login** (a task without one uses its group's). Different branches show as **⎇ 2 target branches**.
 
-A helper the agent starts in its own git worktree is a lane, counted at the end: **⎇ feature/login · 3 lanes**. Only lanes from the current run that still exist count.
+A helper the agent starts in its own worktree is a lane, counted at the end: **⎇ feature/login · 3 lanes**. Only lanes from the current run that still exist count.
 
 ### What cleanup removes
 
@@ -128,7 +128,7 @@ action: nav:projects
 - **Clean Up…** in the row menu, or **Clean Up Old Worktrees…** in the title row's **…** menu, opens the **Clean Up** screen. It covers the workspace and is not a dialog: you can leave it, and a cleanup keeps working. From a row it shows that session's worktrees and branches, with a "Session: …" chip; click the ✕ on the chip to see the whole repository. From the menu it lists every worktree and branch of the repository, with an owner hint.
 - Nothing is ticked at first. Tick rows, **⇧-click** for a range, or choose **Select All That Can Go** (⌘A, except in the search box); Esc clears the ticks. Narrow the list with search, **All / Worktrees / Branches**, an age, an owner and **Merged only**. A worktree's row includes its branch when that can go too.
 - **Clean Up…** waits until every row is checked, asks once, then removes in the background: rows leave as they go, a bar reports "Freed ~X · removed …", and kept rows fold away with their reason.
-- Close the screen with **Clean Up ✕** or by picking a session. One cleanup runs per workbench at a time.
+- Close it with **Clean Up ✕** or by picking a session. One cleanup runs per workbench at a time.
 - A banner "Old worktrees use ~N GB." appears once, after the workbench page has stayed open 30 seconds, when removable worktrees exceed 1 GB, and not while the Clean Up screen is open; its **Clean Up…** opens the Clean Up screen.
 - A session Watchtower put in a worktree that exits on its own cleans up that worktree at once.
 
