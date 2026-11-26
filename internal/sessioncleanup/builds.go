@@ -660,7 +660,8 @@ func buildKindName(name string) bool {
 // (derivedDataDepth).
 func withinDerivedDataDepth(root, dir string) bool {
 	rel, err := filepath.Rel(root, dir)
-	return err == nil && rel != "." && !strings.HasPrefix(rel, "..") && relDepth(rel) <= derivedDataDepth
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) &&
+		relDepth(rel) <= derivedDataDepth
 }
 
 // derivedDataByContent: dir, a real directory of any name, is an Xcode
