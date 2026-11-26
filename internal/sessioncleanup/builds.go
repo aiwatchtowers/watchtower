@@ -176,7 +176,8 @@ func (a *applier) pruneBuilds(ctx context.Context) {
 // re-check. A root the request names in BuildsChecked (an earlier
 // automatic apply checked it since the session's finish) is not walked
 // again. BuildsChecked is set once nothing is left to delete: no build
-// found, or every one found deleted or kept for certain.
+// found, or every one found deleted or kept for certain — never when a
+// quiet session reopened part-way (pruneStopped).
 func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 	root := strings.TrimPrefix(it.Key, "worktree:")
 	if slices.Contains(a.req.BuildsChecked, root) {
@@ -220,13 +221,19 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 		if holder := b.worktreeInside(f.path); holder != "" {
 			continue // a linked worktree lives in it: its work is not build output
 		}
-		removed, err := b.pruneBuildDir(ctx, root, f, a.quietStillStands)
+		outcome, err := b.pruneBuildDir(ctx, root, f, a.quietStillStands)
 		if err != nil {
 			it.BuildError = err.Error()
 			return
 		}
-		if removed {
+		switch outcome {
+		case pruneRemoved:
 			it.BuildsRemoved = append(it.BuildsRemoved, f.path)
+		case pruneStopped:
+			// The session is no longer quiet: the rest is left, and the
+			// root not marked checked, so the pass after it goes quiet
+			// again walks it.
+			return
 		}
 	}
 	it.BuildsChecked = !doubt
@@ -352,15 +359,29 @@ type foundBuild struct {
 	kind  buildKind
 }
 
-// pruneBuildDir deletes one find of root and says whether it did: a folder
+// pruneOutcome is what pruneBuildDir did with one find.
+type pruneOutcome int
+
+const (
+	// pruneKept: the folder stays for good (git tracks a file in it).
+	pruneKept pruneOutcome = iota
+	// pruneRemoved: the folder was deleted.
+	pruneRemoved
+	// pruneStopped: the folder stays because the session no longer
+	// qualifies (lastCheck said so); the prune stops and the root is not
+	// marked checked.
+	pruneStopped
+)
+
+// pruneBuildDir deletes one find of root and says what it did: a folder
 // git tracks a file in (its path matched literally) stays (it is the repository's, not build output); a
 // build folder is moved aside and deleted (removeBuildDir), a marked trash
-// leftover deleted as it is.
+// leftover deleted as it is; a session lastCheck no longer lets go stops it.
 func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild,
-	lastCheck func(context.Context) (bool, error)) (bool, error) {
+	lastCheck func(context.Context) (bool, error)) (pruneOutcome, error) {
 	rel, err := filepath.Rel(root, f.path)
 	if err != nil {
-		return false, fmt.Errorf("locating %s: %w", f.path, err)
+		return pruneKept, fmt.Errorf("locating %s: %w", f.path, err)
 	}
 	// ":(literal)": the folder's path is a path, never pathspec magic or a
 	// glob (a folder named ":(literal)x" or "a*" must still match itself).
@@ -377,21 +398,24 @@ func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild,
 	}
 	out, err := b.repo.git.output(ctx, root, append(args, "--", ":(literal)"+rel)...)
 	if err != nil {
-		return false, fmt.Errorf("reading what git tracks in %s: %w", f.path, err)
+		return pruneKept, fmt.Errorf("reading what git tracks in %s: %w", f.path, err)
 	}
 	if len(out) > 0 {
-		return false, nil
+		return pruneKept, nil
 	}
 	// The last thing before the move or the delete: the session's activity
 	// read afresh (the ls-files above can take long). It stays on a
 	// failed read.
-	if ok, err := lastCheck(ctx); err != nil || !ok {
-		return false, err
+	switch ok, err := lastCheck(ctx); {
+	case err != nil:
+		return pruneKept, err
+	case !ok:
+		return pruneStopped, nil
 	}
 	if f.trash {
-		return true, finishTrash(f.path, f.kind.name, os.RemoveAll)
+		return pruneRemoved, finishTrash(f.path, f.kind.name, os.RemoveAll)
 	}
-	return true, removeBuildDir(f.path, os.RemoveAll)
+	return pruneRemoved, removeBuildDir(f.path, os.RemoveAll)
 }
 
 // removeBuildDir makes a fresh trash folder beside dir

@@ -616,7 +616,8 @@ func (g *flipOnGit) RunGit(ctx context.Context, dir, bin string, args ...string)
 
 // TestProj18_QuietSessionReopenedDuringTheBranchChecksKeepsItsBranch: the
 // session reopens while the branch is checked one last time (the re-listing
-// of worktrees right before the ref delete); the branch stays.
+// of worktrees right before the ref delete, after the worktree went); the
+// branch stays, a check_failed keep that is no failure.
 func TestProj18_QuietSessionReopenedDuringTheBranchChecksKeepsItsBranch(t *testing.T) {
 	t.Parallel()
 	a := newAutoFixture(t)
@@ -624,47 +625,132 @@ func TestProj18_QuietSessionReopenedDuringTheBranchChecksKeepsItsBranch(t *testi
 	a.record(root, "feat/x")
 	now := time.Now()
 	a.quietSession(now.Add(-30 * time.Hour))
-	lists := 0
-	a.git = &flipOnGit{
+	removed, listsAfter := false, 0
+	g := &flipOnGit{
 		match: func(args []string) bool {
-			if slices.Equal(args, []string{"worktree", "list", "--porcelain"}) {
-				lists++
-				return lists == 5 // the re-listing in notCheckedOutNow, after the worktree went
+			switch {
+			case len(args) > 1 && args[0] == "worktree" && args[1] == "remove":
+				removed = true
+			case removed && slices.Equal(args, []string{"worktree", "list", "--porcelain"}):
+				listsAfter++
+				// After the remove: the branch re-check's fresh facts, then
+				// notCheckedOutNow's re-listing — the last git call before
+				// the final activity read and update-ref -d.
+				return listsAfter == 2
 			}
 			return false
 		},
 		flip: func() { a.store.activity[0].LastActive = now.Add(-time.Minute) },
 	}
-	if _, err := a.run(now); err != nil {
-		t.Fatal(err)
+	a.git = g
+	res, err := a.run(now)
+	if err != nil || res.Failed != 0 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if !g.done {
+		t.Fatalf("the reopen never happened (lists after the remove %d)", listsAfter)
+	}
+	if a.listsWorktree(root) {
+		t.Fatal("the worktree stayed: the run never reached the branch's last check")
 	}
 	if !a.branchExists("feat/x") {
-		t.Fatalf("the reopened session's branch went (lists seen %d)", lists)
+		t.Fatal("the reopened session's branch went")
 	}
+	if it := savedItem(t, a, "branch:feat/x"); it.Action != ActionKeep || it.Reason != ReasonCheckFailed || it.Error != "" {
+		t.Fatalf("branch item %+v, want a check_failed keep", it)
+	}
+}
+
+// savedItem is the item of the result the pass saved, by key.
+func savedItem(t *testing.T, a *autoFixture, key string) Item {
+	t.Helper()
+	var saved Result
+	if err := json.Unmarshal([]byte(a.results.body), &saved); err != nil {
+		t.Fatalf("saved result: %v", err)
+	}
+	for _, it := range saved.Items {
+		if it.Key == key {
+			return it
+		}
+	}
+	t.Fatalf("no %s in the saved result %s", key, a.results.body)
+	return Item{}
+}
+
+// lsFilesOfABuild: the `git ls-files` pruneBuildDir runs on a build folder.
+func lsFilesOfABuild(args []string) bool {
+	return len(args) > 0 && args[0] == "ls-files" && slices.ContainsFunc(args, func(s string) bool { return strings.HasPrefix(s, ":(literal)") })
 }
 
 // TestProj18_QuietSessionReopenedDuringLsFilesKeepsItsBuild: the session
 // reopens while git lists what it tracks in a build folder (right before the
-// folder is moved aside); the build stays.
+// folder is moved aside); the build stays, quietly (no failure, no build
+// error), and the worktree is not marked builds-checked.
 func TestProj18_QuietSessionReopenedDuringLsFilesKeepsItsBuild(t *testing.T) {
 	t.Parallel()
 	a := newAutoFixture(t)
-	_, builds := a.unpushedWithBuild()
+	root, builds := a.unpushedWithBuild()
 	now := time.Now()
 	a.quietSession(now.Add(-30 * time.Hour))
-	a.git = &flipOnGit{
-		match: func(args []string) bool {
-			return len(args) > 0 && args[0] == "ls-files" && slices.ContainsFunc(args, func(s string) bool { return strings.HasPrefix(s, ":(literal)") })
-		},
-		flip: func() { a.store.activity[0].LastActive = now.Add(-time.Minute) },
+	g := &flipOnGit{match: lsFilesOfABuild, flip: func() { a.store.activity[0].LastActive = now.Add(-time.Minute) }}
+	a.git = g
+	res, err := a.run(now)
+	if err != nil || res.Failed != 0 {
+		t.Fatalf("res %+v, err %v", res, err)
 	}
-	if _, err := a.run(now); err != nil {
-		t.Fatal(err)
+	if !g.done {
+		t.Fatal("the reopen never happened: no build folder reached ls-files")
 	}
 	for _, b := range builds {
 		if !exists(b) {
 			t.Fatalf("build %s went", b)
 		}
+	}
+	if it := savedItem(t, a, "worktree:"+root); it.BuildsChecked || it.BuildError != "" || len(it.BuildsRemoved) != 0 {
+		t.Fatalf("worktree item %+v: want builds unchecked, no error, none removed", it)
+	}
+}
+
+// TestProj18_QuietSessionReopenedDuringLsFilesOfItsLastBuildIsPrunedLater
+// (F4-1): the reopen lands on the ls-files of the worktree's only build —
+// no later folder's re-check can notice it — so the stop itself must keep
+// the root unchecked; the pass after the session went quiet again walks the
+// root and deletes the build.
+func TestProj18_QuietSessionReopenedDuringLsFilesOfItsLastBuildIsPrunedLater(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root := a.worktree("wt", "feat/x")
+	a.commit(root, ".gitignore", ".build/\n")
+	a.record(root, "feat/x")
+	build := swiftBuild(t, filepath.Join(root, ".build"))
+	now := time.Now()
+	a.quietSession(now.Add(-30 * time.Hour))
+	reopened := now.Add(-time.Minute)
+	g := &flipOnGit{match: lsFilesOfABuild, flip: func() { a.store.activity[0].LastActive = reopened }}
+	a.git = g
+	if res, err := a.run(now); err != nil || res.Failed != 0 {
+		t.Fatalf("first pass: res %+v, err %v", res, err)
+	}
+	if !g.done || !exists(build) {
+		t.Fatalf("first pass: reopen fired %v, build kept %v", g.done, exists(build))
+	}
+	if it := savedItem(t, a, "worktree:"+root); it.BuildsChecked {
+		t.Fatalf("first pass: worktree item %+v marked builds-checked", it)
+	}
+
+	// Quiet again for 30 h; the candidate carries the first pass's result.
+	later := now.Add(30 * time.Hour)
+	a.git = nil
+	a.cands = []AutoCandidate{{SessionID: testSession, WorkbenchID: testWorkbench, EndedAt: reopened, Quiet: true,
+		CleanupAt: now, CleanupResult: a.results.body}}
+	if res, err := a.run(later); err != nil || res.Failed != 0 {
+		t.Fatalf("second pass: res %+v, err %v", res, err)
+	}
+	if exists(build) {
+		t.Fatal("second pass: the build of the quiet-again session survived")
+	}
+	if !a.listsWorktree(root) || !a.branchExists("feat/x") {
+		t.Fatal("second pass: the unpushed work went")
 	}
 }
 
