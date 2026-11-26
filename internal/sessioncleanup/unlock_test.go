@@ -237,7 +237,7 @@ func TestProj18_FailedRelockKeepsTheWorktree(t *testing.T) {
 	interruptedUnlock(t, f, root)
 	f.clock = idleLater()
 	f.git = &loggingGit{log: &opLog{}, before: func(args []string) *gitAnswer {
-		if len(args) > 1 && args[0] == "worktree" && args[1] == "lock" {
+		if i := slices.Index(args, "worktree"); i >= 0 && i+1 < len(args) && args[i+1] == "lock" {
 			return &gitAnswer{code: 128, err: &GitError{Args: args, Code: 128, Stderr: "fatal: injected"}}
 		}
 		return nil
@@ -395,7 +395,7 @@ func TestLocked_MergeCheckFailureKeepsTheLock(t *testing.T) {
 func TestRestoreLocks_ListsNothingWithoutWorktrees(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	if notes := restoreLocks(context.Background(), gitCmd{run: SystemGit{}, bin: gitBinOrSkip(t)}, f.repo,
+	if notes := restoreLocks(context.Background(), gitCmd{run: SystemGit{}, bin: gitBinOrSkip(t)},
 		filepath.Join(f.repo, ".git")); len(notes) != 0 {
 		t.Fatalf("notes %v", notes)
 	}
@@ -702,5 +702,61 @@ func TestLocked_FailedRelockAfterARefusedUnlockStopsTheApply(t *testing.T) {
 	wantResultItem(t, res, "branch:feat/x", ActionKeep, ReasonNotAttempted, false)
 	if !f.listsWorktree(root) || !exists(filepath.Join(adminOf(t, root), unlockMarker)) {
 		t.Fatal("the worktree or its marker went")
+	}
+}
+
+// TestLocked_LockReplacedBeforeW3IsKept (fix round 3, R3-1): the listing
+// showed a lock, then an agent replaced it before W3 read the admin dir:
+// the replacement is not the lock seen before the listing, so it is never
+// judged, and the worktree stays with it.
+func TestLocked_LockReplacedBeforeW3IsKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.mergedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.lock(root)
+	f.clock = idleLater()
+	lists := 0
+	f.git = &afterGit{after: func(args []string) {
+		if slices.Equal(args, []string{"worktree", "list", "--porcelain"}) {
+			if lists++; lists == 3 { // the final re-check's listing
+				gitIn(t, f.repo, "worktree", "unlock", root)
+				gitIn(t, f.repo, "worktree", "lock", "--reason", "agent B", root)
+			}
+		}
+	}}
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonLocked, false)
+	if reason, ok := lockOf(t, root); !ok || reason != "agent B\n" {
+		t.Fatalf("lock %v %q", ok, reason)
+	}
+}
+
+// TestRestoreLocks_NamesTheGitDir (fix round 3, R3-2): the restore names
+// the common dir with --git-dir rather than relying on discovery from it,
+// so a bare repository's linked worktree is relocked too.
+func TestRestoreLocks_NamesTheGitDir(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	bare := filepath.Join(f.base, "remote.git")
+	wt := filepath.Join(f.base, "bare-wt")
+	gitIn(t, f.base, "--git-dir="+bare, "worktree", "add", "-q", wt, "main")
+	gitIn(t, f.base, "--git-dir="+bare, "worktree", "lock", "--reason", planReason, wt)
+	admin := gitIn(t, wt, "rev-parse", "--absolute-git-dir")
+	writeFile(t, filepath.Join(admin, unlockMarker), planReason+"\n")
+	gitIn(t, f.base, "--git-dir="+bare, "worktree", "unlock", wt)
+	log := &opLog{}
+
+	if notes := restoreLocks(context.Background(), gitCmd{run: &loggingGit{log: log}, bin: gitBinOrSkip(t)},
+		bare); len(notes) != 0 {
+		t.Fatalf("notes %v", notes)
+	}
+	if body, err := os.ReadFile(filepath.Join(admin, lockFile)); err != nil || string(body) != planReason+"\n" {
+		t.Fatalf("lock %q, err %v", body, err)
+	}
+	want := "git --git-dir=" + bare + " worktree lock --reason " + planReason + " " + resolvePath(wt)
+	if !slices.Contains(log.list(), want) {
+		t.Fatalf("runs %v, want %q", log.list(), want)
 	}
 }

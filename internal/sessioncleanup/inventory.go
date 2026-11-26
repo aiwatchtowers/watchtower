@@ -69,10 +69,13 @@ type repoState struct {
 	worktrees     []worktree
 	branches      []branchRef
 	adminDirs     map[string]string // worktree root -> <common>/worktrees/<name>
-	contained     map[string]bool   // sha -> in the default branch or a remote ref
-	tipDates      map[string]string // sha -> committer date, RFC 3339 UTC (display only)
-	merged        map[string]bool   // sha in the default branch or origin's copy: every tip listed up front (true or false), others cached
-	mergedRefs    []string          // the existing default refs merged is read against
+	// locksBefore is each admin dir's lock file read just before `git
+	// worktree list` (readLocksBefore): W3 judges only that very lock.
+	locksBefore map[string]lockSeen
+	contained   map[string]bool   // sha -> in the default branch or a remote ref
+	tipDates    map[string]string // sha -> committer date, RFC 3339 UTC (display only)
+	merged      map[string]bool   // sha in the default branch or origin's copy: every tip listed up front (true or false), others cached
+	mergedRefs  []string          // the existing default refs merged is read against
 }
 
 // readRepo inventories the repository holding folder; display reads the
@@ -85,6 +88,7 @@ func readRepo(ctx context.Context, g gitCmd, folder string, display bool) (*repo
 		return nil, fmt.Errorf("locating the repository of %s: %w", folder, err)
 	}
 	r.commonDir = absFrom(folder, strings.TrimSpace(string(out)))
+	r.locksBefore = readLocksBefore(r.commonDir)
 	if out, err = g.output(ctx, folder, "worktree", "list", "--porcelain"); err != nil {
 		return nil, fmt.Errorf("listing worktrees: %w", err)
 	}

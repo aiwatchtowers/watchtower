@@ -93,6 +93,9 @@ func (SystemGit) RunGitInput(ctx context.Context, dir, bin string, stdin []byte,
 // config --remove-section);
 // everything else is a read.
 func ownerWrite(args []string) bool {
+	if len(args) > 0 && strings.HasPrefix(args[0], "--git-dir=") {
+		args = args[1:] // the restore names the repository (unlock.go)
+	}
 	switch {
 	case len(args) == 0:
 		return false

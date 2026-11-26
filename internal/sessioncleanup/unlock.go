@@ -107,6 +107,33 @@ func readLock(w worktree, admin string) (lockState, error) {
 	return st, nil
 }
 
+// sameLockAsListed: now is the lock admin held right before the listing
+// (readLocksBefore).
+func (b *builder) sameLockAsListed(admin string, now lockSeen) bool {
+	before, ok := b.repo.locksBefore[admin]
+	return ok && before.same(now)
+}
+
+// readLocksBefore reads the lock file of every admin dir under commonDir,
+// right before the listing (fix round 3, R3-1): a lock the listing shows
+// is judged only while it is still this one. No git runs; an admin dir
+// whose lock cannot be read is left out (its lock is never judged).
+func readLocksBefore(commonDir string) map[string]lockSeen {
+	base := filepath.Join(commonDir, "worktrees")
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil
+	}
+	out := map[string]lockSeen{}
+	for _, e := range entries {
+		admin := filepath.Join(base, e.Name())
+		if seen, err := readLockFile(admin); err == nil && seen.exists {
+			out[admin] = seen
+		}
+	}
+	return out
+}
+
 // judge records the lock W3 let pass for root.
 func (b *builder) judge(root string, seen lockSeen) {
 	b.walkMu.Lock()
@@ -196,8 +223,9 @@ func restoreScope(ctx context.Context, d Deps, r Request) []string {
 	g := gitCmd{run: d.Git, bin: bin}
 	var notes []string
 	for _, common := range keys {
-		// git runs in the common dir itself: no folder is resolved again.
-		notes = append(notes, restoreLocks(ctx, g, common, common)...)
+		// git is pointed at the common dir itself (--git-dir): no folder
+		// is resolved again.
+		notes = append(notes, restoreLocks(ctx, g, common)...)
 	}
 	return notes
 }
@@ -208,7 +236,7 @@ func restoreScope(ctx context.Context, d Deps, r Request) []string {
 // marker stays and W3 keeps its worktree (errUnlockPending) until a later
 // apply restores it. A marker whose worktree is gone is left: git drops its
 // admin dir with it.
-func restoreLocks(ctx context.Context, g gitCmd, folder, commonDir string) []string {
+func restoreLocks(ctx context.Context, g gitCmd, commonDir string) []string {
 	base := filepath.Join(commonDir, "worktrees")
 	entries, err := os.ReadDir(base)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -230,7 +258,7 @@ func restoreLocks(ctx context.Context, g gitCmd, folder, commonDir string) []str
 		if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
 			continue
 		}
-		if err := relock(ctx, g, folder, admin, root); err != nil {
+		if err := relock(ctx, g, "", commonDir, admin, root); err != nil {
 			notes = append(notes, err.Error())
 		}
 	}
@@ -240,9 +268,10 @@ func restoreLocks(ctx context.Context, g gitCmd, folder, commonDir string) []str
 // relock undoes an unlock of ours: when root is not locked now, `git
 // worktree lock` with the reason the marker saved; then the marker goes.
 // A worktree locked meanwhile (killed before the unlock, or locked by an
-// agent since) keeps that lock. The lock runs even when ctx is done (a
+// agent since) keeps that lock. git runs in folder, or — gitDir set (the
+// restore) — with --git-dir=gitDir. The lock runs even when ctx is done (a
 // stopping daemon), within gitTimeout. On failure the marker stays.
-func relock(ctx context.Context, g gitCmd, folder, admin, root string) error {
+func relock(ctx context.Context, g gitCmd, folder, gitDir, admin, root string) error {
 	marker := filepath.Join(admin, unlockMarker)
 	saved, err := os.ReadFile(marker)
 	switch {
@@ -261,6 +290,12 @@ func relock(ctx context.Context, g gitCmd, folder, admin, root string) error {
 			args = append(args, "--reason", reason)
 		}
 		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitTimeout)
+		if gitDir != "" {
+			// Named, not discovered from the working directory (fix round
+			// 3, R3-2): a bare common dir under safe.bareRepository=explicit
+			// is found only so.
+			folder, args = gitDir, append([]string{"--git-dir=" + gitDir}, args...)
+		}
 		_, _, err := g.run.RunGit(lctx, folder, g.bin, append(args, root)...)
 		cancel()
 		if err != nil {
@@ -314,7 +349,7 @@ func (a *applier) unlockForRemoval(ctx context.Context, root, admin string, judg
 	_, _, err = a.git.run.RunGit(uctx, a.folder, a.git.bin, "worktree", "unlock", root)
 	cancel()
 	if err != nil {
-		if rerr := relock(ctx, a.git, a.folder, admin, root); rerr != nil {
+		if rerr := relock(ctx, a.git, a.folder, "", admin, root); rerr != nil {
 			// Not a plain refusal: the worktree may be left unlocked (fix
 			// round 2, R2-6); the apply stops, the marker stays.
 			return false, fmt.Errorf("%w: unlocking %s: %v; locking it again: %v", errLockNotRestored, root, err, rerr)
@@ -361,6 +396,9 @@ func (a *applier) removeWorktreeNow(ctx context.Context, it *Item, root string, 
 	case errors.Is(err, errLockChanged):
 		keepItem(it, ReasonLocked, err.Error())
 		return
+	case errors.Is(err, errLockNotRestored):
+		a.fail(it, err)
+		return
 	case err != nil && errors.As(err, &gitErr) && gitErr.Code > 0:
 		keepItem(it, ReasonCheckFailed, err.Error())
 		return
@@ -376,7 +414,7 @@ func (a *applier) removeWorktreeNow(ctx context.Context, it *Item, root string, 
 		return
 	}
 	detail := fmt.Sprintf("removing it failed (%v); locked again", err)
-	rerr := relock(ctx, a.git, a.folder, admin, root)
+	rerr := relock(ctx, a.git, a.folder, "", admin, root)
 	if rerr != nil {
 		detail = fmt.Sprintf("removing it failed (%v); locking it again failed, the next cleanup retries: %v", err, rerr)
 	}

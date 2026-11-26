@@ -167,9 +167,9 @@ func catchLocked(ctx context.Context, b *builder, w worktree) (string, string, e
 		return "", "", errUnlockPending
 	case !st.locked:
 		return "", "", nil
-	case w.Locked && b.lockedMayGo(ctx, w, admin):
-		// Only a lock the listing already showed is judged (fix round 2,
-		// R2-1): one taken since the listing is someone claiming the
+	case w.Locked && b.sameLockAsListed(admin, st.seen) && b.lockedMayGo(ctx, w, admin):
+		// Only the lock the listing showed is judged (fix rounds 2–3,
+		// R2-1/R3-1): one taken or replaced since is someone claiming the
 		// worktree now, whatever its idleness says.
 		b.judge(w.Root, st.seen)
 		return "", "", nil
