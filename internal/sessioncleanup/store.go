@@ -203,6 +203,11 @@ func activityOf(r db.TerminalSessionActivity, now func() time.Time) SessionActiv
 	}
 }
 
+// WorktreeLastSeen is the database's newest ledger sighting of root.
+func (s DBStore) WorktreeLastSeen(ctx context.Context, root string) (time.Time, bool, error) {
+	return s.DB.WorktreeLastSeen(ctx, root)
+}
+
 // activityStamp reads a stored stamp: zero when none is stored, now when
 // one is stored but does not parse.
 func activityStamp(raw string, now func() time.Time, parse func(string) (time.Time, bool)) time.Time {

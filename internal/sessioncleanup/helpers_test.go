@@ -199,6 +199,9 @@ type fakeStore struct {
 	bench      []string
 	activity   []SessionActivity
 	rootOwners map[string][]int64
+	// lastSeen is the newest ledger sighting per root; seenErr fails the read.
+	lastSeen map[string]time.Time
+	seenErr  error
 	// agentIDs are the session's agent session ids; uuidOwners the rows
 	// holding each uuid (absent = none, which adopts nothing); idsErr and
 	// ownersErr fail those reads.
@@ -284,6 +287,11 @@ func (s *fakeStore) SessionActivityOf(_ context.Context, id int64) (SessionActiv
 		}
 	}
 	return SessionActivity{}, false, nil
+}
+
+func (s *fakeStore) WorktreeLastSeen(_ context.Context, root string) (time.Time, bool, error) {
+	at, ok := s.lastSeen[root]
+	return at, ok, s.seenErr
 }
 
 // fakeProcs returns a fixed scan and records every Terminate.

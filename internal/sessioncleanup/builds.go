@@ -469,6 +469,15 @@ var errBuildScanBudget = errors.New("looking for build folders took too long")
 // (regenerableCaches), and never into what it found. Over budget it fails,
 // and nothing is deleted.
 func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]foundBuild, error) {
+	return findBuilds(ctx, root, budget, false)
+}
+
+// findBuilds is findBuildDirs; strict makes a directory whose .git entry
+// cannot be looked at (a permission error) an error instead of a directory
+// to leave alone. The prune wants the lenient reading (what it cannot see
+// it does not delete); the activity measure wants the strict one (what it
+// cannot see it cannot call quiet).
+func findBuilds(ctx context.Context, root string, budget time.Duration, strict bool) ([]foundBuild, error) {
 	deadline := time.Now().Add(budget)
 	var found []foundBuild
 	n := 0
@@ -491,7 +500,11 @@ func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]fo
 		if name == ".git" {
 			return filepath.SkipDir
 		}
-		if k, ok := isBuildDir(path, name); ok {
+		k, ok, err := buildDirKind(path, name, strict)
+		if err != nil {
+			return err
+		}
+		if ok {
 			found = append(found, foundBuild{path: path, kind: k})
 			return filepath.SkipDir
 		}
@@ -499,40 +512,75 @@ func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]fo
 			found = append(found, foundBuild{path: path, trash: true, kind: k})
 			return filepath.SkipDir
 		}
-		if regenerableCaches[name] || hasGitEntry(path) {
-			return filepath.SkipDir // a cache, or a nested worktree or repository: not ours
+		if regenerableCaches[name] {
+			return filepath.SkipDir // a cache: never entered, so never probed
+		}
+		_, gitErr := os.Lstat(filepath.Join(path, ".git"))
+		if gitErr == nil || !errors.Is(gitErr, fs.ErrNotExist) {
+			if strict && gitErr != nil {
+				return gitErr // cannot tell: the caller measuring activity must not guess
+			}
+			return filepath.SkipDir // a nested worktree or repository: not ours
 		}
 		return nil
 	})
+	if err == nil && strict {
+		err = ctx.Err()
+		if err == nil && time.Now().After(deadline) {
+			err = errBuildScanBudget
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("looking for build folders in %s: %w", root, err)
 	}
 	return found, nil
 }
 
-// isBuildDir: dir (named name, a real directory) is one of buildKinds,
-// returned —
-// it holds no .git entry (a repository or worktree of that name is never
-// build output) and every marker of its kind.
-func isBuildDir(dir, name string) (buildKind, bool) {
+// buildDirKind: dir (named name, a real directory) is one of buildKinds,
+// returned — it holds no .git entry (a repository or worktree of that name
+// is never build output) and every marker of its kind. Lenient (the
+// prune's reading), a lookup that fails for any reason is "not a build
+// folder"; strict (the activity measure's), only an absent or wrongly
+// typed entry is, and any other failure is an error: a build folder that
+// cannot be recognised must not be taken for a plain directory.
+func buildDirKind(dir, name string, strict bool) (buildKind, bool, error) {
 	for _, k := range buildKinds {
-		if k.name != name || hasGitEntry(dir) {
+		if k.name != name {
+			continue
+		}
+		if strict {
+			if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+				continue
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return buildKind{}, false, err
+			}
+		} else if hasGitEntry(dir) {
 			continue
 		}
 		ok := true
+		check := func(sub string, want func(fs.FileInfo) bool) error {
+			fi, err := os.Lstat(filepath.Join(dir, sub))
+			if strict && err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			ok = ok && err == nil && want(fi)
+			return nil
+		}
 		for _, f := range k.files {
-			fi, err := os.Lstat(filepath.Join(dir, f))
-			ok = ok && err == nil && fi.Mode().IsRegular()
+			if err := check(f, func(fi fs.FileInfo) bool { return fi.Mode().IsRegular() }); err != nil {
+				return buildKind{}, false, err
+			}
 		}
 		for _, sub := range k.dirs {
-			fi, err := os.Lstat(filepath.Join(dir, sub))
-			ok = ok && err == nil && fi.IsDir()
+			if err := check(sub, fs.FileInfo.IsDir); err != nil {
+				return buildKind{}, false, err
+			}
 		}
 		if ok {
-			return k, true
+			return k, true, nil
 		}
 	}
-	return buildKind{}, false
+	return buildKind{}, false, nil
 }
 
 // isTrashLeftover: dir is a folder an interrupted prune moved aside —
