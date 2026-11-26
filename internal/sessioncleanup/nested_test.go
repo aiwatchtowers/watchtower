@@ -257,7 +257,11 @@ func TestPlan_RenamedDerivedDataIsACache(t *testing.T) {
 			if tc.reason != "" {
 				action = ActionKeep
 			}
-			wantItem(t, f.plan(Request{}), "worktree:"+root, action, tc.reason)
+			it := wantItem(t, f.plan(Request{}), "worktree:"+root, action, tc.reason)
+			// fix round 2, R2-4: the clone found is the one reported.
+			if tc.clone && it.Detail != filepath.Join(dd, "vendor", "lib") {
+				t.Fatalf("detail %q", it.Detail)
+			}
 		})
 	}
 }

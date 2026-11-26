@@ -236,10 +236,10 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 	doubt := false
 	var found []foundBuild
 	for _, f := range all {
-		switch holds, err := holdsForeignGit(ctx, f, nestedScanBudget); {
+		switch foreign, err := holdsForeignGit(ctx, f, nestedScanBudget); {
 		case err != nil:
 			doubt = true // unreadable or over budget: kept, quietly
-		case !holds:
+		case foreign == "":
 			found = append(found, f)
 		}
 	}
@@ -282,16 +282,17 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 	it.BuildsChecked = !doubt
 }
 
-// holdsForeignGit walks a find without following symlinks for a `.git`
+// holdsForeignGit walks a find without following symlinks for the first `.git`
 // entry of any kind (a directory, a gitfile of a linked worktree or
 // submodule checkout, anything of that name) outside its kind's managed
 // folders, whose children it does not enter: true keeps the find, whose
 // .git could be anyone's work. Over budget, or on an unreadable entry, it
 // fails, and the find is kept.
-func holdsForeignGit(ctx context.Context, f foundBuild, budget time.Duration) (bool, error) {
+func holdsForeignGit(ctx context.Context, f foundBuild, budget time.Duration) (string, error) {
 	deadline := time.Now().Add(budget)
 	n := 0
 	errFound := errors.New("found")
+	found := ""
 	err := filepath.WalkDir(f.path, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -311,17 +312,18 @@ func holdsForeignGit(ctx context.Context, f foundBuild, budget time.Duration) (b
 			return filepath.SkipDir // the tool's own clone or mirror of a package
 		}
 		if d.Name() == ".git" {
+			found = path
 			return errFound
 		}
 		return nil
 	})
 	switch {
 	case errors.Is(err, errFound):
-		return true, nil
+		return found, nil
 	case err != nil:
-		return false, fmt.Errorf("looking for repositories in %s: %w", f.path, err)
+		return "", fmt.Errorf("looking for repositories in %s: %w", f.path, err)
 	}
-	return false, nil
+	return "", nil
 }
 
 // managedChild: path is a direct child of one of the find's managed
@@ -460,7 +462,7 @@ func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild,
 	if f.trash {
 		return pruneRemoved, finishTrash(f.path, f.name, os.RemoveAll)
 	}
-	return pruneRemoved, removeBuildDir(f.path, os.RemoveAll)
+	return pruneRemoved, removeBuildDir(f.path, f.kind, os.RemoveAll)
 }
 
 // removeBuildDir makes a fresh trash folder beside dir
@@ -470,12 +472,12 @@ func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild,
 // after the mark leaves a marked trash folder a later prune finishes; one
 // before it leaves an empty folder at worst, and the build folder
 // untouched.
-func removeBuildDir(dir string, rm func(string) error) error {
+func removeBuildDir(dir string, kind buildKind, rm func(string) error) error {
 	trash, err := os.MkdirTemp(filepath.Dir(dir), filepath.Base(dir)+trashInfix)
 	if err != nil {
 		return fmt.Errorf("making room to move %s aside: %w", dir, err)
 	}
-	if err := os.WriteFile(filepath.Join(trash, trashMarker), []byte(trashMarkerBody), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(trash, trashMarker), []byte(trashMarkerOf(kind)), 0o600); err != nil {
 		_ = os.RemoveAll(trash) // our own folder; the build stays
 		return fmt.Errorf("marking %s: %w", trash, err)
 	}
@@ -714,8 +716,10 @@ func derivedDataAt(dir string) bool {
 
 // isTrashLeftover: dir is a folder an interrupted prune moved aside —
 // named <build folder><trashInfix>…, with no .git entry, and carrying
-// trashMarker with trashMarkerBody as a regular file; moved is the build
-// folder's name. That name is a build kind's or — shallow, within
+// trashMarker as a regular file (trashMarkerOf, whose kind it is
+// recovered as; the bare trashMarkerBody of an older prune gives the
+// name's kind); moved is the build folder's name. That name is a build
+// kind's or — shallow, within
 // derivedDataDepth of the root — any name (a DerivedData folder recognised
 // by its content, which a half-finished delete may have taken). A folder
 // of such a name without the marker is someone else's and stays.
@@ -735,14 +739,33 @@ func isTrashLeftover(dir, name string, shallow bool) (kind buildKind, moved stri
 	}
 	marker := filepath.Join(dir, trashMarker)
 	fi, err := os.Lstat(marker)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() != int64(len(trashMarkerBody)) {
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() > trashMarkerMax {
 		return buildKind{}, "", false
 	}
 	body, err := os.ReadFile(marker)
-	if err != nil || !bytes.Equal(body, []byte(trashMarkerBody)) {
+	if err != nil {
 		return buildKind{}, "", false
 	}
-	return kind, moved, true
+	if bytes.Equal(body, []byte(trashMarkerBody)) {
+		return kind, moved, true // a marker from before the kind was written: the name's
+	}
+	for _, k := range buildKinds {
+		if bytes.Equal(body, []byte(trashMarkerOf(k))) {
+			return k, moved, true
+		}
+	}
+	return buildKind{}, "", false
+}
+
+// trashMarkerMax bounds a marker the prune reads: its body and a kind line.
+const trashMarkerMax = 256
+
+// trashMarkerOf is the marker body of a trash folder of kind k: the fixed
+// body, then the kind the build folder was found as (fix round 2, R2-5), so
+// a leftover is recovered as that kind — a .build found as DerivedData by
+// its content keeps its package clones managed.
+func trashMarkerOf(k buildKind) string {
+	return trashMarkerBody + "kind: " + k.name + "\n"
 }
 
 // hasGitEntry: dir holds a .git file or directory (or anything of that

@@ -167,6 +167,9 @@ type repoScope struct {
 	// unlocked are the folders (resolved) whose repository lockKeys could
 	// not tell, each with its note: never evaluated (sweepBuilders).
 	unlocked map[string]string
+	// locked are the canonical common dirs whose lock Apply took (Deps.Lock):
+	// the only repositories an unlock marker is restored in (restoreScope).
+	locked []string
 }
 
 // folders are the folders the scope evaluates.
@@ -198,6 +201,13 @@ func readScope(ctx context.Context, d Deps, r Request) (*repoScope, error) {
 		s, err := d.DB.CleanupSession(ctx, r.SessionID)
 		if err != nil {
 			return nil, err //nolint:wrapcheck // names the session already
+		}
+		// The session must be the request's workbench's before anything
+		// is done, the recovery of an interrupted unlock included (fix
+		// round 2, R2-3); loadSession checks it again.
+		if r.WorkbenchID != 0 && s.WorkbenchID != r.WorkbenchID {
+			return nil, fmt.Errorf("%w: session %d belongs to workbench %d, not %d",
+				ErrWrongWorkbench, s.ID, s.WorkbenchID, r.WorkbenchID)
 		}
 		sc.sessionFolder, wb = s.Folder, s.WorkbenchID
 	}
@@ -248,6 +258,7 @@ func lockRepositories(ctx context.Context, d Deps, r Request) (func(), error) {
 			return nil, fmt.Errorf("waiting for another cleanup of %s: %w", k, err)
 		}
 		unlocks = append(unlocks, unlock)
+		r.scope.locked = append(r.scope.locked, k)
 	}
 	return unlockAll, nil
 }

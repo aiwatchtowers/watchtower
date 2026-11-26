@@ -345,7 +345,7 @@ func TestRemoveBuildDir_UniqueTrashAndMarker(t *testing.T) {
 	writeFile(t, filepath.Join(lookalike, "precious"), "x\n")
 	old := filepath.Join(dir, ".build.removing-by-watchtower")
 	writeFile(t, filepath.Join(old, "precious"), "x\n")
-	if err := removeBuildDir(build, os.RemoveAll); err != nil {
+	if err := removeBuildDir(build, buildKinds[0], os.RemoveAll); err != nil {
 		t.Fatal(err)
 	}
 	if exists(build) {
@@ -611,7 +611,7 @@ func TestHoldsGitfile_FailsClosed(t *testing.T) {
 	if _, err := holdsForeignGit(context.Background(), foundBuild{path: dir, kind: buildKinds[0]}, -time.Second); err == nil {
 		t.Fatal("no error over budget")
 	}
-	if holds, err := holdsForeignGit(context.Background(), foundBuild{path: dir, kind: buildKinds[0]}, time.Minute); holds || err != nil {
+	if holds, err := holdsForeignGit(context.Background(), foundBuild{path: dir, kind: buildKinds[0]}, time.Minute); holds != "" || err != nil {
 		t.Fatalf("holds %v, err %v", holds, err)
 	}
 }
@@ -686,7 +686,7 @@ func TestFinishTrash_InterruptedDeleteIsFinishedLater(t *testing.T) {
 	dir := t.TempDir()
 	build := swiftBuild(t, filepath.Join(dir, ".build"))
 	interrupted := errors.New("interrupted")
-	err := removeBuildDir(build, func(p string) error {
+	err := removeBuildDir(build, buildKinds[0], func(p string) error {
 		_ = os.Remove(filepath.Join(p, buildMarker)) // part of it went
 		return interrupted
 	})
@@ -1018,5 +1018,37 @@ func TestPrune_TrashOfADotNameIsNoLeftover(t *testing.T) {
 		if !exists(keep) || !exists(filepath.Join(trash, trashMarker)) {
 			t.Fatalf("%s: something went", name)
 		}
+	}
+}
+
+// TestPrune_DerivedDataDotBuildLeftoverKeepsItsKind (fix round 2, R2-5): an
+// interrupted prune of a .build recognised as DerivedData by its content
+// leaves a trash folder that is recovered as DerivedData, so its Xcode
+// package clones (SourcePackages/checkouts) are the tool's own, not
+// foreign; a marker of the old form keeps the kind its name gives.
+func TestPrune_DerivedDataDotBuildLeftoverKeepsItsKind(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	build := derivedData(t, filepath.Join(root, ".build"), "Logs")
+	if err := os.MkdirAll(filepath.Join(build, "SourcePackages", "checkouts", "pkg", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	found, err := findBuildDirs(context.Background(), root, time.Minute)
+	if err != nil || len(found) != 1 || found[0].kind.name != derivedDataKind.name {
+		t.Fatalf("found %+v, err %v", found, err)
+	}
+	if err := removeBuildDir(build, found[0].kind, func(string) error { return errors.New("killed") }); err == nil {
+		t.Fatal("the interrupted delete succeeded")
+	}
+	left, err := findBuildDirs(context.Background(), root, time.Minute)
+	if err != nil || len(left) != 1 || !left[0].trash || left[0].kind.name != derivedDataKind.name {
+		t.Fatalf("leftover %+v, err %v", left, err)
+	}
+	if foreign, err := holdsForeignGit(context.Background(), left[0], time.Minute); foreign != "" || err != nil {
+		t.Fatalf("foreign %q, err %v", foreign, err)
+	}
+	old := markedTrash(t, filepath.Join(t.TempDir(), ".build"+trashInfix+"old"))
+	if k, _, ok := isTrashLeftover(old, filepath.Base(old), true); !ok || k.name != ".build" {
+		t.Fatalf("old marker: kind %q ok %v", k.name, ok)
 	}
 }

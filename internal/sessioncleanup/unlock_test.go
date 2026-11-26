@@ -572,3 +572,135 @@ func TestLocked_UnlockStepFailureStopsTheApply(t *testing.T) {
 		})
 	}
 }
+
+// afterGit is the real git; after, when set, runs once a run has finished
+// (with its arguments).
+type afterGit struct {
+	SystemGit
+	after func(args []string)
+}
+
+func (g *afterGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	out, code, err := g.SystemGit.RunGit(ctx, dir, bin, args...)
+	if g.after != nil {
+		g.after(args)
+	}
+	return out, code, err
+}
+
+// TestLocked_LockTakenAfterTheListingIsKept (fix round 2, R2-1): a lock an
+// agent takes after the final re-check's `worktree list` showed the
+// worktree unlocked, before W3 reads the admin dir, is never judged
+// removable: the worktree stays, locked.
+func TestLocked_LockTakenAfterTheListingIsKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.mergedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.clock = idleLater()
+	lists := 0
+	f.git = &afterGit{after: func(args []string) {
+		if slices.Equal(args, []string{"worktree", "list", "--porcelain"}) {
+			if lists++; lists == 3 { // the final re-check's listing
+				f.lock(root)
+			}
+		}
+	}}
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonLocked, false)
+	wantLocked(t, root)
+}
+
+// TestLocked_RestoreStaysInTheLockedRepository (fix round 2, R2-2): a
+// bench folder symlink retargeted to another repository while the apply
+// waits for its lock does not make it restore markers in that repository:
+// only the repository whose lock it holds is restored.
+func TestLocked_RestoreStaysInTheLockedRepository(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	a := f.pushedWork("wt", "feat/x")
+	f.record(a, "feat/x")
+	f.lock(a)
+	interruptedUnlock(t, f, a)
+	hub := f.otherRepo("hub")
+	b := f.pushedWorkIn(hub, "hub-wt", "feat/hub")
+	gitIn(t, hub, "worktree", "lock", "--reason", planReason, b)
+	writeFile(t, filepath.Join(adminOf(t, b), unlockMarker), planReason+"\n")
+	gitIn(t, hub, "worktree", "unlock", b)
+	link := filepath.Join(f.base, "bench")
+	if err := os.Symlink(f.repo, link); err != nil {
+		t.Fatal(err)
+	}
+	f.store.folders[testWorkbench] = link
+	d := f.deps()
+	var locked []string
+	d.Lock = func(_ context.Context, repo string) (func(), error) {
+		locked = append(locked, repo)
+		// Retarget the folder while the lock is taken.
+		if err := os.Remove(link); err != nil {
+			t.Error(err)
+		}
+		if err := os.Symlink(hub, link); err != nil {
+			t.Error(err)
+		}
+		return func() {}, nil
+	}
+	_, _ = Apply(context.Background(), d, Request{SessionID: testSession}, nil)
+	if !slices.Equal(locked, []string{filepath.Join(f.repo, ".git")}) {
+		t.Fatalf("locked %v", locked)
+	}
+	wantLocked(t, a)
+	if _, ok := lockOf(t, b); ok || !exists(filepath.Join(adminOf(t, b), unlockMarker)) {
+		t.Fatal("the other repository's marker was restored without its lock")
+	}
+}
+
+// TestLocked_WrongWorkbenchRestoresNothing (fix round 2, R2-3): a request
+// for a session of another workbench is refused before any recovery: its
+// markers stay, nothing is relocked.
+func TestLocked_WrongWorkbenchRestoresNothing(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.lock(root)
+	interruptedUnlock(t, f, root)
+	_, err := Apply(context.Background(), f.deps(), Request{SessionID: testSession, WorkbenchID: testWorkbench + 1}, nil)
+	if !errors.Is(err, ErrWrongWorkbench) {
+		t.Fatalf("err %v", err)
+	}
+	if _, ok := lockOf(t, root); ok || !exists(filepath.Join(adminOf(t, root), unlockMarker)) {
+		t.Fatal("a refused request relocked the worktree")
+	}
+}
+
+// TestLocked_FailedRelockAfterARefusedUnlockStopsTheApply (fix round 2,
+// R2-6): git refuses the unlock (yet the lock is gone) and the relock
+// fails too: that is no plain refusal — the apply stops, the marker stays
+// for the next pass.
+func TestLocked_FailedRelockAfterARefusedUnlockStopsTheApply(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.mergedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.lock(root)
+	f.clock = idleLater()
+	f.git = &loggingGit{log: &opLog{}, before: func(args []string) *gitAnswer {
+		switch {
+		case slices.Equal(args, []string{"worktree", "unlock", root}):
+			gitIn(t, f.repo, "worktree", "unlock", root)
+			return &gitAnswer{code: 128, err: &GitError{Args: args, Code: 128, Stderr: "fatal: injected refusal"}}
+		case len(args) > 1 && args[0] == "worktree" && args[1] == "lock":
+			return &gitAnswer{code: 128, err: &GitError{Args: args, Code: 128, Stderr: "fatal: injected"}}
+		}
+		return nil
+	}}
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonCheckFailed, false)
+	wantResultItem(t, res, "branch:feat/x", ActionKeep, ReasonNotAttempted, false)
+	if !f.listsWorktree(root) || !exists(filepath.Join(adminOf(t, root), unlockMarker)) {
+		t.Fatal("the worktree or its marker went")
+	}
+}

@@ -54,14 +54,18 @@ func findNestedRepository(ctx context.Context, root string, budget time.Duration
 			// Skipped only when nothing but its own package clones holds a
 			// .git (fix round 1, F3): an independent clone inside is walked
 			// to, and keeps the worktree.
-			holds, err := holdsForeignGit(ctx, foundBuild{path: path, name: d.Name(), kind: derivedDataKind},
+			foreign, err := holdsForeignGit(ctx, foundBuild{path: path, name: d.Name(), kind: derivedDataKind},
 				time.Until(deadline))
 			if err != nil {
 				return err
 			}
-			if !holds {
+			if foreign == "" {
 				return filepath.SkipDir
 			}
+			// The clone the check found is the one reported (fix round 2,
+			// R2-4): the walk on would skip by other rules.
+			found = filepath.Dir(foreign)
+			return errNestedFound
 		}
 		seen++
 		if seen%nestedClockEvery == 0 {

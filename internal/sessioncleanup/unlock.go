@@ -61,10 +61,12 @@ type lockSeen struct {
 	exists bool
 	body   string
 	mod    time.Time
+	fi     fs.FileInfo // the file itself: a new lock is a new file (os.SameFile)
 }
 
 func (s lockSeen) same(o lockSeen) bool {
-	return s.exists == o.exists && s.body == o.body && s.mod.Equal(o.mod)
+	return s.exists == o.exists && s.body == o.body && s.mod.Equal(o.mod) &&
+		(!s.exists || os.SameFile(s.fi, o.fi))
 }
 
 // readLockFile reads admin's lock file; a read that fails is an error.
@@ -81,7 +83,7 @@ func readLockFile(admin string) (lockSeen, error) {
 	if err != nil {
 		return lockSeen{}, fmt.Errorf("reading %s: %w", path, err)
 	}
-	return lockSeen{exists: true, body: string(body), mod: fi.ModTime()}, nil
+	return lockSeen{exists: true, body: string(body), mod: fi.ModTime(), fi: fi}, nil
 }
 
 // readLock reads w's lock from admin ("" = unknown: the listing alone); a
@@ -122,6 +124,10 @@ func (b *builder) judgedLock(root string) (lockSeen, bool) {
 	seen, ok := b.judged[root]
 	return seen, ok
 }
+
+// errLockNotRestored: an unlock step failed and the lock could not be put
+// back; never a plain refusal (the apply stops, the next pass relocks).
+var errLockNotRestored = errors.New("its lock could not be restored; the next cleanup retries")
 
 // errLockChanged keeps a worktree whose lock is not the one W3 judged:
 // someone dropped it and locked it again since.
@@ -166,12 +172,11 @@ func (b *builder) mergedWithOwnWork(ctx context.Context, branch string) bool {
 	return repo.BranchMerge(ctx, branch) == workbenchcheck.BranchMerged
 }
 
-// restoreScope runs restoreLocks for every repository of the apply's
-// scope (r.scope, read and locked by Apply) — right after the locks, before
-// any fact is loaded, so an evaluation that then fails still leaves no
-// worktree unlocked (fix round 1, F6). A folder whose repository could not
-// be told was never locked and is skipped; a common dir git cannot read
-// now gives a note (its markers keep their worktrees, W3).
+// restoreScope runs restoreLocks in every repository whose lock the apply
+// holds (r.scope.locked) — right after the locks, before any fact is
+// loaded, so an evaluation that then fails still leaves no worktree
+// unlocked (fix round 1, F6). A folder whose repository could not be told
+// was never locked and is not restored.
 func restoreScope(ctx context.Context, d Deps, r Request) []string {
 	if d.Git == nil || r.scope == nil {
 		return nil
@@ -180,24 +185,19 @@ func restoreScope(ctx context.Context, d Deps, r Request) []string {
 	if !ok {
 		return nil
 	}
+	// The canonical common dirs whose locks Apply holds (fix round 2,
+	// R2-2): a folder symlink retargeted since never moves the restore to
+	// another repository. A caller without Deps.Lock holds the locks itself;
+	// its keys are read here, once.
+	keys := r.scope.locked
+	if d.Lock == nil {
+		keys, _ = lockKeys(ctx, d, r.scope.folders(r.Sweep))
+	}
 	g := gitCmd{run: d.Git, bin: bin}
 	var notes []string
-	done := map[string]bool{}
-	for _, f := range r.scope.folders(r.Sweep) {
-		folder := resolvePath(f)
-		if f == "" || r.scope.unlocked[folder] != "" {
-			continue
-		}
-		out, err := g.output(ctx, folder, "rev-parse", "--git-common-dir")
-		if err != nil {
-			notes = append(notes, fmt.Sprintf("%s: the worktrees' locks could not be checked (%v)", folder, err))
-			continue
-		}
-		common := absFrom(folder, strings.TrimSpace(string(out)))
-		if !done[common] {
-			done[common] = true
-			notes = append(notes, restoreLocks(ctx, g, folder, common)...)
-		}
+	for _, common := range keys {
+		// git runs in the common dir itself: no folder is resolved again.
+		notes = append(notes, restoreLocks(ctx, g, common, common)...)
 	}
 	return notes
 }
@@ -315,8 +315,9 @@ func (a *applier) unlockForRemoval(ctx context.Context, root, admin string, judg
 	cancel()
 	if err != nil {
 		if rerr := relock(ctx, a.git, a.folder, admin, root); rerr != nil {
-			return false, fmt.Errorf("unlocking %s: %w; restoring its lock failed, the next cleanup retries: %v",
-				root, err, rerr)
+			// Not a plain refusal: the worktree may be left unlocked (fix
+			// round 2, R2-6); the apply stops, the marker stays.
+			return false, fmt.Errorf("%w: unlocking %s: %v; locking it again: %v", errLockNotRestored, root, err, rerr)
 		}
 		return false, fmt.Errorf("unlocking %s: %w", root, err)
 	}
@@ -375,11 +376,12 @@ func (a *applier) removeWorktreeNow(ctx context.Context, it *Item, root string, 
 		return
 	}
 	detail := fmt.Sprintf("removing it failed (%v); locked again", err)
-	if rerr := relock(ctx, a.git, a.folder, admin, root); rerr != nil {
+	rerr := relock(ctx, a.git, a.folder, admin, root)
+	if rerr != nil {
 		detail = fmt.Sprintf("removing it failed (%v); locking it again failed, the next cleanup retries: %v", err, rerr)
 	}
 	keepItem(it, ReasonCheckFailed, detail)
-	if code <= 0 || !errors.As(err, &gitErr) {
-		a.halt = err
+	if rerr != nil || code <= 0 || !errors.As(err, &gitErr) {
+		a.halt = err // only git's refusal, relocked, lets the apply go on
 	}
 }
