@@ -92,6 +92,9 @@ func activityNewest(ctx context.Context, d Deps, root, adminDir string, budget t
 	if err := ctx.Err(); err != nil {
 		return time.Time{}, err
 	}
+	if time.Since(start) > budget {
+		return time.Time{}, fmt.Errorf("over the %s budget", budget)
+	}
 	return newest, nil
 }
 

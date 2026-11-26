@@ -414,3 +414,71 @@ func TestIdle_UnreadableDirectoryUnderTheWorktreeIsNotIdle(t *testing.T) {
 		t.Fatal("a directory that cannot be looked at read as idle")
 	}
 }
+
+func TestIdle_ExpiredBudgetWithNoBuildFolderIsNotIdle(t *testing.T) {
+	t.Parallel()
+	tr := newIdleTree(t)
+	at, err := lastActivityWithin(context.Background(), tr.deps(), tr.root, tr.admin, -time.Second)
+	if err == nil || !at.Equal(idleNow) {
+		t.Fatalf("expired budget, no build folder: %v, %v; want now and an error", at, err)
+	}
+}
+
+func TestIdle_CancelledContextIsCaughtByTheWalks(t *testing.T) {
+	t.Parallel()
+	tr := newIdleTree(t)
+	build := tr.swiftBuild(".build")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := activityNewest(ctx, tr.deps(), tr.root, tr.admin, time.Minute); err == nil {
+		t.Fatal("activityNewest ignored a cancelled context")
+	}
+	if _, err := findBuilds(ctx, tr.root, time.Minute, true); err == nil {
+		t.Fatal("a strict build search ignored a cancelled context")
+	}
+	if _, err := buildActivity(ctx, build, time.Minute); err == nil {
+		t.Fatal("buildActivity ignored a cancelled context")
+	}
+}
+
+func TestIdle_UnstattableBuildMarkerIsNotIdle(t *testing.T) {
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("root reads everything")
+	}
+	tr := newIdleTree(t)
+	build := tr.swiftBuild("pkg/.build")
+	// The marker cannot be looked at: its folder allows no search.
+	if err := os.Chmod(build, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(build, 0o755) })
+	if tr.idle() {
+		t.Fatal("a build folder whose marker cannot be stat-ed read as idle")
+	}
+	// The prune's lenient reading is unchanged: it simply is not a build folder.
+	if _, ok, err := buildDirKind(build, ".build", false); ok || err != nil {
+		t.Fatalf("lenient buildDirKind = %v, %v; want false, nil", ok, err)
+	}
+}
+
+func TestIdle_UnreadableCacheFolderIsNotAnError(t *testing.T) {
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("root reads everything")
+	}
+	tr := newIdleTree(t)
+	nm := filepath.Join(tr.root, "node_modules")
+	if err := os.MkdirAll(filepath.Join(nm, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tr.touch(nm, idleNow.Add(-7*24*time.Hour))
+	tr.touch(tr.root, idleNow.Add(-7*24*time.Hour))
+	if err := os.Chmod(nm, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(nm, 0o755) })
+	if !tr.idle() {
+		t.Fatal("an unreadable node_modules, never entered, made the worktree busy")
+	}
+}
