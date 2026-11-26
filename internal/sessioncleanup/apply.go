@@ -421,7 +421,15 @@ func (a *applier) fresh(ctx context.Context) (*builder, error) {
 	if err := benchFolderGone(ctx, a.deps, a.req); err != nil {
 		return nil, fmt.Errorf("re-checking: %w", err)
 	}
-	b, err := newBuilder(ctx, a.deps, a.req)
+	r := a.req
+	if r.liveNow != nil {
+		live, err := r.liveNow(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("re-checking: listing the live sessions: %w", err)
+		}
+		r.LiveSessions = live
+	}
+	b, err := newBuilder(ctx, a.deps, r)
 	if err != nil {
 		return nil, fmt.Errorf("re-checking: %w", err)
 	}
@@ -525,6 +533,12 @@ func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string, wa
 		ev := b.evaluateWorktree(ctx, w)
 		if ev.Action != ActionRemove {
 			keepItem(it, ev.Reason, ev.Detail)
+			return nil, false
+		}
+		// The repository pass took the worktree for being idle: right
+		// before the removal it still must be (#2402 §2).
+		if admin := b.repo.adminDirs[root]; walk && a.req.repoPass && (admin == "" || !isIdle(ctx, a.deps, root, admin)) {
+			keepItem(it, reasonNotIdle, "active again since the pass chose it")
 			return nil, false
 		}
 		// The walks above can take long; a quiet session may have reopened

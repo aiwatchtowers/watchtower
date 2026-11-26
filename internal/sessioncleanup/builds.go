@@ -87,12 +87,17 @@ var pruneReasons = map[string]bool{
 
 // pruneCatches are the checks a kept worktree passes again, on fresh
 // facts, before its build output goes: it is under no ~/.claude and no
-// workbench folder, it is the session's own, nothing runs in it (orphans
+// workbench folder, it is the session's own (in the repository pass: no
+// session that recorded it was active lately, the sweep's W2), nothing runs in it (orphans
 // included: a binary of the build itself), no session works in it, no git
 // operation is in progress, and — locked, or in the repository pass — it
 // has been idle for idleFor (catchPruneIdle).
-func pruneCatches() []worktreeCatch {
-	return []worktreeCatch{catchClaudeHome, catchFolders, catchOwnWorktree, catchAnyProcess,
+func (b *builder) pruneCatches() []worktreeCatch {
+	own := catchOwnWorktree
+	if b.req.Sweep {
+		own = catchRecentOwner // the repository pass: no session to own it
+	}
+	return []worktreeCatch{catchClaudeHome, catchFolders, own, catchAnyProcess,
 		catchSessionInIt, catchOperation, catchPruneIdle}
 }
 
@@ -193,10 +198,11 @@ func (b *builder) sessionEnded() bool {
 
 // pruneBuilds deletes the build output of every worktree the apply kept
 // only for its work, when the request asks for it (an automatic apply of an
-// ended session, outside a terminal session) and the apply did not stop.
+// ended session, outside a terminal session, or the repository pass — never
+// the owner's sweep) and the apply did not stop.
 // A failure is recorded on the item's BuildError and never stops anything.
 func (a *applier) pruneBuilds(ctx context.Context) {
-	if !a.req.PruneBuilds || a.req.Sweep || a.req.CallerSessionID != 0 || a.halt != nil {
+	if !a.req.PruneBuilds || a.req.Sweep && !a.req.repoPass || a.req.CallerSessionID != 0 || a.halt != nil {
 		return
 	}
 	for i := range a.items {
@@ -342,7 +348,7 @@ func (f foundBuild) managedChild(path string) bool {
 
 // mayPrune re-reads every fact (a fresh evaluation) and says whether root's
 // build may go now: the session ended (and, for RequireEnded, its finish
-// stands), root is still a listed linked worktree, and it passes every
+// stands; the repository pass has no session), root is still a listed linked worktree, and it passes every
 // pruneCatches check. The fresh builder comes back for the per-folder
 // checks; err is a check that could not be made.
 func (a *applier) mayPrune(ctx context.Context, root string) (*builder, bool, error) {
@@ -350,14 +356,16 @@ func (a *applier) mayPrune(ctx context.Context, root string) (*builder, bool, er
 	if err != nil {
 		return nil, false, err
 	}
-	if !b.sessionEnded() || !b.endStands() {
+	// The repository pass has no session to have ended: what holds it
+	// back is pruneCatches (the sweep's W2, W6, idle).
+	if !b.req.repoPass && !b.sessionEnded() || !b.endStands() {
 		return nil, false, nil
 	}
 	w, ok := b.listedWorktree(root)
 	if !ok {
 		return nil, false, nil
 	}
-	for _, c := range pruneCatches() {
+	for _, c := range b.pruneCatches() {
 		reason, _, err := c(ctx, b, w)
 		if err != nil {
 			return nil, false, err

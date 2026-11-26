@@ -78,11 +78,23 @@ type autoFixture struct {
 	live    map[int64]bool
 	liveErr error
 	// liveFn, when set, answers Live instead of live/liveErr.
-	liveFn  func() (map[int64]bool, error)
-	busy    bool
-	locked  []string
-	results *fakeResults
-	logf    func(format string, args ...any)
+	liveFn func() (map[int64]bool, error)
+	busy   bool
+	// busyAfter, when > 0, makes the lock busy once a run has taken it that
+	// many times: another cleanup getting it in between.
+	busyAfter int
+	locked    []string
+	results   *fakeResults
+	logf      func(format string, args ...any)
+	// benches are the workbenches the repository pass covers; nil = no
+	// repository pass.
+	benches []int64
+	// ctx is the pass's ctx; nil = context.Background().
+	ctx context.Context
+	// budget is AutoDeps.budget; nil = the real one.
+	budget func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	// liveCtx, when set, sees the ctx of every Live read.
+	liveCtx func(context.Context)
 }
 
 func newAutoFixture(t *testing.T) *autoFixture {
@@ -98,24 +110,39 @@ func (a *autoFixture) run(now time.Time) (AutoResult, error) {
 		a.t.Error("the pass took the waiting lock")
 		return func() {}, nil
 	}
-	return AutoRun(context.Background(), AutoDeps{
-		Deps: d,
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var workbenches func(context.Context) ([]int64, error)
+	if a.benches != nil {
+		workbenches = func(context.Context) ([]int64, error) { return a.benches, nil }
+	}
+	taken := 0
+	return AutoRun(ctx, AutoDeps{
+		Deps:        d,
+		Workbenches: workbenches,
+		budget:      a.budget,
 		Candidates: func(_ context.Context, since time.Time) ([]AutoCandidate, error) {
 			if want := now.Add(-autoWindow); !since.Equal(want) {
 				a.t.Errorf("since = %v, want %v", since, want)
 			}
 			return a.cands, nil
 		},
-		Live: func(context.Context) (map[int64]bool, error) {
+		Live: func(ctx context.Context) (map[int64]bool, error) {
+			if a.liveCtx != nil {
+				a.liveCtx(ctx)
+			}
 			if a.liveFn != nil {
 				return a.liveFn()
 			}
 			return a.live, a.liveErr
 		},
 		TryLock: func(repo string) (func(), bool, error) {
-			if a.busy {
+			if a.busy || a.busyAfter > 0 && taken >= a.busyAfter {
 				return nil, false, nil
 			}
+			taken++
 			a.locked = append(a.locked, repo)
 			return func() {}, true, nil
 		},

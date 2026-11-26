@@ -47,7 +47,8 @@ type Request struct {
 	// PruneBuilds lets an apply that names no item, of a session that
 	// ended (finished or being deleted), outside a terminal session,
 	// delete the build output of the worktrees it keeps for their work
-	// (#2131, builds.go). Ignored anywhere else.
+	// (#2131, builds.go), and the repository pass's (repoPass). Ignored
+	// anywhere else — the owner's sweep included.
 	PruneBuilds bool
 	// NoTerminate: the apply signals no process; a worktree with an orphan
 	// in it is kept (process_running), as in a sweep. The daemon's
@@ -95,6 +96,22 @@ type Request struct {
 	// scope is the folder set Apply read once and locked (repoScope); nil
 	// = read here as before (a plan).
 	scope *repoScope
+	// repoPass marks the daemon's repository pass (#2402 §2, repopass.go):
+	// a sweep whose apply may prune the build output of the worktrees it
+	// keeps (pruneBuilds). The owner's sweep never sets it.
+	repoPass bool
+	// onlyRoots, in a sweep, limits the evaluation to these worktree roots
+	// and their branches, with no stale LaunchServices entry: the
+	// repository pass's batch. nil = every worktree.
+	onlyRoots map[string]bool
+	// ownerBenches are further workbenches whose sessions' ledgers count
+	// as a worktree's owners in a sweep (W2): every workbench over the
+	// repository the repository pass covers.
+	ownerBenches []int64
+	// liveNow, when set, re-reads the session host's live runs for every
+	// re-check (applier.fresh): a session the host started since
+	// LiveSessions was read counts. An error fails the re-check.
+	liveNow func(ctx context.Context) ([]int64, error)
 }
 
 // builder carries one evaluation's facts.
@@ -308,14 +325,16 @@ func (b *builder) loadClaudeHome() {
 }
 
 func (b *builder) loadOwners(ctx context.Context) error {
-	owners, err := b.deps.DB.WorkbenchSessionWorktrees(ctx, b.req.WorkbenchID)
-	if err != nil {
-		return fmt.Errorf("reading workbench %d session worktrees: %w", b.req.WorkbenchID, err)
-	}
 	b.rootOwners = map[string][]int64{}
-	for root, ids := range owners {
-		key := resolvePath(root)
-		b.rootOwners[key] = append(b.rootOwners[key], ids...)
+	for _, wb := range append([]int64{b.req.WorkbenchID}, b.req.ownerBenches...) {
+		owners, err := b.deps.DB.WorkbenchSessionWorktrees(ctx, wb)
+		if err != nil {
+			return fmt.Errorf("reading workbench %d session worktrees: %w", wb, err)
+		}
+		for root, ids := range owners {
+			key := resolvePath(root)
+			b.rootOwners[key] = append(b.rootOwners[key], ids...)
+		}
 	}
 	return nil
 }
@@ -679,7 +698,7 @@ func (b *builder) markStaying(w worktree) {
 func (b *builder) listsWorktree(w worktree) bool {
 	structural, _, _ := catchFolders(context.Background(), b, w)
 	if b.req.Sweep {
-		return structural == ""
+		return structural == "" && (b.req.onlyRoots == nil || b.req.onlyRoots[w.Root])
 	}
 	if structural != "" {
 		return b.declaredRoot(w.Root)
@@ -786,6 +805,16 @@ func (b *builder) branchItems(ctx context.Context, worktreeItems []Item) []Item 
 // the ones checked out in a worktree that stays.
 func (b *builder) branchCandidates(worktreeItems []Item) []string {
 	set := map[string]bool{}
+	if b.req.Sweep && b.req.onlyRoots != nil {
+		// The batch's branches only: those of its worktrees that may go.
+		for _, it := range worktreeItems {
+			if it.Kind == KindWorktree && it.Action == ActionRemove && it.Branch != "" &&
+				it.Branch != b.repo.defaultBranch {
+				set[it.Branch] = true
+			}
+		}
+		return sortedKeys(set)
+	}
 	if b.req.Sweep {
 		for _, br := range b.repo.branches {
 			_, staying := b.checkedOutStaying[br.Name]
@@ -912,7 +941,7 @@ func (b *builder) bundleItems(root string) []Item {
 }
 
 func (b *builder) staleItems(ctx context.Context) []Item {
-	if !b.req.Sweep || b.deps.LS == nil {
+	if !b.req.Sweep || b.req.onlyRoots != nil || b.deps.LS == nil {
 		return nil
 	}
 	var items []Item

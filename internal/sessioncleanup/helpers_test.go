@@ -198,7 +198,9 @@ type fakeStore struct {
 	extraFolders   []string
 	// bench is the workbench's live folders (BenchFolders), home first;
 	// nil = its home folder alone.
-	bench      []string
+	bench []string
+	// benchErr fails BenchFolders.
+	benchErr   error
 	activity   []SessionActivity
 	rootOwners map[string][]int64
 	// lastSeen is the newest ledger sighting per root; seenErr fails the read.
@@ -265,6 +267,9 @@ func (s *fakeStore) WorkbenchFolders(context.Context) ([]string, error) {
 }
 
 func (s *fakeStore) BenchFolders(_ context.Context, id int64) ([]string, error) {
+	if s.benchErr != nil {
+		return nil, s.benchErr
+	}
 	if s.bench == nil {
 		return []string{s.folders[id]}, nil
 	}
