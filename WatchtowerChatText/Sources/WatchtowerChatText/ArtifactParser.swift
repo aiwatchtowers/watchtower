@@ -76,8 +76,11 @@ public enum ArtifactParser {
         cache.removeAll()
     }
 
-    private static func cacheKey(_ text: String, final: Bool) -> String {
-        (final ? "1" : "0") + text
+    /// An `NSString`: it compares the exact UTF-16 units, where `String`
+    /// would take `é` and `e` + U+0301 for one key and hand back the other
+    /// spelling's parse.
+    private static func cacheKey(_ text: String, final: Bool) -> NSString {
+        ((final ? "1" : "0") + text) as NSString
     }
 
     /// Parses bounded by their total cost (the texts' UTF-16 length); past
@@ -85,17 +88,17 @@ public enum ArtifactParser {
     private final class ParseCache: @unchecked Sendable {
         private let lock = NSLock()
         private let costLimit: Int
-        private var entries: [String: (parsed: ParsedMessage, cost: Int)] = [:]
-        private var order: [String] = []
+        private var entries: [NSString: (parsed: ParsedMessage, cost: Int)] = [:]
+        private var order: [NSString] = []
         private var cost = 0
 
         init(costLimit: Int) { self.costLimit = costLimit }
 
-        func value(for key: String) -> ParsedMessage? {
+        func value(for key: NSString) -> ParsedMessage? {
             lock.withLock { entries[key]?.parsed }
         }
 
-        func insert(_ parsed: ParsedMessage, for key: String, cost entryCost: Int) {
+        func insert(_ parsed: ParsedMessage, for key: NSString, cost entryCost: Int) {
             guard entryCost <= costLimit else { return }
             lock.withLock {
                 if let old = entries.updateValue((parsed, entryCost), forKey: key) {

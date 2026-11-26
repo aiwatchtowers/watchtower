@@ -172,4 +172,16 @@ final class ArtifactParserTests: XCTestCase {
         XCTAssertEqual(ArtifactParser.slug("!!!"), "artifact")
         XCTAssertEqual(ArtifactParser.slug(String(repeating: "a", count: 100)).count, 64)
     }
+
+    /// The parse cache keys on the exact text: two canonically equal
+    /// spellings (`é` and `e` + U+0301) each get their own parse back.
+    func testCacheKeepsCanonicallyEqualSpellingsApart() {
+        let composed = "caf\u{E9} \(UUID().uuidString)"
+        let decomposed = composed.replacingOccurrences(of: "\u{E9}", with: "e\u{301}")
+        XCTAssertEqual(composed, decomposed, "Swift takes them for one string")
+        _ = ArtifactParser.parse(composed, final: true)
+        let parsed = ArtifactParser.parse(decomposed, final: true)
+        guard case let .markdown(text)? = parsed.segments.first else { return XCTFail("\(parsed)") }
+        XCTAssertEqual(Array(text.utf8), Array(decomposed.utf8), "the decomposed text's own bytes")
+    }
 }

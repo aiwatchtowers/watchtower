@@ -515,7 +515,7 @@ final class TerminalCenterReattachTests: XCTestCase {
         XCTAssertEqual(exits.first?.1, 0)
         XCTAssertEqual(exits.first?.2, false, "an exit while the app was away is a natural exit")
         XCTAssertEqual(center.states[row.id], .exited(0))
-        await control.firstSent(.forget)
+        await control.untilSent(.forget)
         XCTAssertEqual(try forgotten(), [SessionHostAttachRequest(row: row.id, run: "run-b")])
         XCTAssertTrue(signals.isEmpty)
         XCTAssertEqual(factoryCalls, 0)
@@ -551,7 +551,7 @@ final class TerminalCenterReattachTests: XCTestCase {
         control.autoReply = false
 
         let reattach = Task { await vm.reattachHostedSessions() }
-        await control.firstSent(.list)
+        await control.untilSent(.list)
         XCTAssertEqual(control.sent(.list).count, 1)
         control.push(.json(.error, SessionHostErrorMessage(message: "boom")))
         await reattach.value
@@ -712,8 +712,9 @@ final class TerminalCenterReattachTests: XCTestCase {
         let (hosted, info) = try await attachedRun(row)
         hosted.reconnectSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
         control.failedLists = 1000
+        let lists = control.sent(.list).count
         try XCTUnwrap(transports.last).hangUp()
-        await control.firstSent(.list)
+        await control.untilSent(.list, count: lists + 1)
         XCTAssertEqual(center.hostLinks[row.id], .reconnecting)
 
         await center.closeAll()
@@ -843,7 +844,7 @@ final class TerminalCenterReattachTests: XCTestCase {
         control.listed = [SessionHostSessionInfo(row: row.id, run: "run-live", pid: 7800, startedAtMs: 1, exited: false, code: nil)]
         control.autoReply = false
         let opening = Task { await vm.open(row, placement: .inPlace) }
-        await control.firstSent(.list)
+        await control.untilSent(.list)
         XCTAssertEqual(control.sent(.list).count, 1)
         let focusedBefore = center.focusOrder
         _ = vm.beginSwitch(projectID: projectID)
@@ -922,7 +923,7 @@ final class TerminalCenterReattachTests: XCTestCase {
         let projectID = try XCTUnwrap(row.projectID)
         control.autoReply = false
         let opening = Task { await vm.open(row, placement: .inPlace) }
-        await control.firstSent(.list)
+        await control.untilSent(.list)
         XCTAssertEqual(control.sent(.list).count, 1)
         let focusedBefore = center.focusOrder
         _ = vm.beginSwitch(projectID: projectID)
