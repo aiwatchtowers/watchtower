@@ -188,8 +188,9 @@ struct WorkchatPolishRealShot: View {
     }
 
     private var feed: some View {
-        let workchatFeed = WorkchatFeed(entries: WorkchatPolishRealShotFixtures.entries, markdown: SessionFeedMarkdownCache(),
+        var workchatFeed = WorkchatFeed(entries: WorkchatPolishRealShotFixtures.entries, markdown: SessionFeedMarkdownCache(),
                                         expandedEvents: []) { _ in }
+        workchatFeed.highlighting = .workchatShot
         var context = workchatFeed.context()
         var follow = ChatFeedFollow(conversationID: 1)
         follow.anchorsBottom = true

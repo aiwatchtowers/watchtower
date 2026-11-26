@@ -220,7 +220,8 @@ struct WorkchatAgentsRealShot: View {
 
     private var feed: some View {
         let entries = WorkchatAgentsShotFixtures.entries(mock)
-        let workchatFeed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
+        var workchatFeed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
+        workchatFeed.highlighting = .workchatShot
         var context = workchatFeed.context()
         var follow = ChatFeedFollow(conversationID: 1)
         follow.anchorsBottom = true

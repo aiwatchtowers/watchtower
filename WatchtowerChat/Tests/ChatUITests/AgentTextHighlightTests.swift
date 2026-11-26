@@ -308,6 +308,7 @@ final class AgentTextHighlightTests: XCTestCase {
         let text = AgentTextHighlightRender.highlighted(base) { _ in false }
         XCTAssertEqual(attributes(of: "4d434597", in: text)[.font] as? NSFont,
                        attributes(of: "4d434597", in: base)[.font] as? NSFont)
+        XCTAssertEqual(color(of: "4d434597", in: text), NSColor(SyntaxTint.hash))
     }
 }
 #endif

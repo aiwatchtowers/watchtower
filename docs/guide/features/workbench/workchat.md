@@ -108,7 +108,9 @@ since: 0.29.4
 action: nav:projects
 -->
 
-In the agent's text, a target number (`#42`), a commit hash, a file path and a command in code (`git …`, `make …`, `./scripts/…`) are coloured. Click `#42` to show it on the Board, a path to open the file in **Files**, a hash or command to copy it. A path is coloured only when it is a file in the session's folder.
+In the agent's text, a target number (`#42`), a commit hash, a file path and a command in code (`git …`, `make …`, `./scripts/…`) are coloured, in code or not. Click `#42` to show it on the Board, a path to open the file in **Files**, a hash or command to copy it. A path is coloured only when it is a file in the session's folder.
+
+Dates (`2026-11-16`), times (`14:30`), `PR #12` and `ask #990` are coloured too; a click on them does nothing.
 
 ### Read messages between agents
 <!-- learn

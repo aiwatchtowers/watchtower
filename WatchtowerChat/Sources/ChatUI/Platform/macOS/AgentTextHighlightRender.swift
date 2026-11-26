@@ -52,7 +52,8 @@ enum AgentTextHighlightRender {
     private static let scans = MarkdownMemo<NSAttributedString, [Found]>(totalCostLimit: 1 << 16)
     private static let memo = MarkdownMemo<Key, NSAttributedString>(totalCostLimit: 4 << 20)
 
-    /// `clickable` false (a feed with no span action) leaves the click attribute off every span: colour only.
+    /// `clickable` false (a feed with no span action) leaves the click attribute off every span: colour only. Not the
+    /// only guard: `MarkdownRunTextView` also ignores clicks while its `onHighlight` is nil.
     static func highlighted(
         _ text: NSAttributedString, clickable: Bool = true, resolvesPath: (String) -> Bool
     ) -> NSAttributedString {
