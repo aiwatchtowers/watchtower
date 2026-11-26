@@ -156,6 +156,9 @@ type Store interface {
 	// standalone ones): an agent of another workbench over the same
 	// repository can work inside a worktree too (W6).
 	AllSessionActivity(ctx context.Context) ([]SessionActivity, error)
+	// WorktreeLastSeen is the newest sighting of a worktree root in any
+	// session's ledger; false = none recorded.
+	WorktreeLastSeen(ctx context.Context, root string) (time.Time, bool, error)
 }
 
 // Proc is one process of the scan. Cwd and Exe "" = unknown. Name is ps's
@@ -233,6 +236,9 @@ type Deps struct {
 func OrphansIn(procs []Proc, roots []string, self int) (orphans, blockers []Proc) {
 	uid := os.Getuid()
 	for _, p := range procs {
+		if isLanguageServer(p) {
+			continue // spec §5: neither keeps a worktree nor is signalled
+		}
 		if !procInside(p, roots) && (p.UID != uid || !ProcUnknown(p)) {
 			continue
 		}
@@ -243,6 +249,22 @@ func OrphansIn(procs []Proc, roots []string, self int) (orphans, blockers []Proc
 		}
 	}
 	return orphans, blockers
+}
+
+// languageServers are the native language servers (spec §5, W5): a process
+// running one neither keeps a worktree nor is ever an orphan to signal. A
+// fixed set on purpose: servers under node or python (tsserver, pyright)
+// cannot be told from a build or a dev server by the executable, so they
+// keep the worktree.
+var languageServers = map[string]bool{
+	"gopls": true, "sourcekit-lsp": true, "clangd": true, "rust-analyzer": true,
+	"jdtls": true, "lua-language-server": true, "zls": true,
+}
+
+// isLanguageServer: p's executable (never its argv-based name) is one of
+// languageServers; an unknown executable is not.
+func isLanguageServer(p Proc) bool {
+	return p.Exe != "" && languageServers[filepath.Base(p.Exe)]
 }
 
 // ProcUnknown reports whether the scan could not see p's cwd.
