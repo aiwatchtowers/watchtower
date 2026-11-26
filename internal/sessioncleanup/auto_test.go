@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"watchtower/internal/gitbin"
 )
 
 // TestApply_TakesTheRepositoryLockFirst: an apply takes Deps.Lock for the
@@ -934,5 +936,59 @@ func TestQuietStillStands_ReadsTheHostsLiveRuns(t *testing.T) {
 		if stands != tc.stands || (err != nil) != tc.wantErr || tc.wantErr && !errors.Is(err, errLiveUnreadable) {
 			t.Fatalf("%s: stands %v, err %v", name, stands, err)
 		}
+	}
+}
+
+// TestAutoRun_SessionApplyRunsNoRepositoryHook (final review C4): every
+// unattended session apply — a finished session's and a quiet one's — writes
+// in the hooks-off background mode, as the repository pass does: its
+// worktree removal and branch delete run no hook of the repository. The
+// owner's own apply still runs it (TestProj18_RepositoryPassRunsNoRepositoryHook's
+// control).
+func TestAutoRun_SessionApplyRunsNoRepositoryHook(t *testing.T) {
+	t.Parallel()
+	for _, quiet := range []bool{false, true} {
+		a := newAutoFixture(t)
+		root := a.pushedWork("wt", "feat/x")
+		a.record(root, "feat/x")
+		now := time.Now()
+		if quiet {
+			a.quietSession(now.Add(-30 * time.Hour))
+		} else {
+			a.endSession()
+			a.cands = []AutoCandidate{{SessionID: testSession, WorkbenchID: testWorkbench, FinishedAt: now.Add(-time.Minute)}}
+		}
+		marker := a.plantHook()
+
+		res, err := a.run(now)
+		if err != nil || res.Applied != 1 || res.Failed != 0 || res.Changed != 1 {
+			t.Fatalf("quiet %v: res %+v, err %v", quiet, res, err)
+		}
+		if exists(root) || a.branchExists("feat/x") {
+			t.Fatalf("quiet %v: the pushed work stayed", quiet)
+		}
+		if exists(marker) {
+			t.Fatalf("quiet %v: the unattended apply ran the repository's hook", quiet)
+		}
+	}
+}
+
+// TestGitArgv_SessionApplyWritesNameNoRepository (final review C4): the
+// unattended session apply's mark (no repository) turns its writes hooks-off
+// and leaves every read, repository-wide ones included, unpinned — never an
+// empty --git-dir.
+func TestGitArgv_SessionApplyWritesNameNoRepository(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	bin, _ := gitbin.Locate()
+	ctx := withBackgroundWrites(context.Background(), "")
+	write, err := gitArgv(ctx, f.repo, bin, []string{"update-ref", "-d", "refs/heads/x", "abc"})
+	if joined := strings.Join(write, " "); err != nil || strings.Contains(joined, "--git-dir") ||
+		!strings.Contains(joined, "core.hooksPath=/dev/null") {
+		t.Fatalf("write argv %q, %v", joined, err)
+	}
+	read, err := gitArgv(ctx, f.repo, bin, []string{"rev-list", "-1", "refs/heads/main"})
+	if err != nil || strings.Contains(strings.Join(read, " "), "--git-dir") {
+		t.Fatalf("read argv %q, %v", read, err)
 	}
 }

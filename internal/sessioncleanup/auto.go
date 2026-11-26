@@ -204,7 +204,11 @@ func autoApply(ctx context.Context, ad AutoDeps, c AutoCandidate, live []int64, 
 		// read again before each destructive step, are its sign of life.
 		r.liveNow = ad.liveIDs
 	}
-	res, err := Apply(ctx, d, r, nil)
+	// Unattended: no owner asked for these writes, so they run in the
+	// hooks-off background mode, as the repository pass's do (final review
+	// C4) — with no repository named, since a session's folders may lie in
+	// several; Apply resolves each one as before.
+	res, err := Apply(withBackgroundWrites(ctx, ""), d, r, nil)
 	if err != nil {
 		return res, fmt.Errorf("applying: %w", err)
 	}
