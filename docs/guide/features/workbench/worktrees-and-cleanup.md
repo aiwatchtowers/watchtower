@@ -74,7 +74,7 @@ A helper the agent starts in its own worktree is a lane, counted at the end: **�
 
 Cleanup is Watchtower's own command, since auto mode blocks an agent's `git worktree remove`. A session's own cleanup removes only what that session created, never work:
 
-- A worktree is kept when it has uncommitted or untracked changes, holds ignored files that are not build caches, is locked (unless its branch is merged and it has been untouched for 3 days), is in use by a process or another session, or its HEAD is in neither the default branch nor any remote ref.
+- A worktree is kept when it has uncommitted or untracked changes, holds ignored files that are not build caches, is locked (unless its branch is merged and untouched for 3 days), is in use by a process or another session, or its HEAD is in neither the default branch nor any remote ref.
 - A branch is kept when it is the default branch, is checked out anywhere, or has commits not pushed.
 
 Each item is ticked for removal or greyed out with its reason. Nothing is forced.
@@ -83,7 +83,7 @@ Each item is ticked for removal or greyed out with its reason. Nothing is forced
 
 Every session delete cleans up once its **Undo** bar goes away: the worktrees and branches the session and its agents created that are merged or pushed are removed, with no question. The panel reads **Cleaning up 2 sessions…**, then a notice such as **Cleaned up “Fix login flow”: removed 3 worktrees and 12 branches (~2.1 GB).** shows for six seconds.
 
-- Kept on purpose, and named in the notice: uncommitted changes, unsaved ignored files, unpushed commits, a locked worktree, a git operation in progress, and branches while git cannot tell the default branch ("default branch unknown"). The session still goes.
+- Kept on purpose, and named in the notice: uncommitted changes, unsaved ignored files, unpushed commits, a locked worktree (unless merged and idle 3 days), a git operation in progress, and branches while git cannot tell the default branch ("default branch unknown"). The session still goes.
 - If Claude Code's subagent records could not be read, the notice says **Could not read the subagent records of “T” — check the Clean Up screen.**
 - Never touched and not mentioned: what the session did not create (the main folder, the default branch, an older worktree), a worktree an agent made in a folder of its own, or a branch made in the main folder. Remove those on the Clean Up screen.
 - If something could not be removed (a process runs in a worktree, git refused, the cleanup failed), the session comes back in **▸ N finished** with an orange line such as **Not fully cleaned: 1 worktree — a process is running in it.** Click it for its report and **Cleanup** section. Hover it, or use its **⋯** menu in a narrow panel:
@@ -109,7 +109,7 @@ Within an hour after a session finishes, the daemon removes its merged or pushed
 
 Every linked worktree under `.claude/worktrees/`, including one you made by hand, that no session uses and nothing has touched for 3 days is checked every hour and removed only when every cleanup check passes (a workbench folder, or a locked branch with no commits of its own, stays), at most 20 per repository an hour. A merged worktree that is locked goes too; it is unlocked just before it is removed and locked again if the removal fails. Half-removed ones are left to the Clean Up screen.
 
-A kept worktree loses only its build folders (`.build`, `DerivedData`, however it is named). A locked worktree, or one the sweep above looks at, loses them only after 3 days without activity; one kept only for work still loses them at its session's end, unless a process runs in it. A language server such as `gopls` or `clangd` does not keep a worktree; any other running process does.
+A kept worktree loses only its build folders (`.build`, `DerivedData` and the like). A locked worktree, or one the sweep above looks at, loses them only after 3 idle days; one kept only for work still loses them at its session's end, unless a process runs in it. A language server such as `gopls` or `clangd` does not keep a worktree; any other running process does.
 
 ## Using it
 <!-- learn
