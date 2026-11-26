@@ -225,11 +225,23 @@ func (ad AutoDeps) passBatch(ctx context.Context, rp passRepo, live []int64, st 
 		PruneBuilds: true, repoPass: true, folder: rp.folder, allOwners: true, liveNow: ad.liveIDs,
 		repoKey: rp.key, scope: &repoScope{bench: []string{rp.folder}, locked: []string{rp.key}}}
 	if !st.measured {
-		// The candidates are measured before the lock is taken (final review
-		// F2): an idle walk may take nestedScanBudget per worktree, and the
-		// owner's Clean Up waits for this lock. Measuring only selects: each
-		// batch re-plans under the lock and idleness is read again right
-		// before every removal and prune.
+		// An interrupted unlock is undone first, under a short hold of the
+		// lock (final review residual R2): a measure that fails below still
+		// leaves no worktree unlocked. Busy: the repository waits for the
+		// next pass, as a busy batch does.
+		release, err := d.Lock(ctx, rp.key)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, note := range restoreScope(ctx, d, r) {
+			ad.logf("session cleanup: repository %s: %s", rp.key, note)
+		}
+		release()
+		// The candidates are measured outside the lock (final review F2): an
+		// idle walk may take nestedScanBudget per worktree, and the owner's
+		// Clean Up waits for this lock. Measuring only selects: each batch
+		// re-plans under the lock and idleness is read again right before
+		// every removal and prune.
 		mb, err := newBuilder(ctx, d, r)
 		if err != nil {
 			return nil, false, err

@@ -270,8 +270,10 @@ func TestAutoRun_RepositoryPassWaitsForTheLock(t *testing.T) {
 	if res, err := a.run(time.Now()); err != nil || res.RepoChanged != 1 || !a.gone(root) {
 		t.Fatalf("free: res %+v, err %v", res, err)
 	}
-	if want := filepath.Join(a.repo, ".git"); len(a.locked) != 1 || a.locked[0] != want {
-		t.Fatalf("locked %v, want %s", a.locked, want)
+	// The restore's short hold, then the batch (residual R2): both the
+	// repository's own lock.
+	if want := filepath.Join(a.repo, ".git"); !slices.Equal(a.locked, []string{want, want}) {
+		t.Fatalf("locked %v, want %s twice", a.locked, want)
 	}
 }
 
@@ -497,7 +499,9 @@ func TestAutoRun_RepositoryPassOncePerRepository(t *testing.T) {
 	a.store.folders[testWorkbench+1] = a.repo
 	a.benches = []int64{testWorkbench, testWorkbench + 1}
 	res, err := a.run(time.Now())
-	if err != nil || res.RepoChanged != 1 || !a.gone(root) || len(a.locked) != 1 {
+	// One pass: the restore's short hold, then one batch (residual R2).
+	want := []string{filepath.Join(a.repo, ".git"), filepath.Join(a.repo, ".git")}
+	if err != nil || res.RepoChanged != 1 || !a.gone(root) || !slices.Equal(a.locked, want) {
 		t.Fatalf("res %+v, err %v, locked %v", res, err, a.locked)
 	}
 }
@@ -765,8 +769,9 @@ func (g *movedRepository) RunGit(ctx context.Context, dir, bin string, args ...s
 // 1 C4): the pass locks the repository it found, and a folder that
 // resolves to another repository once that lock is held makes it skip the
 // repository this pass — nothing evaluated under a lock that is not the
-// repository's. A folder that left before the lock (seen by the unlocked
-// measure, final review F2) skips it with no lock taken.
+// repository's. A folder that left before the batch's lock (seen by the
+// unlocked measure, final review F2) skips it after the restore's short
+// hold alone (residual R2), which names the repository found.
 func TestAutoRun_RepositoryPassSkipsARepositoryItsFolderLeft(t *testing.T) {
 	t.Parallel()
 	for _, after := range []int32{1, 2} {
@@ -782,9 +787,10 @@ func TestAutoRun_RepositoryPassSkipsARepositoryItsFolderLeft(t *testing.T) {
 		if !a.listsWorktree(root) || !a.branchExists("worktree-agent-1") {
 			t.Fatalf("after %d: acted on a repository whose folder left it", after)
 		}
-		want := []string{filepath.Join(a.repo, ".git")}
+		found := filepath.Join(a.repo, ".git")
+		want := []string{found, found}
 		if after == 1 {
-			want = nil
+			want = []string{found}
 		}
 		if !slices.Equal(a.locked, want) {
 			t.Fatalf("after %d: locked %v, want %v", after, a.locked, want)
@@ -1585,5 +1591,34 @@ func TestAutoRun_RepositoryPassBranchGoesOnlyWithItsWorktree(t *testing.T) {
 	}
 	if !a.branchExists("worktree-agent-1") {
 		t.Fatal("the branch of a worktree that stayed went")
+	}
+}
+
+// TestAutoRun_RepositoryPassRestoresBeforeItsMeasureFails (final review
+// residual R2): an interrupted unlock is restored under a short hold of the
+// repository's lock before the unlocked measure, so a measure that fails
+// (git cannot list the worktrees) still leaves no worktree unlocked.
+func TestAutoRun_RepositoryPassRestoresBeforeItsMeasureFails(t *testing.T) {
+	t.Parallel()
+	a := newRepoPassFixture(t)
+	root := a.claudeWorktree("plan-c", "feat/plan-c")
+	a.commit(root, "work.txt", "unpushed\n")
+	a.lock(root)
+	interruptedUnlock(t, a.fixture, root)
+	a.git = &loggingGit{log: &opLog{}, before: func(args []string) *gitAnswer {
+		if slices.Equal(args, []string{"worktree", "list", "--porcelain"}) {
+			return &gitAnswer{code: 128, err: &GitError{Args: args, Code: 128, Stderr: "fatal: injected failure"}}
+		}
+		return nil
+	}}
+
+	res, err := a.run(time.Now())
+	if err != nil || res.RepoFailed != 1 || res.RepoChanged != 0 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	a.git = nil
+	wantLocked(t, root)
+	if want := []string{filepath.Join(a.repo, ".git")}; !slices.Equal(a.locked, want) || a.held.Load() {
+		t.Fatalf("locked %v (held %v), want one short hold of %v", a.locked, a.held.Load(), want)
 	}
 }
