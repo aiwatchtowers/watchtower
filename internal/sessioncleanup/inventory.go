@@ -330,15 +330,23 @@ func readAdminDirs(commonDir string) (map[string]string, error) {
 	out := map[string]string{}
 	for _, e := range entries {
 		admin := filepath.Join(base, e.Name())
-		b, err := os.ReadFile(filepath.Join(admin, "gitdir"))
-		if err != nil {
-			continue // not a worktree admin dir, or a broken one git lists as prunable
+		if root, ok := adminRoot(admin); ok {
+			out[root] = admin
 		}
-		// gitdir is relative to the admin dir under worktree.useRelativePaths.
-		root := filepath.Dir(absFrom(admin, strings.TrimSpace(string(b))))
-		out[resolvePath(root)] = admin
 	}
 	return out, nil
+}
+
+// adminRoot is the root (symlink-resolved) of the worktree whose admin dir
+// is admin, read from its gitdir; false for a directory that is not a
+// worktree admin dir, or a broken one git lists as prunable.
+func adminRoot(admin string) (string, bool) {
+	b, err := os.ReadFile(filepath.Join(admin, "gitdir"))
+	if err != nil {
+		return "", false
+	}
+	// gitdir is relative to the admin dir under worktree.useRelativePaths.
+	return resolvePath(filepath.Dir(absFrom(admin, strings.TrimSpace(string(b))))), true
 }
 
 // isContained reports whether sha is an ancestor of the default branch or

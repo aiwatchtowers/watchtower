@@ -227,9 +227,13 @@ var errStopWalk = errors.New("stop")
 func (j *ignoredJudge) abs(rel string) string { return filepath.Join(j.root, filepath.FromSlash(rel)) }
 
 // cacheAt reports whether parts[i] names a cache: one of W9's at any depth,
-// or `build` directly at a root.
+// a DerivedData folder of any name by its content within derivedDataDepth
+// of the root (#2402 §4), or `build` directly at a root.
 func (j *ignoredJudge) cacheAt(parts []string, i int) bool {
 	if regenerableCaches[parts[i]] {
+		return true
+	}
+	if i < derivedDataDepth && derivedDataAt(j.abs(strings.Join(parts[:i+1], "/"))) {
 		return true
 	}
 	if parts[i] != topLevelBuild {

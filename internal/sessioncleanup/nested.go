@@ -16,8 +16,10 @@ const nestedClockEvery = 1024
 // regenerableCaches names the dependency and build caches W9's walk skips
 // at any depth: a `.git` inside them is a package manager's checkout
 // (`.build/checkouts/<pkg>/.git`, `node_modules/**/.git`), rebuilt on
-// demand, not someone's work. A listed worktree placed inside one is still
-// found by catchNested's listing check, which does not walk.
+// demand, not someone's work. A DerivedData folder of another name,
+// recognised by its content near the root (derivedDataByContent), is one
+// too. A listed worktree placed inside one is still found by catchNested's
+// listing check, which does not walk.
 var regenerableCaches = map[string]bool{
 	".build":       true,
 	"node_modules": true,
@@ -45,7 +47,8 @@ func findNestedRepository(ctx context.Context, root string, budget time.Duration
 			found = filepath.Dir(path)
 			return errNestedFound
 		}
-		if d.IsDir() && path != root && (path == own || regenerableCaches[d.Name()]) {
+		if d.IsDir() && path != root && (path == own || regenerableCaches[d.Name()] ||
+			(withinDerivedDataDepth(root, path) && derivedDataAt(path))) {
 			return filepath.SkipDir
 		}
 		seen++

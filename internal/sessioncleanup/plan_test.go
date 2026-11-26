@@ -95,6 +95,15 @@ func TestProj18_LockedWorktreeIsKept(t *testing.T) {
 	gitIn(t, f.repo, "worktree", "lock", root)
 
 	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonLocked)
+
+	// #2402 §3: merged with a commit of its own, but active (not idle for
+	// idleFor), it is kept too.
+	active := newFixture(t)
+	merged := active.mergedWork("wt", "feat/x")
+	active.record(merged, "feat/x")
+	gitIn(t, active.repo, "worktree", "lock", merged)
+
+	wantItem(t, active.plan(Request{}), "worktree:"+merged, ActionKeep, ReasonLocked)
 }
 
 func TestPlan_OperationInProgressKeepsTheWorktree(t *testing.T) {

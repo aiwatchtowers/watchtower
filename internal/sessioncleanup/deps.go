@@ -77,7 +77,8 @@ func (SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([
 }
 
 // ownerWrite: args are one of the writes an apply runs on the owner's
-// confirmation (worktree remove, update-ref -d, config --remove-section);
+// confirmation (worktree remove, its unlock and relock, update-ref -d,
+// config --remove-section);
 // everything else is a read.
 func ownerWrite(args []string) bool {
 	switch {
@@ -86,7 +87,7 @@ func ownerWrite(args []string) bool {
 	case args[0] == "update-ref":
 		return true
 	case args[0] == "worktree":
-		return len(args) > 1 && args[1] == "remove"
+		return len(args) > 1 && slices.Contains([]string{"remove", "lock", "unlock"}, args[1])
 	case args[0] == "config":
 		return slices.Contains(args[1:], "--remove-section")
 	}

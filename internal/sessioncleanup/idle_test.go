@@ -482,3 +482,41 @@ func TestIdle_UnreadableCacheFolderIsNotAnError(t *testing.T) {
 		t.Fatal("an unreadable node_modules, never entered, made the worktree busy")
 	}
 }
+
+// TestPruneIdle_LockedOrSweepWaitsForIdle: the prune's idle check applies
+// to a locked worktree, one an unlock of ours left marked, and any worktree
+// in a sweep (the repository pass); an unlocked worktree of a session's
+// prune does not wait (#2131).
+func TestPruneIdle_LockedOrSweepWaitsForIdle(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		file   string
+		sweep  bool
+		recent bool
+		want   string
+	}{
+		"unlocked, session, active": {recent: true},
+		"locked, active":            {file: lockFile, recent: true, want: reasonNotIdle},
+		"marked, active":            {file: unlockMarker, recent: true, want: reasonNotIdle},
+		"sweep, active":             {sweep: true, recent: true, want: reasonNotIdle},
+		"locked, idle":              {file: lockFile},
+		"sweep, idle":               {sweep: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tr := newIdleTree(t)
+			if tc.file != "" {
+				tr.write(filepath.Join(tr.admin, tc.file), "")
+			}
+			if tc.recent {
+				tr.touch(filepath.Join(tr.admin, "HEAD"), idleNow.Add(-time.Hour))
+			}
+			b := &builder{deps: tr.deps(), req: Request{Sweep: tc.sweep},
+				repo: &repoState{adminDirs: map[string]string{tr.root: tr.admin}}}
+			reason, _, err := catchPruneIdle(context.Background(), b, worktree{Root: tr.root})
+			if err != nil || reason != tc.want {
+				t.Fatalf("reason %q, err %v; want %q", reason, err, tc.want)
+			}
+		})
+	}
+}

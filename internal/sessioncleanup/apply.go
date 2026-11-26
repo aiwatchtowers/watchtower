@@ -116,6 +116,11 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 	if err != nil {
 		return res, err
 	}
+	// Undo an unlock an interrupted apply left (#2402 §3), before anything
+	// is evaluated; it runs under the repository locks taken above.
+	for _, b := range parts {
+		b.notes = append(b.notes, restoreLocks(ctx, b.repo.git, b.repo.folder, b.repo.commonDir)...)
+	}
 	if (r.RequireEnded || r.Quiet) && !r.Sweep && !parts[0].endStands() {
 		return res, fmt.Errorf("session %d: %w", r.SessionID, ErrSessionNotEnded)
 	}
@@ -433,8 +438,9 @@ func (a *applier) fail(it *Item, err error) {
 }
 
 // removeWorktree clears the worktree's orphans, unregisters its bundles,
-// re-checks it once more and only then runs `git worktree remove`. When it
-// stays, the bundles unregistered for it are registered again.
+// re-checks it once more and only then runs `git worktree remove`, a locked
+// one unlocked right before it (removeWorktreeNow). When it stays, the
+// bundles unregistered for it are registered again.
 func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 	root := strings.TrimPrefix(it.Key, "worktree:")
 	if !a.clearOrphans(ctx, it, root) {
@@ -449,11 +455,8 @@ func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 	if err != nil {
 		a.fail(it, err)
 	} else {
-		if a.recheckClear(ctx, it, root, "process in use: ", true) {
-			rctx, cancel := context.WithTimeout(ctx, worktreeRemoveTimeout)
-			_, code, err := a.git.run.RunGit(rctx, a.folder, a.git.bin, "worktree", "remove", root)
-			cancel()
-			a.settleGit(it, code, err)
+		if b, ok := a.recheckClear(ctx, it, root, "process in use: ", true); ok {
+			a.removeWorktreeNow(ctx, it, root, b.repo.adminDirs[root])
 		}
 		unlock()
 	}
@@ -551,23 +554,25 @@ func (a *applier) clearOrphans(ctx context.Context, it *Item, root string) bool 
 	if !a.terminate(it, orphans) || !a.awaitExit(ctx, it, root) {
 		return false
 	}
-	return a.recheckClear(ctx, it, root, "survived SIGTERM: ", false)
+	_, ok = a.recheckClear(ctx, it, root, "survived SIGTERM: ", false)
+	return ok
 }
 
 // recheckClear is a full re-check of root that also wants no orphan left
 // (prefix words the keep detail of one that is); the process items of
-// root that are gone are marked done; walk as in recheckWorktree.
-func (a *applier) recheckClear(ctx context.Context, it *Item, root, prefix string, walk bool) bool {
+// root that are gone are marked done; walk as in recheckWorktree. The
+// fresh facts come back with true.
+func (a *applier) recheckClear(ctx context.Context, it *Item, root, prefix string, walk bool) (*builder, bool) {
 	b, ok := a.recheckWorktree(ctx, it, root, walk)
 	if !ok {
-		return false
+		return nil, false
 	}
 	if orphans, _ := OrphansIn(b.procs, []string{root}, a.self); len(orphans) > 0 {
 		keepItem(it, ReasonProcessRunning, prefix+procText(orphans[0]))
-		return false
+		return nil, false
 	}
 	a.markGone(root, b.procs)
-	return true
+	return b, true
 }
 
 // awaitExit re-runs the process scan alone each poll step until no orphan
