@@ -992,3 +992,33 @@ func TestGitArgv_SessionApplyWritesNameNoRepository(t *testing.T) {
 		t.Fatalf("read argv %q, %v", read, err)
 	}
 }
+
+// TestAutoRun_SessionApplyRemovesAGoneWorktreeAndGoesOn (final review
+// residual R1): under the unattended hooks-off writes, a recorded worktree
+// whose directory is already gone (prunable) is still dropped through
+// `git worktree remove`, and the apply goes on to its other items.
+func TestAutoRun_SessionApplyRemovesAGoneWorktreeAndGoesOn(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	gone := a.pushedWork("wt-gone", "feat/gone")
+	a.record(gone, "feat/gone")
+	other := a.pushedWork("wt-other", "feat/other")
+	a.record(other, "feat/other")
+	if err := os.RemoveAll(gone); err != nil { // the fixture's own temp worktree
+		t.Fatal(err)
+	}
+	a.endSession()
+	now := time.Now()
+	a.cands = []AutoCandidate{{SessionID: testSession, WorkbenchID: testWorkbench, FinishedAt: now.Add(-time.Minute)}}
+
+	res, err := a.run(now)
+	if err != nil || res.Applied != 1 || res.Failed != 0 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if a.listsWorktree(gone) || a.branchExists("feat/gone") {
+		t.Fatal("the gone worktree or its branch stayed")
+	}
+	if exists(other) || a.listsWorktree(other) || a.branchExists("feat/other") {
+		t.Fatal("the apply stopped before the other worktree")
+	}
+}
