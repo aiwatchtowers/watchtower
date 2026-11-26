@@ -501,10 +501,10 @@ func (f *endedFixture) list() []FinishedSessionForCleanup {
 	return got
 }
 
-// TestEndedSessionsForCleanup_Finished lists finished agent rows of a
+// TestFinishedSessionsForCleanup lists finished agent rows of a
 // workbench since the given time, not being deleted, never-cleaned first
 // (#2131).
-func TestEndedSessionsForCleanup_Finished(t *testing.T) {
+func TestFinishedSessionsForCleanup(t *testing.T) {
 	f := newEndedFixture(t)
 	cleaned := f.row(`finished_at = ?, cleanup_at = ?, cleanup_result = '{}'`,
 		AgentStateStamp(f.now.Add(-2*time.Hour)), AgentStateStamp(f.now.Add(-time.Hour)))
