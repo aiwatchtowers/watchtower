@@ -924,3 +924,33 @@ func TestLocked_LockSwappedWhileTheMarkerIsWrittenIsKept(t *testing.T) {
 		t.Fatal("the apply unlocked the new lock, or left its marker")
 	}
 }
+
+// TestRestoreLocks_MissingTreeWithItsAdminEntryIsRelocked (final review
+// residual R3): a marker lives in the admin dir, so a marker still there
+// means the removal did not complete — a volume not mounted, a crash
+// mid-remove — even when the checkout path is missing: the admin entry is
+// locked again (git locks it by its recorded path), so git's own
+// `worktree prune` never drops it unlocked.
+func TestRestoreLocks_MissingTreeWithItsAdminEntryIsRelocked(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.rootedWorktree(".claude/worktrees/plan-y", "feat/plan-y")
+	f.lock(root)
+	admin := adminOf(t, root)
+	interruptedUnlock(t, f, root)
+	if err := os.Rename(root, root+"-elsewhere"); err != nil { // as if its volume were not mounted
+		t.Fatal(err)
+	}
+
+	notes := restoreLocks(context.Background(), gitCmd{run: SystemGit{}, bin: gitBinOrSkip(t)},
+		filepath.Join(f.repo, ".git"))
+	if len(notes) != 0 {
+		t.Fatalf("notes %v", notes)
+	}
+	if body, err := os.ReadFile(filepath.Join(admin, lockFile)); err != nil || string(body) != planReason+"\n" {
+		t.Fatalf("lock %q, err %v", body, err)
+	}
+	if exists(filepath.Join(admin, unlockMarker)) {
+		t.Fatal("the marker stayed")
+	}
+}

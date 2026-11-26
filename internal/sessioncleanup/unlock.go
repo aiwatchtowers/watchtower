@@ -309,11 +309,11 @@ func restoreScope(ctx context.Context, d Deps, r Request) []string {
 }
 
 // restoreLocks turns every unlock marker of the repository at commonDir
-// whose worktree still exists — or cannot be told gone — back into its lock
-// (relock), before anything is evaluated. It returns a note per marker it could not restore; such a
-// marker stays and W3 keeps its worktree (errUnlockPending) until a later
-// apply restores it. A marker whose worktree is gone is left: git drops its
-// admin dir with it.
+// back into its lock (relock), before anything is evaluated — whether or
+// not its checkout path can be seen now. It returns a note per marker it
+// could not restore; such a marker stays and W3 keeps its worktree
+// (errUnlockPending) until a later apply restores it. A completed removal
+// leaves no marker: git drops the admin dir with it.
 func restoreLocks(ctx context.Context, g gitCmd, commonDir string) []string {
 	base := filepath.Join(commonDir, "worktrees")
 	entries, err := os.ReadDir(base)
@@ -333,13 +333,12 @@ func restoreLocks(ctx context.Context, g gitCmd, commonDir string) []string {
 		if !ok {
 			continue
 		}
-		// Only a tree that does not exist is gone. One that cannot be read now
-		// (EACCES, a volume not mounted) is locked again through its admin
-		// entry, which git reaches by --git-dir (final review F4): left
-		// unlocked, git's own `worktree prune` could drop it.
-		if fi, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) || err == nil && !fi.IsDir() {
-			continue
-		}
+		// The marker lives in the admin dir, so its being here means the
+		// removal did not complete, whatever the checkout path shows now —
+		// missing (a volume not mounted, a crash mid-remove) or unreadable:
+		// the admin entry is locked again, by its recorded path through
+		// --git-dir (final review F4, residual R3). Left unlocked, git's own
+		// `worktree prune` could drop it.
 		if err := relock(ctx, g, "", commonDir, admin, root); err != nil {
 			notes = append(notes, err.Error())
 		}
