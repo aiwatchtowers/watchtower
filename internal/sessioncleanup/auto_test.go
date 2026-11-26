@@ -95,6 +95,8 @@ type autoFixture struct {
 	budget func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	// liveCtx, when set, sees the ctx of every Live read.
 	liveCtx func(context.Context)
+	// ls is Deps.LS; nil = none.
+	ls LaunchServices
 }
 
 func newAutoFixture(t *testing.T) *autoFixture {
@@ -106,6 +108,7 @@ func (a *autoFixture) run(now time.Time) (AutoResult, error) {
 	a.t.Helper()
 	d := a.deps()
 	d.Results = a.results
+	d.LS = a.ls
 	d.Lock = func(context.Context, string) (func(), error) {
 		a.t.Error("the pass took the waiting lock")
 		return func() {}, nil

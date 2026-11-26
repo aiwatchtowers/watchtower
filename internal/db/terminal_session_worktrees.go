@@ -182,6 +182,33 @@ func (db *DB) WorkbenchSessionWorktrees(ctx context.Context, workbenchID int64) 
 	return out, nil
 }
 
+// SessionWorktreeOwners maps each worktree root any session recorded, of
+// any workbench, to those sessions' ids, ascending; never nil. The
+// cleanup's repository pass reads it (#2402): a tree a session of another
+// workbench, or of a folder that left its bench, saw lately is still that
+// session's.
+func (db *DB) SessionWorktreeOwners(ctx context.Context) (map[string][]int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT DISTINCT root, session_id
+		FROM terminal_session_worktrees ORDER BY root, session_id`)
+	if err != nil {
+		return nil, fmt.Errorf("reading session worktree owners: %w", err)
+	}
+	defer rows.Close()
+	out := map[string][]int64{}
+	for rows.Next() {
+		var root string
+		var id int64
+		if err := rows.Scan(&root, &id); err != nil {
+			return nil, fmt.Errorf("reading session worktree owners: %w", err)
+		}
+		out[root] = append(out[root], id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading session worktree owners: %w", err)
+	}
+	return out, nil
+}
+
 // SaveCleanupResult stores the JSON of session sessionID's last cleanup
 // apply and its time at (agent_state_at format). Only that row changes;
 // ErrTerminalSessionNotFound when there is none.

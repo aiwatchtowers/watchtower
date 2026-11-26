@@ -239,4 +239,10 @@ func TestDBWorkbenches_ListsEveryWorkbench(t *testing.T) {
 	if err != nil || !slices.Equal(ids, []int64{wb, other}) {
 		t.Fatalf("ids %v, err %v", ids, err)
 	}
+	// Fix round 1 C10: the read honours its ctx.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := DBWorkbenches(s.DB)(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancelled read: %v", err)
+	}
 }

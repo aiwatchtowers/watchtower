@@ -40,7 +40,7 @@ func sessionCleanupPass(cfg *config.Config, database *db.DB, port *sessionstart.
 			logger.Printf("session cleanup: %v", err)
 		}
 		if res.Changed+res.Failed+res.RepoChanged+res.RepoFailed > 0 {
-			logger.Printf("session cleanup: %d session(s) cleaned up, %d failed; %d repositor(ies) cleaned up, %d failed",
+			logger.Printf("session cleanup: %d session(s) cleaned up, %d failed; %d repositories cleaned up, %d failed",
 				res.Changed, res.Failed, res.RepoChanged, res.RepoFailed)
 		}
 	}

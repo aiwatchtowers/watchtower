@@ -104,15 +104,24 @@ type Request struct {
 	// and their branches, with no stale LaunchServices entry: the
 	// repository pass's batch. nil = every worktree.
 	onlyRoots map[string]bool
-	// ownerBenches are further workbenches whose sessions' ledgers count
-	// as a worktree's owners in a sweep (W2): every workbench over the
-	// repository the repository pass covers.
-	ownerBenches []int64
+	// allOwners: in a sweep, every session that recorded a worktree, of
+	// any workbench — a folder that left its bench included — is its owner
+	// (W2), read afresh by every evaluation and re-check: the repository
+	// pass's owners (#2402).
+	allOwners bool
 	// liveNow, when set, re-reads the session host's live runs for every
 	// re-check (applier.fresh): a session the host started since
 	// LiveSessions was read counts. An error fails the re-check.
 	liveNow func(ctx context.Context) ([]int64, error)
+	// repoKey, when set, is the git common dir whose cleanup lock the
+	// caller holds (the repository pass): an evaluation whose folder now
+	// resolves to another repository fails (errRepositoryMoved).
+	repoKey string
 }
+
+// errRepositoryMoved: the evaluated folder resolves to another repository
+// than the one whose lock is held.
+var errRepositoryMoved = errors.New("the folder now belongs to another repository than the one locked")
 
 // builder carries one evaluation's facts.
 type builder struct {
@@ -209,6 +218,9 @@ func newBuilder(ctx context.Context, d Deps, r Request) (*builder, error) {
 	}
 	if err := b.loadRepo(ctx, gitCmd{run: d.Git, bin: bin}); err != nil {
 		return nil, err
+	}
+	if r.repoKey != "" && b.repo.commonDir != r.repoKey {
+		return nil, fmt.Errorf("%w: %s, not %s", errRepositoryMoved, b.repo.commonDir, r.repoKey)
 	}
 	return b, b.loadFacts(ctx)
 }
@@ -325,15 +337,23 @@ func (b *builder) loadClaudeHome() {
 }
 
 func (b *builder) loadOwners(ctx context.Context) error {
-	b.rootOwners = map[string][]int64{}
-	for _, wb := range append([]int64{b.req.WorkbenchID}, b.req.ownerBenches...) {
-		owners, err := b.deps.DB.WorkbenchSessionWorktrees(ctx, wb)
-		if err != nil {
-			return fmt.Errorf("reading workbench %d session worktrees: %w", wb, err)
+	var owners map[string][]int64
+	var err error
+	if b.req.allOwners {
+		if owners, err = b.deps.DB.SessionWorktreeOwners(ctx); err != nil {
+			return fmt.Errorf("reading the session worktree owners: %w", err)
 		}
-		for root, ids := range owners {
-			key := resolvePath(root)
-			b.rootOwners[key] = append(b.rootOwners[key], ids...)
+	} else if owners, err = b.deps.DB.WorkbenchSessionWorktrees(ctx, b.req.WorkbenchID); err != nil {
+		return fmt.Errorf("reading workbench %d session worktrees: %w", b.req.WorkbenchID, err)
+	}
+	b.rootOwners = map[string][]int64{}
+	for root, ids := range owners {
+		// Two spellings of one root resolve to one key: each id once.
+		key := resolvePath(root)
+		for _, id := range ids {
+			if !slices.Contains(b.rootOwners[key], id) {
+				b.rootOwners[key] = append(b.rootOwners[key], id)
+			}
 		}
 	}
 	return nil

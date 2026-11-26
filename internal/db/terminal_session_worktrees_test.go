@@ -122,6 +122,31 @@ func TestWorkbenchSessionWorktrees_MapsRootsToTheWorkbenchSessions(t *testing.T)
 	}
 }
 
+// TestSessionWorktreeOwners_EveryWorkbench (#2402, fix round 1): every
+// session that recorded a root, whatever its workbench, is its owner —
+// the repository pass protects a tree any recent session saw.
+func TestSessionWorktreeOwners_EveryWorkbench(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	a := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
+	b := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f")
+	for _, r := range []struct {
+		id           int64
+		root, branch string
+	}{{a, "/tmp/example/wt", "feat/x"}, {a, "/tmp/example/wt", "feat/y"}, {b, "/tmp/example/wt", ""}} {
+		if _, err := d.RecordSessionWorktree(ctx, nil, r.id, r.root, r.branch, ledgerAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := d.SessionWorktreeOwners(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m["/tmp/example/wt"]; len(got) != 2 || got[0] != a || got[1] != b || len(m) != 1 {
+		t.Fatalf("owners = %v, want /tmp/example/wt → [%d %d]", m, a, b)
+	}
+}
+
 func TestSaveCleanupResult_WritesOnlyItsRow(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)

@@ -268,7 +268,19 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 		if holder := b.worktreeInside(f.path); holder != "" {
 			continue // a linked worktree lives in it: its work is not build output
 		}
-		outcome, err := b.pruneBuildDir(ctx, root, f, a.quietStillStands)
+		outcome, err := b.pruneBuildDir(ctx, root, f, func(ctx context.Context) (bool, error) {
+			if ok, err := a.quietStillStands(ctx); err != nil || !ok {
+				return ok, err
+			}
+			// The repository pass: no session the host lists live in it.
+			switch err := a.liveClear(ctx, root); {
+			case errors.Is(err, errLiveInIt):
+				return false, nil
+			case err != nil:
+				return false, err
+			}
+			return true, nil
+		})
 		if err != nil {
 			it.BuildError = err.Error()
 			return

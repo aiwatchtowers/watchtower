@@ -426,3 +426,40 @@ func TestExecOwnerNetwork_KillsTheProcessGroup(t *testing.T) {
 	}
 	waitGone(pid)
 }
+
+// TestBackgroundWriteArgsIn_NoHookAndNoFilter (#2402): a write Watchtower
+// runs on its own runs no hook (a reference-transaction hook on update-ref
+// included) and no fsmonitor; one that inspects the work tree (worktree
+// remove) also blanks the folder's filter drivers. Other writes list no
+// config.
+func TestBackgroundWriteArgsIn_NoHookAndNoFilter(t *testing.T) {
+	bin, ok := Locate()
+	if !ok {
+		t.Skip("no git")
+	}
+	dir, _ := plantedFilterRepo(t, bin)
+	for _, args := range [][]string{
+		{"update-ref", "-d", "refs/heads/x", "abc"},
+		{"config", "--remove-section", "branch.x"},
+		{"worktree", "unlock", "/tmp/wt"},
+		{"worktree", "remove", "/tmp/wt"},
+	} {
+		argv, err := BackgroundWriteArgsIn(context.Background(), bin, dir, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined := strings.Join(argv, " ")
+		for _, want := range []string{"-c core.hooksPath=/dev/null", "-c core.fsmonitor=false"} {
+			if !strings.Contains(joined, want) {
+				t.Errorf("argv %q lacks %q", joined, want)
+			}
+		}
+		if !strings.HasSuffix(joined, " "+strings.Join(args, " ")) {
+			t.Errorf("argv %q does not end with the subcommand", joined)
+		}
+		blanks := strings.Contains(joined, "-c filter.planted.clean=")
+		if want := args[0] == "worktree" && args[1] == "remove"; blanks != want {
+			t.Errorf("argv %q: filters blanked %v, want %v", joined, blanks, want)
+		}
+	}
+}

@@ -537,7 +537,7 @@ func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string, wa
 		}
 		// The repository pass took the worktree for being idle: right
 		// before the removal it still must be (#2402 §2).
-		if admin := b.repo.adminDirs[root]; walk && a.req.repoPass && (admin == "" || !isIdle(ctx, a.deps, root, admin)) {
+		if walk && a.req.repoPass && !worktreeIdle(ctx, a.deps, w, b.repo.adminDirs[root]) {
 			keepItem(it, reasonNotIdle, "active again since the pass chose it")
 			return nil, false
 		}

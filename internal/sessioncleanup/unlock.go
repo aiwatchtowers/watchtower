@@ -428,6 +428,16 @@ func writeMarker(path string, body []byte) (err error) {
 // on: any other failure of the unlock or the removal (a marker that cannot
 // be written, git that cannot run) stops it.
 func (a *applier) removeWorktreeNow(ctx context.Context, it *Item, root string, b *builder) {
+	// The repository pass: the live runs read once more, after the final
+	// re-check's walks (#2402 fix round 1).
+	switch err := a.liveClear(ctx, root); {
+	case errors.Is(err, errLiveInIt):
+		keepItem(it, ReasonSessionInIt, err.Error())
+		return
+	case err != nil:
+		a.fail(it, err)
+		return
+	}
 	admin := b.repo.adminDirs[root]
 	judged, ok := b.judgedLock(root)
 	unlocked, err := a.unlockForRemoval(ctx, root, admin, judged, ok)

@@ -134,6 +134,26 @@ func overridesFor(fields []string) ([]string, error) {
 	return out, nil
 }
 
+// BackgroundWriteArgsIn is the argv of a write Watchtower runs on its own
+// in dir — no owner asked for it and no session of the owner's owns what it
+// writes (the automatic cleanup's repository pass, #2402): ReadArgs' guard
+// (no hook — a reference-transaction hook on a ref delete included —, no
+// fsmonitor, no signature check), and for a write that inspects the work
+// tree's content (`worktree remove` checks it for changes) every filter
+// driver of the folder blanked as ReadArgsIn does. An error refuses the
+// write rather than run it unprotected.
+func BackgroundWriteArgsIn(ctx context.Context, bin, dir string, args ...string) ([]string, error) {
+	if len(args) < 2 || args[0] != "worktree" || args[1] != "remove" {
+		return ReadArgs(args...), nil
+	}
+	overrides, err := filterOverrides(ctx, bin, dir)
+	if err != nil {
+		return nil, err
+	}
+	argv := append(slices.Clone(readConfig), overrides...)
+	return append(argv, args...), nil
+}
+
 // OwnerArgs is the argv of a command the owner asked for (a branch switch):
 // the repository's hooks run, as they would from a terminal; the fsmonitor
 // command, which no command needs, never does.

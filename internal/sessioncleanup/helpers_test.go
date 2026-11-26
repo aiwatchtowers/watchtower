@@ -203,9 +203,15 @@ type fakeStore struct {
 	benchErr   error
 	activity   []SessionActivity
 	rootOwners map[string][]int64
+	// ledgerOwners are the owners of every workbench's ledger
+	// (SessionWorktreeOwners); nil = rootOwners.
+	ledgerOwners map[string][]int64
 	// lastSeen is the newest ledger sighting per root; seenErr fails the read.
 	lastSeen map[string]time.Time
 	seenErr  error
+	// onLastSeen, when set, runs on every WorktreeLastSeen read (an idle
+	// walk reads it first).
+	onLastSeen func(root string)
 	// agentIDs are the session's agent session ids; uuidOwners the rows
 	// holding each uuid (absent = none, which adopts nothing); idsErr and
 	// ownersErr fail those reads.
@@ -283,6 +289,13 @@ func (s *fakeStore) WorkbenchSessionWorktrees(context.Context, int64) (map[strin
 	return s.rootOwners, nil
 }
 
+func (s *fakeStore) SessionWorktreeOwners(ctx context.Context) (map[string][]int64, error) {
+	if s.ledgerOwners == nil {
+		return s.WorkbenchSessionWorktrees(ctx, 0)
+	}
+	return s.ledgerOwners, nil
+}
+
 func (s *fakeStore) AllSessionActivity(context.Context) ([]SessionActivity, error) {
 	return s.activity, nil
 }
@@ -297,6 +310,9 @@ func (s *fakeStore) SessionActivityOf(_ context.Context, id int64) (SessionActiv
 }
 
 func (s *fakeStore) WorktreeLastSeen(_ context.Context, root string) (time.Time, bool, error) {
+	if s.onLastSeen != nil {
+		s.onLastSeen(root)
+	}
 	at, ok := s.lastSeen[root]
 	return at, ok, s.seenErr
 }

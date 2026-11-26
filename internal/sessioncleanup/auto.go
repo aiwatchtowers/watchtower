@@ -362,17 +362,7 @@ func DBCandidates(database *db.DB, now func() time.Time) func(context.Context, t
 }
 
 // DBWorkbenches is AutoDeps.Workbenches over the database: every
-// workbench's id.
+// workbench's id, read under the pass's ctx.
 func DBWorkbenches(database *db.DB) func(context.Context) ([]int64, error) {
-	return func(context.Context) ([]int64, error) {
-		wbs, err := database.ListWorkbenches()
-		if err != nil {
-			return nil, err //nolint:wrapcheck // names the listing
-		}
-		ids := make([]int64, 0, len(wbs))
-		for _, wb := range wbs {
-			ids = append(ids, wb.ID)
-		}
-		return ids, nil
-	}
+	return database.WorkbenchIDs
 }

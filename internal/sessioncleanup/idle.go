@@ -47,28 +47,14 @@ func lastActivityWithin(ctx context.Context, d Deps, root, adminDir string, budg
 }
 
 func activityNewest(ctx context.Context, d Deps, root, adminDir string, budget time.Duration) (time.Time, error) {
-	var newest time.Time
+	newest, err := adminActivity(ctx, d, root, adminDir)
+	if err != nil {
+		return time.Time{}, err
+	}
 	note := func(t time.Time) {
 		if t.After(newest) {
 			newest = t
 		}
-	}
-	for _, name := range []string{"HEAD", "index", filepath.Join("logs", "HEAD")} {
-		fi, err := os.Stat(filepath.Join(adminDir, name))
-		switch {
-		case err == nil:
-			note(fi.ModTime())
-		case errors.Is(err, fs.ErrNotExist) && name != "HEAD":
-		default:
-			return time.Time{}, err
-		}
-	}
-	seen, ok, err := d.DB.WorktreeLastSeen(ctx, root)
-	if err != nil {
-		return time.Time{}, err
-	}
-	if ok {
-		note(seen)
 	}
 	start := time.Now()
 	builds, err := findBuilds(ctx, root, budget, true)
@@ -96,6 +82,61 @@ func activityNewest(ctx context.Context, d Deps, root, adminDir string, budget t
 		return time.Time{}, fmt.Errorf("over the %s budget", budget)
 	}
 	return newest, nil
+}
+
+// adminActivity is the newest of the mtimes of the admin dir's HEAD, index
+// and logs/HEAD (only a missing index or logs/HEAD is no activity) and of
+// root's newest ledger sighting: a worktree's activity without its build
+// folders.
+func adminActivity(ctx context.Context, d Deps, root, adminDir string) (time.Time, error) {
+	var newest time.Time
+	note := func(t time.Time) {
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	for _, name := range []string{"HEAD", "index", filepath.Join("logs", "HEAD")} {
+		fi, err := os.Stat(filepath.Join(adminDir, name))
+		switch {
+		case err == nil:
+			note(fi.ModTime())
+		case errors.Is(err, fs.ErrNotExist) && name != "HEAD":
+		default:
+			return time.Time{}, err
+		}
+	}
+	seen, ok, err := d.DB.WorktreeLastSeen(ctx, root)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if ok {
+		note(seen)
+	}
+	return newest, nil
+}
+
+// worktreeActivity is w's last activity (lastActivity); for a prunable
+// worktree, whose directory and builds are gone, its admin dir's and the
+// ledger's alone. Any failure returns now with the error (fail closed).
+func worktreeActivity(ctx context.Context, d Deps, w worktree, adminDir string) (time.Time, error) {
+	if !w.Prunable {
+		return lastActivity(ctx, d, w.Root, adminDir)
+	}
+	newest, err := adminActivity(ctx, d, w.Root, adminDir)
+	if err != nil {
+		return clockNow(d), fmt.Errorf("last activity of %s: %w", w.Root, err)
+	}
+	return newest, nil
+}
+
+// worktreeIdle: w has shown no activity for idleFor (worktreeActivity);
+// any failure measuring it, or no admin dir, is "not idle".
+func worktreeIdle(ctx context.Context, d Deps, w worktree, adminDir string) bool {
+	if adminDir == "" {
+		return false
+	}
+	at, err := worktreeActivity(ctx, d, w, adminDir)
+	return err == nil && clockNow(d).Sub(at) >= idleFor
 }
 
 // buildActivity is the newest mtime of dir and of the directories inside

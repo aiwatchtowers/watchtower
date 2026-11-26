@@ -70,6 +70,13 @@ func (s SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) 
 // read or owner arguments and environment.
 func (SystemGit) RunGitInput(ctx context.Context, dir, bin string, stdin []byte, args ...string) ([]byte, int, error) {
 	argv := gitbin.OwnerArgs(args...)
+	if ownerWrite(args) && backgroundWrites(ctx) {
+		bg, err := gitbin.BackgroundWriteArgsIn(ctx, bin, dir, args...)
+		if err != nil {
+			return nil, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		}
+		argv = bg
+	}
 	if !ownerWrite(args) {
 		read, err := gitbin.ReadArgsIn(ctx, bin, dir, args...)
 		if err != nil {
@@ -86,6 +93,25 @@ func (SystemGit) RunGitInput(ctx context.Context, dir, bin string, stdin []byte,
 		return stdout, exitErr.ExitCode(), &GitError{Args: args, Code: exitErr.ExitCode(), Stderr: string(stderr)}
 	}
 	return nil, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+}
+
+// backgroundWritesKey marks a ctx whose git writes no owner asked for
+// (withBackgroundWrites).
+type backgroundWritesKey struct{}
+
+// withBackgroundWrites marks ctx: SystemGit runs every write under it in
+// gitbin's background mode — no hook, no fsmonitor, and for `worktree
+// remove` no filter driver of the folder (#2402, fix round 1). The
+// repository pass sets it: it writes over trees no session of the owner's
+// owns, so nothing it does may run the repository's commands. The mark
+// travels with the ctx through any runner that wraps SystemGit.
+func withBackgroundWrites(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundWritesKey{}, true)
+}
+
+func backgroundWrites(ctx context.Context) bool {
+	on, _ := ctx.Value(backgroundWritesKey{}).(bool)
+	return on
 }
 
 // ownerWrite: args are one of the writes an apply runs on the owner's
@@ -168,6 +194,9 @@ type Store interface {
 	// then the rest by position: the repositories the owner's sweep covers.
 	BenchFolders(ctx context.Context, workbenchID int64) ([]string, error)
 	WorkbenchSessionWorktrees(ctx context.Context, workbenchID int64) (map[string][]int64, error)
+	// SessionWorktreeOwners maps each root any session of any workbench
+	// recorded to those sessions: the repository pass's owners (#2402).
+	SessionWorktreeOwners(ctx context.Context) (map[string][]int64, error)
 	// AllSessionActivity is every terminal session of every workbench (and
 	// standalone ones): an agent of another workbench over the same
 	// repository can work inside a worktree too (W6).
