@@ -1548,3 +1548,42 @@ func TestAutoRun_RepositoryPassMeasuresCandidatesOutsideTheLock(t *testing.T) {
 		t.Fatalf("lock held at each idle read: %v (want the first unheld, a later one held)", held)
 	}
 }
+
+// TestAutoRun_RepositoryPassBranchGoesOnlyWithItsWorktree (final review C5):
+// the pass deletes a branch only when its worktree went in the same batch.
+// A worktree used again before its removal — here switched to another
+// branch, so its own branch is no longer checked out anywhere — stays, and
+// so does that branch.
+func TestAutoRun_RepositoryPassBranchGoesOnlyWithItsWorktree(t *testing.T) {
+	t.Parallel()
+	a := newRepoPassFixture(t)
+	root := a.mergedClaudeWork("agent-1", "worktree-agent-1")
+	admin := adminOf(t, root)
+	lists := 0
+	a.git = &loggingGit{log: &opLog{}, before: func(args []string) *gitAnswer {
+		// Listings: the unlocked measure's facts, the batch's, the first
+		// re-check's, the final one's; the worktree switches branch right
+		// before the final one.
+		if slices.Equal(args, []string{"worktree", "list", "--porcelain"}) {
+			if lists++; lists == 4 {
+				gitIn(t, root, "switch", "-q", "-c", "wt/other")
+				at := a.clock().Add(-time.Minute) // used now, by the pass's clock
+				if err := os.Chtimes(filepath.Join(admin, "HEAD"), at, at); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+		return nil
+	}}
+
+	res, err := a.run(time.Now())
+	if err != nil || res.RepoChanged != 0 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if lists < 4 || !a.listsWorktree(root) {
+		t.Fatalf("the worktree went (%d listings)", lists)
+	}
+	if !a.branchExists("worktree-agent-1") {
+		t.Fatal("the branch of a worktree that stayed went")
+	}
+}

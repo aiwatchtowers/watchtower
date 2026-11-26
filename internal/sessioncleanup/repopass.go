@@ -398,7 +398,7 @@ func orderByRoots(items []Item, roots []string) {
 // that may go, in the order of roots (the oldest activity first), at most
 // limit of them, with the LaunchServices entries of the app bundles inside
 // each (as a Clean Up row's) and its branch when that branch item may go
-// too.
+// too — attempted only once the worktree went (applier.act).
 func passSelection(items []Item, roots []string, limit int) []string {
 	byKey := map[string]Item{}
 	branchKey := map[string]string{}
