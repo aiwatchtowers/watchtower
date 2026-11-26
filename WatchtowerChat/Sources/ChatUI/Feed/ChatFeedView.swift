@@ -296,7 +296,7 @@ public struct ChatFeedRows: View {
         }
     }
 
-    private func partContext(_ message: ChatFeed.Message) -> ChatPartContext {
+    func partContext(_ message: ChatFeed.Message) -> ChatPartContext {
         ChatPartContext(
             message: message,
             provider: context.provider,

@@ -64,8 +64,11 @@ public enum AgentTextHighlights {
         let spans = matches(pathToken, in: text).compactMap { pathSpan($0, in: text, urls: urls, steps: &steps) }
             + prefixed + refs
             + matches(hashPattern, in: text).compactMap { hashSpan($0, in: text, urls: urls, steps: &steps) }
-            + (matches(datePattern, in: text) + matches(clockPattern, in: text)).compactMap {
-                timeSpan($0, in: text, urls: urls, steps: &steps)
+            + matches(datePattern, in: text).compactMap {
+                timeSpan($0, isDate: true, in: text, urls: urls, steps: &steps)
+            }
+            + matches(clockPattern, in: text).compactMap {
+                timeSpan($0, isDate: false, in: text, urls: urls, steps: &steps)
             }
         return spans.sorted {
             $0.range.lowerBound != $1.range.lowerBound ? $0.range.lowerBound < $1.range.lowerBound : $0.kind != .path
@@ -97,10 +100,24 @@ public enum AgentTextHighlights {
         return Span(range: range, kind: whole.kind, text: token)
     }
 
+    /// `codeSpan(inCode:)` with the plain text right before the code: a ref in code after `PR` / `ask` (any case, on
+    /// the same line) is that phrase's kind, so ``PR `#1124` `` colours as the phrase and does not open target #1124.
+    /// The span still covers the code token only.
+    public static func codeSpan(inCode code: String, after plain: String) -> Span? {
+        guard let span = codeSpan(inCode: code) else { return nil }
+        guard case let .ref(number) = span.kind,
+              let match = phraseWordAtEnd.firstMatch(in: plain, range: NSRange(plain.startIndex..., in: plain)),
+              let word = Range(match.range(at: 1), in: plain) else { return span }
+        let kind: Kind = plain[word].lowercased() == "pr" ? .pullRequest(number) : .ask(number)
+        return Span(range: span.range, kind: kind, text: span.text)
+    }
+
     // MARK: - Patterns
 
     /// `PR #N` / `ask #N` (any case), standing alone, the word and the ref on one line.
     private static let prefixedRefPattern = regex(#"(?i)(?<![\w])(PR|ask)[ \t]+#(\d{1,6})(?![\w])"#)
+    /// `PR` / `ask` (any case) standing alone at the end of a stretch, a space or tab after it.
+    private static let phraseWordAtEnd = regex(#"(?i)(?<![\w])(PR|ask)[ \t]+$"#)
     /// `#` and 1–6 digits at a word boundary, not inside a URL or a word (`issue#12`).
     private static let refPattern = regex(#"(?<![\w/#&])#(\d{1,6})(?![\w])"#)
     /// 7–40 lowercase hex characters standing alone (not part of a word, a path or a dotted version).
@@ -143,12 +160,12 @@ public enum AgentTextHighlights {
         return Span(range: range, kind: kind, text: String(text[range]))
     }
 
-    /// A date (its month 01–12 and day 01–31 in groups 1 and 2) or a time (one group).
+    /// A date (`isDate`: its month 01–12 and day 01–31 in groups 1 and 2) or a time.
     private static func timeSpan(
-        _ match: NSTextCheckingResult, in text: String, urls: [Range<String.Index>], steps: inout Int
+        _ match: NSTextCheckingResult, isDate: Bool, in text: String, urls: [Range<String.Index>], steps: inout Int
     ) -> Span? {
         guard let range = Range(match.range, in: text) else { return nil }
-        if match.numberOfRanges == 3 {
+        if isDate {
             guard let month = Range(match.range(at: 1), in: text).flatMap({ Int(text[$0]) }),
                   let day = Range(match.range(at: 2), in: text).flatMap({ Int(text[$0]) }),
                   (1...12).contains(month), (1...31).contains(day) else { return nil }

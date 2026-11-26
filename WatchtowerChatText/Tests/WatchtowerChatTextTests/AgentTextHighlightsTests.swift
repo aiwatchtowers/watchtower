@@ -155,4 +155,36 @@ final class AgentTextHighlightsTests: XCTestCase {
         XCTAssertEqual(kinds("ask\n#990"), [.ref(990)])
         XCTAssertEqual(kinds("ask\t#990"), [.ask(990)])
     }
+
+    /// A ref in inline code right after `PR` / `ask` in the plain text is that phrase (final review A1): ``PR `#1124` ``
+    /// colours as the phrase and opens nothing. The span stays the code token.
+    func testCodeSpanAfterAPhraseWordTakesThePhrasesKind() {
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#1124", after: "see PR ")?.kind, .pullRequest(1124))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#990", after: "answered in ask ")?.kind, .ask(990))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#7", after: "pr\t")?.kind, .pullRequest(7))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#8", after: "ASK ")?.kind, .ask(8))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: " #1124 ", after: "PR ")?.text, "#1124")
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#12", after: "task ")?.kind, .ref(12))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#12", after: "PR\n")?.kind, .ref(12))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#12", after: "PR")?.kind, .ref(12))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#12", after: "sPR ")?.kind, .ref(12))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "make test", after: "PR ")?.kind, .command)
+        XCTAssertNil(AgentTextHighlights.codeSpan(inCode: "domain-kpi-v2", after: "PR "))
+    }
+
+    /// Boundary decisions pinned as they stand (final review A3).
+    func testBoundaryDecisions() {
+        let cases: [(String, [AgentTextHighlights.Kind], UInt)] = [
+            ("10:00-11:00", [], #line),
+            ("12:30\u{2013}13:00", [.time, .time], #line),
+            ("2026-11-16..2026-11-20", [.time], #line),
+            ("2026-11-16T10:05", [], #line),
+            ("9:05", [], #line),
+            ("see https://x.example.com/r/2026-11-16?at=10:05", [], #line),
+            ("ask #1 #2, PR #3 #4 and #5", [.ask(1), .ref(2), .pullRequest(3), .ref(4), .ref(5)], #line)
+        ]
+        for (text, expected, line) in cases {
+            XCTAssertEqual(kinds(text), expected, text, line: line)
+        }
+    }
 }

@@ -55,7 +55,7 @@ enum AgentTextHighlightRender {
     /// `clickable` false (a feed with no span action) leaves the click attribute off every span: colour only. Not the
     /// only guard: `MarkdownRunTextView` also ignores clicks while its `onHighlight` is nil.
     static func highlighted(
-        _ text: NSAttributedString, clickable: Bool = true, resolvesPath: (String) -> Bool
+        _ text: NSAttributedString, clickable: Bool, resolvesPath: (String) -> Bool
     ) -> NSAttributedString {
         let found = scans.value(for: text, cost: { max($0.count, 1) }, build: { scan(text) })
         var resolved = Set<String>()
@@ -106,14 +106,23 @@ enum AgentTextHighlightRender {
         }
     }
 
-    /// Every candidate span of the run, links left out.
+    /// Every candidate span of the run, links left out. Inline code reads the plain stretch right before it, so
+    /// ``PR `#1124` `` is the phrase, not a ref (`codeSpan(inCode:after:)`).
     static func scan(_ text: NSAttributedString) -> [Found] {
         let string = text.string as NSString
-        return stretches(text).flatMap { range, isCode -> [Found] in
+        let all = stretches(text)
+        return all.indices.flatMap { index -> [Found] in
+            let (range, isCode) = all[index]
             let piece = string.substring(with: range)
-            let spans = isCode
-                ? AgentTextHighlights.codeSpan(inCode: piece).map { [$0] } ?? []
-                : AgentTextHighlights.spans(inPlain: piece)
+            let spans: [AgentTextHighlights.Span]
+            if isCode {
+                let before = index > 0 ? all[index - 1] : nil
+                let plainBefore = before.flatMap { !$0.isCode && NSMaxRange($0.range) == range.location ? $0 : nil }
+                    .map { string.substring(with: $0.range) } ?? ""
+                spans = AgentTextHighlights.codeSpan(inCode: piece, after: plainBefore).map { [$0] } ?? []
+            } else {
+                spans = AgentTextHighlights.spans(inPlain: piece)
+            }
             return spans.map { span in
                 let local = NSRange(span.range, in: piece)
                 return Found(range: NSRange(location: range.location + local.location, length: local.length), span: span)
@@ -163,6 +172,7 @@ enum AgentTextHighlightRender {
         font.fontDescriptor.withDesign(.monospaced).flatMap { NSFont(descriptor: $0, size: font.pointSize) } ?? font
     }
 }
+
 extension MessageHighlighting {
     /// A run of this message's text coloured (`AgentTextHighlightRender`): its paths through the feed's resolver, its
     /// spans clickable only when the feed acts on them.

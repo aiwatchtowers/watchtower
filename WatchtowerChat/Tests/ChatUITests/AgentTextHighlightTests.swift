@@ -43,7 +43,7 @@ final class AgentTextHighlightTests: XCTestCase {
 
     func testSpansGetTheirTintAndNothingElse() {
         let base = runText(markdown)
-        let text = AgentTextHighlightRender.highlighted(base) { $0 == "internal/a.go" }
+        let text = AgentTextHighlightRender.highlighted(base, clickable: true) { $0 == "internal/a.go" }
         XCTAssertEqual(kind(of: "#2188", in: text), .ref(2188))
         XCTAssertEqual(kind(of: "67a59755a", in: text), .hash)
         XCTAssertEqual(kind(of: "make test", in: text), .command)
@@ -76,14 +76,14 @@ final class AgentTextHighlightTests: XCTestCase {
 
     func testNothingToColourKeepsTheRunText() {
         let base = runText("Nothing to see here, `foo bar` and docs/missing.md.")
-        XCTAssertTrue(AgentTextHighlightRender.highlighted(base) { _ in false } === base)
+        XCTAssertTrue(AgentTextHighlightRender.highlighted(base, clickable: true) { _ in false } === base)
     }
 
     func testTheColouredTextIsMemoisedPerResolvedPaths() {
         let base = runText(markdown)
-        let first = AgentTextHighlightRender.highlighted(base) { $0 == "internal/a.go" }
-        XCTAssertTrue(AgentTextHighlightRender.highlighted(base) { $0 == "internal/a.go" } === first)
-        let both = AgentTextHighlightRender.highlighted(base) { _ in true }
+        let first = AgentTextHighlightRender.highlighted(base, clickable: true) { $0 == "internal/a.go" }
+        XCTAssertTrue(AgentTextHighlightRender.highlighted(base, clickable: true) { $0 == "internal/a.go" } === first)
+        let both = AgentTextHighlightRender.highlighted(base, clickable: true) { _ in true }
         XCTAssertFalse(both === first)
         XCTAssertEqual(kind(of: "docs/missing.md", in: both), .path)
     }
@@ -96,8 +96,10 @@ final class AgentTextHighlightTests: XCTestCase {
     /// A path candidate that does not resolve leaves the ref inside it coloured; one that resolves takes it.
     func testARefInsideAnUnresolvedPathKeepsItsColour() {
         let base = runText("Round 3 of #2201/T2 is ready")
-        XCTAssertEqual(kind(of: "#2201", in: AgentTextHighlightRender.highlighted(base) { _ in false }), .ref(2201))
-        XCTAssertEqual(kind(of: "2201/T2", in: AgentTextHighlightRender.highlighted(base) { _ in true }), .path)
+        let unresolved = AgentTextHighlightRender.highlighted(base, clickable: true) { _ in false }
+        XCTAssertEqual(kind(of: "#2201", in: unresolved), .ref(2201))
+        let resolved = AgentTextHighlightRender.highlighted(base, clickable: true) { _ in true }
+        XCTAssertEqual(kind(of: "2201/T2", in: resolved), .path)
     }
 
     private func color(of needle: String, in text: NSAttributedString) -> NSColor? {
@@ -107,7 +109,7 @@ final class AgentTextHighlightTests: XCTestCase {
     /// Spec 2026-11-26 §1: inline code that is one whole span takes that kind's tint and click.
     func testInlineCodeHashGetsItsTintAndClick() {
         let base = runText("Landed as `4d434597` today")
-        let text = AgentTextHighlightRender.highlighted(base) { _ in false }
+        let text = AgentTextHighlightRender.highlighted(base, clickable: true) { _ in false }
         XCTAssertNotNil(base.attribute(.markdownInlineCode, at: (base.string as NSString).range(of: "4d434597").location,
                                        effectiveRange: nil))
         XCTAssertEqual(color(of: "4d434597", in: text), NSColor(SyntaxTint.hash))
@@ -117,7 +119,7 @@ final class AgentTextHighlightTests: XCTestCase {
     /// D1: a date and an `ask #N` are coloured and carry no click; the `#990` is the phrase's, not a ref.
     func testColourOnlyKindsCarryNoClick() {
         let base = runText("since 2026-11-16, ask #990")
-        let text = AgentTextHighlightRender.highlighted(base) { _ in false }
+        let text = AgentTextHighlightRender.highlighted(base, clickable: true) { _ in false }
         XCTAssertEqual(color(of: "2026-11-16", in: text), NSColor(SyntaxTint.time))
         XCTAssertEqual(color(of: "ask #990", in: text), NSColor(SyntaxTint.ref))
         XCTAssertNil(attributes(of: "2026-11-16", in: text)[.agentHighlight])
@@ -128,7 +130,7 @@ final class AgentTextHighlightTests: XCTestCase {
 
     func testMultiTokenInlineCodeStaysPlain() {
         let base = runText("Set `marking_started: \"2026-11-16\"` first")
-        let text = AgentTextHighlightRender.highlighted(base) { _ in true }
+        let text = AgentTextHighlightRender.highlighted(base, clickable: true) { _ in true }
         XCTAssertTrue(text === base, "no span: the run text is unchanged")
         XCTAssertEqual(color(of: "2026-11-16", in: text), color(of: "2026-11-16", in: base))
     }
@@ -136,7 +138,7 @@ final class AgentTextHighlightTests: XCTestCase {
     func testADateInsideAResolvingPathTakesThePathColour() {
         let base = runText("Wrote logs/2026-11-16.txt now")
         let path = (base.string as NSString).range(of: "logs/2026-11-16.txt")
-        let resolved = AgentTextHighlightRender.highlighted(base) { $0 == "logs/2026-11-16.txt" }
+        let resolved = AgentTextHighlightRender.highlighted(base, clickable: true) { $0 == "logs/2026-11-16.txt" }
         var effective = NSRange()
         let pathColor = resolved.attribute(.foregroundColor, at: path.location, effectiveRange: &effective) as? NSColor
         XCTAssertEqual(pathColor, NSColor(SyntaxTint.path))
@@ -145,7 +147,7 @@ final class AgentTextHighlightTests: XCTestCase {
             XCTAssertNotEqual(value as? NSColor, NSColor(SyntaxTint.time))
         }
 
-        let unresolved = AgentTextHighlightRender.highlighted(base) { _ in false }
+        let unresolved = AgentTextHighlightRender.highlighted(base, clickable: true) { _ in false }
         let date = (base.string as NSString).range(of: "2026-11-16")
         let dateColor = unresolved.attribute(.foregroundColor, at: date.location, effectiveRange: &effective) as? NSColor
         XCTAssertEqual(dateColor, NSColor(SyntaxTint.time))
@@ -169,10 +171,14 @@ final class AgentTextHighlightTests: XCTestCase {
         }
     }
 
-    private func textView(onHighlight: ((AgentTextHighlights.Span) -> Void)?) -> (MarkdownRunTextView, [DispatchWorkItem]) {
+    private func textView(
+        _ text: String? = nil, onHighlight: ((AgentTextHighlights.Span) -> Void)?
+    ) -> (MarkdownRunTextView, [DispatchWorkItem]) {
         let view = MarkdownRunTextView.make()
         view.onHighlight = onHighlight
-        view.show(AgentTextHighlightRender.highlighted(runText(markdown)) { $0 == "internal/a.go" })
+        view.show(AgentTextHighlightRender.highlighted(runText(text ?? markdown), clickable: true) {
+            $0 == "internal/a.go"
+        })
         return (view, [])
     }
 
@@ -253,17 +259,18 @@ final class AgentTextHighlightTests: XCTestCase {
         XCTAssertNil(ChatFeedContext().agentTextHighlighting, "the AI chat and the phone stay plain by default")
     }
 
-    func testAFeedPassesItsFlagToThePartContext() {
+    func testAFeedPassesItsHighlightingToThePartContext() {
         var opened: [AgentTextHighlights.Span] = []
-        let value = AgentTextHighlighting(
+        var feed = ChatFeedContext()
+        feed.agentTextHighlighting = AgentTextHighlighting(
             resolvesPath: { path, messageID in path == "a/b.go" && messageID == 1 },
             openHighlight: { span, messageID in
                 XCTAssertEqual(messageID, 1)
                 opened.append(span)
             })
-        let highlighting = MessageHighlighting(ChatPartContext(
-            message: ChatFeed.Message(id: 1, role: "assistant", text: "", createdAt: .distantPast),
-            agentTextHighlighting: value))
+        let message = ChatFeed.Message(id: 1, role: "assistant", text: "", createdAt: .distantPast)
+        let rows = ChatFeedRows(messages: [message], context: feed)
+        let highlighting = MessageHighlighting(rows.partContext(message))
         XCTAssertEqual(highlighting?.resolvesPath("a/b.go"), true)
         XCTAssertEqual(highlighting?.resolvesPath("c.go"), false)
         let span = AgentTextHighlights.spans(inPlain: "#7")[0]
@@ -286,7 +293,7 @@ final class AgentTextHighlightTests: XCTestCase {
 
     /// C3: a ref in inline code takes the ref tint and a click, as in plain text.
     func testInlineCodeRefGetsItsTintAndClick() {
-        let text = AgentTextHighlightRender.highlighted(runText("Merged `#2188` today")) { _ in false }
+        let text = AgentTextHighlightRender.highlighted(runText("Merged `#2188` today"), clickable: true) { _ in false }
         XCTAssertEqual(color(of: "#2188", in: text), NSColor(SyntaxTint.ref))
         XCTAssertEqual(kind(of: "#2188", in: text), .ref(2188))
     }
@@ -294,10 +301,10 @@ final class AgentTextHighlightTests: XCTestCase {
     /// C3: a path in inline code is coloured only when it resolves.
     func testInlineCodePathIsColouredOnlyWhenItResolves() {
         let base = runText("Edited `internal/a.go` now")
-        let resolved = AgentTextHighlightRender.highlighted(base) { $0 == "internal/a.go" }
+        let resolved = AgentTextHighlightRender.highlighted(base, clickable: true) { $0 == "internal/a.go" }
         XCTAssertEqual(color(of: "internal/a.go", in: resolved), NSColor(SyntaxTint.path))
         XCTAssertEqual(kind(of: "internal/a.go", in: resolved), .path)
-        let unresolved = AgentTextHighlightRender.highlighted(base) { _ in false }
+        let unresolved = AgentTextHighlightRender.highlighted(base, clickable: true) { _ in false }
         XCTAssertNotEqual(color(of: "internal/a.go", in: unresolved), NSColor(SyntaxTint.path))
         XCTAssertNil(kind(of: "internal/a.go", in: unresolved))
     }
@@ -305,10 +312,45 @@ final class AgentTextHighlightTests: XCTestCase {
     /// A hash in inline code keeps the code's own font: no second monospace pass.
     func testAHashInInlineCodeKeepsTheCodesFont() {
         let base = runText("Landed as `4d434597` today")
-        let text = AgentTextHighlightRender.highlighted(base) { _ in false }
+        let text = AgentTextHighlightRender.highlighted(base, clickable: true) { _ in false }
         XCTAssertEqual(attributes(of: "4d434597", in: text)[.font] as? NSFont,
                        attributes(of: "4d434597", in: base)[.font] as? NSFont)
         XCTAssertEqual(color(of: "4d434597", in: text), NSColor(SyntaxTint.hash))
+    }
+
+    /// Final review A1: a ref in inline code right after `PR` / `ask` is that phrase: the PR/ask colour, no click.
+    func testARefInCodeAfterAPhraseWordIsThePhrase() {
+        let base = runText("Merged PR `#1124`, answered in ask `#990`, task `#12`")
+        let text = AgentTextHighlightRender.highlighted(base, clickable: true) { _ in false }
+        for needle in ["#1124", "#990"] {
+            XCTAssertNil(attributes(of: needle, in: text)[.agentHighlight], needle)
+            XCTAssertEqual(color(of: needle, in: text), NSColor(SyntaxTint.ref), needle)
+        }
+        XCTAssertEqual(kind(of: "#12", in: text), .ref(12), "after another word the code ref still opens")
+        XCTAssertEqual(AgentTextHighlightRender.scan(base).map(\.span.kind), [.pullRequest(1124), .ask(990), .ref(12)])
+    }
+
+    /// Final review A4: `clickable` is part of the memo key — the same run rendered clickable and not differs.
+    func testClickableIsPartOfTheMemoKey() {
+        let base = runText("Merged #4242 today")
+        let clickable = AgentTextHighlightRender.highlighted(base, clickable: true) { _ in false }
+        let inert = AgentTextHighlightRender.highlighted(base, clickable: false) { _ in false }
+        XCTAssertNotNil(attributes(of: "#4242", in: clickable)[.agentHighlight])
+        XCTAssertNil(attributes(of: "#4242", in: inert)[.agentHighlight])
+        XCTAssertFalse(clickable.isEqual(to: inert))
+
+        let other = runText("Merged #4343 today")
+        let inertFirst = AgentTextHighlightRender.highlighted(other, clickable: false) { _ in false }
+        let clickableSecond = AgentTextHighlightRender.highlighted(other, clickable: true) { _ in false }
+        XCTAssertNil(attributes(of: "#4343", in: inertFirst)[.agentHighlight])
+        XCTAssertNotNil(attributes(of: "#4343", in: clickableSecond)[.agentHighlight])
+    }
+
+    /// Final review A4: VoiceOver offers an action for the spans that open only, never a date or an `ask #N`.
+    func testVoiceOverSkipsColourOnlySpans() throws {
+        let (view, _) = textView("Fixed #12 on 2026-11-16, ask #990") { _ in }
+        let actions = try XCTUnwrap(view.accessibilityCustomActions())
+        XCTAssertEqual(actions.map(\.name), ["Show #12 on the board"])
     }
 }
 #endif

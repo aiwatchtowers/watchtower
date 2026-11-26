@@ -9,7 +9,8 @@ public struct AgentTextHighlighting {
     /// Whether a path candidate of the message (by id) is a file of the session's folders; nil colours no path. It may
     /// answer later (an async lookup): the screen re-renders when it lands.
     public var resolvesPath: ((_ path: String, _ messageID: Int64) -> Bool)?
-    /// A click on a span that opens (`Kind.opens`); nil keeps every span colour-only.
+    /// A click on a span that opens (`Kind.opens`); nil keeps every span colour-only: no click, no hand cursor and no
+    /// VoiceOver actions.
     public var openHighlight: ((_ span: AgentTextHighlights.Span, _ messageID: Int64) -> Void)?
 
     public init(resolvesPath: ((String, Int64) -> Bool)? = nil,
