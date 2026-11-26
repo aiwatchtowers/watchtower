@@ -29,6 +29,7 @@ final class FakeSessionHostTransport: SessionHostTransport {
     var helloFeatures: [String]?
     private var onFrame: ((SessionHostFrame) -> Void)?
     private var onClose: (() -> Void)?
+    private var sendWaiters: [(type: SessionHostFrameType, resume: CheckedContinuation<Void, Never>)] = []
 
     func open(onFrame: @escaping (SessionHostFrame) -> Void, onClose: @escaping () -> Void) async throws {
         if let openError { throw openError }
@@ -39,6 +40,9 @@ final class FakeSessionHostTransport: SessionHostTransport {
 
     func send(_ frame: SessionHostFrame) {
         sent.append(frame)
+        let woken = sendWaiters.filter { $0.type == frame.type }
+        sendWaiters.removeAll { $0.type == frame.type }
+        woken.forEach { $0.resume.resume() }
         guard autoReply else { return }
         switch frame.type {
         case .hello where v1Host:
@@ -73,6 +77,14 @@ final class FakeSessionHostTransport: SessionHostTransport {
     func hangUp() { onClose?() }
 
     func sent(_ type: SessionHostFrameType) -> [SessionHostFrame] { sent.filter { $0.type == type } }
+
+    /// Returns once a frame of `type` has gone out — at once if one already
+    /// has. A wait on the send itself, not a count of yields a loaded runner
+    /// can exhaust first (#2400).
+    func firstSent(_ type: SessionHostFrameType) async {
+        guard sent(type).isEmpty else { return }
+        await withCheckedContinuation { sendWaiters.append((type, $0)) }
+    }
 }
 
 @MainActor
