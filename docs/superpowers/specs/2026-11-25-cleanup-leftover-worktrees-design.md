@@ -4,13 +4,13 @@
 
 ## Problem
 
-On 2026-11-25 the owner's repository held 99 linked worktrees, 201 GB, under `.claude/worktrees/`, although the hourly automatic cleanup (#2131) ran and logged no failure. It removed branches and kept almost every worktree. Five gaps, read from the code:
+A busy repository kept dozens of linked worktrees and hundreds of GB of builds under `.claude/worktrees/`, although the hourly automatic cleanup (#2131) ran and logged no failure. It removed branches and kept almost every worktree. Five gaps, read from the code:
 
 1. **Only `finish_session` makes a session a candidate.** `db.FinishedSessionsForCleanup` needs `finished_at`, written only by `finish_session`. A session whose tab was closed, that crashed or that stopped without it is never cleaned up.
-2. **A locked worktree is kept for ever.** W3 (`catchLocked`) keeps it before any other check, so a locked worktree whose branch is long merged stays, and the build prune skips it too (`pruneCatches` includes `catchLocked`). Plan worktrees are locked by rule while a plan runs; nobody unlocks them afterwards. Example: one 14 GB locked worktree whose branch was merged.
+2. **A locked worktree is kept for ever.** W3 (`catchLocked`) keeps it before any other check, so a locked worktree whose branch is long merged stays, and the build prune skips it too (`pruneCatches` includes `catchLocked`). Plan worktrees are locked by rule while a plan runs; nobody unlocks them afterwards. Example: a locked worktree with a large build whose branch was merged.
 3. **A worktree no finished session owns is never looked at.** The daemon applies session scopes only. Claude Code subagent worktrees (`agent-<hex>`) without a matching subagent record, worktrees older than the session that saw them (`existed_before_session`), those with an unknown birth (`created_unknown`), and those of sessions finished more than 14 days ago are never evaluated again (the first three are settled reasons).
 4. **Any process with its cwd inside keeps the worktree**, language servers included (`gopls`, `sourcekit-lsp`, `clangd`), which an editor or an agent leaves running long after the work ended.
-5. Directories under `.claude/worktrees/` that git no longer lists, and loose files there, are seen by nobody. They held ~2 GB; they are split off to their own low-priority target (see Out of scope).
+5. Directories under `.claude/worktrees/` that git no longer lists, and loose files there, are seen by nobody. They held a few GB; they are split off to their own low-priority target (see Out of scope).
 
 ## Decisions
 
@@ -19,7 +19,7 @@ On 2026-11-25 the owner's repository held 99 linked worktrees, 201 GB, under `.c
 - A repository-wide pass covers worktrees no finished session owns — ask #1850.
 - Language servers do not keep a worktree — ask #1850.
 - **Proposed by the author, owner approved in ask #1853:** "must not slow down builds" is read as: a build folder is removed only from a worktree idle for 3 days (§2, "Last activity") with no live session and no blocking process in it, so a build in use or used recently is never thrown away. The same 3 days gate the removal of a locked worktree and the repository pass.
-- **Proposed by the author, owner approved in ask #1853:** orphan directories and loose files under `.claude/worktrees/` (~2 GB) are not part of this spec; they get their own low-priority target, #2404, shown in the Clean Up screen and removed only by the owner's tick.
+- **Proposed by the author, owner approved in ask #1853:** orphan directories and loose files under `.claude/worktrees/` are not part of this spec; they get their own low-priority target, #2404, shown in the Clean Up screen and removed only by the owner's tick.
 - Global level: the fix lives in Watchtower's cleanup (`internal/sessioncleanup`, the daemon), not in this repository's rules; project-specific build habits are #2403 — conversation.
 
 ## Design
@@ -43,7 +43,7 @@ The apply passes `RequireEnded: false` for such a row (it is ended by this rule,
 
 After the session applies, each pass runs one **repository pass** per distinct repository of the workbenches' folders (keyed by the git common dir, under the same repository cleanup lock, `TryLock`; busy → next pass).
 
-**Scope.** Linked worktrees whose root is under `<main checkout>/.claude/worktrees/` — the folder Watchtower's placement and Claude Code's `isolation: worktree` both create worktrees in. A worktree anywhere else is never touched by this pass: outside that folder Watchtower cannot tell an agent's worktree from one the owner made and works in by hand, and the owner's own worktrees are the owner's. Those stay reachable through the Clean Up screen's sweep, as today.
+**Scope.** Linked worktrees whose root is under `<main checkout>/.claude/worktrees/` — the folder Watchtower's placement and Claude Code's `isolation: worktree` both create worktrees in. A worktree anywhere else is never touched by this pass: outside that folder Watchtower cannot tell an agent's worktree from one the owner made and works in by hand, so a worktree there that the owner made by hand is covered by the same checks and the 3-day idle rule (no session working in it, clean, merged or pushed, idle). The owner's worktrees elsewhere are the owner's. Those outside stay reachable through the Clean Up screen's sweep, as today.
 
 **Skip.** A worktree is skipped (not evaluated) when any of these hold:
 
@@ -83,7 +83,7 @@ The same rule applies in a session apply, in the automatic pass and in the owner
 ### 4. Build prune
 
 - `pruneReasons` gains `locked`: a locked worktree's build output goes even when the worktree stays.
-- **An Xcode DerivedData folder is recognised by its content, whatever its name.** Today only a folder named `DerivedData` counts; `-derivedDataPath` folders named otherwise (seen: `.build-mobile-dd`, `.derived`, `.derived-mobile`, 1.7–2.9 GB each) stay. A directory at the worktree's root, or one level below it, holding `info.plist`, `Build/` and at least one of `Logs/`, `Index.noindex/`, `ModuleCache.noindex/` is a DerivedData folder for the prune and for W10's cache exemption (so it does not count as unsaved ignored work either). The same content check guards it as today's `DerivedData` kind (`buildKind.files`/`dirs`).
+- **An Xcode DerivedData folder is recognised by its content, whatever its name.** Today only a folder named `DerivedData` counts; `-derivedDataPath` folders named otherwise (seen: `.build-mobile-dd`, `.derived`, `.derived-mobile`, GBs each) stay. A directory at the worktree's root, or one level below it, holding `info.plist`, `Build/` and at least one of `Logs/`, `Index.noindex/`, `ModuleCache.noindex/` is a DerivedData folder for the prune and for W10's cache exemption (so it does not count as unsaved ignored work either). The same content check guards it as today's `DerivedData` kind (`buildKind.files`/`dirs`).
 - `pruneCatches` drops `catchLocked` and gains an **idle** check: a build folder is pruned only from a worktree idle for `idleFor`. This applies to every prune of a locked worktree (a locked plan worktree keeps its build at its session's end until it has been idle 3 days) and to the repository pass. The existing prune at a session's end (#2131, ask #1695) of a worktree kept for any other reason is unchanged.
 - A quiet session (§1) counts as ended for the prune too, so its kept worktrees lose their build in the same apply, like a finished session's.
 - The live-process and session-in-it checks stay in `pruneCatches`, so a build in use is never removed.
@@ -158,6 +158,6 @@ Task 5 updates `docs/inventory/workbench.md` (PROJ-18 amendment + changelog line
 
 ## Out of scope
 
-- Directories and loose files under `.claude/worktrees/` that git does not list (~2 GB on 2026-11-25): a separate low-priority target, shown in the Clean Up screen, never removed automatically.
+- Directories and loose files under `.claude/worktrees/` that git does not list: a separate low-priority target, shown in the Clean Up screen, never removed automatically.
 - How this repository builds (`-trimpath`, copying `.build` into worktrees, per-package build folders): #2403.
 - The Go build cache, Xcode DerivedData outside worktrees and simulators: tools' own caches, not Watchtower's.
