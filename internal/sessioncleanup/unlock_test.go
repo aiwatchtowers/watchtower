@@ -954,3 +954,33 @@ func TestRestoreLocks_MissingTreeWithItsAdminEntryIsRelocked(t *testing.T) {
 		t.Fatal("the marker stayed")
 	}
 }
+
+// TestLocked_PrunableTreeWithAPendingMarkerIsKept (final review residual
+// Q3): a worktree whose directory is gone meets only the prunable catches,
+// which used to leave out the one that sees an unlock marker; one whose
+// relock failed (the marker is still there) is kept as check_failed, never
+// removed with its marker.
+func TestLocked_PrunableTreeWithAPendingMarkerIsKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.lock(root)
+	admin := adminOf(t, root)
+	interruptedUnlock(t, f, root)
+	if err := os.RemoveAll(root); err != nil { // the fixture's own temp worktree
+		t.Fatal(err)
+	}
+	f.git = &loggingGit{log: &opLog{}, before: func(args []string) *gitAnswer {
+		if i := slices.Index(args, "worktree"); i >= 0 && i+1 < len(args) && args[i+1] == "lock" {
+			return &gitAnswer{code: 128, err: &GitError{Args: args, Code: 128, Stderr: "fatal: injected failure"}}
+		}
+		return nil
+	}}
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonCheckFailed, false)
+	if !exists(filepath.Join(admin, unlockMarker)) {
+		t.Fatal("the pending marker went with the worktree")
+	}
+}
