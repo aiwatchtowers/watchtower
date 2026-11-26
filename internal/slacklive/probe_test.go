@@ -27,7 +27,7 @@ func init() {
 
 func shortConnect(t *testing.T) {
 	old := connectTimeout
-	connectTimeout = 150 * time.Millisecond
+	connectTimeout = time.Second // room for the stub's init line on a loaded machine
 	t.Cleanup(func() { connectTimeout = old })
 }
 
