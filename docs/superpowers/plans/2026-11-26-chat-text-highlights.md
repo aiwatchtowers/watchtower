@@ -24,7 +24,7 @@
 
 ## Review Focus
 
-1. A date-looking token inside a path or a version (`v2026-11-16`, `logs/2026-11-16.txt`) — the path or nothing wins, never a `time` inside a path that resolves. Test in Task 1.
+1. A date-looking token inside a path or a version (`v2026-11-16`, `logs/2026-11-16.txt`) — the path or nothing wins, never a `time` inside a path that resolves. Tests: `testADateGluedToAWordIsNotADate` (Task 1), `testADateInsideAResolvingPathTakesThePathColour` (Task 2).
 2. `ask #990` / `PR #12` today click as target `#990` / `#12` — after v2 they colour as `ask`/`pullRequest` and never click. Tests in Task 1 (rules) and Task 2 (no click attribute).
 3. Time look-alikes: `24:00`, `3:2`, `12:345`, `10:05:33` — only a valid `HH:MM` standing alone colours (the `10:05` of `10:05:33` does not). Test in Task 1.
 4. Inline code with surrounding space or quotes (`` ` 4d434597 ` ``, `` `"2026-11-16"` ``) — trimmed/unquoted whole-token match still colours, its range covers the token only. Test in Task 1.
@@ -40,7 +40,8 @@ Depends on: none.
 - Modify: `WatchtowerChatText/Sources/WatchtowerChatText/AgentTextHighlights.swift`
 - Modify: `WatchtowerKit/Sources/WatchtowerDesign/SyntaxTint.swift` (add `time`)
 - Modify (exhaustive switches only, to keep every package building): `WatchtowerChat/Sources/ChatUI/Platform/macOS/AgentTextHighlightRender.swift` (`color`, `accessibilityName`), `WatchtowerDesktop/Sources/Views/Workbench/WorkchatHighlights.swift` (`action(for:…)`)
-- Test: `WatchtowerChatText/Tests/WatchtowerChatTextTests/AgentTextHighlightsTests.swift`
+- Modify: `WatchtowerDesktop/Sources/Views/Workbench/AgentFinishedRow.swift:122-129` (`title(_:)`, the other `spans(inPlain:)` consumer: today it colours `.ref`; `PR #N` / `ask #N` were refs there, so it colours `.ref`, `.pullRequest` and `.ask` in `SyntaxTint.ref` — the row looks as before; dates stay plain, C8 coloured refs only)
+- Test: `WatchtowerChatText/Tests/WatchtowerChatTextTests/AgentTextHighlightsTests.swift`; create `WatchtowerDesktop/Tests/AgentFinishedRowTitleTests.swift`
 
 **Interfaces:**
 - Produces:
@@ -48,7 +49,7 @@ Depends on: none.
   - `extension AgentTextHighlights.Kind { public var opens: Bool }` — true for `ref`, `hash`, `path`, `command`; false for the three new kinds.
   - `AgentTextHighlights.codeSpan(inCode code: String) -> Span?` — replaces `commandSpan(inCode:)` (delete it; update its callers). Order: command (today's rule), then the trimmed code — with one pair of surrounding `"` or `'` removed — as a whole: `#N` → `ref`, hash rule → `hash`, `PR #N`/`ask #N` → `pullRequest`/`ask`, date/time → `time`, path candidate (today's path rule on the whole token) → `path`. The span's range covers the token without space or quotes. Anything else → nil.
   - `SyntaxTint.time = Color.teal.opacity(opacity)`.
-- Switch arms added in this task: `color`: `.time` → `SyntaxTint.time`, `.pullRequest`, `.ask` → `SyntaxTint.ref`; `accessibilityName`: `.time`, `.pullRequest`, `.ask` → `span.text` (no verb); `WorkchatHighlights.action`: the three → `.nothing`.
+- Switch arms added in this task: `color`: `.time` → `SyntaxTint.time`, `.pullRequest`, `.ask` → `SyntaxTint.ref`; `accessibilityName` becomes `-> String?`, nil for a kind that does not open (its caller at `MarkdownTextRun.swift:614` skips nil; it only ever sees opening kinds after Task 2, so nil is the honest answer, not a dead label); `WorkchatHighlights.action`: the three → `.nothing`. VoiceOver reads a colour-only span as the plain text it is — no custom action, no extra label (spec D1: the colour adds nothing to act on).
 
 Rules for `spans(inPlain:)` (all skip web addresses, as today):
 - `pullRequest` / `ask`: `(?i)(?<![\w])(PR|ask)\s#(\d{1,6})(?![\w])` — the span covers the whole phrase.
@@ -92,13 +93,26 @@ func testADateInsideAPathIsListedInsideTheCandidate() {
     let spans = AgentTextHighlights.spans(inPlain: "logs/2026-11-16.txt")
     XCTAssertEqual(spans.map(\.kind), [.path, .time])
 }
+
+func testADateGluedToAWordIsNotADate() {
+    XCTAssertEqual(kinds("tag v2026-11-16 shipped"), [])
+}
+```
+
+In `AgentFinishedRowTitleTests`:
+
+```swift
+func testTitleColoursRefsAndPrefixedRefsOnly() {
+    let text = AgentFinishedRow.title("Fixed #12, see PR #1124 and ask #990 on 2026-11-16")
+    // runs with SyntaxTint.ref: "#12", "PR #1124", "ask #990"; the date has no foreground colour
+}
 ```
 
 (`kinds`/`texts` are small private helpers over `spans(inPlain:)`; reuse the file's existing ones if present.) Rename `testCommandSpanInInlineCode` / `testCommandSpanTrimsSurroundingSpace` to call `codeSpan(inCode:)`; their assertions stay. `testScanStepsGrowLinearlyOnALongUnspacedLine` stays and must pass unchanged.
 
 - [ ] **Step 2: Run** `make chattext-test FILTER=AgentTextHighlightsTests > /tmp/t1.log 2>&1; echo "exit=$?"` — expect failures (no such cases / function).
 - [ ] **Step 3: Implement** the kinds, `opens`, the patterns and `codeSpan(inCode:)` in `AgentTextHighlights.swift`; add `SyntaxTint.time`; add the switch arms listed above.
-- [ ] **Step 4: Run** the same command → `exit=0`; then `make chat-test FILTER=AgentTextHighlightTests` and `make test-swift FILTER='WorkchatHighlights|SessionChatView'` → both `exit=0` (builds stay green, old behaviour intact).
+- [ ] **Step 4: Run** the same command → `exit=0`; then `make chat-test FILTER=AgentTextHighlightTests` and `make test-swift FILTER='WorkchatHighlights|SessionChatView|AgentFinishedRowTitle'` → both `exit=0` (builds stay green, old behaviour intact).
 - [ ] **Step 5: Commit** `feat(workchat): highlight kinds for dates and PR/ask refs, whole-inline-code classifier`.
 
 ### Task 2: Render — inline code by kind, colour-only kinds stay inert
@@ -106,18 +120,18 @@ func testADateInsideAPathIsListedInsideTheCandidate() {
 Depends on: Task 1.
 
 **Files:**
-- Modify: `WatchtowerChat/Sources/ChatUI/Platform/macOS/AgentTextHighlightRender.swift` (`scan`, `apply`, VoiceOver custom actions)
+- Modify: `WatchtowerChat/Sources/ChatUI/Platform/macOS/AgentTextHighlightRender.swift` (`scan`, `apply`)
 - Test: `WatchtowerChat/Tests/ChatUITests/AgentTextHighlightTests.swift`
 
 **Interfaces:**
 - Consumes: `AgentTextHighlights.codeSpan(inCode:)`, `Kind.opens`, `SyntaxTint.time`.
-- Produces: no new API. `apply` sets `.agentHighlight` only when `span.kind.opens`; the foreground colour always. Monospacing stays for `hash`/`path` in plain text; a code span already has its mono font. VoiceOver: a span whose kind does not open gets no custom action (find where `accessibilityName` feeds the text view's custom actions — `MarkdownTextRun.swift` ~line 612 — and filter by `opens`).
+- Produces: no new API. `apply` sets `.agentHighlight` only when `span.kind.opens`; the foreground colour always. Monospacing stays for `hash`/`path` in plain text; a code span already has its mono font. VoiceOver needs no change: its custom actions are built from `.agentHighlight` (`MarkdownTextRun.swift:614`), which colour-only spans never carry.
 
 - [ ] **Step 1: Write the failing tests:**
   - `testInlineCodeHashGetsItsTintAndClick` — a run with inline code `4d434597` (`.markdownInlineCode` set) → that range has `NSColor(SyntaxTint.hash)` and an `.agentHighlight` box.
   - `testColourOnlyKindsCarryNoClick` — plain text `since 2026-11-16, ask #990` → both ranges coloured (`SyntaxTint.time`, `SyntaxTint.ref`), neither has `.agentHighlight`; the `#990` is not a `ref`.
   - `testMultiTokenInlineCodeStaysPlain` — inline code `marking_started: "2026-11-16"` → no foreground change.
-  - `testVoiceOverSkipsColourOnlySpans` — custom actions list holds the hash, not the date.
+  - `testADateInsideAResolvingPathTakesThePathColour` — plain `logs/2026-11-16.txt` with `resolvesPath` true → the whole range is `SyntaxTint.path`, no `SyntaxTint.time` anywhere; with `resolvesPath` false → only `2026-11-16` is `SyntaxTint.time`.
   - Existing tests in the file unchanged and passing.
 - [ ] **Step 2: Run** `make chat-test FILTER=AgentTextHighlightTests > /tmp/t2.log 2>&1; echo "exit=$?"` → failures.
 - [ ] **Step 3: Implement** in `scan` (`codeSpan` for code pieces), `apply` (click attribute gated by `opens`) and the custom-actions filter.
