@@ -227,6 +227,8 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 			return
 		}
 		switch outcome {
+		case pruneKept:
+			// kept for good (git tracks a file in it): on to the next folder
 		case pruneRemoved:
 			it.BuildsRemoved = append(it.BuildsRemoved, f.path)
 		case pruneStopped:
