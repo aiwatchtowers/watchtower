@@ -868,3 +868,71 @@ func TestAutoRun_ReadsTheLiveListPerSession(t *testing.T) {
 		t.Fatalf("live read %d times, worktree listed %v", calls, a.listsWorktree(root))
 	}
 }
+
+// TestAutoRun_QuietSessionLiveAgainDuringTheApplyKeepsItsWork (final review
+// C1): a quiet session the host lists live once its apply has started (its
+// terminal reopened after the pass's live read) loses nothing — the apply
+// reads the host's live runs again before each destructive step — and a
+// live read that fails then keeps the work too.
+func TestAutoRun_QuietSessionLiveAgainDuringTheApplyKeepsItsWork(t *testing.T) {
+	t.Parallel()
+	for name, later := range map[string]func() (map[int64]bool, error){
+		"live again": func() (map[int64]bool, error) { return map[int64]bool{testSession: true}, nil },
+		"unreadable": func() (map[int64]bool, error) { return nil, errors.New("host refused") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a := newAutoFixture(t)
+			root := a.pushedWork("wt", "feat/x")
+			a.record(root, "feat/x")
+			now := time.Now()
+			a.quietSession(now.Add(-30 * time.Hour))
+			var reads atomic.Int32
+			a.liveFn = func() (map[int64]bool, error) {
+				if reads.Add(1) == 1 {
+					return map[int64]bool{}, nil // the pass's own read: quiet
+				}
+				return later()
+			}
+
+			res, err := a.run(now)
+			if err != nil || res.Changed != 0 {
+				t.Fatalf("res %+v, err %v", res, err)
+			}
+			if reads.Load() < 2 {
+				t.Fatalf("the apply read the live runs %d times, want a re-read", reads.Load())
+			}
+			if !a.listsWorktree(root) || !a.branchExists("feat/x") {
+				t.Fatal("the quiet session's work went although the host lists it live")
+			}
+		})
+	}
+}
+
+// TestQuietStillStands_ReadsTheHostsLiveRuns (final review C1): right
+// before a destructive step, a quiet request's session the host lists live
+// does not stand, and a live read that fails is an error (the work stays);
+// a request with no live reader reads the database alone.
+func TestQuietStillStands_ReadsTheHostsLiveRuns(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{activity: []SessionActivity{{ID: testSession, WorkbenchID: testWorkbench}}}
+	quiet := Request{SessionID: testSession, Quiet: true, QuietBefore: time.Now()}
+	for name, tc := range map[string]struct {
+		live    func(context.Context) ([]int64, error)
+		stands  bool
+		wantErr bool
+	}{
+		"no reader":  {stands: true},
+		"not live":   {live: func(context.Context) ([]int64, error) { return []int64{testSession + 1}, nil }, stands: true},
+		"live":       {live: func(context.Context) ([]int64, error) { return []int64{testSession}, nil }},
+		"unreadable": {live: func(context.Context) ([]int64, error) { return nil, errors.New("host refused") }, wantErr: true},
+	} {
+		r := quiet
+		r.liveNow = tc.live
+		a := &applier{deps: Deps{DB: store}, req: r}
+		stands, err := a.quietStillStands(context.Background())
+		if stands != tc.stands || (err != nil) != tc.wantErr || tc.wantErr && !errors.Is(err, errLiveUnreadable) {
+			t.Fatalf("%s: stands %v, err %v", name, stands, err)
+		}
+	}
+}

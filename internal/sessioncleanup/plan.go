@@ -111,7 +111,10 @@ type Request struct {
 	allOwners bool
 	// liveNow, when set, re-reads the session host's live runs for every
 	// re-check (applier.fresh): a session the host started since
-	// LiveSessions was read counts. An error fails the re-check.
+	// LiveSessions was read counts. An error fails the re-check. The
+	// repository pass also reads it right before each removal and prune
+	// (liveClear); a quiet session's automatic apply, right before each
+	// destructive step, for the session itself (quietStillStands).
 	liveNow func(ctx context.Context) ([]int64, error)
 	// repoKey, when set, is the git common dir whose cleanup lock the
 	// caller holds (the repository pass): an evaluation whose folder now

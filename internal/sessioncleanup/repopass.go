@@ -451,9 +451,10 @@ var errLiveUnreadable = errors.New("who works in the worktrees could not be read
 // which never says, only when it was opened in root (R4-1). The tree then
 // waits for the next pass. Any other error: what
 // holds it cannot be told, the caller keeps the work. nil = none holds it;
-// other requests: nil.
+// other requests (a quiet session's apply reads liveNow for itself only,
+// quietStillStands): nil.
 func (a *applier) liveClear(ctx context.Context, root string) error {
-	if a.req.liveNow == nil {
+	if a.req.liveNow == nil || a.req.Quiet {
 		return nil
 	}
 	live, err := a.req.liveNow(ctx)
