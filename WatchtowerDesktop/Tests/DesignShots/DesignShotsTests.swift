@@ -124,6 +124,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(WorkchatPolishRealShotFixtures.shots)
     }
 
+    /// A pasted image as a thumbnail in the owner's bubble (the echo and the outgoing line), a swept one as a chip.
+    func testWorkchatPastedImageShotsRender() throws {
+        try renderShots(WorkchatPastedImageShotFixtures.shots)
+    }
+
     /// The same states on the built views (#2065), `workchat-agents-real-NN-…` beside each mockup.
     func testWorkchatAgentsShotsRender() throws {
         try renderShots(WorkchatAgentsShotFixtures.shots)
