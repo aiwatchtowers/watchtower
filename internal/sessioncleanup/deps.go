@@ -90,10 +90,16 @@ func (SystemGit) RunGitInput(ctx context.Context, dir, bin string, stdin []byte,
 // repository the mark carries (or the one the args name already) with
 // --git-dir.
 func gitArgv(ctx context.Context, dir, bin string, args []string) ([]string, error) {
+	gitDir, on := backgroundWrites(ctx)
 	if !ownerWrite(args) {
+		if on && repositoryWideRead(args) {
+			// The repository pass decides its deletes on these: they read
+			// the repository whose lock is held, never one found from dir
+			// (#2402 fix round 3, R3-1).
+			return gitbin.ReadArgs(append([]string{"--git-dir=" + gitDir}, args...)...), nil
+		}
 		return gitbin.ReadArgsIn(ctx, bin, dir, args...) //nolint:wrapcheck // the caller names the command
 	}
-	gitDir, on := backgroundWrites(ctx)
 	if !on {
 		return gitbin.OwnerArgs(args...), nil
 	}
@@ -103,6 +109,24 @@ func gitArgv(ctx context.Context, dir, bin string, args []string) ([]string, err
 	return gitbin.BackgroundWriteArgsIn(ctx, bin, dir, gitDir, args...) //nolint:wrapcheck // the caller names the command
 }
 
+// repositoryWideRead: args read the repository as a whole — its worktree
+// list, refs, ancestry — with no worktree's HEAD, index or files in play,
+// so naming the common dir gives the same answer from any folder of it.
+func repositoryWideRead(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "worktree":
+		return len(args) > 1 && args[1] == "list"
+	case "for-each-ref", "show-ref", "merge-base":
+		return true
+	case "symbolic-ref":
+		return !slices.Contains(args[1:], "HEAD")
+	}
+	return false
+}
+
 type backgroundWritesKey struct{}
 
 // withBackgroundWrites marks ctx: SystemGit runs every write under it in
@@ -110,7 +134,8 @@ type backgroundWritesKey struct{}
 // remove` no filter driver the folder or the target worktree sees (#2402,
 // fix rounds 1–2) — naming commonDir, the repository whose lock is held
 // and that every evaluation was checked against, with --git-dir, so no
-// write discovers another repository from its folder. The repository pass
+// write — nor a repository-wide read (repositoryWideRead) — discovers
+// another repository from its folder. The repository pass
 // sets it: it writes over trees no session of the owner's owns, so nothing
 // it does may run the repository's commands. The mark travels with the ctx
 // through any runner that wraps SystemGit.

@@ -389,6 +389,7 @@ func (a *applier) run(ctx context.Context) {
 func (a *applier) actReported(ctx context.Context, i int) {
 	a.report.removing(a.items[i].Key)
 	a.act(ctx, i)
+	a.items[i].stopped = ctx.Err() != nil
 	a.report.removed(a.items[i])
 }
 
@@ -529,6 +530,14 @@ func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string, wa
 	for _, w := range b.repo.worktrees {
 		if w.Root != root || w.Bare {
 			continue
+		}
+		// The repository pass never takes a prunable tree (R2-1): one that
+		// turned prunable since it was chosen (its directory unreadable, a
+		// volume not mounted) is left for the owner's Clean Up, before its
+		// bundles are unregistered and before the remove (R3-3).
+		if a.req.repoPass && w.Prunable {
+			keepItem(it, ReasonCheckFailed, "git lists it prunable now (its directory cannot be seen); left for the owner's Clean Up")
+			return nil, false
 		}
 		ev := b.evaluateWorktree(ctx, w)
 		if ev.Action != ActionRemove {

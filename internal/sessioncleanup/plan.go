@@ -117,9 +117,6 @@ type Request struct {
 	// caller holds (the repository pass): an evaluation whose folder now
 	// resolves to another repository fails (errRepositoryMoved).
 	repoKey string
-	// repoBenches are the workbenches with a folder over the repository the
-	// repository pass covers (liveClear).
-	repoBenches []int64
 }
 
 // errRepositoryMoved: the evaluated folder resolves to another repository
@@ -302,7 +299,9 @@ func (b *builder) loadFacts(ctx context.Context) error {
 	b.loadClaudeHome()
 	acts, err := b.deps.DB.AllSessionActivity(ctx)
 	if err != nil {
-		return fmt.Errorf("reading the terminal sessions: %w", err)
+		// Tagged: a prune's re-check that cannot read who works where
+		// stops the repository pass (R3-4).
+		return fmt.Errorf("reading the terminal sessions: %w: %w", errLiveUnreadable, err)
 	}
 	b.activity = map[int64]SessionActivity{}
 	for _, a := range acts {
@@ -344,7 +343,7 @@ func (b *builder) loadOwners(ctx context.Context) error {
 	var err error
 	if b.req.allOwners {
 		if owners, err = b.deps.DB.SessionWorktreeOwners(ctx); err != nil {
-			return fmt.Errorf("reading the session worktree owners: %w", err)
+			return fmt.Errorf("reading the session worktree owners: %w: %w", errLiveUnreadable, err)
 		}
 	} else if owners, err = b.deps.DB.WorkbenchSessionWorktrees(ctx, b.req.WorkbenchID); err != nil {
 		return fmt.Errorf("reading workbench %d session worktrees: %w", b.req.WorkbenchID, err)

@@ -212,6 +212,7 @@ func (a *applier) pruneBuilds(ctx context.Context) {
 		it := &a.items[i]
 		if it.Kind == KindWorktree && it.Action == ActionKeep && pruneReasons[it.Reason] {
 			a.pruneWorktreeBuilds(ctx, it)
+			it.stopped = it.stopped || ctx.Err() != nil
 		}
 	}
 }

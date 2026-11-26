@@ -23,6 +23,11 @@ const (
 
 // Item is one thing the plan would remove or keeps, with why (spec §4.1).
 type Item struct {
+	// stopped: the step on this item ended with the pass's ctx already
+	// done — its failure is the stop, not a failure of its own (the
+	// repository pass's count, #2402 R3-5). Never serialised.
+	stopped bool
+
 	Key        string     `json:"key"`
 	Kind       Kind       `json:"kind"`
 	Name       string     `json:"name"`

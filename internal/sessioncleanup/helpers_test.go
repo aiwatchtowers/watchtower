@@ -2,6 +2,7 @@ package sessioncleanup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -212,6 +213,10 @@ type fakeStore struct {
 	// onLastSeen, when set, runs on every WorktreeLastSeen read (an idle
 	// walk reads it first).
 	onLastSeen func(root string)
+	// activityFailAt / ownersFailAt fail the n-th AllSessionActivity /
+	// SessionWorktreeOwners read (1-based; 0 = never), once.
+	activityFailAt, ownersFailAt int
+	activityReads, ownersReads   int
 	// agentIDs are the session's agent session ids; uuidOwners the rows
 	// holding each uuid (absent = none, which adopts nothing); idsErr and
 	// ownersErr fail those reads.
@@ -290,6 +295,9 @@ func (s *fakeStore) WorkbenchSessionWorktrees(context.Context, int64) (map[strin
 }
 
 func (s *fakeStore) SessionWorktreeOwners(ctx context.Context) (map[string][]int64, error) {
+	if s.ownersReads++; s.ownersReads == s.ownersFailAt {
+		return nil, errors.New("owners: database is locked")
+	}
 	if s.ledgerOwners == nil {
 		return s.WorkbenchSessionWorktrees(ctx, 0)
 	}
@@ -297,6 +305,9 @@ func (s *fakeStore) SessionWorktreeOwners(ctx context.Context) (map[string][]int
 }
 
 func (s *fakeStore) AllSessionActivity(context.Context) ([]SessionActivity, error) {
+	if s.activityReads++; s.activityReads == s.activityFailAt {
+		return nil, errors.New("activity: database is locked")
+	}
 	return s.activity, nil
 }
 
