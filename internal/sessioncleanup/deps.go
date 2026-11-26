@@ -92,13 +92,16 @@ func (SystemGit) RunGitInput(ctx context.Context, dir, bin string, stdin []byte,
 func gitArgv(ctx context.Context, dir, bin string, args []string) ([]string, error) {
 	gitDir, on := backgroundWrites(ctx)
 	if !ownerWrite(args) {
-		if on && repositoryWideRead(args) {
-			// The repository pass decides its deletes on these: they read
-			// the repository whose lock is held, never one found from dir
-			// (#2402 fix round 3, R3-1).
-			return gitbin.ReadArgs(append([]string{"--git-dir=" + gitDir}, args...)...), nil
+		argv, err := gitbin.ReadArgsIn(ctx, bin, dir, args...)
+		if err != nil || !on || !repositoryWideRead(args) {
+			return argv, err //nolint:wrapcheck // the caller names the command
 		}
-		return gitbin.ReadArgsIn(ctx, bin, dir, args...) //nolint:wrapcheck // the caller names the command
+		// The repository pass decides its deletes on these: they read the
+		// repository whose lock is held, never one found from dir (#2402
+		// fix rounds 3–4, R3-1, R4-2) — under the same read guard, the
+		// filter drivers blanked for a diff included.
+		guard := argv[:len(argv)-len(args)]
+		return slices.Concat(guard, []string{"--git-dir=" + gitDir}, args), nil
 	}
 	if !on {
 		return gitbin.OwnerArgs(args...), nil
@@ -110,21 +113,52 @@ func gitArgv(ctx context.Context, dir, bin string, args []string) ([]string, err
 }
 
 // repositoryWideRead: args read the repository as a whole — its worktree
-// list, refs, ancestry — with no worktree's HEAD, index or files in play,
-// so naming the common dir gives the same answer from any folder of it.
+// list, refs and reflogs, ancestry, commits named by their id or ref —
+// with no worktree's HEAD, index or files in play, so naming the common
+// dir gives the same answer from any folder of it. The cleanup's own reads
+// (readRepo, recheckBranch, notCheckedOutNow) and the merge check behind
+// W3 (workbenchcheck's) are these; a probe of the folder itself
+// (`rev-parse --show-toplevel`, `--is-inside-work-tree`, `--git-common-dir`)
+// and anything naming HEAD or no revision at all are not.
 func repositoryWideRead(args []string) bool {
-	if len(args) == 0 {
+	if len(args) == 0 || slices.ContainsFunc(args[1:], headRelative) {
 		return false
 	}
 	switch args[0] {
 	case "worktree":
 		return len(args) > 1 && args[1] == "list"
-	case "for-each-ref", "show-ref", "merge-base":
+	case "for-each-ref", "show-ref", "merge-base", "symbolic-ref", "cherry":
 		return true
-	case "symbolic-ref":
-		return !slices.Contains(args[1:], "HEAD")
+	case "rev-parse":
+		return slices.Contains(args[1:], "--verify")
+	case "reflog":
+		return len(args) > 2 && args[1] == "show"
+	case "rev-list", "log":
+		return len(revisions(args[1:])) > 0
+	case "diff":
+		return len(revisions(args[1:])) >= 2
 	}
 	return false
+}
+
+// headRelative: a revision argument resolved against a worktree's HEAD.
+func headRelative(a string) bool {
+	return a == "HEAD" || a == "@" || strings.HasPrefix(a, "HEAD~") || strings.HasPrefix(a, "HEAD^") ||
+		strings.HasPrefix(a, "HEAD:") || strings.HasPrefix(a, "HEAD.") || strings.HasSuffix(a, "..HEAD")
+}
+
+// revisions are the non-option arguments before "--".
+func revisions(args []string) []string {
+	var out []string
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if !strings.HasPrefix(a, "-") {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 type backgroundWritesKey struct{}
@@ -204,6 +238,10 @@ type SessionActivity struct {
 	Finished    bool
 	// DeleteRequested: the row has delete_requested_at (board #1716).
 	DeleteRequested bool
+	// Kind is the row's kind ("shell" for a plain terminal) and Folder its
+	// folder_path, where it was opened (#2402 fix round 4).
+	Kind   string
+	Folder string
 }
 
 // Store is what a plan reads from the database. It has no write method: a

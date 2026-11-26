@@ -291,13 +291,18 @@ func TestListTerminalSessionActivity_EverySessionWithItsCwd(t *testing.T) {
 		t.Fatalf("ListTerminalSessionActivity = %+v, %v; want 2 rows", got, err)
 	}
 	want := TerminalSessionActivity{ID: inWB, WorkbenchID: wb, Title: "s", AgentCwd: "/tmp/example/wt",
-		AgentStateAt: ledgerAt, LastActiveAt: "2026-10-12T12:00:00Z", Finished: true}
+		AgentStateAt: ledgerAt, LastActiveAt: "2026-10-12T12:00:00Z", Finished: true,
+		Kind: "claude", Folder: "/tmp/acme"}
 	if got[0] != want {
 		t.Fatalf("row = %+v, want %+v", got[0], want)
 	}
 	if got[1].ID != standalone || got[1].WorkbenchID != 0 || got[1].AgentCwd != "" || got[1].AgentStateAt != "" ||
-		got[1].Finished || got[1].DeleteRequested {
+		got[1].Finished || got[1].DeleteRequested || got[1].Kind != "shell" || got[1].Folder != "/tmp/acme" {
 		t.Fatalf("standalone row = %+v", got[1])
+	}
+	// By id, the same row (#2402 fix round 4: kind and folder too).
+	if one, ok, err := d.TerminalSessionActivityOf(ctx, standalone); err != nil || !ok || one != got[1] {
+		t.Fatalf("TerminalSessionActivityOf = %+v, %v, %v; want %+v", one, ok, err, got[1])
 	}
 	// A row being deleted is still listed, with the flag (ask #1389).
 	setDeleteRequestedForTest(t, d, inWB, ledgerAt)

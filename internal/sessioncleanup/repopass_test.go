@@ -1003,11 +1003,16 @@ func TestLiveClear_EveryWayALiveSessionHoldsTheTree(t *testing.T) {
 		{ID: 46, WorkbenchID: testWorkbench, AgentCwd: filepath.Join(f.base, "elsewhere")},
 		// Inside as stored, outside once resolved: W6's stored form counts.
 		{ID: 47, WorkbenchID: testWorkbench, AgentCwd: filepath.Join(root, "out")},
+		// Fix round 4 (R4-1): a plain shell never reports a cwd. It holds a
+		// tree only when it was opened in it (W5 sees one that cd'd in).
+		{ID: 48, WorkbenchID: testWorkbench, Kind: "shell", Folder: f.repo},
+		{ID: 49, WorkbenchID: testWorkbench, Kind: "shell", Folder: filepath.Join(root, "sub")},
+		{ID: 50, WorkbenchID: testWorkbench, Kind: "shell"},
 	}
 	// 45 (fix round 3, R3-2): a live session that has not said where it
 	// works holds every tree, whatever its workbench.
 	for id, holds := range map[int64]bool{40: true, 41: true, 42: true, 43: true, 44: true, 45: true, 46: false,
-		47: true} {
+		47: true, 48: false, 49: true, 50: false} {
 		a := &applier{deps: f.deps(), req: Request{
 			liveNow: func(context.Context) ([]int64, error) { return []int64{id}, nil }}}
 		err := a.liveClear(context.Background(), root)
@@ -1196,6 +1201,21 @@ func TestGitArgv_RepositoryPassChecksNameTheLockedRepository(t *testing.T) {
 		{[]string{"ls-files", "-z", "--cached"}, false},
 		{[]string{"rev-parse", "--git-common-dir"}, false},
 		{[]string{"rev-parse", "--show-toplevel"}, false},
+		// Fix round 4 (R4-2): the merge check behind W3's unlock
+		// (workbenchcheck) reads these against the base.
+		{[]string{"rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"}, true},
+		{[]string{"rev-parse", "--verify", "--quiet", "refs/heads/main~3"}, true},
+		{[]string{"reflog", "show", "--format=%H %gs", "refs/heads/x", "--"}, true},
+		{[]string{"rev-list", "--count", "abc..def"}, true},
+		{[]string{"rev-list", "--first-parent", "refs/heads/main"}, true},
+		{[]string{"cherry", "refs/heads/main", "abc"}, true},
+		{[]string{"log", "-1", "--format=%ct", "abc", "--"}, true},
+		{[]string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", "-U0", "abc", "def"}, true},
+		{[]string{"rev-parse", "--is-inside-work-tree"}, false},
+		{[]string{"rev-parse", "--verify", "--quiet", "HEAD^{commit}"}, false},
+		{[]string{"log", "-1", "--format=%ct"}, false},
+		{[]string{"rev-list", "--count", "HEAD~2..abc"}, false},
+		{[]string{"diff", "--stat"}, false},
 	} {
 		argv, err := gitArgv(ctx, f.repo, bin, tc.args)
 		if err != nil {
@@ -1212,14 +1232,15 @@ func TestGitArgv_RepositoryPassChecksNameTheLockedRepository(t *testing.T) {
 }
 
 // TestAutoRun_RepositoryPassTreeGonePrunableAfterSelectionStays (#2402, fix
-// round 3 R3-3): a tree git starts to list as prunable after the pass
-// chose it (its directory unreadable now, as an unmounted volume's mount
-// point is) is rejected by the re-check: no bundle is unregistered and no
-// `worktree remove` runs.
+// round 3 R3-3, round 4 R4-5): a tree git starts to list as prunable after
+// the pass chose it — its directory moved aside, as an unmounted volume's
+// contents vanish; no privilege can see through that — is rejected by the
+// re-check: no bundle is unregistered and no `worktree remove` runs.
 func TestAutoRun_RepositoryPassTreeGonePrunableAfterSelectionStays(t *testing.T) {
 	t.Parallel()
 	a := newRepoPassFixture(t)
 	root := a.mergedClaudeWork("agent-1", "worktree-agent-1")
+	aside := root + ".aside"
 	ops := &opLog{}
 	a.ls = &fakeLS{log: ops}
 	lists := 0
@@ -1227,27 +1248,24 @@ func TestAutoRun_RepositoryPassTreeGonePrunableAfterSelectionStays(t *testing.T)
 		// Listings: the batch's facts, then the first re-check's.
 		if len(args) > 1 && args[len(args)-2] == "list" && args[len(args)-1] == "--porcelain" {
 			if lists++; lists == 2 {
-				if err := os.Chmod(root, 0); err != nil {
+				if err := os.Rename(root, aside); err != nil {
 					t.Error(err)
 				}
 			}
 		}
 		return nil
 	}}
-	t.Cleanup(func() { _ = os.Chmod(root, 0o755) })
 
 	if _, err := a.run(time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if !a.listsWorktree(root) || !a.branchExists("worktree-agent-1") {
-		t.Fatal("removed a tree that turned prunable")
+	if lists < 2 || !exists(filepath.Join(aside, "agent-1.txt")) || !a.listsWorktree(root) ||
+		!a.branchExists("worktree-agent-1") {
+		t.Fatalf("acted on a tree that turned prunable (%d listings)", lists)
 	}
 	for _, op := range ops.list() {
 		if strings.Contains(op, "lsregister -u") || strings.Contains(op, "worktree remove") {
-			t.Fatalf("acted on it: %s (ops %v)", op, ops.list())
+			t.Fatalf("acted on it: %s", op)
 		}
 	}
 }
@@ -1387,4 +1405,105 @@ func TestGitArgv_PassArgumentsStillRefuseADirtyTree(t *testing.T) {
 	if !f.listsWorktree(root) || !exists(filepath.Join(root, "README.md")) {
 		t.Fatal("the dirty tree went")
 	}
+}
+
+// TestProj18_SessionApplyPruneGoesOnAfterAnUnreadableRead (#2402, fix round
+// 4 R4-4): only the repository pass halts on who-works-where reads it
+// cannot make; a session-end apply keeps today's behaviour — the failed
+// folder records its BuildError and the prune goes on with the next.
+func TestProj18_SessionApplyPruneGoesOnAfterAnUnreadableRead(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	var roots []string
+	for _, n := range []string{"wt-a", "wt-b"} {
+		root := f.worktree(n, "feat/"+n)
+		f.commit(root, ".gitignore", ".build/\n")
+		swiftBuild(t, filepath.Join(root, ".build"))
+		f.record(root, "feat/"+n)
+		roots = append(roots, root)
+	}
+	f.endSession()
+	// Read 1 is the apply's evaluation, read 2 the first prune's re-check.
+	f.store.activityFailAt = 2
+
+	res := f.apply(Request{PruneBuilds: true, RequireEnded: true}, nil, nil)
+	failed, pruned := 0, 0
+	for _, root := range roots {
+		it := wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonUnpushedCommits, false)
+		if it.BuildError != "" {
+			failed++
+		}
+		if len(it.BuildsRemoved) > 0 {
+			pruned++
+		}
+	}
+	if failed != 1 || pruned != 1 {
+		t.Fatalf("failed %d, pruned %d; want 1 and 1: %+v", failed, pruned, res.Items)
+	}
+}
+
+// expiringRepoPass is a repository-pass fixture whose pass budget the test
+// runs out (expiringCtx), with a logged LaunchServices and the log lines.
+func expiringRepoPass(t *testing.T) (*autoFixture, *expiringCtx, *[]string) {
+	t.Helper()
+	a := newRepoPassFixture(t)
+	budget := newExpiringCtx()
+	a.budget = func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		if d == repoPassBudget {
+			return budget, func() {}
+		}
+		return context.WithTimeout(parent, d)
+	}
+	var lines []string
+	a.logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	return a, budget, &lines
+}
+
+// TestAutoRun_RepositoryPassStopIsToldWhenTheFailureIsRecorded (#2402, fix
+// round 4 R4-3): a failure is the stop's only when the pass's budget had
+// run out at the moment it was recorded — never decided at the end of the
+// item's step, after its recovery.
+func TestAutoRun_RepositoryPassStopIsToldWhenTheFailureIsRecorded(t *testing.T) {
+	t.Parallel()
+	t.Run("a refusal before the stop counts, though the budget runs out while the bundles are put back", func(t *testing.T) {
+		t.Parallel()
+		a, budget, lines := expiringRepoPass(t)
+		root := a.mergedClaudeWork("agent-1", "worktree-agent-1")
+		a.git = failGitOn("worktree", "remove")
+		a.ls = &fakeLS{log: &opLog{}, onRegister: func(context.Context) { budget.expire() }}
+		res, err := a.run(time.Now())
+		if !errors.Is(err, context.DeadlineExceeded) || res.RepoFailed != 1 || !a.listsWorktree(root) {
+			t.Fatalf("res %+v, err %v", res, err)
+		}
+		if len(*lines) != 1 || !strings.Contains((*lines)[0], ReasonGitRefused) {
+			t.Fatalf("log %q", *lines)
+		}
+	})
+	t.Run("a bundle and its worktree failing after the stop do not count", func(t *testing.T) {
+		t.Parallel()
+		a, budget, lines := expiringRepoPass(t)
+		a.mergedClaudeWork("agent-1", "worktree-agent-1")
+		a.ls = &fakeLS{log: &opLog{}, failWith: errors.New("lsregister failed"),
+			onUnregister: func(string) { budget.expire() }}
+		res, err := a.run(time.Now())
+		if !errors.Is(err, context.DeadlineExceeded) || res.RepoFailed != 0 || len(*lines) != 0 {
+			t.Fatalf("res %+v, err %v, log %q", res, err, *lines)
+		}
+	})
+	t.Run("a check that fails at evaluation after the stop does not count", func(t *testing.T) {
+		t.Parallel()
+		a, budget, lines := expiringRepoPass(t)
+		a.mergedClaudeWork("agent-1", "worktree-agent-1")
+		a.git = &loggingGit{log: &opLog{}, before: func(args []string) *gitAnswer {
+			if args[0] == "status" {
+				budget.expire()
+				return &gitAnswer{code: 128, err: &GitError{Args: args, Code: 128, Stderr: "fatal: killed"}}
+			}
+			return nil
+		}}
+		res, err := a.run(time.Now())
+		if !errors.Is(err, context.DeadlineExceeded) || res.RepoFailed != 0 || len(*lines) != 0 {
+			t.Fatalf("res %+v, err %v, log %q", res, err, *lines)
+		}
+	})
 }

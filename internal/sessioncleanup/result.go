@@ -23,10 +23,11 @@ const (
 
 // Item is one thing the plan would remove or keeps, with why (spec §4.1).
 type Item struct {
-	// stopped: the step on this item ended with the pass's ctx already
-	// done — its failure is the stop, not a failure of its own (the
-	// repository pass's count, #2402 R3-5). Never serialised.
-	stopped bool
+	// stopped: the item's first failure was recorded with the pass's ctx
+	// already done — the stop's, not a failure of its own (the repository
+	// pass's count, #2402 R3-5, R4-3); failSeen: that first failure was
+	// noted (markFailure). Never serialised.
+	stopped, failSeen bool
 
 	Key        string     `json:"key"`
 	Kind       Kind       `json:"kind"`

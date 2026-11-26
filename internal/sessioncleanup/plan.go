@@ -764,6 +764,7 @@ func (b *builder) evaluateWorktree(ctx context.Context, w worktree) Item {
 			break
 		}
 	}
+	markFailure(ctx, &it) // a check that could not be made, as it is recorded
 	if b.req.Sweep {
 		it.Owner = b.ownerHint(w.Root)
 	}
@@ -889,6 +890,7 @@ func (b *builder) evaluateBranch(ctx context.Context, br branchRef) Item {
 			break
 		}
 	}
+	markFailure(ctx, &it)
 	if b.req.Sweep {
 		it.Owner = &OwnerHint{Unknown: true}
 		if root, ok := b.checkedOutIn[br.Name]; ok {

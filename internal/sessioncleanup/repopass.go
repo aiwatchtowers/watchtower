@@ -108,9 +108,9 @@ func (ad AutoDeps) countPassRepo(out *AutoResult, rp passRepo, items []Item, fai
 // passFailure names what a repository's pass recorded as failed: an item's
 // or a build folder's error (resultFailure), and a worktree or branch kept
 // because a check could not be made or git refused its removal; "" for
-// none. An item whose step ended with the pass's ctx already done
-// (Item.stopped, told when the step was handled) is the stop, not a
-// failure, and is left out.
+// none. An item whose first failure was recorded with the pass's ctx
+// already done (Item.stopped, noted when it was recorded) is the stop, not
+// a failure, and is left out.
 func passFailure(items []Item) string {
 	kept := slices.DeleteFunc(slices.Clone(items), func(it Item) bool { return it.stopped })
 	var parts []string
@@ -434,9 +434,10 @@ var errLiveUnreadable = errors.New("who works in the worktrees could not be read
 // with the ledger's owners and each live run's row by id. A live session
 // holds root (errLiveInIt) when its working directory is inside, as stored
 // or resolved (M1); when it recorded root in its ledger (the sweep's W2
-// owners, R2-4); when its row is gone, or when it has not said where it
-// works, whatever its workbench (R2-5, R3-2): the tree waits for the next
-// pass. Any other error: what
+// owners, R2-4); when its row is gone, or when it is an agent that has not
+// said where it works, whatever its workbench (R2-5, R3-2); a plain shell,
+// which never says, only when it was opened in root (R4-1). The tree then
+// waits for the next pass. Any other error: what
 // holds it cannot be told, the caller keeps the work. nil = none holds it;
 // other requests: nil.
 func (a *applier) liveClear(ctx context.Context, root string) error {
@@ -470,6 +471,13 @@ func (a *applier) liveClear(ctx context.Context, root string) error {
 			return fmt.Errorf("%w: live session %d: %w", errLiveUnreadable, id, err)
 		case !ok:
 			return fmt.Errorf("%w: session %d has no row that says where it works", errLiveInIt, id)
+		case s.AgentCwd == "" && s.Kind == "shell":
+			// A plain shell never reports a cwd (only agent hooks write it):
+			// it holds the tree it was opened in; one that cd'd into a tree
+			// is a process there, which W5 sees in the final re-check (R4-1).
+			if s.Folder != "" && (pathWithin(s.Folder, root) || pathWithin(resolvePath(s.Folder), root)) {
+				return fmt.Errorf("%w: shell %d (%s) was opened in it", errLiveInIt, id, s.Title)
+			}
 		case s.AgentCwd == "":
 			return fmt.Errorf("%w: session %d (%s) has not said where it works", errLiveInIt, id, s.Title)
 		case s.AgentCwd != "" && (pathWithin(s.AgentCwd, root) || pathWithin(resolvePath(s.AgentCwd), root)):
@@ -477,4 +485,29 @@ func (a *applier) liveClear(ctx context.Context, root string) error {
 		}
 	}
 	return nil
+}
+
+// itemFailed: the item records a failure — an error, a build folder's, or
+// a keep because a check could not be made or git refused.
+func itemFailed(it Item) bool {
+	return it.Error != "" || it.BuildError != "" ||
+		it.Action == ActionKeep && (it.Reason == ReasonCheckFailed || it.Reason == ReasonGitRefused)
+}
+
+// markFailure notes it's first recorded failure, once: stopped is whether
+// ctx — the pass's — was done at that moment (R4-3). Called right where
+// failures are recorded, before any recovery runs.
+func markFailure(ctx context.Context, it *Item) {
+	if it.failSeen || !itemFailed(*it) {
+		return
+	}
+	it.failSeen, it.stopped = true, ctx.Err() != nil
+}
+
+// noteFailures is markFailure for every item: the applier calls it right
+// after each step that may record a failure, before any recovery.
+func (a *applier) noteFailures(ctx context.Context) {
+	for i := range a.items {
+		markFailure(ctx, &a.items[i])
+	}
 }

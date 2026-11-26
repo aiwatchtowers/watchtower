@@ -289,6 +289,11 @@ type TerminalSessionActivity struct {
 	// DeleteRequested is delete_requested_at set: the row is being deleted
 	// (board #1716); the read stays unfiltered, the catches decide.
 	DeleteRequested bool
+	// Kind is the row's kind (claude, codex, shell) and Folder its
+	// folder_path: a shell never reports AgentCwd, so where it was opened
+	// is all the cleanup knows of it (#2402).
+	Kind   string
+	Folder string
 }
 
 // ListTerminalSessionActivity is every terminal session of every workbench
@@ -301,7 +306,7 @@ func (db *DB) ListTerminalSessionActivity(ctx context.Context) ([]TerminalSessio
 	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(project_id, 0), title, COALESCE(agent_cwd, ''),
 		COALESCE(agent_state_at, ''), last_active_at, finished_at IS NOT NULL,
-		delete_requested_at IS NOT NULL
+		delete_requested_at IS NOT NULL, COALESCE(kind, ''), COALESCE(folder_path, '')
 		FROM terminal_sessions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session activity: %w", err)
@@ -311,7 +316,7 @@ func (db *DB) ListTerminalSessionActivity(ctx context.Context) ([]TerminalSessio
 	for rows.Next() {
 		var a TerminalSessionActivity
 		if err := rows.Scan(&a.ID, &a.WorkbenchID, &a.Title, &a.AgentCwd, &a.AgentStateAt,
-			&a.LastActiveAt, &a.Finished, &a.DeleteRequested); err != nil {
+			&a.LastActiveAt, &a.Finished, &a.DeleteRequested, &a.Kind, &a.Folder); err != nil {
 			return nil, fmt.Errorf("reading terminal session activity: %w", err)
 		}
 		out = append(out, a)
@@ -328,9 +333,9 @@ func (db *DB) TerminalSessionActivityOf(ctx context.Context, id int64) (Terminal
 	var a TerminalSessionActivity
 	err := db.QueryRowContext(ctx, `SELECT id, COALESCE(project_id, 0), title, COALESCE(agent_cwd, ''),
 		COALESCE(agent_state_at, ''), last_active_at, finished_at IS NOT NULL,
-		delete_requested_at IS NOT NULL
+		delete_requested_at IS NOT NULL, COALESCE(kind, ''), COALESCE(folder_path, '')
 		FROM terminal_sessions WHERE id = ?`, id).Scan(&a.ID, &a.WorkbenchID, &a.Title, &a.AgentCwd,
-		&a.AgentStateAt, &a.LastActiveAt, &a.Finished, &a.DeleteRequested)
+		&a.AgentStateAt, &a.LastActiveAt, &a.Finished, &a.DeleteRequested, &a.Kind, &a.Folder)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, false, nil
 	}

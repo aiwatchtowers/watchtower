@@ -389,7 +389,7 @@ func (a *applier) run(ctx context.Context) {
 func (a *applier) actReported(ctx context.Context, i int) {
 	a.report.removing(a.items[i].Key)
 	a.act(ctx, i)
-	a.items[i].stopped = ctx.Err() != nil
+	a.noteFailures(ctx)
 	a.report.removed(a.items[i])
 }
 
@@ -465,9 +465,11 @@ func (a *applier) fail(it *Item, err error) {
 func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 	root := strings.TrimPrefix(it.Key, "worktree:")
 	if !a.clearOrphans(ctx, it, root) {
+		a.noteFailures(ctx)
 		return
 	}
 	a.unregisterBundles(ctx, root)
+	a.noteFailures(ctx) // a bundle's error, before anything else runs
 	// The final re-check runs under the worktree lock, right before the
 	// removal: a wait for the lock never stands between them.
 	lctx, cancelLock := context.WithTimeout(ctx, worktreeRemoveTimeout)
@@ -481,6 +483,9 @@ func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 		}
 		unlock()
 	}
+	// Noted before the bundles are put back (its own bounded wait): a
+	// refusal while the pass ran stays the pass's failure (R4-3).
+	a.noteFailures(ctx)
 	if !it.Done {
 		a.reregisterBundles(ctx, root)
 	}
@@ -807,6 +812,9 @@ func (a *applier) deleteBranch(ctx context.Context, it *Item) {
 	}
 }
 
+// recheckBranch re-reads the branch on fresh facts. In the repository pass
+// its reads, and notCheckedOutNow's, name the locked common dir
+// (repositoryWideRead, deps.go): keep a new read here in that list.
 func (a *applier) recheckBranch(ctx context.Context, it *Item) (string, bool) {
 	b, err := a.fresh(ctx)
 	if err != nil {

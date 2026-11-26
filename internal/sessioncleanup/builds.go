@@ -212,7 +212,7 @@ func (a *applier) pruneBuilds(ctx context.Context) {
 		it := &a.items[i]
 		if it.Kind == KindWorktree && it.Action == ActionKeep && pruneReasons[it.Reason] {
 			a.pruneWorktreeBuilds(ctx, it)
-			it.stopped = it.stopped || ctx.Err() != nil
+			markFailure(ctx, it)
 		}
 	}
 }
@@ -306,13 +306,16 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 	it.BuildsChecked = !doubt
 }
 
-// haltOnLiveUnreadable stops the apply when err is the live runs (or what
-// a live session holds) that could not be read (#2402 fix round 2, R2-7):
+// haltOnLiveUnreadable stops the repository pass's apply when err is the
+// live runs (or what a live session holds) that could not be read (#2402
+// fix round 2, R2-7):
 // the repository pass skips the rest of the repository then, as it does
 // when they cannot be read before a batch. A real occupant is a keep, not
 // an error, and never gets here.
 func (a *applier) haltOnLiveUnreadable(err error) {
-	if errors.Is(err, errLiveUnreadable) && a.halt == nil {
+	// The repository pass only (R4-4): a session-end or owner apply keeps
+	// recording the BuildError and goes on, as before.
+	if a.req.repoPass && errors.Is(err, errLiveUnreadable) && a.halt == nil {
 		a.halt = err
 	}
 }

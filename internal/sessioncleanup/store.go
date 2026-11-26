@@ -204,7 +204,7 @@ func activityOf(r db.TerminalSessionActivity, now func() time.Time) SessionActiv
 		ID: r.ID, WorkbenchID: r.WorkbenchID, Title: r.Title, AgentCwd: r.AgentCwd,
 		ReportedAt: activityStamp(r.AgentStateAt, now, db.ParseActivityStamp),
 		LastActive: activityStamp(r.LastActiveAt, now, db.ParseActivityStamp),
-		Finished:   r.Finished, DeleteRequested: r.DeleteRequested,
+		Finished:   r.Finished, DeleteRequested: r.DeleteRequested, Kind: r.Kind, Folder: r.Folder,
 	}
 }
 
