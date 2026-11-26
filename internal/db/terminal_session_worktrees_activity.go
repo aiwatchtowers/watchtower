@@ -18,17 +18,29 @@ func (db *DB) WorktreeLastSeen(ctx context.Context, root string) (time.Time, boo
 		return time.Time{}, false, fmt.Errorf("reading worktree %s last sighting: %w", root, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var newest sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT MAX(COALESCE(last_at, first_at))
-		FROM terminal_session_worktrees WHERE root = ?`, root).Scan(&newest); err != nil {
+	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(last_at, first_at)
+		FROM terminal_session_worktrees WHERE root = ?`, root)
+	if err != nil {
 		return time.Time{}, false, fmt.Errorf("reading worktree %s last sighting: %w", root, err)
 	}
-	if !newest.Valid {
-		return time.Time{}, false, nil
+	defer func() { _ = rows.Close() }()
+	var newest time.Time
+	found := false
+	for rows.Next() {
+		var stamp sql.NullString
+		if err := rows.Scan(&stamp); err != nil {
+			return time.Time{}, false, fmt.Errorf("reading worktree %s last sighting: %w", root, err)
+		}
+		at, ok := ParseAgentStateStamp(stamp.String)
+		if !stamp.Valid || !ok {
+			return time.Time{}, false, fmt.Errorf("worktree %s last sighting %q is not a stamp", root, stamp.String)
+		}
+		if !found || at.After(newest) {
+			newest, found = at, true
+		}
 	}
-	at, ok := ParseAgentStateStamp(newest.String)
-	if !ok {
-		return time.Time{}, false, fmt.Errorf("worktree %s last sighting %q is not a stamp", root, newest.String)
+	if err := rows.Err(); err != nil {
+		return time.Time{}, false, fmt.Errorf("reading worktree %s last sighting: %w", root, err)
 	}
-	return at, true, nil
+	return newest, found, nil
 }

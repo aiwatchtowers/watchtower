@@ -395,6 +395,15 @@ var errBuildScanBudget = errors.New("looking for build folders took too long")
 // (regenerableCaches), and never into what it found. Over budget it fails,
 // and nothing is deleted.
 func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]foundBuild, error) {
+	return findBuilds(ctx, root, budget, false)
+}
+
+// findBuilds is findBuildDirs; strict makes a directory whose .git entry
+// cannot be looked at (a permission error) an error instead of a directory
+// to leave alone. The prune wants the lenient reading (what it cannot see
+// it does not delete); the activity measure wants the strict one (what it
+// cannot see it cannot call quiet).
+func findBuilds(ctx context.Context, root string, budget time.Duration, strict bool) ([]foundBuild, error) {
 	deadline := time.Now().Add(budget)
 	var found []foundBuild
 	n := 0
@@ -424,6 +433,11 @@ func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]fo
 		if k, ok := isTrashLeftover(path, name); ok {
 			found = append(found, foundBuild{path: path, trash: true, kind: k})
 			return filepath.SkipDir
+		}
+		if strict {
+			if _, err := os.Lstat(filepath.Join(path, ".git")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
 		}
 		if regenerableCaches[name] || hasGitEntry(path) {
 			return filepath.SkipDir // a cache, or a nested worktree or repository: not ours

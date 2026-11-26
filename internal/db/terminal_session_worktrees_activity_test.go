@@ -48,3 +48,23 @@ func TestWorktreeLastSeen_UnparsableStampIsAnError(t *testing.T) {
 		t.Fatal("an unparsable stamp read as a time; want an error (fail closed)")
 	}
 }
+
+func TestWorktreeLastSeen_MalformedRowBelowAValidOneIsAnError(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	a := newAgentStateRow(t, d, wb, "claude", agentStateUUID)
+	b := newAgentStateRow(t, d, wb, "claude", "33333333-3333-3333-3333-333333333333")
+	const root = "/tmp/example/wt"
+	for _, id := range []int64{a, b} {
+		if _, err := d.RecordSessionWorktree(ctx, nil, id, root, "", ledgerAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.Exec(`UPDATE terminal_session_worktrees SET last_at = '' WHERE session_id = ?`, b); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := d.WorktreeLastSeen(ctx, root); err == nil {
+		t.Fatal("a malformed stamp that sorts below a valid one was discarded; want an error")
+	}
+}

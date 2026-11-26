@@ -71,16 +71,26 @@ func activityNewest(ctx context.Context, d Deps, root, adminDir string, budget t
 		note(seen)
 	}
 	start := time.Now()
-	builds, err := findBuildDirs(ctx, root, budget)
+	builds, err := findBuilds(ctx, root, budget, true)
 	if err != nil {
 		return time.Time{}, err
 	}
 	for _, b := range builds {
-		t, err := buildActivity(ctx, b.path, budget-time.Since(start))
+		left := budget - time.Since(start)
+		if err := ctx.Err(); err != nil {
+			return time.Time{}, err
+		}
+		if left <= 0 {
+			return time.Time{}, fmt.Errorf("over the %s budget", budget)
+		}
+		t, err := buildActivity(ctx, b.path, left)
 		if err != nil {
 			return time.Time{}, err
 		}
 		note(t)
+	}
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
 	}
 	return newest, nil
 }
@@ -95,6 +105,11 @@ func buildActivity(ctx context.Context, dir string, budget time.Duration) (time.
 	err := filepath.WalkDir(dir, func(path string, e fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if seen++; seen%nestedClockEvery == 0 {
+			if err := nestedWalkLimit(ctx, deadline, budget); err != nil {
+				return err
+			}
 		}
 		if !e.IsDir() {
 			return nil
@@ -116,11 +131,11 @@ func buildActivity(ctx context.Context, dir string, budget time.Duration) (time.
 		if rel != "." && relDepth(rel) >= buildActivityDepth {
 			return filepath.SkipDir
 		}
-		if seen++; seen%nestedClockEvery == 0 {
-			return nestedWalkLimit(ctx, deadline, budget)
-		}
 		return nil
 	})
+	if err == nil {
+		err = nestedWalkLimit(ctx, deadline, budget)
+	}
 	if err != nil {
 		return time.Time{}, err
 	}

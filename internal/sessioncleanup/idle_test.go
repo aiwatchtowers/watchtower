@@ -370,3 +370,47 @@ func TestProj18_LanguageServerIsNeverAnOrphanToSignal(t *testing.T) {
 		t.Fatalf("orphans %v blockers %v; want neither", orphans, blockers)
 	}
 }
+
+func TestIdle_ExpiredBudgetOnATinyTreeIsNotIdle(t *testing.T) {
+	t.Parallel()
+	tr := newIdleTree(t)
+	tr.swiftBuild(".build")
+	at, err := lastActivityWithin(context.Background(), tr.deps(), tr.root, tr.admin, -time.Second)
+	if err == nil || !at.Equal(idleNow) {
+		t.Fatalf("expired budget: %v, %v; want now and an error", at, err)
+	}
+	if _, err := buildActivity(context.Background(), filepath.Join(tr.root, ".build"), -time.Second); err == nil {
+		t.Fatal("buildActivity succeeded over an expired budget")
+	}
+}
+
+func TestIdle_CancelledContextOnATinyTreeIsNotIdle(t *testing.T) {
+	t.Parallel()
+	tr := newIdleTree(t)
+	tr.swiftBuild(".build")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if isIdle(ctx, tr.deps(), tr.root, tr.admin) {
+		t.Fatal("a cancelled measure read as idle")
+	}
+}
+
+func TestIdle_UnreadableDirectoryUnderTheWorktreeIsNotIdle(t *testing.T) {
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("root reads everything")
+	}
+	tr := newIdleTree(t)
+	tr.swiftBuild(".build")
+	sub := filepath.Join(tr.root, "pkg")
+	if err := os.MkdirAll(filepath.Join(sub, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sub, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
+	if tr.idle() {
+		t.Fatal("a directory that cannot be looked at read as idle")
+	}
+}
