@@ -32,6 +32,8 @@ feed sets with one line, so other chats can opt in later.
 - Clicks on the new kinds (owner, ask #990: colour only). Existing clicks (ref → board, hash and
   command → copy, path → Files) stay as they are.
 - Status words ("green", "not sure") and durations — C1 keeps them out.
+- Branch names (`domain-kpi-v2`): a branch has no shape of its own — it reads like any
+  hyphenated word (`read-only`, `follow-up`) — so a rule would colour prose or nothing.
 - Task numbers ("Task 3", «задача 3», `A1a`): Russian inflects the word (задачу, задаче) and a
   bare `A1a` is indistinguishable from any short id; left out rather than guessed.
 - Colouring a path that does not resolve in a session folder: the resolution rule stays.
@@ -60,7 +62,9 @@ feed sets with one line, so other chats can opt in later.
 | `pullRequest(N)`, `ask(N)` (new) | `PR #N`, `ask #N`, case-insensitive, the whole phrase | the same | none |
 
 `spans(inPlain:)` gains the new kinds; `commandSpan(inCode:)` becomes `codeSpan(inCode:)`, which
-returns the one kind the whole code span is, command first. Inline code that holds more than
+returns the one kind the whole code span is, command first. A hash, ref or path in inline code
+takes the same click it has in plain text (copy, board, Files): the agent's choice of backticks
+should not change what a span does (author's call, C3 below). Inline code that holds more than
 one token (`marking_started: "2026-11-16"`) is only coloured if it is a command, as today.
 
 **Colours (`SyntaxTint`).** One new token, `time`, foreground at the same `opacity` 0.7 (D3:
@@ -71,8 +75,9 @@ the row. Hashes and paths keep their monospaced design; a code span keeps its ow
 `codeSpan(inCode:)`; the new kinds colour without the click attribute; VoiceOver names them
 ("PR #12", "ask #990", the date) with no action.
 
-**Opt-in.** `ChatFeedContext.highlightsAgentText: Bool` and `ChatPartActions.resolvesPath`
-become one value:
+**Opt-in.** `ChatFeedContext.highlightsAgentText: Bool`, its copy
+`ChatPartContext.highlightsAgentText` and `ChatPartActions.resolvesPath` become one value,
+carried from the feed context into the part context (one source of truth):
 
 ```swift
 public struct AgentTextHighlighting {           // ChatUI
@@ -82,8 +87,11 @@ public struct AgentTextHighlighting {           // ChatUI
 ChatFeedContext.agentTextHighlighting: AgentTextHighlighting?   // nil: off (default)
 ```
 
-The Workchat (`SessionChatView`, `SessionChatRow`)
-sets it with `WorkchatHighlights` as today; no other surface changes in v2. A chat that opts in
+Every place that sets the flag or the resolver today moves to the value, with
+`WorkchatHighlights` as before: `SessionChatView`, `SessionChatRow`, the subagent feed
+`SessionChatSubagentView`, the shot fixture `DesignShotFixtures+WorkchatHighlights`, and the
+tests that build them (`SessionChatViewTests`, `ReviewAgentChatTests`,
+`AgentTextHighlightTests`). No other surface changes in v2. A chat that opts in
 later writes one line, `context.agentTextHighlighting = AgentTextHighlighting()`, and gets
 refs, hashes, commands, dates, PR and ask refs coloured, without clicks or paths.
 
@@ -97,8 +105,9 @@ new token, `[r]` ref accent, `⟦…⟧` inline code):
 Отметка с [t]2026-11-16, ответ в [r]ask #990, PR [r]#1124 → [r]PR #1124.
 ```
 
-The as-built screen is shot with `make desktop-shots` on the Workchat fixture and attached to
-the target before review; this spec does not add a screen or a state.
+The as-built screen is shot with `make desktop-shots` from `DesignShotFixtures+WorkchatHighlights`
+(its sample text gains inline-code hashes, a date and `ask #N`) and attached to the target
+before review; this spec does not add a screen or a state.
 
 ## Decisions
 
@@ -107,11 +116,13 @@ the target before review; this spec does not add a screen or a state.
 | D1 | Colour only for the new kinds, no clicks | owner, ask #990 |
 | D2 | Extend the existing pass rather than build a new one | owner, ask #991 (refined after the spec review) |
 | D3' | Workchat-polish D3 (no fill, box, weight; opacity 0.7) holds; one new token `time` | author's call, from D3 |
-| C1' | v2 adds dates and PR/ask refs to C1's kinds; status words, durations, task numbers stay out | author's call; approved by ask #992 |
-| C2' | C2 stands: AI chat and iPhone unchanged in v2; the opt-in becomes one value | author's call; approved by ask #992 |
-| Q2 | No Mac inline-code plate: it is a fill D3 rules out. If ask #992 asks for it, it becomes its own target | author's call; approved by ask #992 |
+| C1' | v2 adds dates and PR/ask refs to C1's kinds; status words, durations, branches, task numbers stay out | author's call, pending owner approval of this spec |
+| C2' | C2 stands: AI chat and iPhone unchanged in v2; the opt-in becomes one value | author's call, pending owner approval of this spec |
+| C3 | A hash, ref or path in inline code clicks as it does in plain text; new kinds never click | author's call, pending owner approval of this spec |
+| Q2 | No Mac inline-code plate: it is a fill D3 rules out. If the owner wants it, it becomes its own target | author's call, pending owner approval of this spec |
 
-If ask #992 is declined, nothing changes and the work stops at this spec.
+The owner's approval of this spec's review ask approves C1', C2', C3 and Q2. If it is declined,
+nothing changes and the work stops at this spec.
 
 ## Failure paths
 
