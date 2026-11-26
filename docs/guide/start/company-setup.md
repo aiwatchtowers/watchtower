@@ -46,7 +46,7 @@ action: nav:connections
 2. On **Services**, tick what your company uses. Only those become steps; anything else connects through [Quick Connections](../features/quick-connections.md).
 3. Each service step first lists the apps this Mac already knows under **Found on this Mac**. Pick one to reuse it, or choose **Create new** (Watchtower walks you through the vendor's console) or **We already have one** (paste what identifies it: for Slack, the app's **App ID**, which starts with A, from api.slack.com/apps → your app → **Basic Information**, or a link to the app). Watchtower never creates a second app by accident.
 4. Google and Atlassian are checked by your own sign-in, which also connects your own account and stores the company setup. Linear and Microsoft 365 are checked without a sign-in. For Atlassian, tick the three settings under **Confirm the app's settings**; Atlassian gives no way to read them.
-5. Optionally fill the **Link deny list**, then open **Publish**. Check the **Company name** (colleagues see "Connect <name>?") and press **Publish**. With Slack in the setup, paste a fresh configuration token: Watchtower writes the link and code to the About page of your Slack app and never stores the token.
+5. Optionally fill the **Link deny list**, then open **Publish**. Check the **Company name** (colleagues see "Connect <name>?") and press **Publish**. With Slack in the setup, paste a fresh configuration token: Watchtower writes the link and the code to your Slack app's page in the workspace's app list (its **App Details**) and never stores the token. Colleagues find both there, so you need not post them in a channel.
 6. Publish shows the **Connect link**, the **Connect code** and a **Configuration profile for IT**. **Connect this Mac** connects whatever you have not signed in to yet.
 
 You can leave the page at any step: the progress is kept in a draft (secrets included, readable only by you) and the zone shows **Continue setup**. **Discard setup** deletes the draft; accounts you already connected stay.
@@ -68,11 +68,32 @@ since: 0.29.0
 action: nav:connections
 -->
 
-1. Open Watchtower first, then click the link on your company's Slack app About page. Or press **Connect with a company code** under **Companies** (also at the end of the **Connect…** menu) and paste the code.
+1. Open Watchtower first, then click the link on your company's Watchtower app page in Slack (**App Details**). Or press **Connect with a company code** under **Companies** (also at the end of the **Connect…** menu) and paste the code.
 2. Watchtower asks **Connect <company>?** with a box per service. Nothing is stored before you press **Connect**, so a web page cannot wire your accounts.
 3. Each ticked service opens its sign-in in your browser, one after another. **Skip this service** moves on; **Stop** ends the chain. You can close the window: Connections shows where the chain is.
 
 A service you cancelled shows **Not connected** with **Connect** in its company group. Opening the same link again only offers what is not connected yet. Your company may also set the company through your Mac's profile: its card then shows **Managed by your organization** and **Connect all**.
+
+### No code? Ask a colleague or find it in Slack
+<!-- learn
+id: company-find-code-in-slack
+title: Find your company code in Slack
+text: No code? Enter your Slack address under **Connections → Companies** and press **Open Slack apps** to find it.
+area: setup
+level: basics
+kind: tip
+since: next
+action: nav:connections
+-->
+
+A colleague who already uses Watchtower can send you the link or the code. Otherwise, take it from your company's Watchtower app in Slack, starting under the **Company code** field:
+
+1. Type your Slack workspace address, like `acme.slack.com`, and press **Open Slack apps**. Your browser opens the workspace's app list; Watchtower fetches nothing and does not keep the address.
+2. Search for Watchtower in the list and open it.
+3. Open **App Details**.
+4. Click the connect link, or copy the code and paste it into **Company code**.
+
+If Watchtower is not in the list or Slack asks you to sign in, sign in to Slack in this browser and try again. Still nothing: ask your Slack admin for the Watchtower company code.
 
 ## When your company changes an app
 
@@ -93,6 +114,7 @@ The top of **Connections** lists each stored company as a card: how many of its 
 - **"Another link is waiting".** Answer the open question in Watchtower first.
 - **"Slack would not let this token change app …"** on the Slack step. Make the configuration token in the workspace the app was made in, signed in as one of the app's collaborators, and press **Try again**. If you can't, press **Create a new app instead**: Watchtower makes a second app with the same token, and the company link uses that one.
 - **"This workspace already has a Watchtower app. Paste its App ID to update it."** **Create the app** found the app a Slack account on this Mac uses, but not its App ID. Paste it (or a link to the app). When Watchtower knows the App ID, it reads that app instead and shows what **Update the app** would change.
+- **"That is your organization's address."** under the Slack address. You entered your Enterprise Grid organization's address (`acme.enterprise.slack.com`). Enter your workspace's address instead, like `acme.slack.com`: it is in Slack's workspace menu.
 - **You clicked the link during Watchtower's first-run Setup.** The question waits until Setup ends; a pasted code asks you to finish Setup first.
 
 ## Related

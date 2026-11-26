@@ -133,6 +133,31 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
         XCTAssertEqual(Pres.connect, "Connect")
     }
 
+    /// Company code from the Slack app spec, "Desktop — No code?".
+    func testSlackHintCopy() {
+        XCTAssertEqual(Pres.slackHintTitle, "No code? Ask a colleague who uses Watchtower, "
+            + "or find Watchtower in your company's Slack:")
+        XCTAssertEqual(Pres.slackAddressPlaceholder, "acme.slack.com")
+        XCTAssertEqual(Pres.openSlackApps, "Open Slack apps")
+        XCTAssertEqual(Pres.slackHintSteps, [
+            "Search for Watchtower in the list and open it.",
+            "Open App Details.",
+            "Click the connect link, or copy the code and paste it above."
+        ])
+        XCTAssertEqual(Pres.slackHintFallback, "Not in the list, or Slack asks you to sign in? Sign in to Slack in "
+            + "this browser and try again. Still nothing — ask your Slack admin for the Watchtower company code.")
+        XCTAssertEqual(Pres.slackAddressInvalid, "Enter your Slack address, like acme.slack.com")
+        XCTAssertEqual(Pres.slackAddressOrganization, "That is your organization's address. Enter your workspace's, "
+            + "like acme.slack.com — it is in Slack's workspace menu.")
+    }
+
+    func testSlackAddressCaption() {
+        XCTAssertEqual(Pres.slackAddressCaption(.invalid), Pres.slackAddressInvalid)
+        XCTAssertEqual(Pres.slackAddressCaption(.organization), Pres.slackAddressOrganization)
+        XCTAssertNil(Pres.slackAddressCaption(.empty))
+        XCTAssertNil(Pres.slackAddressCaption(.workspace("acme")))
+    }
+
     func testDamagedFileIsNotEmpty() {
         let damaged = [CompanyFileError(file: "acme.json", error: "unexpected end of JSON input")]
         let state = zone(errors: damaged)
@@ -466,8 +491,8 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
         XCTAssertEqual(Pres.companiesLoading, "Reading company setups…")
         XCTAssertEqual(Pres.companiesEmpty, "Using Watchtower at work? Connect with your company's link or code, "
             + "or set it up for your company.")
-        XCTAssertEqual(Pres.codeInvalid, "That is not a Watchtower company code. Copy it again from the Slack app's About page "
-            + "or from your admin.")
+        XCTAssertEqual(Pres.codeInvalid, "That is not a Watchtower company code. Copy it again from your company's "
+            + "Watchtower app page in Slack, or ask a colleague who uses Watchtower.")
         XCTAssertEqual(Pres.groupShared, "Watchtower's shared app")
         XCTAssertEqual(Pres.groupOwnGoogle, "Your own Google project")
         XCTAssertEqual(Pres.groupTokens, "API tokens")
