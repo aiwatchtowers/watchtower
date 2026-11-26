@@ -439,3 +439,136 @@ func TestLocked_AgentLockAfterTheFinalCheckWins(t *testing.T) {
 		t.Fatal("the apply unlocked the agent's lock")
 	}
 }
+
+// TestLocked_SquashMergedBranchGoes (fix round 1, F1): a branch of several
+// commits squash-merged into main is merged — the drift check's squash
+// detection pipes the branch diff into `git patch-id`, so stdin must reach
+// git — and its idle locked worktree goes.
+func TestLocked_SquashMergedBranchGoes(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.worktree("wt", "feat/x")
+	f.commit(root, "a.txt", "a\n")
+	f.commit(root, "b.txt", "b\n")
+	gitIn(t, root, "push", "-q", "origin", "feat/x")
+	gitIn(t, f.repo, "merge", "-q", "--squash", "feat/x")
+	gitIn(t, f.repo, "commit", "-q", "-m", "feat/x squashed")
+	gitIn(t, f.repo, "push", "-q", "origin", "main")
+	f.record(root, "feat/x")
+	f.lock(root)
+	f.clock = idleLater()
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
+}
+
+// statusHook runs at at-th W4 status (the evaluation's, the first
+// re-check's, the final re-check's for one worktree), after W3.
+func statusHook(at int, hook func()) func(args []string) *gitAnswer {
+	n := 0
+	return func(args []string) *gitAnswer {
+		if len(args) > 2 && args[0] == "status" && args[2] == "--untracked-files=normal" {
+			if n++; n == at {
+				hook()
+			}
+		}
+		return nil
+	}
+}
+
+// TestLocked_LockReplacedAfterW3IsKept (fix round 1, F5): an agent drops
+// the lock W3 judged and takes a new one while the final re-check's later
+// catches run: the apply does not unlock the new lock, and the worktree
+// stays with it.
+func TestLocked_LockReplacedAfterW3IsKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.mergedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.lock(root)
+	f.clock = idleLater()
+	log := &opLog{}
+	f.git = &loggingGit{log: log, before: statusHook(3, func() {
+		gitIn(t, f.repo, "worktree", "unlock", root)
+		gitIn(t, f.repo, "worktree", "lock", "--reason", "agent B", root)
+	})}
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonLocked, false)
+	if reason, ok := lockOf(t, root); !ok || reason != "agent B\n" {
+		t.Fatalf("lock %v %q", ok, reason)
+	}
+	if exists(filepath.Join(adminOf(t, root), unlockMarker)) ||
+		slices.Contains(log.list(), "git worktree unlock "+root) {
+		t.Fatal("the apply unlocked the new lock")
+	}
+}
+
+// failingScan fails every process scan: the evaluation cannot load its
+// facts.
+type failingScan struct{}
+
+func (failingScan) Scan(context.Context) ([]Proc, error) {
+	return nil, errors.New("injected scan failure")
+}
+func (failingScan) Terminate(Proc) error { return nil }
+
+// TestLocked_RestoreRunsBeforeTheFactsLoad (fix round 1, F6): an apply
+// whose evaluation cannot load its facts still turns an interrupted
+// pass's marker back into the lock first.
+func TestLocked_RestoreRunsBeforeTheFactsLoad(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.lock(root)
+	interruptedUnlock(t, f, root)
+	d := f.deps()
+	d.Procs = failingScan{}
+	if _, err := Apply(context.Background(), d, Request{SessionID: testSession}, nil); err == nil {
+		t.Fatal("the apply loaded its facts")
+	}
+	wantLocked(t, root)
+}
+
+// TestLocked_UnlockStepFailureStopsTheApply (fix round 1, F7): a failure
+// of the unlock step that is not git's own refusal — the marker cannot be
+// written, git cannot run — keeps the worktree locked as check_failed and
+// stops the apply (its branch is not attempted).
+func TestLocked_UnlockStepFailureStopsTheApply(t *testing.T) {
+	t.Parallel()
+	for name, setup := range map[string]func(f *fixture, root string){
+		"the marker cannot be written": func(f *fixture, root string) {
+			f.git = &loggingGit{log: &opLog{}, before: statusHook(3, func() {
+				if err := os.Mkdir(filepath.Join(adminOf(t, root), unlockMarker), 0o755); err != nil {
+					t.Error(err)
+				}
+			})}
+		},
+		"git cannot run": func(f *fixture, root string) {
+			f.git = &loggingGit{log: &opLog{}, before: func(args []string) *gitAnswer {
+				if slices.Equal(args, []string{"worktree", "unlock", root}) {
+					return &gitAnswer{code: -1, err: errors.New("injected: git could not start")}
+				}
+				return nil
+			}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			root := f.mergedWork("wt", "feat/x")
+			f.record(root, "feat/x")
+			f.lock(root)
+			f.clock = idleLater()
+			setup(f, root)
+
+			res := f.apply(Request{}, nil, nil)
+			wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonCheckFailed, false)
+			wantResultItem(t, res, "branch:feat/x", ActionKeep, ReasonNotAttempted, false)
+			if reason, ok := lockOf(t, root); !ok || reason != planReason+"\n" {
+				t.Fatalf("lock %v %q", ok, reason)
+			}
+		})
+	}
+}

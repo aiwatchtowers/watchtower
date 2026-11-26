@@ -993,3 +993,30 @@ func TestPrune_RenamedDerivedDataLeftoverIsFinished(t *testing.T) {
 		t.Fatalf("leftover there %v, deep leftover there %v", exists(trash), exists(deep))
 	}
 }
+
+// TestPrune_TrashOfADotNameIsNoLeftover (fix round 1, F2): a marked folder
+// whose moved name would be "." or ".." is no trash leftover, and
+// finishTrash never deletes anything but a child of the trash folder.
+func TestPrune_TrashOfADotNameIsNoLeftover(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"." + trashInfix + "a", ".." + trashInfix + "b"} {
+		dir := t.TempDir()
+		keep := filepath.Join(dir, "keep.txt")
+		writeFile(t, keep, "x\n")
+		trash := filepath.Join(dir, name)
+		writeFile(t, filepath.Join(trash, trashMarker), trashMarkerBody)
+		found, err := findBuildDirs(context.Background(), dir, time.Minute)
+		if err != nil || len(found) != 0 {
+			t.Fatalf("%s: found %+v, err %v", name, found, err)
+		}
+		for _, moved := range []string{".", "..", "a/b", ""} {
+			removed := false
+			if err := finishTrash(trash, moved, func(string) error { removed = true; return nil }); err == nil || removed {
+				t.Fatalf("finishTrash(%q) = %v, removed %v", moved, err, removed)
+			}
+		}
+		if !exists(keep) || !exists(filepath.Join(trash, trashMarker)) {
+			t.Fatalf("%s: something went", name)
+		}
+	}
+}

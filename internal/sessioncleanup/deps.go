@@ -55,8 +55,20 @@ type SystemGit struct{}
 // GitBinary is gitbin.Locate.
 func (SystemGit) GitBinary() (string, bool) { return gitbin.Locate() }
 
+// GitInputRunner is a GitRunner that can also feed git a stdin (the drift
+// check's `git patch-id`, unlock.go); SystemGit is one.
+type GitInputRunner interface {
+	RunGitInput(ctx context.Context, dir, bin string, stdin []byte, args ...string) (stdout []byte, code int, err error)
+}
+
 // RunGit runs bin with args in dir.
-func (SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+func (s SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	return s.RunGitInput(ctx, dir, bin, nil, args...)
+}
+
+// RunGitInput is RunGit feeding stdin (nil = none) to git, under the same
+// read or owner arguments and environment.
+func (SystemGit) RunGitInput(ctx context.Context, dir, bin string, stdin []byte, args ...string) ([]byte, int, error) {
 	argv := gitbin.OwnerArgs(args...)
 	if !ownerWrite(args) {
 		read, err := gitbin.ReadArgsIn(ctx, bin, dir, args...)
@@ -65,7 +77,7 @@ func (SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([
 		}
 		argv = read
 	}
-	stdout, stderr, err := gitbin.Exec(ctx, dir, nil, bin, argv...)
+	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, bin, argv...)
 	if err == nil {
 		return stdout, 0, nil
 	}

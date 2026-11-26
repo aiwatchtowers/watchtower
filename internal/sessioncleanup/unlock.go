@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"watchtower/internal/workbenchcheck"
 )
@@ -47,8 +48,40 @@ var errUnlockPending = errors.New("an earlier cleanup unlocked it and could not 
 
 // lockState is a worktree's lock as its admin dir holds it now.
 type lockState struct {
-	locked bool // git's lock (the listing's, or the lock file now)
-	marked bool // an unlock of ours not undone yet
+	locked bool     // git's lock (the listing's, or the lock file now)
+	marked bool     // an unlock of ours not undone yet
+	seen   lockSeen // the lock file as read
+}
+
+// lockSeen is one reading of a worktree's lock file: whether it exists,
+// its content and its mtime. A lock dropped and taken again reads
+// differently (a new file), even with the same reason, unless both land in
+// one mtime tick with the same reason.
+type lockSeen struct {
+	exists bool
+	body   string
+	mod    time.Time
+}
+
+func (s lockSeen) same(o lockSeen) bool {
+	return s.exists == o.exists && s.body == o.body && s.mod.Equal(o.mod)
+}
+
+// readLockFile reads admin's lock file; a read that fails is an error.
+func readLockFile(admin string) (lockSeen, error) {
+	path := filepath.Join(admin, lockFile)
+	fi, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return lockSeen{}, nil
+	case err != nil:
+		return lockSeen{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return lockSeen{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+	return lockSeen{exists: true, body: string(body), mod: fi.ModTime()}, nil
 }
 
 // readLock reads w's lock from admin ("" = unknown: the listing alone); a
@@ -58,17 +91,41 @@ func readLock(w worktree, admin string) (lockState, error) {
 	if admin == "" {
 		return st, nil
 	}
-	for name, to := range map[string]*bool{lockFile: &st.locked, unlockMarker: &st.marked} {
-		_, err := os.Lstat(filepath.Join(admin, name))
-		switch {
-		case err == nil:
-			*to = true
-		case !errors.Is(err, fs.ErrNotExist):
-			return st, fmt.Errorf("reading the lock of %s: %w", w.Root, err)
-		}
+	seen, err := readLockFile(admin)
+	if err != nil {
+		return st, fmt.Errorf("reading the lock of %s: %w", w.Root, err)
+	}
+	st.seen, st.locked = seen, st.locked || seen.exists
+	switch _, err := os.Lstat(filepath.Join(admin, unlockMarker)); {
+	case err == nil:
+		st.marked = true
+	case !errors.Is(err, fs.ErrNotExist):
+		return st, fmt.Errorf("reading the lock of %s: %w", w.Root, err)
 	}
 	return st, nil
 }
+
+// judge records the lock W3 let pass for root.
+func (b *builder) judge(root string, seen lockSeen) {
+	b.walkMu.Lock()
+	defer b.walkMu.Unlock()
+	if b.judged == nil {
+		b.judged = map[string]lockSeen{}
+	}
+	b.judged[root] = seen
+}
+
+// judgedLock is the lock W3 let pass for root in these facts, if any.
+func (b *builder) judgedLock(root string) (lockSeen, bool) {
+	b.walkMu.Lock()
+	defer b.walkMu.Unlock()
+	seen, ok := b.judged[root]
+	return seen, ok
+}
+
+// errLockChanged keeps a worktree whose lock is not the one W3 judged:
+// someone dropped it and locked it again since.
+var errLockChanged = errors.New("locked again since the check; that lock is not the one judged")
 
 // lockedMayGo is W3's exception: the worktree's branch is merged with a
 // commit of its own (mergedWithOwnWork) and the worktree has been idle for
@@ -81,23 +138,68 @@ func (b *builder) lockedMayGo(ctx context.Context, w worktree, admin string) boo
 // mergedWithOwnWork: branch is merged into the default branch by the drift
 // check's own detection (workbenchcheck.OpenRepositoryAgainst), under
 // which a branch cut from the base with no commit of its own is not
-// merged. git runs through the cleanup's runner. A detached HEAD (""), an
-// unknown default branch or a verdict git could not reach is not merged.
+// merged. git runs through the cleanup's runner, a stdin (the squash
+// check's `git patch-id`) through its GitInputRunner; a runner without one
+// fails that call. A detached HEAD (""), an unknown default branch or a
+// verdict git could not reach is not merged.
 func (b *builder) mergedWithOwnWork(ctx context.Context, branch string) bool {
 	if branch == "" || b.repo.defaultBranch == "" {
 		return false
 	}
 	g := b.repo.git
-	run := func(ctx context.Context, dir string, _ []byte, name string, args ...string) ([]byte, int, error) {
+	run := func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
 		if name != "git" {
 			return nil, -1, fmt.Errorf("the cleanup runs git only, not %s", name)
 		}
 		ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 		defer cancel()
-		return g.run.RunGit(ctx, dir, g.bin, args...)
+		if stdin == nil {
+			return g.run.RunGit(ctx, dir, g.bin, args...)
+		}
+		in, ok := g.run.(GitInputRunner)
+		if !ok {
+			return nil, -1, errors.New("the cleanup's git runner cannot feed git an input")
+		}
+		return in.RunGitInput(ctx, dir, g.bin, stdin, args...)
 	}
 	repo := workbenchcheck.OpenRepositoryAgainst(ctx, b.repo.folder, b.repo.defaultBranch, run)
 	return repo.BranchMerge(ctx, branch) == workbenchcheck.BranchMerged
+}
+
+// restoreScope runs restoreLocks for every repository of the apply's
+// scope (r.scope, read and locked by Apply) — right after the locks, before
+// any fact is loaded, so an evaluation that then fails still leaves no
+// worktree unlocked (fix round 1, F6). A folder whose repository could not
+// be told was never locked and is skipped; a common dir git cannot read
+// now gives a note (its markers keep their worktrees, W3).
+func restoreScope(ctx context.Context, d Deps, r Request) []string {
+	if d.Git == nil || r.scope == nil {
+		return nil
+	}
+	bin, ok := d.Git.GitBinary()
+	if !ok {
+		return nil
+	}
+	g := gitCmd{run: d.Git, bin: bin}
+	var notes []string
+	done := map[string]bool{}
+	for _, f := range r.scope.folders(r.Sweep) {
+		folder := resolvePath(f)
+		if f == "" || r.scope.unlocked[folder] != "" {
+			continue
+		}
+		out, err := g.output(ctx, folder, "rev-parse", "--git-common-dir")
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("%s: the worktrees' locks could not be checked (%v)", folder, err))
+			continue
+		}
+		common := absFrom(folder, strings.TrimSpace(string(out)))
+		if !done[common] {
+			done[common] = true
+			notes = append(notes, restoreLocks(ctx, g, folder, common)...)
+		}
+	}
+	return notes
 }
 
 // restoreLocks turns every unlock marker of the repository at commonDir
@@ -184,38 +286,28 @@ func isLocked(admin string) (bool, error) {
 	return false, fmt.Errorf("reading the lock in %s: %w", admin, err)
 }
 
-// lockedWhenListed is root's admin dir when the listing these facts were
-// read from (the final re-check's, before its catches) showed root locked,
-// "" otherwise. Only such a lock — the one W3 then judged — is ever
-// unlocked: a lock that appears after that listing is someone else's, and
-// git's refusal of the remove keeps the worktree for them.
-func (b *builder) lockedWhenListed(root string) string {
-	for _, w := range b.repo.worktrees {
-		if w.Root == root && w.Locked {
-			return b.repo.adminDirs[root]
-		}
-	}
-	return ""
-}
-
-// unlockForRemoval unlocks root for the removal that follows at once, when
-// admin is set (lockedWhenListed) and root is still locked: the lock file
-// is saved in the marker (written and synced first), then `git worktree
-// unlock`. true when it unlocked (the caller relocks if the removal
-// fails). A failure leaves the worktree locked as it was (relock) and is
-// returned: the worktree stays.
-func (a *applier) unlockForRemoval(ctx context.Context, root, admin string) (bool, error) {
-	if admin == "" {
-		return false, nil // not locked when listed: a lock now is someone else's, and git refuses the remove
-	}
-	body, err := os.ReadFile(filepath.Join(admin, lockFile))
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
+// unlockForRemoval unlocks root for the removal that follows at once, but
+// only the lock W3 judged in the final re-check (judged; ok false = W3 saw
+// no lock, so a lock now is someone else's and git's refusal of the remove
+// keeps the worktree for them): the lock file, read again, must be that
+// one (errLockChanged otherwise); it is saved in the marker (written and
+// synced first), then `git worktree unlock`. true when it unlocked (the
+// caller relocks if the removal fails). A failure leaves the worktree
+// locked as it was (relock) and is returned: the worktree stays.
+func (a *applier) unlockForRemoval(ctx context.Context, root, admin string, judged lockSeen, ok bool) (bool, error) {
+	if !ok || admin == "" {
 		return false, nil
+	}
+	now, err := readLockFile(admin)
+	switch {
 	case err != nil:
 		return false, fmt.Errorf("reading the lock of %s: %w", root, err)
+	case !now.exists:
+		return false, nil // unlocked meanwhile: nothing to undo
+	case !now.same(judged):
+		return false, errLockChanged
 	}
-	if err := writeMarker(filepath.Join(admin, unlockMarker), body); err != nil {
+	if err := writeMarker(filepath.Join(admin, unlockMarker), []byte(now.body)); err != nil {
 		return false, fmt.Errorf("saving the lock of %s: %w", root, err)
 	}
 	uctx, cancel := context.WithTimeout(ctx, gitTimeout)
@@ -253,15 +345,26 @@ func writeMarker(path string, body []byte) (err error) {
 }
 
 // removeWorktreeNow runs `git worktree remove` (no --force) on root right
-// after the final re-check. A worktree that re-check listed locked — W3
-// let it pass: merged and idle; admin is its admin dir (lockedWhenListed)
-// — is unlocked first (unlockForRemoval) and locked again when the removal
-// fails; it is then kept as check_failed, and a failure that is not git's
-// own refusal stops the apply, as settleGit does.
-func (a *applier) removeWorktreeNow(ctx context.Context, it *Item, root, admin string) {
-	unlocked, err := a.unlockForRemoval(ctx, root, admin)
-	if err != nil {
+// after the final re-check, whose facts b holds. A worktree whose lock W3
+// let pass there (merged and idle) is unlocked first (unlockForRemoval)
+// and locked again when the removal fails; it is then kept as
+// check_failed. As in settleGit, only git's own refusal lets the apply go
+// on: any other failure of the unlock or the removal (a marker that cannot
+// be written, git that cannot run) stops it.
+func (a *applier) removeWorktreeNow(ctx context.Context, it *Item, root string, b *builder) {
+	admin := b.repo.adminDirs[root]
+	judged, ok := b.judgedLock(root)
+	unlocked, err := a.unlockForRemoval(ctx, root, admin, judged, ok)
+	var gitErr *GitError
+	switch {
+	case errors.Is(err, errLockChanged):
+		keepItem(it, ReasonLocked, err.Error())
+		return
+	case err != nil && errors.As(err, &gitErr) && gitErr.Code > 0:
 		keepItem(it, ReasonCheckFailed, err.Error())
+		return
+	case err != nil:
+		a.fail(it, err)
 		return
 	}
 	rctx, cancel := context.WithTimeout(ctx, worktreeRemoveTimeout)
@@ -276,7 +379,6 @@ func (a *applier) removeWorktreeNow(ctx context.Context, it *Item, root, admin s
 		detail = fmt.Sprintf("removing it failed (%v); locking it again failed, the next cleanup retries: %v", err, rerr)
 	}
 	keepItem(it, ReasonCheckFailed, detail)
-	var gitErr *GitError
 	if code <= 0 || !errors.As(err, &gitErr) {
 		a.halt = err
 	}

@@ -165,7 +165,10 @@ func catchLocked(ctx context.Context, b *builder, w worktree) (string, string, e
 		return "", "", err
 	case st.marked:
 		return "", "", errUnlockPending
-	case !st.locked || b.lockedMayGo(ctx, w, admin):
+	case !st.locked:
+		return "", "", nil
+	case b.lockedMayGo(ctx, w, admin):
+		b.judge(w.Root, st.seen)
 		return "", "", nil
 	}
 	return ReasonLocked, "", nil

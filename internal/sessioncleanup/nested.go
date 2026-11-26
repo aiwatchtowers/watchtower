@@ -47,9 +47,21 @@ func findNestedRepository(ctx context.Context, root string, budget time.Duration
 			found = filepath.Dir(path)
 			return errNestedFound
 		}
-		if d.IsDir() && path != root && (path == own || regenerableCaches[d.Name()] ||
-			(withinDerivedDataDepth(root, path) && derivedDataAt(path))) {
+		if d.IsDir() && path != root && (path == own || regenerableCaches[d.Name()]) {
 			return filepath.SkipDir
+		}
+		if d.IsDir() && path != root && withinDerivedDataDepth(root, path) && derivedDataAt(path) {
+			// Skipped only when nothing but its own package clones holds a
+			// .git (fix round 1, F3): an independent clone inside is walked
+			// to, and keeps the worktree.
+			holds, err := holdsForeignGit(ctx, foundBuild{path: path, name: d.Name(), kind: derivedDataKind},
+				time.Until(deadline))
+			if err != nil {
+				return err
+			}
+			if !holds {
+				return filepath.SkipDir
+			}
 		}
 		seen++
 		if seen%nestedClockEvery == 0 {

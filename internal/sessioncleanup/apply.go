@@ -90,8 +90,10 @@ type Result struct {
 // --force; then each branch by compare-and-delete (`update-ref -d <ref>
 // <checked sha>`). A failure that is not git's own refusal stops the apply:
 // the rest is left untouched and reported not_attempted. In session mode
-// the result is saved through Deps.Results (best effort). The error is
-// non-nil only when nothing was done. A sweep over several repositories
+// the result is saved through Deps.Results (best effort). Under the
+// repository locks, before anything is evaluated, every unlock an
+// interrupted apply left is undone first (restoreScope). The error is
+// non-nil only when nothing was removed — that relock aside. A sweep over several repositories
 // applies them one after another (sweepBuilders); a failure that stops one
 // leaves the later ones not_attempted.
 func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error) {
@@ -112,15 +114,14 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 		return res, fmt.Errorf("session cleanup: %w", err)
 	}
 	defer unlock()
+	// Undo an unlock an interrupted apply left (#2402 §3), under the
+	// repository locks taken above, before any fact is loaded.
+	restored := restoreScope(ctx, d, r)
 	parts, err := evaluationBuilders(ctx, d, r)
 	if err != nil {
 		return res, err
 	}
-	// Undo an unlock an interrupted apply left (#2402 §3), before anything
-	// is evaluated; it runs under the repository locks taken above.
-	for _, b := range parts {
-		b.notes = append(b.notes, restoreLocks(ctx, b.repo.git, b.repo.folder, b.repo.commonDir)...)
-	}
+	parts[0].notes = append(parts[0].notes, restored...)
 	if (r.RequireEnded || r.Quiet) && !r.Sweep && !parts[0].endStands() {
 		return res, fmt.Errorf("session %d: %w", r.SessionID, ErrSessionNotEnded)
 	}
@@ -456,7 +457,7 @@ func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 		a.fail(it, err)
 	} else {
 		if b, ok := a.recheckClear(ctx, it, root, "process in use: ", true); ok {
-			a.removeWorktreeNow(ctx, it, root, b.lockedWhenListed(root))
+			a.removeWorktreeNow(ctx, it, root, b)
 		}
 		unlock()
 	}

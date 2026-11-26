@@ -492,6 +492,11 @@ func removeBuildDir(dir string, rm func(string) error) error {
 // trash folder. An interrupted delete leaves the marker, so a later prune
 // finishes it.
 func finishTrash(trash, name string, rm func(string) error) error {
+	// Only a direct child of the trash folder is ever deleted: never the
+	// trash folder itself or its parent (a name "." or "..").
+	if !movedName(name) || filepath.Dir(filepath.Join(trash, name)) != filepath.Clean(trash) {
+		return fmt.Errorf("deleting %s: %q is not a folder moved into it", trash, name)
+	}
 	if err := rm(filepath.Join(trash, name)); err != nil {
 		return fmt.Errorf("deleting %s: %w", trash, err)
 	}
@@ -502,6 +507,13 @@ func finishTrash(trash, name string, rm func(string) error) error {
 		return fmt.Errorf("deleting %s: %w", trash, err)
 	}
 	return nil
+}
+
+// movedName: name can be a build folder's own name — one path element,
+// not "." or "..".
+func movedName(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsRune(name, filepath.Separator) &&
+		filepath.Base(name) == name
 }
 
 // errBuildScanBudget: the walk for build folders ran over its budget.
@@ -549,9 +561,12 @@ func findBuilds(ctx context.Context, root string, budget time.Duration, strict b
 		if err != nil {
 			return err
 		}
-		// A cache W9 skips is never probed for content (it may be unreadable).
+		// A cache W9 skips is never probed for content near the root (it
+		// may be unreadable); a folder of a build kind's name that is not
+		// that kind — a .build an Xcode build was pointed at — is, at any
+		// depth (fix round 1, F8).
 		shallow := withinDerivedDataDepth(root, path) && !regenerableCaches[name]
-		if !ok && shallow {
+		if !ok && (shallow || buildKindName(name)) {
 			if ok, err = derivedDataByContent(path, strict); err != nil {
 				return err
 			}
@@ -636,6 +651,11 @@ func buildDirKind(dir, name string, strict bool) (buildKind, bool, error) {
 	return buildKind{}, false, nil
 }
 
+// buildKindName: name is one of buildKinds' names.
+func buildKindName(name string) bool {
+	return slices.ContainsFunc(buildKinds, func(k buildKind) bool { return k.name == name })
+}
+
 // withinDerivedDataDepth: dir is at root's top level or one level below
 // (derivedDataDepth).
 func withinDerivedDataDepth(root, dir string) bool {
@@ -700,7 +720,7 @@ func derivedDataAt(dir string) bool {
 // of such a name without the marker is someone else's and stays.
 func isTrashLeftover(dir, name string, shallow bool) (kind buildKind, moved string, ok bool) {
 	moved, _, found := strings.Cut(name, trashInfix)
-	if !found || moved == "" {
+	if !found || !movedName(moved) {
 		return buildKind{}, "", false
 	}
 	kind, named := derivedDataKind, false

@@ -520,3 +520,29 @@ func TestPruneIdle_LockedOrSweepWaitsForIdle(t *testing.T) {
 		})
 	}
 }
+
+// TestIdle_DerivedDataInADotBuildCountsAsActivity (fix round 1, F8): a
+// .build an Xcode build was pointed at (-derivedDataPath .build: no
+// workspace-state.json) is a build folder by its content; its fresh output
+// is activity, and the prune finds it.
+func TestIdle_DerivedDataInADotBuildCountsAsActivity(t *testing.T) {
+	t.Parallel()
+	tr := newIdleTree(t)
+	dir := filepath.Join(tr.root, "Pkg", "Sub", ".build")
+	tr.write(filepath.Join(dir, "info.plist"), "<plist/>")
+	tr.write(filepath.Join(dir, "Build", "Products", "App"), "x")
+	tr.write(filepath.Join(dir, "Logs", "Build", "x"), "x")
+	old := idleNow.Add(-7 * 24 * time.Hour)
+	for _, d := range []string{"", "Build", "Logs", "Logs/Build"} {
+		tr.touch(filepath.Join(dir, d), old)
+	}
+	recent := idleNow.Add(-time.Hour)
+	tr.touch(filepath.Join(dir, "Build", "Products"), recent)
+	if tr.idle() || !tr.activity().Equal(recent) {
+		t.Fatalf("idle %v, activity %v, want %v", tr.idle(), tr.activity(), recent)
+	}
+	found, err := findBuildDirs(context.Background(), tr.root, time.Minute)
+	if err != nil || len(found) != 1 || found[0].path != dir {
+		t.Fatalf("found %+v, err %v", found, err)
+	}
+}

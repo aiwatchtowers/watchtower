@@ -231,11 +231,13 @@ func TestPlan_RenamedDerivedDataIsACache(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
 		rel    string
+		clone  bool // an independent clone inside, outside SourcePackages (fix round 1, F3)
 		reason string
 	}{
 		"at the root":     {rel: ".derived", reason: ""},
 		"one level below": {rel: "Mobile/.dd", reason: ""},
 		"deeper":          {rel: "a/b/.dd", reason: ReasonContainsWorktree},
+		"a clone inside":  {rel: ".derived", clone: true, reason: ReasonContainsWorktree},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -246,6 +248,9 @@ func TestPlan_RenamedDerivedDataIsACache(t *testing.T) {
 			dd := derivedData(t, filepath.Join(root, filepath.FromSlash(tc.rel)), "Logs")
 			if err := os.MkdirAll(filepath.Join(dd, "SourcePackages", "checkouts", "pkg", ".git"), 0o755); err != nil {
 				t.Fatal(err)
+			}
+			if tc.clone {
+				gitIn(t, f.base, "init", "-q", filepath.Join(dd, "vendor", "lib"))
 			}
 			f.record(root, "feat/x")
 			action := ActionRemove
