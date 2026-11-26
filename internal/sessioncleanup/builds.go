@@ -737,12 +737,7 @@ func isTrashLeftover(dir, name string, shallow bool) (kind buildKind, moved stri
 	if (!named && !shallow) || hasGitEntry(dir) {
 		return buildKind{}, "", false
 	}
-	marker := filepath.Join(dir, trashMarker)
-	fi, err := os.Lstat(marker)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() > trashMarkerMax {
-		return buildKind{}, "", false
-	}
-	body, err := os.ReadFile(marker)
+	body, _, err := readSmallFile(filepath.Join(dir, trashMarker), trashMarkerMax)
 	if err != nil {
 		return buildKind{}, "", false
 	}

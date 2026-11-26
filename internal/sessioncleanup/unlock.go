@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"watchtower/internal/workbenchcheck"
@@ -72,18 +74,56 @@ func (s lockSeen) same(o lockSeen) bool {
 // readLockFile reads admin's lock file; a read that fails is an error.
 func readLockFile(admin string) (lockSeen, error) {
 	path := filepath.Join(admin, lockFile)
-	fi, err := os.Lstat(path)
+	body, fi, err := readSmallFile(path, smallFileMax)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return lockSeen{}, nil
 	case err != nil:
 		return lockSeen{}, fmt.Errorf("reading %s: %w", path, err)
 	}
-	body, err := os.ReadFile(path)
-	if err != nil {
-		return lockSeen{}, fmt.Errorf("reading %s: %w", path, err)
-	}
 	return lockSeen{exists: true, body: string(body), mod: fi.ModTime(), fi: fi}, nil
+}
+
+// smallFileMax bounds a lock file or unlock marker this file reads.
+const smallFileMax = 64 << 10
+
+// errNotSmallRegular: the entry is not a regular file of at most the size
+// asked for (a FIFO, a device, a symlink, a directory, a huge file).
+var errNotSmallRegular = errors.New("not a small regular file")
+
+// readSmallFile reads path only when it is a regular file of at most max
+// bytes (fix round 4, R4-1): Lstat first, then an open that follows no
+// symlink and never blocks (a FIFO swapped in meanwhile), checked to be the
+// file Lstat saw. A missing file is fs.ErrNotExist; anything else that is
+// not such a file is errNotSmallRegular. The info is the open file's.
+func readSmallFile(path string, maxSize int64) ([]byte, fs.FileInfo, error) {
+	lfi, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err //nolint:wrapcheck // callers name the file
+	}
+	if !lfi.Mode().IsRegular() || lfi.Size() > maxSize {
+		return nil, nil, errNotSmallRegular
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, nil, err //nolint:wrapcheck // callers name the file
+	}
+	defer f.Close() //nolint:errcheck // read only
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, nil, err //nolint:wrapcheck // callers name the file
+	}
+	if !fi.Mode().IsRegular() || !os.SameFile(lfi, fi) {
+		return nil, nil, errNotSmallRegular
+	}
+	body, err := io.ReadAll(io.LimitReader(f, maxSize+1))
+	if err != nil {
+		return nil, nil, err //nolint:wrapcheck // callers name the file
+	}
+	if int64(len(body)) > maxSize {
+		return nil, nil, errNotSmallRegular
+	}
+	return body, fi, nil
 }
 
 // readLock reads w's lock from admin ("" = unknown: the listing alone); a
@@ -273,7 +313,7 @@ func restoreLocks(ctx context.Context, g gitCmd, commonDir string) []string {
 // stopping daemon), within gitTimeout. On failure the marker stays.
 func relock(ctx context.Context, g gitCmd, folder, gitDir, admin, root string) error {
 	marker := filepath.Join(admin, unlockMarker)
-	saved, err := os.ReadFile(marker)
+	saved, _, err := readSmallFile(marker, smallFileMax)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil

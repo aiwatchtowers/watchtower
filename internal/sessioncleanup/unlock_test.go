@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -758,5 +759,57 @@ func TestRestoreLocks_NamesTheGitDir(t *testing.T) {
 	want := "git --git-dir=" + bare + " worktree lock --reason " + planReason + " " + resolvePath(wt)
 	if !slices.Contains(log.list(), want) {
 		t.Fatalf("runs %v, want %q", log.list(), want)
+	}
+}
+
+// fifoAdmin is an admin dir whose lock file and unlock marker are FIFOs
+// with no writer: a blocking open or read of either would hang.
+func fifoAdmin(t *testing.T) string {
+	t.Helper()
+	admin := filepath.Join(t.TempDir(), "worktrees", "wt")
+	if err := os.MkdirAll(admin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{lockFile, unlockMarker} {
+		if err := syscall.Mkfifo(filepath.Join(admin, name), 0o600); err != nil {
+			t.Skipf("no FIFOs here: %v", err)
+		}
+	}
+	return admin
+}
+
+// TestLocked_FIFOLockFileNeverBlocks (fix round 4, R4-1): a FIFO in place
+// of a lock file or a marker is never opened for a blocking read: the
+// pre-listing snapshot leaves it out, W3 keeps the worktree (check_failed),
+// the restore fails with a note, and no git runs for it.
+func TestLocked_FIFOLockFileNeverBlocks(t *testing.T) {
+	t.Parallel()
+	admin := fifoAdmin(t)
+	common := filepath.Dir(filepath.Dir(admin))
+	if got := readLocksBefore(common); len(got) != 0 {
+		t.Fatalf("snapshot %v", got)
+	}
+	b := &builder{repo: &repoState{adminDirs: map[string]string{"/wt": admin}}}
+	if reason, _, err := catchLocked(context.Background(), b, worktree{Root: "/wt", Branch: "feat/x", Locked: true}); err == nil {
+		t.Fatalf("W3 passed a FIFO lock: reason %q", reason)
+	}
+	ran := false
+	g := gitCmd{run: &loggingGit{log: &opLog{}, before: func([]string) *gitAnswer {
+		ran = true
+		return &gitAnswer{code: 128, err: errors.New("no git expected")}
+	}}, bin: "git"}
+	if err := relock(context.Background(), g, "", common, admin, "/wt"); err == nil || ran {
+		t.Fatalf("relock err %v, git ran %v", err, ran)
+	}
+	// A prune's trash marker is read the same way.
+	trash := filepath.Join(t.TempDir(), ".build"+trashInfix+"x")
+	if err := os.MkdirAll(trash, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(trash, trashMarker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := isTrashLeftover(trash, filepath.Base(trash), true); ok {
+		t.Fatal("a FIFO marker made a leftover")
 	}
 }
