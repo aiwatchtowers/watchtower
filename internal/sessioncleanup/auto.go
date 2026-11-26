@@ -196,9 +196,19 @@ var errCleanupBusy = errors.New("another cleanup of the repository runs")
 // errCleanupBusy).
 func autoApply(ctx context.Context, ad AutoDeps, c AutoCandidate, live []int64, now time.Time) (Result, error) {
 	d := ad.tryingDeps()
-	res, err := Apply(ctx, d, Request{SessionID: c.SessionID, WorkbenchID: c.WorkbenchID, LiveSessions: live,
+	r := Request{SessionID: c.SessionID, WorkbenchID: c.WorkbenchID, LiveSessions: live,
 		NoSize: true, PruneBuilds: true, NoTerminate: true, RequireEnded: !c.Quiet, Quiet: c.Quiet, QuietBefore: now.Add(-autoQuiet), BuildsChecked: checkedRoots(c),
-		Now: now}, nil)
+		Now: now}
+	if c.Quiet {
+		// A quiet session has no finish to re-check: the host's live runs,
+		// read again before each destructive step, are its sign of life.
+		r.liveNow = ad.liveIDs
+	}
+	// Unattended: no owner asked for these writes, so they run in the
+	// hooks-off background mode, as the repository pass's do (final review
+	// C4) — with no repository named, since a session's folders may lie in
+	// several; Apply resolves each one as before.
+	res, err := Apply(withBackgroundWrites(ctx, ""), d, r, nil)
 	if err != nil {
 		return res, fmt.Errorf("applying: %w", err)
 	}

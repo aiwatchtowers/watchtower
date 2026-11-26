@@ -407,6 +407,14 @@ func (a *applier) act(ctx context.Context, i int) {
 	case KindWorktree:
 		a.removeWorktree(ctx, it)
 	case KindBranch:
+		if a.req.repoPass && !a.worktreeRemovedOn(it.Name) {
+			// The repository pass selects a branch only with its worktree
+			// (passSelection): a worktree kept at its re-check keeps the
+			// branch too, even once no longer checked out there (final
+			// review C5).
+			keepItem(it, ReasonNotAttempted, "its worktree was not removed")
+			return
+		}
 		a.deleteBranch(ctx, it)
 	case KindLsreg:
 		a.unregisterStale(ctx, it)
@@ -417,8 +425,19 @@ func (a *applier) act(ctx context.Context, i int) {
 	}
 }
 
+// worktreeRemovedOn: a worktree item of this apply whose branch was branch
+// was removed.
+func (a *applier) worktreeRemovedOn(branch string) bool {
+	return slices.ContainsFunc(a.items, func(w Item) bool {
+		return w.Kind == KindWorktree && w.Branch == branch && w.Done
+	})
+}
+
 // fresh is a new evaluation of the request: the re-check's facts.
 func (a *applier) fresh(ctx context.Context) (*builder, error) {
+	if a.deps.rechecking != nil {
+		a.deps.rechecking()
+	}
 	if err := benchFolderGone(ctx, a.deps, a.req); err != nil {
 		return nil, fmt.Errorf("re-checking: %w", err)
 	}

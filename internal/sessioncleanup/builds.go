@@ -175,8 +175,10 @@ func quietStands(r Request, a SessionActivity, known bool) bool {
 // quietStillStands re-reads the activity of the request's session right now
 // (the Desktop writes last_active_at without the repository lock, so a
 // builder's snapshot can be stale after its expensive checks) — for a quiet
-// request, right before a destructive step. Other requests: true. A read
-// that fails is an error: the caller keeps the work.
+// request, right before a destructive step — and, when the request reads
+// the host's live runs (Request.liveNow), those too: a quiet session the
+// host lists live again does not stand (final review C1). Other requests:
+// true. A read that fails is an error: the caller keeps the work.
 func (a *applier) quietStillStands(ctx context.Context) (bool, error) {
 	if !a.req.Quiet {
 		return true, nil
@@ -185,7 +187,14 @@ func (a *applier) quietStillStands(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("re-reading the session's activity: %w", err)
 	}
-	return quietStands(a.req, s, ok), nil
+	if stands := quietStands(a.req, s, ok); !stands || a.req.liveNow == nil {
+		return stands, nil
+	}
+	live, err := a.req.liveNow(ctx)
+	if err != nil {
+		return false, fmt.Errorf("%w: %w", errLiveUnreadable, err)
+	}
+	return !slices.Contains(live, a.req.SessionID), nil
 }
 
 // sessionEnded: the planned session finished (finish_session) or is being

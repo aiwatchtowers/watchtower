@@ -2,7 +2,10 @@ package sessioncleanup
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"time"
 )
@@ -68,7 +71,7 @@ func (b *builder) worktreeCatches(w worktree) []worktreeCatch {
 		own = catchRecentOwner
 	}
 	if w.Prunable {
-		return []worktreeCatch{catchClaudeHome, catchFolders, own, catchUnpushed}
+		return []worktreeCatch{catchClaudeHome, catchFolders, own, catchUnlockPending, catchUnpushed}
 	}
 	return []worktreeCatch{catchClaudeHome, catchFolders, own, catchLocked, catchUncommitted, catchProcesses,
 		catchSessionInIt, catchUnpushed, catchOperation, catchNested, catchIgnoredWork}
@@ -175,6 +178,25 @@ func catchLocked(ctx context.Context, b *builder, w worktree) (string, string, e
 		return "", "", nil
 	}
 	return ReasonLocked, "", nil
+}
+
+// catchUnlockPending is catchLocked's marker check for a prunable worktree,
+// which meets no lock check (final review residual Q3): an earlier apply
+// unlocked it and could not lock it again, so it is kept as check_failed
+// (errUnlockPending) rather than removed with its marker. A marker that
+// cannot be read is an error too.
+func catchUnlockPending(_ context.Context, b *builder, w worktree) (string, string, error) {
+	admin := b.repo.adminDirs[w.Root]
+	if admin == "" {
+		return "", "", nil
+	}
+	switch _, err := os.Lstat(filepath.Join(admin, unlockMarker)); {
+	case err == nil:
+		return "", "", errUnlockPending
+	case !errors.Is(err, fs.ErrNotExist):
+		return "", "", fmt.Errorf("reading the lock of %s: %w", w.Root, err)
+	}
+	return "", "", nil
 }
 
 // catchUncommitted is W4.

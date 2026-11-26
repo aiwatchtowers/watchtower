@@ -172,7 +172,7 @@ func (ad AutoDeps) passRepos(ctx context.Context, wbs []int64, out *AutoResult) 
 // passState is one repository's pass across its batches.
 type passState struct {
 	order    []string // the candidates, the oldest activity first
-	measured bool     // order was read (the first batch, under the lock)
+	measured bool     // order was read (before the first batch's lock)
 	next     int      // order[:next] were taken by a batch
 	removed  int      // worktrees removed so far
 }
@@ -224,6 +224,33 @@ func (ad AutoDeps) passBatch(ctx context.Context, rp passRepo, live []int64, st 
 	r := Request{Sweep: true, WorkbenchID: rp.workbenchID, LiveSessions: live, NoSize: true, NoTerminate: true,
 		PruneBuilds: true, repoPass: true, folder: rp.folder, allOwners: true, liveNow: ad.liveIDs,
 		repoKey: rp.key, scope: &repoScope{bench: []string{rp.folder}, locked: []string{rp.key}}}
+	if !st.measured {
+		// An interrupted unlock is undone first, under a short hold of the
+		// lock (final review residual R2): a measure that fails below still
+		// leaves no worktree unlocked. Busy: the repository waits for the
+		// next pass, as a busy batch does.
+		release, err := d.Lock(ctx, rp.key)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, note := range restoreScope(ctx, d, r) {
+			ad.logf("session cleanup: repository %s: %s", rp.key, note)
+		}
+		release()
+		// The candidates are measured outside the lock (final review F2): an
+		// idle walk may take nestedScanBudget per worktree, and the owner's
+		// Clean Up waits for this lock. Measuring only selects: each batch
+		// re-plans under the lock and idleness is read again right before
+		// every removal and prune.
+		mb, err := newBuilder(ctx, d, r)
+		if err != nil {
+			return nil, false, err
+		}
+		st.order, st.measured = mb.passCandidates(ctx), true
+		if ctx.Err() != nil {
+			return nil, false, ctx.Err()
+		}
+	}
 	// The lock of the repository found at discovery, not of whatever the
 	// folder resolves to now; every evaluation below checks that the folder
 	// still resolves to it (Request.repoKey).
@@ -238,9 +265,6 @@ func (ad AutoDeps) passBatch(ctx context.Context, rp passRepo, live []int64, st 
 	b, err := newBuilder(ctx, d, r)
 	if err != nil {
 		return nil, false, err
-	}
-	if !st.measured {
-		st.order, st.measured = b.passCandidates(ctx), true
 	}
 	roots := st.take(b)
 	if len(roots) == 0 {
@@ -386,7 +410,7 @@ func orderByRoots(items []Item, roots []string) {
 // that may go, in the order of roots (the oldest activity first), at most
 // limit of them, with the LaunchServices entries of the app bundles inside
 // each (as a Clean Up row's) and its branch when that branch item may go
-// too.
+// too — attempted only once the worktree went (applier.act).
 func passSelection(items []Item, roots []string, limit int) []string {
 	byKey := map[string]Item{}
 	branchKey := map[string]string{}
@@ -439,9 +463,10 @@ var errLiveUnreadable = errors.New("who works in the worktrees could not be read
 // which never says, only when it was opened in root (R4-1). The tree then
 // waits for the next pass. Any other error: what
 // holds it cannot be told, the caller keeps the work. nil = none holds it;
-// other requests: nil.
+// other requests (a quiet session's apply reads liveNow for itself only,
+// quietStillStands): nil.
 func (a *applier) liveClear(ctx context.Context, root string) error {
-	if a.req.liveNow == nil {
+	if a.req.liveNow == nil || a.req.Quiet {
 		return nil
 	}
 	live, err := a.req.liveNow(ctx)

@@ -93,7 +93,7 @@ func gitArgv(ctx context.Context, dir, bin string, args []string) ([]string, err
 	gitDir, on := backgroundWrites(ctx)
 	if !ownerWrite(args) {
 		argv, err := gitbin.ReadArgsIn(ctx, bin, dir, args...)
-		if err != nil || !on || !repositoryWideRead(args) {
+		if err != nil || !on || gitDir == "" || !repositoryWideRead(args) {
 			return argv, err //nolint:wrapcheck // the caller names the command
 		}
 		// The repository pass decides its deletes on these: they read the
@@ -171,8 +171,10 @@ type backgroundWritesKey struct{}
 // write — nor a repository-wide read (repositoryWideRead) — discovers
 // another repository from its folder. The repository pass
 // sets it: it writes over trees no session of the owner's owns, so nothing
-// it does may run the repository's commands. The mark travels with the ctx
-// through any runner that wraps SystemGit.
+// it does may run the repository's commands. Every unattended session apply
+// (AutoRun's) sets it too, with commonDir "": the same hooks-off writes,
+// with no repository named and no read pinned (final review C4). The mark
+// travels with the ctx through any runner that wraps SystemGit.
 func withBackgroundWrites(ctx context.Context, commonDir string) context.Context {
 	return context.WithValue(ctx, backgroundWritesKey{}, commonDir)
 }
@@ -345,6 +347,12 @@ type Deps struct {
 	// OrphanGrace is how long an apply waits for SIGTERMed orphans to exit
 	// before it keeps the worktree; 0 = 5 s (spec §7).
 	OrphanGrace time.Duration
+	// markerWritten, when set (tests), runs right after an unlock marker
+	// was written and synced, before the lock's last read.
+	markerWritten func(admin string)
+	// rechecking, when set (tests), runs at the start of every re-check
+	// (applier.fresh): the phase right after the batch's selection.
+	rechecking func()
 }
 
 // OrphansIn splits the processes inside one of roots into orphans and

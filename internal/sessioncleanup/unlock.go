@@ -200,7 +200,7 @@ var errLockNotRestored = errors.New("its lock could not be restored; the next cl
 // someone dropped it and locked it again since.
 var errLockChanged = errors.New("locked again since the check; that lock is not the one judged")
 
-// lockedMayGo is W3's exception: the worktree's branch is merged with a
+// lockedMayGo is W3's exception: the worktree's branch is merged and has a
 // commit of its own (mergedWithOwnWork) and the worktree has been idle for
 // idleFor. Any doubt — no admin dir, a detached HEAD, a failed check — is
 // "no".
@@ -211,9 +211,9 @@ func (b *builder) lockedMayGo(ctx context.Context, w worktree, admin string) boo
 // mergedWithOwnWork: branch is merged into the default branch by the drift
 // check's own detection (workbenchcheck.OpenRepositoryAgainst), under
 // which a branch cut from the base with no commit of its own is not
-// merged. git runs through the cleanup's runner, a stdin (the squash
-// check's `git patch-id`) through its GitInputRunner; a runner without one
-// fails that call. A detached HEAD (""), an unknown default branch or a
+// merged, and it has a commit of its own (hasOwnCommit). git runs through
+// the cleanup's runner, a stdin (the squash check's `git patch-id`) through
+// its GitInputRunner; a runner without one fails that call. A detached HEAD (""), an unknown default branch or a
 // verdict git could not reach is not merged.
 func (b *builder) mergedWithOwnWork(ctx context.Context, branch string) bool {
 	if branch == "" || b.repo.defaultBranch == "" {
@@ -236,7 +236,45 @@ func (b *builder) mergedWithOwnWork(ctx context.Context, branch string) bool {
 		return in.RunGitInput(ctx, dir, g.bin, stdin, args...)
 	}
 	repo := workbenchcheck.OpenRepositoryAgainst(ctx, b.repo.folder, b.repo.defaultBranch, run)
-	return repo.BranchMerge(ctx, branch) == workbenchcheck.BranchMerged
+	return repo.BranchMerge(ctx, branch) == workbenchcheck.BranchMerged && b.hasOwnCommit(ctx, branch)
+}
+
+// hasOwnCommit is W3's evidence that a branch the merge check let pass has
+// a commit of its own (final review C2). The merge check is patch
+// equivalence: a branch cut from a pushed feature tip with no commit of its
+// own reads as merged once that feature is squash-merged, yet every commit
+// of it is the feature's. So: a commit of branch outside the default branch
+// that no other local branch and no remote-tracking ref but origin's copy
+// of branch reaches is its own; when none is, branch still has one only if
+// it has no commit outside the default branch at all (merged by a merge or
+// a fast-forward, which the merge check judges by itself). Commits inside
+// the default branch are never weighed against other branches: every branch
+// cut from it since reaches them. Branch names hold no glob character (git
+// check-ref-format), so each pattern matches its ref alone. An error — git
+// cannot run, the branch is gone — is no evidence.
+func (b *builder) hasOwnCommit(ctx context.Context, branch string) bool {
+	g, dir := b.repo.git, b.repo.folder
+	own, err := g.output(ctx, dir, "rev-list", "-1", "refs/heads/"+branch, "--not",
+		"--exclude="+branch, "--branches", "--exclude=origin/"+branch, "--remotes")
+	if err != nil {
+		return false
+	}
+	if strings.TrimSpace(string(own)) != "" {
+		return true
+	}
+	// Against the default branch's refs that exist; none: every commit is
+	// outside, so no evidence.
+	args := []string{"rev-list", "-1", "refs/heads/" + branch, "--not"}
+	for _, ref := range []string{"refs/heads/" + b.repo.defaultBranch, "refs/remotes/origin/" + b.repo.defaultBranch} {
+		switch _, code, err := g.exitCode(ctx, dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); {
+		case err != nil:
+			return false
+		case code == 0:
+			args = append(args, ref)
+		}
+	}
+	outside, err := g.output(ctx, dir, args...)
+	return err == nil && strings.TrimSpace(string(outside)) == ""
 }
 
 // restoreScope runs restoreLocks in every repository whose lock the apply
@@ -271,11 +309,11 @@ func restoreScope(ctx context.Context, d Deps, r Request) []string {
 }
 
 // restoreLocks turns every unlock marker of the repository at commonDir
-// whose worktree still exists back into its lock (relock), before anything
-// is evaluated. It returns a note per marker it could not restore; such a
-// marker stays and W3 keeps its worktree (errUnlockPending) until a later
-// apply restores it. A marker whose worktree is gone is left: git drops its
-// admin dir with it.
+// back into its lock (relock), before anything is evaluated — whether or
+// not its checkout path can be seen now. It returns a note per marker it
+// could not restore; such a marker stays and W3 keeps its worktree
+// (errUnlockPending) until a later apply restores it. A completed removal
+// leaves no marker: git drops the admin dir with it.
 func restoreLocks(ctx context.Context, g gitCmd, commonDir string) []string {
 	base := filepath.Join(commonDir, "worktrees")
 	entries, err := os.ReadDir(base)
@@ -295,9 +333,12 @@ func restoreLocks(ctx context.Context, g gitCmd, commonDir string) []string {
 		if !ok {
 			continue
 		}
-		if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
-			continue
-		}
+		// The marker lives in the admin dir, so its being here means the
+		// removal did not complete, whatever the checkout path shows now —
+		// missing (a volume not mounted, a crash mid-remove) or unreadable:
+		// the admin entry is locked again, by its recorded path through
+		// --git-dir (final review F4, residual R3). Left unlocked, git's own
+		// `worktree prune` could drop it.
 		if err := relock(ctx, g, "", commonDir, admin, root); err != nil {
 			notes = append(notes, err.Error())
 		}
@@ -366,7 +407,8 @@ func isLocked(admin string) (bool, error) {
 // no lock, so a lock now is someone else's and git's refusal of the remove
 // keeps the worktree for them): the lock file, read again, must be that
 // one (errLockChanged otherwise); it is saved in the marker (written and
-// synced first), then `git worktree unlock`. true when it unlocked (the
+// synced first), read once more and must still be that one (the marker
+// goes otherwise), then `git worktree unlock`. true when it unlocked (the
 // caller relocks if the removal fails). A failure leaves the worktree
 // locked as it was (relock) and is returned: the worktree stays.
 func (a *applier) unlockForRemoval(ctx context.Context, root, admin string, judged lockSeen, ok bool) (bool, error) {
@@ -382,8 +424,26 @@ func (a *applier) unlockForRemoval(ctx context.Context, root, admin string, judg
 	case !now.same(judged):
 		return false, errLockChanged
 	}
-	if err := writeMarker(filepath.Join(admin, unlockMarker), []byte(now.body)); err != nil {
+	marker := filepath.Join(admin, unlockMarker)
+	if err := writeMarker(marker, []byte(now.body)); err != nil {
 		return false, fmt.Errorf("saving the lock of %s: %w", root, err)
+	}
+	if a.deps.markerWritten != nil {
+		a.deps.markerWritten(admin)
+	}
+	// The lock's last read, right before the unlock (final review C3): one
+	// dropped or swapped while the marker was written is not the one judged.
+	// Nothing was unlocked yet: the marker, ours, goes and the worktree
+	// stays as it is (a marker that cannot go is undone by the next
+	// restore, which finds the worktree locked).
+	if again, err := readLockFile(admin); err != nil || !again.same(judged) {
+		if err == nil {
+			err = errLockChanged
+		}
+		if rerr := os.Remove(marker); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+			return false, fmt.Errorf("%w (deleting %s: %v)", err, marker, rerr)
+		}
+		return false, err
 	}
 	uctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	_, _, err = a.git.run.RunGit(uctx, a.folder, a.git.bin, "worktree", "unlock", root)

@@ -10,8 +10,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"watchtower/internal/gitbin"
 )
 
 // TestApply_TakesTheRepositoryLockFirst: an apply takes Deps.Lock for the
@@ -97,6 +100,11 @@ type autoFixture struct {
 	liveCtx func(context.Context)
 	// ls is Deps.LS; nil = none.
 	ls LaunchServices
+	// rechecking is Deps.rechecking: it runs at the start of every
+	// re-check, right after the batch's selection; nil = none.
+	rechecking func()
+	// held is whether a run holds the repository lock right now.
+	held atomic.Bool
 }
 
 func newAutoFixture(t *testing.T) *autoFixture {
@@ -109,6 +117,7 @@ func (a *autoFixture) run(now time.Time) (AutoResult, error) {
 	d := a.deps()
 	d.Results = a.results
 	d.LS = a.ls
+	d.rechecking = a.rechecking
 	d.Lock = func(context.Context, string) (func(), error) {
 		a.t.Error("the pass took the waiting lock")
 		return func() {}, nil
@@ -147,7 +156,8 @@ func (a *autoFixture) run(now time.Time) (AutoResult, error) {
 			}
 			taken++
 			a.locked = append(a.locked, repo)
-			return func() {}, true, nil
+			a.held.Store(true)
+			return func() { a.held.Store(false) }, true, nil
 		},
 		Logf: a.logf,
 	}, now)
@@ -862,5 +872,157 @@ func TestAutoRun_ReadsTheLiveListPerSession(t *testing.T) {
 	}
 	if calls != 2 || !a.listsWorktree(root) {
 		t.Fatalf("live read %d times, worktree listed %v", calls, a.listsWorktree(root))
+	}
+}
+
+// TestAutoRun_QuietSessionLiveAgainDuringTheApplyKeepsItsWork (final review
+// C1): a quiet session the host lists live once its apply has started (its
+// terminal reopened after the pass's live read) loses nothing — the apply
+// reads the host's live runs again before each destructive step — and a
+// live read that fails then keeps the work too.
+func TestAutoRun_QuietSessionLiveAgainDuringTheApplyKeepsItsWork(t *testing.T) {
+	t.Parallel()
+	for name, later := range map[string]func() (map[int64]bool, error){
+		"live again": func() (map[int64]bool, error) { return map[int64]bool{testSession: true}, nil },
+		"unreadable": func() (map[int64]bool, error) { return nil, errors.New("host refused") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a := newAutoFixture(t)
+			root := a.pushedWork("wt", "feat/x")
+			a.record(root, "feat/x")
+			now := time.Now()
+			a.quietSession(now.Add(-30 * time.Hour))
+			var reads atomic.Int32
+			a.liveFn = func() (map[int64]bool, error) {
+				if reads.Add(1) == 1 {
+					return map[int64]bool{}, nil // the pass's own read: quiet
+				}
+				return later()
+			}
+
+			res, err := a.run(now)
+			if err != nil || res.Changed != 0 {
+				t.Fatalf("res %+v, err %v", res, err)
+			}
+			if reads.Load() < 2 {
+				t.Fatalf("the apply read the live runs %d times, want a re-read", reads.Load())
+			}
+			if !a.listsWorktree(root) || !a.branchExists("feat/x") {
+				t.Fatal("the quiet session's work went although the host lists it live")
+			}
+		})
+	}
+}
+
+// TestQuietStillStands_ReadsTheHostsLiveRuns (final review C1): right
+// before a destructive step, a quiet request's session the host lists live
+// does not stand, and a live read that fails is an error (the work stays);
+// a request with no live reader reads the database alone.
+func TestQuietStillStands_ReadsTheHostsLiveRuns(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{activity: []SessionActivity{{ID: testSession, WorkbenchID: testWorkbench}}}
+	quiet := Request{SessionID: testSession, Quiet: true, QuietBefore: time.Now()}
+	for name, tc := range map[string]struct {
+		live    func(context.Context) ([]int64, error)
+		stands  bool
+		wantErr bool
+	}{
+		"no reader":  {stands: true},
+		"not live":   {live: func(context.Context) ([]int64, error) { return []int64{testSession + 1}, nil }, stands: true},
+		"live":       {live: func(context.Context) ([]int64, error) { return []int64{testSession}, nil }},
+		"unreadable": {live: func(context.Context) ([]int64, error) { return nil, errors.New("host refused") }, wantErr: true},
+	} {
+		r := quiet
+		r.liveNow = tc.live
+		a := &applier{deps: Deps{DB: store}, req: r}
+		stands, err := a.quietStillStands(context.Background())
+		if stands != tc.stands || (err != nil) != tc.wantErr || tc.wantErr && !errors.Is(err, errLiveUnreadable) {
+			t.Fatalf("%s: stands %v, err %v", name, stands, err)
+		}
+	}
+}
+
+// TestAutoRun_SessionApplyRunsNoRepositoryHook (final review C4): every
+// unattended session apply — a finished session's and a quiet one's — writes
+// in the hooks-off background mode, as the repository pass does: its
+// worktree removal and branch delete run no hook of the repository. The
+// owner's own apply still runs it (TestProj18_RepositoryPassRunsNoRepositoryHook's
+// control).
+func TestAutoRun_SessionApplyRunsNoRepositoryHook(t *testing.T) {
+	t.Parallel()
+	for _, quiet := range []bool{false, true} {
+		a := newAutoFixture(t)
+		root := a.pushedWork("wt", "feat/x")
+		a.record(root, "feat/x")
+		now := time.Now()
+		if quiet {
+			a.quietSession(now.Add(-30 * time.Hour))
+		} else {
+			a.endSession()
+			a.cands = []AutoCandidate{{SessionID: testSession, WorkbenchID: testWorkbench, FinishedAt: now.Add(-time.Minute)}}
+		}
+		marker := a.plantHook()
+
+		res, err := a.run(now)
+		if err != nil || res.Applied != 1 || res.Failed != 0 || res.Changed != 1 {
+			t.Fatalf("quiet %v: res %+v, err %v", quiet, res, err)
+		}
+		if exists(root) || a.branchExists("feat/x") {
+			t.Fatalf("quiet %v: the pushed work stayed", quiet)
+		}
+		if exists(marker) {
+			t.Fatalf("quiet %v: the unattended apply ran the repository's hook", quiet)
+		}
+	}
+}
+
+// TestGitArgv_SessionApplyWritesNameNoRepository (final review C4): the
+// unattended session apply's mark (no repository) turns its writes hooks-off
+// and leaves every read, repository-wide ones included, unpinned — never an
+// empty --git-dir.
+func TestGitArgv_SessionApplyWritesNameNoRepository(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	bin, _ := gitbin.Locate()
+	ctx := withBackgroundWrites(context.Background(), "")
+	write, err := gitArgv(ctx, f.repo, bin, []string{"update-ref", "-d", "refs/heads/x", "abc"})
+	if joined := strings.Join(write, " "); err != nil || strings.Contains(joined, "--git-dir") ||
+		!strings.Contains(joined, "core.hooksPath=/dev/null") {
+		t.Fatalf("write argv %q, %v", joined, err)
+	}
+	read, err := gitArgv(ctx, f.repo, bin, []string{"rev-list", "-1", "refs/heads/main"})
+	if err != nil || strings.Contains(strings.Join(read, " "), "--git-dir") {
+		t.Fatalf("read argv %q, %v", read, err)
+	}
+}
+
+// TestAutoRun_SessionApplyRemovesAGoneWorktreeAndGoesOn (final review
+// residual R1): under the unattended hooks-off writes, a recorded worktree
+// whose directory is already gone (prunable) is still dropped through
+// `git worktree remove`, and the apply goes on to its other items.
+func TestAutoRun_SessionApplyRemovesAGoneWorktreeAndGoesOn(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	gone := a.pushedWork("wt-gone", "feat/gone")
+	a.record(gone, "feat/gone")
+	other := a.pushedWork("wt-other", "feat/other")
+	a.record(other, "feat/other")
+	if err := os.RemoveAll(gone); err != nil { // the fixture's own temp worktree
+		t.Fatal(err)
+	}
+	a.endSession()
+	now := time.Now()
+	a.cands = []AutoCandidate{{SessionID: testSession, WorkbenchID: testWorkbench, FinishedAt: now.Add(-time.Minute)}}
+
+	res, err := a.run(now)
+	if err != nil || res.Applied != 1 || res.Failed != 0 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if a.listsWorktree(gone) || a.branchExists("feat/gone") {
+		t.Fatal("the gone worktree or its branch stayed")
+	}
+	if exists(other) || a.listsWorktree(other) || a.branchExists("feat/other") {
+		t.Fatal("the apply stopped before the other worktree")
 	}
 }

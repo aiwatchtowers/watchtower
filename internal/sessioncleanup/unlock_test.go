@@ -3,6 +3,7 @@ package sessioncleanup
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -811,5 +812,175 @@ func TestLocked_FIFOLockFileNeverBlocks(t *testing.T) {
 	}
 	if _, _, ok := isTrashLeftover(trash, filepath.Base(trash), true); ok {
 		t.Fatal("a FIFO marker made a leftover")
+	}
+}
+
+// TestRestoreLocks_UnreadableTreeIsRelocked (final review F4): a marker whose
+// worktree cannot be read right now (EACCES here; an unmounted volume alike)
+// is not a gone tree: it is locked again through the admin entry, so git's
+// own `worktree prune` never drops it unlocked. Only a tree that does not
+// exist is left with its marker.
+func TestRestoreLocks_UnreadableTreeIsRelocked(t *testing.T) {
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("root reads every directory")
+	}
+	f := newFixture(t)
+	root := f.rootedWorktree(".claude/worktrees/plan-x", "feat/plan-x")
+	f.lock(root)
+	admin := adminOf(t, root)
+	interruptedUnlock(t, f, root)
+	parent := filepath.Dir(root)
+	if err := os.Chmod(parent, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+	if _, err := os.Stat(root); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("stat %v, want a permission error", err)
+	}
+
+	notes := restoreLocks(context.Background(), gitCmd{run: SystemGit{}, bin: gitBinOrSkip(t)},
+		filepath.Join(f.repo, ".git"))
+	if len(notes) != 0 {
+		t.Fatalf("notes %v", notes)
+	}
+	if body, err := os.ReadFile(filepath.Join(admin, lockFile)); err != nil || string(body) != planReason+"\n" {
+		t.Fatalf("lock %q, err %v", body, err)
+	}
+	if exists(filepath.Join(admin, unlockMarker)) {
+		t.Fatal("the marker stayed")
+	}
+}
+
+// TestLocked_BranchCutFromASquashMergedFeatureStays (final review C2): a
+// locked branch cut from a pushed feature tip, with no commit of its own,
+// reads as merged once its parent is squash-merged (patch equivalence) —
+// but every commit of it is also its parent's: no commit of its own, so the
+// idle locked worktree stays locked.
+func TestLocked_BranchCutFromASquashMergedFeatureStays(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	parent := f.worktree("wt-parent", "feat/parent")
+	f.commit(parent, "a.txt", "a\n")
+	gitIn(t, parent, "push", "-q", "origin", "feat/parent")
+	root := filepath.Join(f.base, "wt-child")
+	gitIn(t, f.repo, "worktree", "add", "-q", "-b", "feat/child", root, "feat/parent")
+	gitIn(t, root, "push", "-q", "origin", "feat/child")
+	gitIn(t, f.repo, "merge", "-q", "--squash", "feat/parent")
+	gitIn(t, f.repo, "commit", "-q", "-m", "feat/parent squashed")
+	gitIn(t, f.repo, "push", "-q", "origin", "main")
+	f.record(root, "feat/child")
+	f.lock(root)
+	f.clock = idleLater()
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonLocked, false)
+	wantLocked(t, root)
+}
+
+// TestLocked_OwnCommitCheckFailureKeepsTheLock (final review C2): when git
+// cannot tell whether the branch has a commit of its own, the merged idle
+// locked worktree stays locked.
+func TestLocked_OwnCommitCheckFailureKeepsTheLock(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.mergedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.lock(root)
+	f.clock = idleLater()
+	f.git = failGitOn("rev-list", "-1", "refs/heads/feat/x")
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonLocked, false)
+	wantLocked(t, root)
+}
+
+// TestLocked_LockSwappedWhileTheMarkerIsWrittenIsKept (final review C3): a
+// lock dropped and taken again by someone else between the marker's write
+// and the unlock is not the one W3 judged: the apply never unlocks it, the
+// worktree stays as a locked keep with that new lock, and the marker goes.
+func TestLocked_LockSwappedWhileTheMarkerIsWrittenIsKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.mergedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.lock(root)
+	f.clock = idleLater()
+	log := &opLog{}
+	f.git = &loggingGit{log: log}
+
+	res := f.apply(Request{}, nil, func(d *Deps) {
+		d.markerWritten = func(string) {
+			gitIn(t, f.repo, "worktree", "unlock", root)
+			gitIn(t, f.repo, "worktree", "lock", "--reason", "agent B", root)
+		}
+	})
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonLocked, false)
+	if reason, ok := lockOf(t, root); !ok || reason != "agent B\n" {
+		t.Fatalf("lock %v %q", ok, reason)
+	}
+	if exists(filepath.Join(adminOf(t, root), unlockMarker)) ||
+		slices.ContainsFunc(log.list(), func(op string) bool { return strings.Contains(op, "worktree unlock") }) {
+		t.Fatal("the apply unlocked the new lock, or left its marker")
+	}
+}
+
+// TestRestoreLocks_MissingTreeWithItsAdminEntryIsRelocked (final review
+// residual R3): a marker lives in the admin dir, so a marker still there
+// means the removal did not complete — a volume not mounted, a crash
+// mid-remove — even when the checkout path is missing: the admin entry is
+// locked again (git locks it by its recorded path), so git's own
+// `worktree prune` never drops it unlocked.
+func TestRestoreLocks_MissingTreeWithItsAdminEntryIsRelocked(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.rootedWorktree(".claude/worktrees/plan-y", "feat/plan-y")
+	f.lock(root)
+	admin := adminOf(t, root)
+	interruptedUnlock(t, f, root)
+	if err := os.Rename(root, root+"-elsewhere"); err != nil { // as if its volume were not mounted
+		t.Fatal(err)
+	}
+
+	notes := restoreLocks(context.Background(), gitCmd{run: SystemGit{}, bin: gitBinOrSkip(t)},
+		filepath.Join(f.repo, ".git"))
+	if len(notes) != 0 {
+		t.Fatalf("notes %v", notes)
+	}
+	if body, err := os.ReadFile(filepath.Join(admin, lockFile)); err != nil || string(body) != planReason+"\n" {
+		t.Fatalf("lock %q, err %v", body, err)
+	}
+	if exists(filepath.Join(admin, unlockMarker)) {
+		t.Fatal("the marker stayed")
+	}
+}
+
+// TestLocked_PrunableTreeWithAPendingMarkerIsKept (final review residual
+// Q3): a worktree whose directory is gone meets only the prunable catches,
+// which used to leave out the one that sees an unlock marker; one whose
+// relock failed (the marker is still there) is kept as check_failed, never
+// removed with its marker.
+func TestLocked_PrunableTreeWithAPendingMarkerIsKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.lock(root)
+	admin := adminOf(t, root)
+	interruptedUnlock(t, f, root)
+	if err := os.RemoveAll(root); err != nil { // the fixture's own temp worktree
+		t.Fatal(err)
+	}
+	f.git = &loggingGit{log: &opLog{}, before: func(args []string) *gitAnswer {
+		if i := slices.Index(args, "worktree"); i >= 0 && i+1 < len(args) && args[i+1] == "lock" {
+			return &gitAnswer{code: 128, err: &GitError{Args: args, Code: 128, Stderr: "fatal: injected failure"}}
+		}
+		return nil
+	}}
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonCheckFailed, false)
+	if !exists(filepath.Join(admin, unlockMarker)) {
+		t.Fatal("the pending marker went with the worktree")
 	}
 }

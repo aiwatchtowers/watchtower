@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -149,7 +151,24 @@ func BackgroundWriteArgsIn(ctx context.Context, bin, dir, gitDir string, args ..
 	argv := slices.Clone(readConfig)
 	if len(args) > 2 && args[0] == "worktree" && args[1] == "remove" {
 		seen := map[string]bool{}
-		for _, from := range []string{dir, args[len(args)-1]} {
+		target := args[len(args)-1]
+		for _, from := range []string{dir, target} {
+			if from == target && gitDir == "" {
+				// A target whose directory is gone (a prunable worktree) has
+				// no checkout a filter could run in: only its own lookup is
+				// skipped, the folder's stays (final review residual R1). Any
+				// other failure to see it still refuses the write below. Only
+				// for a write that names no repository (an unattended session
+				// apply): one that names the repository it checked (the
+				// repository pass) refuses a target that vanished since (Q1).
+				path := target
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(dir, path) // git reads it against dir
+				}
+				if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+			}
 			overrides, err := filterOverrides(ctx, bin, from)
 			if err != nil {
 				return nil, err
