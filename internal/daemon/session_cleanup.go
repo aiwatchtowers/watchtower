@@ -8,14 +8,16 @@ import (
 // The automatic cleanup of ended workbench sessions (board #2131): a
 // goroutine of its own runs one pass of the session cleanup
 // (sessioncleanup.AutoRun, wired by cmd) at start and then every
-// sessionCleanupEvery, each bounded by sessionCleanupBudget — apart from the
+// sessionCleanupEvery, each bounded by sessionCleanupBudget (the sum of the
+// pass's two parts, each of which AutoRun bounds itself: the session
+// applies, then the repository pass, #2402) — apart from the
 // sync cycle, so a paused sync, --no-sync or a cancelled fetch never holds
 // it back and a pass never delays the pipelines. One pass at a time: the
 // next tick waits for the running one. The daemon's ctx stops it; a pass
 // stopped part-way is re-checked from scratch by the next one.
 const (
 	sessionCleanupEvery  = time.Hour
-	sessionCleanupBudget = 10 * time.Minute
+	sessionCleanupBudget = 20 * time.Minute
 )
 
 // SetSessionCleanup gives the daemon its automatic session-cleanup pass.

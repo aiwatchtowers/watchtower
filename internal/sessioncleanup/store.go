@@ -159,6 +159,11 @@ func (s DBStore) WorkbenchSessionWorktrees(ctx context.Context, workbenchID int6
 	return s.DB.WorkbenchSessionWorktrees(ctx, workbenchID)
 }
 
+// SessionWorktreeOwners is db.DB.SessionWorktreeOwners.
+func (s DBStore) SessionWorktreeOwners(ctx context.Context) (map[string][]int64, error) {
+	return s.DB.SessionWorktreeOwners(ctx) //nolint:wrapcheck // names the read
+}
+
 // AllSessionActivity is every terminal session with its agent's working
 // directory (agent_cwd, board #565). A stamp that is stored but does not
 // read is taken as now: the session counts as active, so what it may be
@@ -199,7 +204,7 @@ func activityOf(r db.TerminalSessionActivity, now func() time.Time) SessionActiv
 		ID: r.ID, WorkbenchID: r.WorkbenchID, Title: r.Title, AgentCwd: r.AgentCwd,
 		ReportedAt: activityStamp(r.AgentStateAt, now, db.ParseActivityStamp),
 		LastActive: activityStamp(r.LastActiveAt, now, db.ParseActivityStamp),
-		Finished:   r.Finished, DeleteRequested: r.DeleteRequested,
+		Finished:   r.Finished, DeleteRequested: r.DeleteRequested, Kind: r.Kind, Folder: r.Folder,
 	}
 }
 

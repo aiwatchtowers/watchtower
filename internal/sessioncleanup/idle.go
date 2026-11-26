@@ -47,28 +47,14 @@ func lastActivityWithin(ctx context.Context, d Deps, root, adminDir string, budg
 }
 
 func activityNewest(ctx context.Context, d Deps, root, adminDir string, budget time.Duration) (time.Time, error) {
-	var newest time.Time
+	newest, err := adminActivity(ctx, d, root, adminDir)
+	if err != nil {
+		return time.Time{}, err
+	}
 	note := func(t time.Time) {
 		if t.After(newest) {
 			newest = t
 		}
-	}
-	for _, name := range []string{"HEAD", "index", filepath.Join("logs", "HEAD")} {
-		fi, err := os.Stat(filepath.Join(adminDir, name))
-		switch {
-		case err == nil:
-			note(fi.ModTime())
-		case errors.Is(err, fs.ErrNotExist) && name != "HEAD":
-		default:
-			return time.Time{}, err
-		}
-	}
-	seen, ok, err := d.DB.WorktreeLastSeen(ctx, root)
-	if err != nil {
-		return time.Time{}, err
-	}
-	if ok {
-		note(seen)
 	}
 	start := time.Now()
 	builds, err := findBuilds(ctx, root, budget, true)
@@ -94,6 +80,37 @@ func activityNewest(ctx context.Context, d Deps, root, adminDir string, budget t
 	}
 	if time.Since(start) > budget {
 		return time.Time{}, fmt.Errorf("over the %s budget", budget)
+	}
+	return newest, nil
+}
+
+// adminActivity is the newest of the mtimes of the admin dir's HEAD, index
+// and logs/HEAD (only a missing index or logs/HEAD is no activity) and of
+// root's newest ledger sighting: a worktree's activity without its build
+// folders.
+func adminActivity(ctx context.Context, d Deps, root, adminDir string) (time.Time, error) {
+	var newest time.Time
+	note := func(t time.Time) {
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	for _, name := range []string{"HEAD", "index", filepath.Join("logs", "HEAD")} {
+		fi, err := os.Stat(filepath.Join(adminDir, name))
+		switch {
+		case err == nil:
+			note(fi.ModTime())
+		case errors.Is(err, fs.ErrNotExist) && name != "HEAD":
+		default:
+			return time.Time{}, err
+		}
+	}
+	seen, ok, err := d.DB.WorktreeLastSeen(ctx, root)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if ok {
+		note(seen)
 	}
 	return newest, nil
 }

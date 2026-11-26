@@ -389,6 +389,7 @@ func (a *applier) run(ctx context.Context) {
 func (a *applier) actReported(ctx context.Context, i int) {
 	a.report.removing(a.items[i].Key)
 	a.act(ctx, i)
+	a.noteFailures(ctx)
 	a.report.removed(a.items[i])
 }
 
@@ -421,7 +422,15 @@ func (a *applier) fresh(ctx context.Context) (*builder, error) {
 	if err := benchFolderGone(ctx, a.deps, a.req); err != nil {
 		return nil, fmt.Errorf("re-checking: %w", err)
 	}
-	b, err := newBuilder(ctx, a.deps, a.req)
+	r := a.req
+	if r.liveNow != nil {
+		live, err := r.liveNow(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("re-checking: %w: %w", errLiveUnreadable, err)
+		}
+		r.LiveSessions = live
+	}
+	b, err := newBuilder(ctx, a.deps, r)
 	if err != nil {
 		return nil, fmt.Errorf("re-checking: %w", err)
 	}
@@ -456,9 +465,11 @@ func (a *applier) fail(it *Item, err error) {
 func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 	root := strings.TrimPrefix(it.Key, "worktree:")
 	if !a.clearOrphans(ctx, it, root) {
+		a.noteFailures(ctx)
 		return
 	}
 	a.unregisterBundles(ctx, root)
+	a.noteFailures(ctx) // a bundle's error, before anything else runs
 	// The final re-check runs under the worktree lock, right before the
 	// removal: a wait for the lock never stands between them.
 	lctx, cancelLock := context.WithTimeout(ctx, worktreeRemoveTimeout)
@@ -472,6 +483,9 @@ func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 		}
 		unlock()
 	}
+	// Noted before the bundles are put back (its own bounded wait): a
+	// refusal while the pass ran stays the pass's failure (R4-3).
+	a.noteFailures(ctx)
 	if !it.Done {
 		a.reregisterBundles(ctx, root)
 	}
@@ -522,9 +536,23 @@ func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string, wa
 		if w.Root != root || w.Bare {
 			continue
 		}
+		// The repository pass never takes a prunable tree (R2-1): one that
+		// turned prunable since it was chosen (its directory unreadable, a
+		// volume not mounted) is left for the owner's Clean Up, before its
+		// bundles are unregistered and before the remove (R3-3).
+		if a.req.repoPass && w.Prunable {
+			keepItem(it, ReasonCheckFailed, "git lists it prunable now (its directory cannot be seen); left for the owner's Clean Up")
+			return nil, false
+		}
 		ev := b.evaluateWorktree(ctx, w)
 		if ev.Action != ActionRemove {
 			keepItem(it, ev.Reason, ev.Detail)
+			return nil, false
+		}
+		// The repository pass took the worktree for being idle: right
+		// before the removal it still must be (#2402 §2).
+		if admin := b.repo.adminDirs[root]; walk && a.req.repoPass && (admin == "" || !isIdle(ctx, a.deps, root, admin)) {
+			keepItem(it, reasonNotIdle, "active again since the pass chose it")
 			return nil, false
 		}
 		// The walks above can take long; a quiet session may have reopened
@@ -709,9 +737,18 @@ func (a *applier) unregisterBundles(ctx context.Context, root string) {
 	}
 }
 
+// bundleRegisterTimeout bounds registering a stayed worktree's bundles
+// again, on a ctx of its own (reregisterBundles).
+const bundleRegisterTimeout = 30 * time.Second
+
 // reregisterBundles registers again the bundles unregistered for root
-// when root stays: they are reported kept, not removed.
+// when root stays: they are reported kept, not removed. It runs on a ctx
+// that ignores the apply's cancellation, bounded by bundleRegisterTimeout
+// (as relock does): an apply stopped after the unregister still leaves
+// the worktree's entries as they were (#2402 fix round 2, R2-6).
 func (a *applier) reregisterBundles(ctx context.Context, root string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bundleRegisterTimeout)
+	defer cancel()
 	for i := range a.items {
 		it := &a.items[i]
 		if it.Kind != KindLsreg || !it.Done || !pathWithin(it.Detail, root) {
@@ -775,6 +812,9 @@ func (a *applier) deleteBranch(ctx context.Context, it *Item) {
 	}
 }
 
+// recheckBranch re-reads the branch on fresh facts. In the repository pass
+// its reads, and notCheckedOutNow's, name the locked common dir
+// (repositoryWideRead, deps.go): keep a new read here in that list.
 func (a *applier) recheckBranch(ctx context.Context, it *Item) (string, bool) {
 	b, err := a.fresh(ctx)
 	if err != nil {

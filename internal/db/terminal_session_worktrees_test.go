@@ -122,6 +122,31 @@ func TestWorkbenchSessionWorktrees_MapsRootsToTheWorkbenchSessions(t *testing.T)
 	}
 }
 
+// TestSessionWorktreeOwners_EveryWorkbench (#2402, fix round 1): every
+// session that recorded a root, whatever its workbench, is its owner —
+// the repository pass protects a tree any recent session saw.
+func TestSessionWorktreeOwners_EveryWorkbench(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	a := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
+	b := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f")
+	for _, r := range []struct {
+		id           int64
+		root, branch string
+	}{{a, "/tmp/example/wt", "feat/x"}, {a, "/tmp/example/wt", "feat/y"}, {b, "/tmp/example/wt", ""}} {
+		if _, err := d.RecordSessionWorktree(ctx, nil, r.id, r.root, r.branch, ledgerAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := d.SessionWorktreeOwners(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m["/tmp/example/wt"]; len(got) != 2 || got[0] != a || got[1] != b || len(m) != 1 {
+		t.Fatalf("owners = %v, want /tmp/example/wt → [%d %d]", m, a, b)
+	}
+}
+
 func TestSaveCleanupResult_WritesOnlyItsRow(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
@@ -266,13 +291,18 @@ func TestListTerminalSessionActivity_EverySessionWithItsCwd(t *testing.T) {
 		t.Fatalf("ListTerminalSessionActivity = %+v, %v; want 2 rows", got, err)
 	}
 	want := TerminalSessionActivity{ID: inWB, WorkbenchID: wb, Title: "s", AgentCwd: "/tmp/example/wt",
-		AgentStateAt: ledgerAt, LastActiveAt: "2026-10-12T12:00:00Z", Finished: true}
+		AgentStateAt: ledgerAt, LastActiveAt: "2026-10-12T12:00:00Z", Finished: true,
+		Kind: "claude", Folder: "/tmp/acme"}
 	if got[0] != want {
 		t.Fatalf("row = %+v, want %+v", got[0], want)
 	}
 	if got[1].ID != standalone || got[1].WorkbenchID != 0 || got[1].AgentCwd != "" || got[1].AgentStateAt != "" ||
-		got[1].Finished || got[1].DeleteRequested {
+		got[1].Finished || got[1].DeleteRequested || got[1].Kind != "shell" || got[1].Folder != "/tmp/acme" {
 		t.Fatalf("standalone row = %+v", got[1])
+	}
+	// By id, the same row (#2402 fix round 4: kind and folder too).
+	if one, ok, err := d.TerminalSessionActivityOf(ctx, standalone); err != nil || !ok || one != got[1] {
+		t.Fatalf("TerminalSessionActivityOf = %+v, %v, %v; want %+v", one, ok, err, got[1])
 	}
 	// A row being deleted is still listed, with the flag (ask #1389).
 	setDeleteRequestedForTest(t, d, inWB, ledgerAt)

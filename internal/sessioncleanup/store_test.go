@@ -226,3 +226,23 @@ func TestDBStore_SessionActivityOf(t *testing.T) {
 		t.Fatalf("missing row: ok %v, err %v", ok, err)
 	}
 }
+
+// TestDBWorkbenches_ListsEveryWorkbench: the repository pass covers the
+// folders of every workbench.
+func TestDBWorkbenches_ListsEveryWorkbench(t *testing.T) {
+	s, wb, _ := storeFixture(t)
+	other, err := s.DB.CreateWorkbench("other", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := DBWorkbenches(s.DB)(context.Background())
+	if err != nil || !slices.Equal(ids, []int64{wb, other}) {
+		t.Fatalf("ids %v, err %v", ids, err)
+	}
+	// Fix round 1 C10: the read honours its ctx.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := DBWorkbenches(s.DB)(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancelled read: %v", err)
+	}
+}

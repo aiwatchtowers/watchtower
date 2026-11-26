@@ -69,13 +69,9 @@ func (s SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) 
 // RunGitInput is RunGit feeding stdin (nil = none) to git, under the same
 // read or owner arguments and environment.
 func (SystemGit) RunGitInput(ctx context.Context, dir, bin string, stdin []byte, args ...string) ([]byte, int, error) {
-	argv := gitbin.OwnerArgs(args...)
-	if !ownerWrite(args) {
-		read, err := gitbin.ReadArgsIn(ctx, bin, dir, args...)
-		if err != nil {
-			return nil, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-		}
-		argv = read
+	argv, err := gitArgv(ctx, dir, bin, args)
+	if err != nil {
+		return nil, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, bin, argv...)
 	if err == nil {
@@ -86,6 +82,105 @@ func (SystemGit) RunGitInput(ctx context.Context, dir, bin string, stdin []byte,
 		return stdout, exitErr.ExitCode(), &GitError{Args: args, Code: exitErr.ExitCode(), Stderr: string(stderr)}
 	}
 	return nil, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+}
+
+// gitArgv is the argv SystemGit runs for args in dir: a read under
+// gitbin's read guard; a write the owner's way (OwnerArgs) — or, under a
+// ctx withBackgroundWrites marked, in gitbin's background mode, naming the
+// repository the mark carries (or the one the args name already) with
+// --git-dir.
+func gitArgv(ctx context.Context, dir, bin string, args []string) ([]string, error) {
+	gitDir, on := backgroundWrites(ctx)
+	if !ownerWrite(args) {
+		argv, err := gitbin.ReadArgsIn(ctx, bin, dir, args...)
+		if err != nil || !on || !repositoryWideRead(args) {
+			return argv, err //nolint:wrapcheck // the caller names the command
+		}
+		// The repository pass decides its deletes on these: they read the
+		// repository whose lock is held, never one found from dir (#2402
+		// fix rounds 3–4, R3-1, R4-2) — under the same read guard, the
+		// filter drivers blanked for a diff included.
+		guard := argv[:len(argv)-len(args)]
+		return slices.Concat(guard, []string{"--git-dir=" + gitDir}, args), nil
+	}
+	if !on {
+		return gitbin.OwnerArgs(args...), nil
+	}
+	if len(args) > 0 && strings.HasPrefix(args[0], "--git-dir=") {
+		gitDir, args = strings.TrimPrefix(args[0], "--git-dir="), args[1:]
+	}
+	return gitbin.BackgroundWriteArgsIn(ctx, bin, dir, gitDir, args...) //nolint:wrapcheck // the caller names the command
+}
+
+// repositoryWideRead: args read the repository as a whole — its worktree
+// list, refs and reflogs, ancestry, commits named by their id or ref —
+// with no worktree's HEAD, index or files in play, so naming the common
+// dir gives the same answer from any folder of it. The cleanup's own reads
+// (readRepo, recheckBranch, notCheckedOutNow) and the merge check behind
+// W3 (workbenchcheck's) are these; a probe of the folder itself
+// (`rev-parse --show-toplevel`, `--is-inside-work-tree`, `--git-common-dir`)
+// and anything naming HEAD or no revision at all are not.
+func repositoryWideRead(args []string) bool {
+	if len(args) == 0 || slices.ContainsFunc(args[1:], headRelative) {
+		return false
+	}
+	switch args[0] {
+	case "worktree":
+		return len(args) > 1 && args[1] == "list"
+	case "for-each-ref", "show-ref", "merge-base", "symbolic-ref", "cherry":
+		return true
+	case "rev-parse":
+		return slices.Contains(args[1:], "--verify")
+	case "reflog":
+		return len(args) > 2 && args[1] == "show"
+	case "rev-list", "log":
+		return len(revisions(args[1:])) > 0
+	case "diff":
+		return len(revisions(args[1:])) >= 2
+	}
+	return false
+}
+
+// headRelative: a revision argument resolved against a worktree's HEAD.
+func headRelative(a string) bool {
+	return a == "HEAD" || a == "@" || strings.HasPrefix(a, "HEAD~") || strings.HasPrefix(a, "HEAD^") ||
+		strings.HasPrefix(a, "HEAD:") || strings.HasPrefix(a, "HEAD.") || strings.HasSuffix(a, "..HEAD")
+}
+
+// revisions are the non-option arguments before "--".
+func revisions(args []string) []string {
+	var out []string
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if !strings.HasPrefix(a, "-") {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+type backgroundWritesKey struct{}
+
+// withBackgroundWrites marks ctx: SystemGit runs every write under it in
+// gitbin's background mode — no hook, no fsmonitor, and for `worktree
+// remove` no filter driver the folder or the target worktree sees (#2402,
+// fix rounds 1–2) — naming commonDir, the repository whose lock is held
+// and that every evaluation was checked against, with --git-dir, so no
+// write — nor a repository-wide read (repositoryWideRead) — discovers
+// another repository from its folder. The repository pass
+// sets it: it writes over trees no session of the owner's owns, so nothing
+// it does may run the repository's commands. The mark travels with the ctx
+// through any runner that wraps SystemGit.
+func withBackgroundWrites(ctx context.Context, commonDir string) context.Context {
+	return context.WithValue(ctx, backgroundWritesKey{}, commonDir)
+}
+
+// backgroundWrites is the mark's repository, and whether ctx carries one.
+func backgroundWrites(ctx context.Context) (string, bool) {
+	dir, on := ctx.Value(backgroundWritesKey{}).(string)
+	return dir, on
 }
 
 // ownerWrite: args are one of the writes an apply runs on the owner's
@@ -143,6 +238,10 @@ type SessionActivity struct {
 	Finished    bool
 	// DeleteRequested: the row has delete_requested_at (board #1716).
 	DeleteRequested bool
+	// Kind is the row's kind ("shell" for a plain terminal) and Folder its
+	// folder_path, where it was opened (#2402 fix round 4).
+	Kind   string
+	Folder string
 }
 
 // Store is what a plan reads from the database. It has no write method: a
@@ -168,6 +267,9 @@ type Store interface {
 	// then the rest by position: the repositories the owner's sweep covers.
 	BenchFolders(ctx context.Context, workbenchID int64) ([]string, error)
 	WorkbenchSessionWorktrees(ctx context.Context, workbenchID int64) (map[string][]int64, error)
+	// SessionWorktreeOwners maps each root any session of any workbench
+	// recorded to those sessions: the repository pass's owners (#2402).
+	SessionWorktreeOwners(ctx context.Context) (map[string][]int64, error)
 	// AllSessionActivity is every terminal session of every workbench (and
 	// standalone ones): an agent of another workbench over the same
 	// repository can work inside a worktree too (W6).

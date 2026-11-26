@@ -80,7 +80,9 @@ type repoState struct {
 
 // readRepo inventories the repository holding folder; display reads the
 // tips' dates and the merged set too (a re-check, which never reports,
-// skips them).
+// skips them). In the repository pass its repository-wide reads name the
+// locked common dir (repositoryWideRead, deps.go): a new read here that
+// such a pass decides on belongs in that list.
 func readRepo(ctx context.Context, g gitCmd, folder string, display bool) (*repoState, error) {
 	r := &repoState{git: g, folder: folder, contained: map[string]bool{}}
 	out, err := g.output(ctx, folder, "rev-parse", "--git-common-dir")

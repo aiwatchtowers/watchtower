@@ -47,7 +47,8 @@ type Request struct {
 	// PruneBuilds lets an apply that names no item, of a session that
 	// ended (finished or being deleted), outside a terminal session,
 	// delete the build output of the worktrees it keeps for their work
-	// (#2131, builds.go). Ignored anywhere else.
+	// (#2131, builds.go), and the repository pass's (repoPass). Ignored
+	// anywhere else — the owner's sweep included.
 	PruneBuilds bool
 	// NoTerminate: the apply signals no process; a worktree with an orphan
 	// in it is kept (process_running), as in a sweep. The daemon's
@@ -95,7 +96,32 @@ type Request struct {
 	// scope is the folder set Apply read once and locked (repoScope); nil
 	// = read here as before (a plan).
 	scope *repoScope
+	// repoPass marks the daemon's repository pass (#2402 §2, repopass.go):
+	// a sweep whose apply may prune the build output of the worktrees it
+	// keeps (pruneBuilds). The owner's sweep never sets it.
+	repoPass bool
+	// onlyRoots, in a sweep, limits the evaluation to these worktree roots
+	// and their branches, with no stale LaunchServices entry: the
+	// repository pass's batch. nil = every worktree.
+	onlyRoots map[string]bool
+	// allOwners: in a sweep, every session that recorded a worktree, of
+	// any workbench — a folder that left its bench included — is its owner
+	// (W2), read afresh by every evaluation and re-check: the repository
+	// pass's owners (#2402).
+	allOwners bool
+	// liveNow, when set, re-reads the session host's live runs for every
+	// re-check (applier.fresh): a session the host started since
+	// LiveSessions was read counts. An error fails the re-check.
+	liveNow func(ctx context.Context) ([]int64, error)
+	// repoKey, when set, is the git common dir whose cleanup lock the
+	// caller holds (the repository pass): an evaluation whose folder now
+	// resolves to another repository fails (errRepositoryMoved).
+	repoKey string
 }
+
+// errRepositoryMoved: the evaluated folder resolves to another repository
+// than the one whose lock is held.
+var errRepositoryMoved = errors.New("the folder now belongs to another repository than the one locked")
 
 // builder carries one evaluation's facts.
 type builder struct {
@@ -193,6 +219,9 @@ func newBuilder(ctx context.Context, d Deps, r Request) (*builder, error) {
 	if err := b.loadRepo(ctx, gitCmd{run: d.Git, bin: bin}); err != nil {
 		return nil, err
 	}
+	if r.repoKey != "" && b.repo.commonDir != r.repoKey {
+		return nil, fmt.Errorf("%w: %s, not %s", errRepositoryMoved, b.repo.commonDir, r.repoKey)
+	}
 	return b, b.loadFacts(ctx)
 }
 
@@ -270,7 +299,9 @@ func (b *builder) loadFacts(ctx context.Context) error {
 	b.loadClaudeHome()
 	acts, err := b.deps.DB.AllSessionActivity(ctx)
 	if err != nil {
-		return fmt.Errorf("reading the terminal sessions: %w", err)
+		// Tagged: a prune's re-check that cannot read who works where
+		// stops the repository pass (R3-4).
+		return fmt.Errorf("reading the terminal sessions: %w: %w", errLiveUnreadable, err)
 	}
 	b.activity = map[int64]SessionActivity{}
 	for _, a := range acts {
@@ -308,14 +339,24 @@ func (b *builder) loadClaudeHome() {
 }
 
 func (b *builder) loadOwners(ctx context.Context) error {
-	owners, err := b.deps.DB.WorkbenchSessionWorktrees(ctx, b.req.WorkbenchID)
-	if err != nil {
+	var owners map[string][]int64
+	var err error
+	if b.req.allOwners {
+		if owners, err = b.deps.DB.SessionWorktreeOwners(ctx); err != nil {
+			return fmt.Errorf("reading the session worktree owners: %w: %w", errLiveUnreadable, err)
+		}
+	} else if owners, err = b.deps.DB.WorkbenchSessionWorktrees(ctx, b.req.WorkbenchID); err != nil {
 		return fmt.Errorf("reading workbench %d session worktrees: %w", b.req.WorkbenchID, err)
 	}
 	b.rootOwners = map[string][]int64{}
 	for root, ids := range owners {
+		// Two spellings of one root resolve to one key: each id once.
 		key := resolvePath(root)
-		b.rootOwners[key] = append(b.rootOwners[key], ids...)
+		for _, id := range ids {
+			if !slices.Contains(b.rootOwners[key], id) {
+				b.rootOwners[key] = append(b.rootOwners[key], id)
+			}
+		}
 	}
 	return nil
 }
@@ -679,7 +720,7 @@ func (b *builder) markStaying(w worktree) {
 func (b *builder) listsWorktree(w worktree) bool {
 	structural, _, _ := catchFolders(context.Background(), b, w)
 	if b.req.Sweep {
-		return structural == ""
+		return structural == "" && (b.req.onlyRoots == nil || b.req.onlyRoots[w.Root])
 	}
 	if structural != "" {
 		return b.declaredRoot(w.Root)
@@ -723,6 +764,7 @@ func (b *builder) evaluateWorktree(ctx context.Context, w worktree) Item {
 			break
 		}
 	}
+	markFailure(ctx, &it) // a check that could not be made, as it is recorded
 	if b.req.Sweep {
 		it.Owner = b.ownerHint(w.Root)
 	}
@@ -786,6 +828,16 @@ func (b *builder) branchItems(ctx context.Context, worktreeItems []Item) []Item 
 // the ones checked out in a worktree that stays.
 func (b *builder) branchCandidates(worktreeItems []Item) []string {
 	set := map[string]bool{}
+	if b.req.Sweep && b.req.onlyRoots != nil {
+		// The batch's branches only: those of its worktrees that may go.
+		for _, it := range worktreeItems {
+			if it.Kind == KindWorktree && it.Action == ActionRemove && it.Branch != "" &&
+				it.Branch != b.repo.defaultBranch {
+				set[it.Branch] = true
+			}
+		}
+		return sortedKeys(set)
+	}
 	if b.req.Sweep {
 		for _, br := range b.repo.branches {
 			_, staying := b.checkedOutStaying[br.Name]
@@ -838,6 +890,7 @@ func (b *builder) evaluateBranch(ctx context.Context, br branchRef) Item {
 			break
 		}
 	}
+	markFailure(ctx, &it)
 	if b.req.Sweep {
 		it.Owner = &OwnerHint{Unknown: true}
 		if root, ok := b.checkedOutIn[br.Name]; ok {
@@ -912,7 +965,7 @@ func (b *builder) bundleItems(root string) []Item {
 }
 
 func (b *builder) staleItems(ctx context.Context) []Item {
-	if !b.req.Sweep || b.deps.LS == nil {
+	if !b.req.Sweep || b.req.onlyRoots != nil || b.deps.LS == nil {
 		return nil
 	}
 	var items []Item

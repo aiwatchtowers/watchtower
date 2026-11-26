@@ -182,6 +182,35 @@ func (db *DB) WorkbenchSessionWorktrees(ctx context.Context, workbenchID int64) 
 	return out, nil
 }
 
+// SessionWorktreeOwners maps each worktree root any session recorded, of
+// any workbench, to those sessions' ids, ascending; never nil. The
+// cleanup's repository pass reads it (#2402): a tree a session of another
+// workbench, or of a folder that left its bench, saw lately is still that
+// session's. Rows marked for deletion (delete_requested_at) are included
+// on purpose: until such a row goes, what it recorded stays protected
+// (fail closed).
+func (db *DB) SessionWorktreeOwners(ctx context.Context) (map[string][]int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT DISTINCT root, session_id
+		FROM terminal_session_worktrees ORDER BY root, session_id`)
+	if err != nil {
+		return nil, fmt.Errorf("reading session worktree owners: %w", err)
+	}
+	defer rows.Close()
+	out := map[string][]int64{}
+	for rows.Next() {
+		var root string
+		var id int64
+		if err := rows.Scan(&root, &id); err != nil {
+			return nil, fmt.Errorf("reading session worktree owners: %w", err)
+		}
+		out[root] = append(out[root], id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading session worktree owners: %w", err)
+	}
+	return out, nil
+}
+
 // SaveCleanupResult stores the JSON of session sessionID's last cleanup
 // apply and its time at (agent_state_at format). Only that row changes;
 // ErrTerminalSessionNotFound when there is none.
@@ -260,6 +289,11 @@ type TerminalSessionActivity struct {
 	// DeleteRequested is delete_requested_at set: the row is being deleted
 	// (board #1716); the read stays unfiltered, the catches decide.
 	DeleteRequested bool
+	// Kind is the row's kind (claude, codex, shell) and Folder its
+	// folder_path: a shell never reports AgentCwd, so where it was opened
+	// is all the cleanup knows of it (#2402).
+	Kind   string
+	Folder string
 }
 
 // ListTerminalSessionActivity is every terminal session of every workbench
@@ -272,7 +306,7 @@ func (db *DB) ListTerminalSessionActivity(ctx context.Context) ([]TerminalSessio
 	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(project_id, 0), title, COALESCE(agent_cwd, ''),
 		COALESCE(agent_state_at, ''), last_active_at, finished_at IS NOT NULL,
-		delete_requested_at IS NOT NULL
+		delete_requested_at IS NOT NULL, COALESCE(kind, ''), COALESCE(folder_path, '')
 		FROM terminal_sessions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session activity: %w", err)
@@ -282,7 +316,7 @@ func (db *DB) ListTerminalSessionActivity(ctx context.Context) ([]TerminalSessio
 	for rows.Next() {
 		var a TerminalSessionActivity
 		if err := rows.Scan(&a.ID, &a.WorkbenchID, &a.Title, &a.AgentCwd, &a.AgentStateAt,
-			&a.LastActiveAt, &a.Finished, &a.DeleteRequested); err != nil {
+			&a.LastActiveAt, &a.Finished, &a.DeleteRequested, &a.Kind, &a.Folder); err != nil {
 			return nil, fmt.Errorf("reading terminal session activity: %w", err)
 		}
 		out = append(out, a)
@@ -299,9 +333,9 @@ func (db *DB) TerminalSessionActivityOf(ctx context.Context, id int64) (Terminal
 	var a TerminalSessionActivity
 	err := db.QueryRowContext(ctx, `SELECT id, COALESCE(project_id, 0), title, COALESCE(agent_cwd, ''),
 		COALESCE(agent_state_at, ''), last_active_at, finished_at IS NOT NULL,
-		delete_requested_at IS NOT NULL
+		delete_requested_at IS NOT NULL, COALESCE(kind, ''), COALESCE(folder_path, '')
 		FROM terminal_sessions WHERE id = ?`, id).Scan(&a.ID, &a.WorkbenchID, &a.Title, &a.AgentCwd,
-		&a.AgentStateAt, &a.LastActiveAt, &a.Finished, &a.DeleteRequested)
+		&a.AgentStateAt, &a.LastActiveAt, &a.Finished, &a.DeleteRequested, &a.Kind, &a.Folder)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, false, nil
 	}
