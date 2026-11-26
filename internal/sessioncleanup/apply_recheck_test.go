@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"watchtower/internal/fsutil"
 )
 
 // secondOrphanIn is another orphan of root, next to orphanIn's.
@@ -295,5 +297,69 @@ func TestApply_UnreadableStaleBundleIsKept(t *testing.T) {
 	wantResultItem(t, res, "lsreg:"+bundle, ActionKeep, ReasonBundleUnreadable, false)
 	if len(log.list()) != 0 {
 		t.Fatalf("lsregister ran: %v", log.list())
+	}
+}
+
+// The cleanup's `git worktree remove` holds the repository's worktree lock,
+// so it never races a session start's or a coach publish's add (#2394).
+func TestApply_WorktreeRemoveHoldsTheWorktreeLock(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	lock := filepath.Join(f.repo, ".git", "watchtower-worktree.lock")
+	var removes, held int
+	f.git = &loggingGit{log: &opLog{}, before: func(args []string) *gitAnswer {
+		if len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
+			removes++
+			unlock, free, err := fsutil.TryLockFile(lock)
+			if free {
+				unlock()
+			}
+			if err == nil && !free {
+				held++
+			}
+		}
+		return nil
+	}}
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
+	if removes == 0 || held != removes {
+		t.Fatalf("worktree remove ran %d times, %d under the lock", removes, held)
+	}
+}
+
+// The worktree lock cannot be taken (here: the repository's common dir is
+// not told): the worktree stays, its bundles are registered again, and the
+// apply stops — git never removes it unlocked (#2394).
+func TestApply_WorktreeLockFailureKeepsTheWorktree(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	log := &opLog{}
+	armed := false
+	f.git = &loggingGit{log: log, before: func(args []string) *gitAnswer {
+		if armed && len(args) >= 2 && args[0] == "rev-parse" && args[1] == "--git-common-dir" {
+			return &gitAnswer{code: -1, err: errors.New("injected: git did not run")}
+		}
+		return nil
+	}}
+	res := f.apply(Request{}, nil, func(d *Deps) {
+		d.LS = &fakeLS{log: log, onUnregister: func(string) { armed = true }}
+	})
+	it := wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonCheckFailed, false)
+	if !strings.Contains(it.Detail, "worktree lock") {
+		t.Fatalf("detail = %q", it.Detail)
+	}
+	ops := log.list()
+	if slices.Contains(ops, "git worktree remove "+root) {
+		t.Fatalf("removed without the lock: %v", ops)
+	}
+	if !slices.Contains(ops, "lsregister "+filepath.Join(root, "Build", "App.app")) {
+		t.Fatalf("bundle not registered again: %v", ops)
+	}
+	if !f.listsWorktree(root) {
+		t.Fatal("the worktree is gone")
 	}
 }

@@ -101,6 +101,9 @@ final class TextRenderingBenchmarkTests: XCTestCase {
     /// second parse (and every finished row's re-parse on a scroll rebuild)
     /// is now a cache hit — read from the cache itself, not timed.
     func testRepeatArtifactParseIsACacheHit() {
+        // The cache is process-wide: parses by earlier tests in the shard can
+        // sit near its cost limit and evict this one right after the insert.
+        ArtifactParser.removeCachedParses()
         let text = Self.markdown(chars: 50_000, seed: 11)
         XCTAssertNil(ArtifactParser.cached(text, final: false), "a text never parsed is not cached")
         let first = ArtifactParser.parse(text, final: false)

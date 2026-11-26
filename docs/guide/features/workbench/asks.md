@@ -36,27 +36,8 @@ Watchtower is careful not to talk over you:
 A workbench automation can ask you something too: a yes/no check or a question. It joins **Waiting for you** labelled "⚙ <automation> · run #N" where an agent's ask names its session, and you answer it the same way. Your answer goes back to the automation, never into a terminal: **Answer saved — the automation goes on with it**. Answered ones are under "⚙ Automations · ▸ N closed".
 
 ### The ask guard
-<!-- learn
-id: asks-ask-guard
-title: Never miss a question in the terminal
-text: A question the agent types as plain text is sent back to it to file as an ask, so it lands in your list.
-area: development
-level: power
-kind: tip
-since: 0.24.0
--->
 
-By default (ask guard **strict**, finish check **on**), Claude Code's own question dialog is turned off in a workbench session. A check at the end of every agent turn sends any question written as plain text back to the agent to file as an ask. The finish check sends back a turn that reports the work done without marking the session **Finished**, and lets the agent finish only the whole target it was started for, its changes checked against the reviewer's AI overview; what it leaves comes to you as one ask.
-
-The methodology can change this; see [Methodology](methodology.md) and **Agent Settings…**. With **soft**, Claude Code's question dialog works while you are in the session, and plain-text questions are recorded instead of bounced back. With **off**, nothing is checked. The finish check can be switched off on its own.
-
-One short question may stay in the terminal while you are in that session. If you don't answer it, Watchtower files it for you as a Quick ask marked **From chat · N min**. It becomes a regular ask when it does not fit a Quick ask (four options, or an option label over 40 characters), and so does a request recorded under **soft**. Its title is the question, the agent's context below it; a yes/no question gets Yes and No buttons. It is filed:
-
-- after 10 minutes unanswered;
-- after you have been away from the session for 90 seconds;
-- at once, if you were already away when the agent asked.
-
-A half-typed reply in Claude Code's input holds the question back for up to 30 minutes. If you answer in the terminal, nothing is filed.
+A question an agent writes as plain text in the terminal is sent back to it to file as an ask, so it lands in **Waiting for you**. How the guard works and how to change it: [The ask guard](ask-guard.md).
 
 ## Using it
 
@@ -94,6 +75,22 @@ Open asks wait, oldest first, in **Waiting for you (N)** at the top of the sessi
 4. Press the main button at the bottom: **Answer**, **Send** or **Approve**. The line above it says what is still missing, for example "Answer every question".
 
 **Later** (or ×) closes the drawer and keeps everything you entered. It stays closed until the agent files another Full ask, and a banner over the terminal says **Agent asks: #N …** with **Open**.
+
+### Ask the assistant what a question means
+<!-- learn
+id: asks-not-clear
+title: Have a question explained
+text: Click **Not clear?** under an ask's question and the assistant explains it in plain words.
+area: development
+level: next
+kind: feature
+since: 0.29.5
+action: nav:projects
+-->
+
+Click **Not clear?** under a question or a check, open or closed, and the drawer becomes a chat whose first message explains the ask in plain words: what is being decided and what each option changes for you. Ask more there, then **Back to question** (or Esc, unless the composer holds text) brings back your picks and notes as you left them.
+
+The assistant reads the ask and, on Claude or Codex, the workbench folder; it never changes anything and never answers for you. The chat is kept per ask, so opening it again continues it. It runs on your provider's strong model, only when you click, and is on the Mac only.
 
 ### Answer a Quick ask
 <!-- learn
@@ -139,12 +136,14 @@ Watchtower notifies you when an agent files an ask (**Agent asks: <title>**). Se
 - **The drawer did not open.** The pane may be too narrow for it beside the terminal; use **Open** on the banner. Or you closed it with **Later**; it stays closed until the next Full ask.
 - **The answer did not reach the agent.** Look for the highlighted line over the terminal: it says whether it is waiting for a permission prompt, typed but not sent, or copied to the clipboard because the terminal could not take it. Follow what it says.
 - **Withdrawn or Replaced.** The agent withdrew the ask or filed a newer round. It moves to **▸ N closed**.
+- **No Not clear?** Review asks have none; it is on questions and checks only.
+- **Couldn't explain.** The chat could not open; **Retry** opens it again. Without **Retry**, the ask's workbench is gone.
 - **Unsent answers on quit.** Drafts survive switching sessions, workbenches and tabs. Quitting Watchtower with unsent answers asks first.
 
 Answer not reaching the agent? See [A Workbench session or ask is stuck](../../troubleshooting/workbench-session-or-ask-stuck.md).
 
 ## Related
 
-- [Sessions](sessions.md), [Workbench overview](README.md)
+- [Sessions](sessions.md), [The ask guard](ask-guard.md), [Workbench overview](README.md)
 
 For developers: [docs/features/workbench.md](../../../features/workbench.md)

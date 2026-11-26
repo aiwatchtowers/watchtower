@@ -467,6 +467,11 @@ final class WorkbenchesViewModel {
     /// `TerminalCenter.killGrace`): the batch never commits while one of
     /// its rows is here.
     @ObservationIgnored var closingDeletes: Set<Int64> = []
+    /// Sessions whose batch left `pendingDeletes` and whose delete write
+    /// (`delete_requested_at`, or the standalone DELETE) has not settled:
+    /// still deleted as far as the owner can tell, so the ask explain chat's
+    /// folder treats them as gone (`deletingSessionIDs`).
+    @ObservationIgnored var committingDeletes: Set<Int64> = []
     /// The window ran out while a row of the batch was still closing: the
     /// last close to finish commits the batch.
     @ObservationIgnored var deleteCommitDue = false
@@ -795,6 +800,8 @@ final class WorkbenchesViewModel {
             Task { await self?.openTerminalAskLink(askID, workbenchID: workbenchID) }
         }
         asks.isTabOnScreen = { [weak self] in self?.isTabOnScreen() ?? false }
+        // A session in its delete's Undo window is gone for the explain chat's folder.
+        asks.hiddenSessions = { [weak self] in self?.deletingSessionIDs ?? [] }
         asks.watchedProjectID = { [weak self] in self?.selectedWorkbenchID }
         asks.onLoaded = { [weak self] projectID in self?.openNewAsk(projectID: projectID) }
         asks.onDelivered = { [weak self] projectID, sessionID, delivery in

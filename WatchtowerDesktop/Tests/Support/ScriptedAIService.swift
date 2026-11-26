@@ -38,6 +38,24 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
     private var _persists: [Int: FakeEmbeddedPersist] = [:]
     /// A `--persist` turn whose start write fails with this (the owner text stays).
     package var persistStartError: Error?
+    /// While set, a `--persist` turn's start write waits (`releasePersistStart`):
+    /// the engine stays `isStarting`.
+    private var startHold: DispatchSemaphore?
+
+    /// Holds every later `--persist` start until `releasePersistStart()`.
+    package func holdPersistStart() {
+        lock.withLock { startHold = DispatchSemaphore(value: 0) }
+    }
+
+    /// Lets the held starts (and every later one) through.
+    package func releasePersistStart() {
+        let hold = lock.withLock { () -> DispatchSemaphore? in
+            defer { startHold = nil }
+            return startHold
+        }
+        // Enough for every start held so far.
+        for _ in 0..<64 { hold?.signal() }
+    }
 
     package init() {}
 
@@ -122,6 +140,7 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
                             ownerInstructions: ownerInstructions, purpose: purpose, readFolderAskID: readFolderAskID,
                             readFolderRoundID: readFolderRoundID)
         let failure = persistStartError
+        let hold = lock.withLock { startHold }
         let (index, continuation) = lock.withLock { () -> (Int, AsyncThrowingStream<StreamEvent, Error>.Continuation) in
             let index = _continuations.count - 1
             _calls[index].persist = persist
@@ -133,6 +152,7 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
         }
         lock.withLock { _persists[index] = emulator }
         emulator.queue.async {
+            hold?.wait()
             if let failure {
                 continuation.yield(.failure(ChatSessionError(turnID: persist.turnID, code: .internalError,
                                                              message: failure.localizedDescription, retryable: false)))

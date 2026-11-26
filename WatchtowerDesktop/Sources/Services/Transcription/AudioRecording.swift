@@ -18,13 +18,17 @@ struct CaptureLevels: Equatable, Sendable {
 /// Abstraction over the audio capture stack so MeetingRecorderCenter is
 /// testable without CoreAudio or TCC permissions.
 protocol AudioRecording: AnyObject {
-    /// Begins capturing mic + system audio into `url` (16 kHz mono AAC in a
-    /// crash-tolerant .caf container). Throws immediately on permission denial
-    /// or unsupported OS.
+    /// Begins capturing mic + system audio into `url` (16 kHz mono AAC; the
+    /// container follows the extension — ADTS for today's `.aac`). Throws
+    /// immediately on permission denial or unsupported OS.
     func start(to url: URL) async throws
     /// Closes the file; always safe to call once after a successful start.
     /// Throws `.writeFailed` when writing broke mid-recording — the truncated
     /// file is kept on disk, but it must not be reported as a clean success.
+    /// Throws `.notFinalized` when the closed file lists no readable audio
+    /// packets although frames were written (it would decode to nothing); that file
+    /// is kept on disk too, and the error carries the result `stop` would
+    /// have returned, so a caller holding a live transcript can still save it.
     func stop() async throws -> RecordingResult
     /// Live 16 kHz mono Float32 samples delivered as they are captured, for
     /// in-progress transcription. Finishes when `stop()` is called. Consuming it
@@ -45,6 +49,9 @@ enum AudioRecordingError: LocalizedError {
     case systemAudioPermissionDenied
     case deviceSetupFailed(String)
     case writeFailed(String)
+    /// The recording that `stop()` would have returned; its audio file is
+    /// on disk but cannot be decoded.
+    case notFinalized(RecordingResult)
 
     var errorDescription: String? {
         switch self {
@@ -58,6 +65,8 @@ enum AudioRecordingError: LocalizedError {
             return "Audio device setup failed: \(message)"
         case .writeFailed(let message):
             return "Recording was cut short by a write error: \(message). The partial audio was kept."
+        case .notFinalized:
+            return "The recording file was not finalized — the audio is kept for recovery."
         }
     }
 }

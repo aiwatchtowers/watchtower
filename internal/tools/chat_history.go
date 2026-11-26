@@ -98,7 +98,7 @@ func boundConversation(ctx context.Context, d *db.DB, call Call) (int64, error) 
 	}
 	var isolated bool
 	err := d.QueryRowContext(ctx, `SELECT COALESCE(context_type, '') IN
-  ('code_question', 'spec_review_thread', 'analytics_tuning', 'review_reviewer')
+  ('code_question', 'spec_review_thread', 'owner_ask_explain', 'analytics_tuning', 'review_reviewer')
 FROM chat_conversations WHERE id = ?`, id).Scan(&isolated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, &ValidationError{Msg: fmt.Sprintf("chat conversation %d no longer exists", id)}

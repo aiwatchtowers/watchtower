@@ -79,6 +79,9 @@ extension WorkbenchesViewModel {
     /// unbound its asks (board #542).
     func commitPendingDeletes(_ entries: [PendingSessionDeletes.Entry]) async {
         guard !entries.isEmpty else { return }
+        // Hidden until the write settles, whichever way (`deletingSessionIDs`).
+        let ids = Set(entries.map(\.sessionID))
+        committingDeletes.formUnion(ids)
         let lists = Self.sessionLists(of: entries)
         let (rows, standalone) = Self.split(entries)
         do {
@@ -92,6 +95,9 @@ extension WorkbenchesViewModel {
                 setSessionError("Could not delete the session: \(error.localizedDescription)", projectID: list)
             }
         }
+        // The write settled: the database says it from here (a failed one
+        // brings the rows back, so they are no longer gone either).
+        committingDeletes.subtract(ids)
         for list in lists { await loadSessions(projectID: list) }
         for case let projectID? in lists { await asks.load(projectID: projectID) }
     }
@@ -138,6 +144,14 @@ extension WorkbenchesViewModel {
         pendingDeletes.discardBatch(workbenchID: workbenchID)
         if pendingDeletes.batch.isEmpty { cancelPendingDeleteWindow() }
         discardAutoCleanup(workbenchID: workbenchID)
+    }
+
+    /// The sessions being deleted as far as the owner can tell: waiting in
+    /// the Undo batch, or past it while their delete write settles. Their
+    /// `delete_requested_at` may not be written yet, so the ask explain
+    /// chat's folder reads them from here (`OwnerAsksViewModel.hiddenSessions`).
+    var deletingSessionIDs: Set<Int64> {
+        pendingDeletes.ids.union(committingDeletes)
     }
 
     /// `rows` without the sessions waiting in the Undo batch.

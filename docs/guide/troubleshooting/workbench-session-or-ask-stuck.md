@@ -35,4 +35,4 @@ The caption changes (**Working**, **Waiting for you**) after the agent reads the
 
 ## If it did not help
 
-A session started in your own terminal app, or in a standalone terminal under **Terminals**, never reports a state and has no board tools; start it from the workbench instead. The ask drawer and the ask guard are on [Asks](../features/workbench/asks.md); states are on [Sessions](../features/workbench/sessions.md).
+A session started in your own terminal app, or in a standalone terminal under **Terminals**, never reports a state and has no board tools; start it from the workbench instead. The ask drawer is on [Asks](../features/workbench/asks.md), the ask guard on [The ask guard](../features/workbench/ask-guard.md); states are on [Sessions](../features/workbench/sessions.md).

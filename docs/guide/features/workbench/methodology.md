@@ -69,7 +69,7 @@ A methodology change reinstalls the folder's skills. A session worktree takes th
 
 ## Related
 
-- [Asks](asks.md): what the ask guard protects.
+- [The ask guard](ask-guard.md): what the ask guard protects.
 - [Your instructions](instructions.md): your own standing directions; `workflow.md` here is the team's folder rules, committed with the code.
 - [Sessions](sessions.md): **Finished** and **Idle** states.
 - [Workbench](README.md)

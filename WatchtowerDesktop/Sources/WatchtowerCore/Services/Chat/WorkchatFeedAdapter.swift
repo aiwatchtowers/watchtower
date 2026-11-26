@@ -11,12 +11,13 @@ package enum WorkchatFeedAdapter {
     /// ChatUI's role of a line that is neither the owner's nor an answer.
     package static let systemRole = "system"
 
-    /// The known entries in order; a kind this build does not know is left out.
+    /// The known entries in order; a kind this build does not know is left out. An owner line's image paths read
+    /// `[Image #N]`, as in the field (`WorkchatOwnerImages`).
     package static func messages(_ entries: [SessionFeedEntry]) -> [ChatFeed.Message] {
         entries.compactMap { entry in
             guard let role = role(for: entry.kind) else { return nil }
-            return ChatFeed.Message(id: messageID(entry.id), role: role, text: entry.text,
-                                    createdAt: entry.at ?? .distantPast)
+            let text = entry.kind == "owner" ? WorkchatOwnerImages.shown(entry.text, markdown: true) : entry.text
+            return ChatFeed.Message(id: messageID(entry.id), role: role, text: text, createdAt: entry.at ?? .distantPast)
         }
     }
 

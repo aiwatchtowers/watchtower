@@ -148,6 +148,7 @@ var displayOnlyReaders = map[string]string{
 	"IdeasChatFloorTop":                "MAX(id), a number with no text",
 	"deleteWorkbenchCodeQuestions":     "delete only",
 	"deleteWorkbenchSpecReviewThreads": "delete only",
+	"deleteWorkbenchAskExplainChats":   "delete only",
 	"keptJoin":                         "the knowledge source's join: it skips a marked conversation (internal/kb TestLIVE01_KeptArtifactSkipped)",
 }
 
@@ -162,6 +163,7 @@ var displayOnlyReadersAt = map[string]string{
 	"workbenchfolders/merge.go:chatContextsStep": "the merge step that runs reKeyChats; reads no text",
 	"tools/chat_history.go:boundConversation":    "reads the bound conversation's context_type to refuse isolated threads; no text. The chat-history tools hand a chat its own rows for its next answer, like ActiveChatPath",
 	"db/chat_lease.go:MarkChatTurnSessionLost":   "writes the error code of a dead hub turn's reply; reads no text",
+	"db/ask_explain.go:askExplainDraftKeyTx":     "reads an ask explain chat's context_id by id to route its queued draft's key; no text",
 	// internal/hub chat_answer push: ids, status and the conversation title only.
 	"hub/chat_turn_watch.go:send":           "the chat_answer push reads a conversation title, never message text into a store",
 	"hub/chat_turn_watch.go:pendingActions": "the chat_answer push: pending action ids of main chats, no text",

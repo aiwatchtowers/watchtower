@@ -8,9 +8,10 @@ struct AudioPlayerControlView: View {
     let transcriptID: Int64
     let audioURL: URL
     /// The transcript's persisted duration (seconds), shown/used as the scrubber's
-    /// range before playback starts — `center.duration` is 0 until this row's
-    /// `AVAudioPlayer` has loaded, which would otherwise make the slider
-    /// un-draggable (range `0...0.01`) on a row that hasn't been played yet.
+    /// range until the player knows its own — `center.duration` is 0 until this
+    /// row's player has loaded the file's precise duration, which would otherwise
+    /// make the slider un-draggable (range `0...0.01`) on a row that hasn't been
+    /// played yet or has only just started.
     let knownDuration: TimeInterval
     let center: AudioPlaybackCenter
 
@@ -19,7 +20,7 @@ struct AudioPlayerControlView: View {
 
     private var isActive: Bool { center.activeTranscriptID == transcriptID }
     private var hasFailed: Bool { center.failedTranscriptID == transcriptID }
-    private var displayedDuration: TimeInterval { isActive ? center.duration : knownDuration }
+    private var displayedDuration: TimeInterval { isActive && center.duration > 0 ? center.duration : knownDuration }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {

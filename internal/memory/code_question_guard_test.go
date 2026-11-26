@@ -37,6 +37,17 @@ func TestCodeQuestionGuard_ChatIngestNeverReadsCodeQuestions(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok)
 
+	// A "Not clear?" chat on an ask stays out the same way.
+	explain := seedChatConversation(t, d, "owner_ask_explain", "1:7")
+	seedChatMessage(t, d, explain, "user", "we decided to drop the cache", 1720000004)
+	assert.NotContains(t, widest, "owner_ask_explain")
+	turns, err = d.ListOwnerChatTurns(0, widest)
+	require.NoError(t, err)
+	assert.Empty(t, turns)
+	ok, err = d.OwnerChatTurnExists(explain, 1720000004, widest)
+	require.NoError(t, err)
+	assert.False(t, ok)
+
 	// A tuning chat stays out the same way (the allow-list never names it).
 	tuning := seedChatConversation(t, d, "analytics_tuning", "main")
 	seedChatMessage(t, d, tuning, "user", "we decided to drop the cache", 1720000003)

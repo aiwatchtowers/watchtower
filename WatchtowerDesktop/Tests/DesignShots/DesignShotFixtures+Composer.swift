@@ -4,6 +4,7 @@ import ChatWire
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerChatText
 import WatchtowerCore
 import WatchtowerTestSupport
 
@@ -110,7 +111,8 @@ enum ComposerShotFixtures {
             },
             DesignShot(name: "composer-help-panel", size: NSSize(width: 420, height: 0)) { helpPanel() },
             DesignShot(name: "composer-target-brief", size: NSSize(width: 560, height: 0)) { targetBrief() },
-            DesignShot(name: "composer-workchat-attachments", size: wide) { workchatAttachments() }
+            DesignShot(name: "composer-workchat-attachments", size: wide) { workchatAttachments() },
+            DesignShot(name: "composer-workchat-paste-tokens", size: wide) { workchatPasteTokens() }
         ]
     }
 
@@ -307,6 +309,29 @@ enum ComposerShotFixtures {
         held.append(model)
         model.draft = "Look at these before the migration"
         model.attach(files: [URL(fileURLWithPath: "/tmp/acme/schema.sql"), URL(fileURLWithPath: "/tmp/acme/error.png")])
+        return AnyView(WorkchatComposer(model: model, working: false)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.vertical, Spacing.medium)
+            .detailBackground())
+    }
+
+    /// The Workchat field with a pasted image and a pasted long text: two live tokens drawn as pills, beside a
+    /// hand-typed lookalike that stays plain.
+    private static func workchatPasteTokens() -> AnyView {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("wt-shot-pastes-\(UUID().uuidString)")
+        files.append(root)
+        let model = WorkchatModel(
+            sessionID: 1, control: ShotWorkchatControl(), lineDelivery: SessionLineDelivery(terminalCenter: nil),
+            attachmentStore: WorkchatAttachmentStore(root: root),
+            kind: { .claude }, now: { Date(timeIntervalSince1970: 1_790_000_000) }
+        )
+        held.append(model)
+        settle {
+            let image = await model.paste(.image(Data([0x89, 0x50, 0x4E, 0x47]), name: "Pasted image.png")) ?? ""
+            let log = Array(repeating: "row rejected: schema mismatch", count: 42).joined(separator: "\n")
+            let text = await model.paste(.text(log)) ?? ""
+            model.draft = "Why does \(image) fail like \(text)? Not [Image #9], I typed that."
+        }
         return AnyView(WorkchatComposer(model: model, working: false)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(.vertical, Spacing.medium)

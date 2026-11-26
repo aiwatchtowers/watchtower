@@ -44,24 +44,16 @@ public enum ArtifactParser {
     public static let knownKinds: Set<String> = ["document", "table", "email", "slack", "event", "code", "html"]
     static let opener = ":::artifact"
 
-    private final class Box {
-        let parsed: ParsedMessage
-        init(_ parsed: ParsedMessage) { self.parsed = parsed }
-    }
-
-    /// Memoized like `MarkdownDocument.parse`: a streamed turn is parsed by
-    /// its row's body and again by `ChatViewModel.updateLiveArtifacts` on
-    /// every published delta, and every finished row re-parses whenever a
-    /// scroll rebuilds it.
-    private static let cache: NSCache<NSString, Box> = {
-        let cache = NSCache<NSString, Box>()
-        cache.totalCostLimit = 8 << 20
-        return cache
-    }()
+    /// Memoized: a streamed turn is parsed by its row's body and again by
+    /// `ChatViewModel.updateLiveArtifacts` on every published delta, and
+    /// every finished row re-parses whenever a scroll rebuilds it. Not an
+    /// `NSCache`: that one drops entries whenever the system is short of
+    /// memory, so a repeat parse was a hit only by luck (#2400).
+    private static let cache = ParseCache(costLimit: 8 << 20)
 
     public static func parse(_ text: String, final: Bool) -> ParsedMessage {
         let key = cacheKey(text, final: final)
-        if let hit = cache.object(forKey: key) { return hit.parsed }
+        if let hit = cache.value(for: key) { return hit }
         var machine = Machine(final: final)
         let lines = splitLines(text)
         for (index, entry) in lines.enumerated() {
@@ -69,17 +61,69 @@ public enum ArtifactParser {
             guard machine.consume(entry.line, isTrailingPartial: trailingPartial) else { break }
         }
         let parsed = machine.finish()
-        cache.setObject(Box(parsed), forKey: key, cost: text.utf16.count)
+        cache.insert(parsed, for: key, cost: text.utf16.count)
         return parsed
     }
 
     /// The memoized parse of `text`, if any (tests: a repeat is a cache hit).
     public static func cached(_ text: String, final: Bool) -> ParsedMessage? {
-        cache.object(forKey: cacheKey(text, final: final))?.parsed
+        cache.value(for: cacheKey(text, final: final))
     }
 
+    /// Drops every memoized parse (tests: start from an empty cache, so
+    /// earlier parses near the cost limit cannot evict the one under test).
+    public static func removeCachedParses() {
+        cache.removeAll()
+    }
+
+    /// An `NSString`: it compares the exact UTF-16 units, where `String`
+    /// would take `é` and `e` + U+0301 for one key and hand back the other
+    /// spelling's parse.
     private static func cacheKey(_ text: String, final: Bool) -> NSString {
         ((final ? "1" : "0") + text) as NSString
+    }
+
+    /// Parses bounded by their total cost (the texts' UTF-16 length); past
+    /// the limit the oldest inserts go first. Thread-safe.
+    private final class ParseCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private let costLimit: Int
+        private var entries: [NSString: (parsed: ParsedMessage, cost: Int)] = [:]
+        private var order: [NSString] = []
+        private var cost = 0
+
+        init(costLimit: Int) { self.costLimit = costLimit }
+
+        func value(for key: NSString) -> ParsedMessage? {
+            lock.withLock { entries[key]?.parsed }
+        }
+
+        func insert(_ parsed: ParsedMessage, for key: NSString, cost entryCost: Int) {
+            guard entryCost <= costLimit else { return }
+            lock.withLock {
+                if let old = entries.updateValue((parsed, entryCost), forKey: key) {
+                    cost -= old.cost
+                    order.removeAll { $0 == key }
+                }
+                order.append(key)
+                cost += entryCost
+                var evicted = 0
+                while cost > costLimit, evicted < order.count {
+                    let oldest = order[evicted]
+                    cost -= entries.removeValue(forKey: oldest)?.cost ?? 0
+                    evicted += 1
+                }
+                order.removeFirst(evicted)
+            }
+        }
+
+        func removeAll() {
+            lock.withLock {
+                entries.removeAll()
+                order.removeAll()
+                cost = 0
+            }
+        }
     }
 
     public static func slug(_ title: String) -> String {

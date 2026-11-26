@@ -124,6 +124,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(WorkchatPolishRealShotFixtures.shots)
     }
 
+    /// A pasted image as a thumbnail in the owner's bubble (the echo and the outgoing line), a swept one as a chip.
+    func testWorkchatPastedImageShotsRender() throws {
+        try renderShots(WorkchatPastedImageShotFixtures.shots)
+    }
+
     /// The same states on the built views (#2065), `workchat-agents-real-NN-…` beside each mockup.
     func testWorkchatAgentsShotsRender() throws {
         try renderShots(WorkchatAgentsShotFixtures.shots)
@@ -303,18 +308,43 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(WatchmanTuningShotFixtures.shots)
     }
 
+    /// The "Not clear?" on an ask spec's mockups (#2355).
+    func testAskExplainShotsRender() throws {
+        try renderShots(AskExplainMockShotFixtures.shots)
+    }
+
+    /// The same states from the built views (#2355 T5), plus the question
+    /// view scrolled to its bottom, the chat opened and closed over it: the
+    /// scroll survives the chat.
+    func testAskExplainBuiltShotsRender() throws {
+        try renderShots(AskExplainBuiltShotFixtures.shots)
+        let outputDir = try shotsDir()
+        for (suffix, name) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            let shot = try AskExplainBuiltShotFixtures.backScrolled(try XCTUnwrap(NSAppearance(named: name)))
+            XCTAssertEqual(shot.offset, shot.bottom, accuracy: 1,
+                           "the question view lost its bottom scroll across the chat (\(suffix))")
+            try shot.png.write(to: outputDir.appendingPathComponent("ask-explain-built-back-scrolled-\(suffix).png"))
+        }
+    }
+
     /// The company setup screens spec's mockups (#1887).
     func testCompanySetupShotsRender() throws {
         try renderShots(CompanySetupShotFixtures.shots)
     }
 
-    private func renderShots(_ shots: [DesignShot]) throws {
+    /// `DESKTOP_SHOTS_DIR`, made; the test is skipped without it.
+    private func shotsDir() throws -> URL {
         guard let outputDir = ProcessInfo.processInfo.environment["DESKTOP_SHOTS_DIR"]
             .flatMap({ $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) })
         else {
             throw XCTSkip("DESKTOP_SHOTS_DIR is not set; run `make desktop-shots`")
         }
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        return outputDir
+    }
+
+    private func renderShots(_ shots: [DesignShot]) throws {
+        let outputDir = try shotsDir()
         for shot in shots {
             let view = try Self.prepared(shot)
             // A zero height means "as tall as the content".

@@ -484,7 +484,11 @@ func TestForgetWorktree_RelativeGitdir(t *testing.T) {
 		}
 		writeFile(t, filepath.Join(admin, name), "gitdir", gitdir+"\n")
 	}
-	forgetWorktree(context.Background(), r, dir)
+	p, err := r.locatePaths(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgetWorktree(p, dir)
 	if _, err := os.Stat(filepath.Join(admin, "24")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the relative registration of %s is still there (%v)", dir, err)
 	}
@@ -538,12 +542,16 @@ func TestPublish_PushURLElsewhereRefused(t *testing.T) {
 	}
 }
 
+// Parallel publishes of one repository add and remove scratch worktrees at
+// once; git's `worktree add` must never read a registration another one is
+// still writing (#2394), so they go through the repository's worktree lock.
 func TestPublish_ParallelIDs(t *testing.T) {
 	f := newPublishFixture(t)
 	o := f.options(nil)
+	ids := []int64{21, 22, 23, 24, 25, 26}
 	var wg sync.WaitGroup
-	errs := make([]error, 2)
-	for i, id := range []int64{21, 22} {
+	errs := make([]error, len(ids))
+	for i, id := range ids {
 		wg.Go(func() { _, errs[i] = Publish(context.Background(), o, f.request(id)) })
 	}
 	wg.Wait()
@@ -552,7 +560,7 @@ func TestPublish_ParallelIDs(t *testing.T) {
 			t.Errorf("publish %d: %v", i, err)
 		}
 	}
-	for _, id := range []int64{21, 22} {
+	for _, id := range ids {
 		gitIn(t, f.origin, "rev-parse", "--verify", "refs/heads/coach/0a1b2c3d/proposal-"+itoa(id))
 		f.assertScratchGone(t, id)
 	}
