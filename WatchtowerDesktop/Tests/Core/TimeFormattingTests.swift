@@ -93,8 +93,10 @@ final class TimeFormattingTests: XCTestCase {
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
         let now = try XCTUnwrap(TimeFormatting.parseISO("2026-11-17T08:00:00Z"))
         let said = try XCTUnwrap(TimeFormatting.parseISO("2026-10-21T09:40:00Z"))
-        XCTAssertEqual(TimeFormatting.relativeSpan(from: said, now: now, calendar: calendar), "26 days, 22 hr")
-        XCTAssertEqual(TimeFormatting.relativeSpan(from: now, now: now.addingTimeInterval(90), calendar: calendar),
-                       "1 min, 30 sec")
+        // The short unit's plural is the OS's choice ("hr" on older macOS, "hrs" on newer).
+        let span = TimeFormatting.relativeSpan(from: said, now: now, calendar: calendar)
+        XCTAssertNotNil(span.range(of: #"^26 days, 22 hrs?$"#, options: .regularExpression), span)
+        let short = TimeFormatting.relativeSpan(from: now, now: now.addingTimeInterval(90), calendar: calendar)
+        XCTAssertNotNil(short.range(of: #"^1 min, 30 secs?$"#, options: .regularExpression), short)
     }
 }
