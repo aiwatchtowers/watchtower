@@ -553,3 +553,20 @@ func TestBackgroundWriteArgsIn_GoneTargetKeepsTheFoldersGuard(t *testing.T) {
 		t.Fatal("an unreadable target did not refuse the write")
 	}
 }
+
+// TestBackgroundWriteArgsIn_GoneTargetOfANamedRepositoryRefuses (final
+// review residual Q1): the gone-target skip is for a write that names no
+// repository (an unattended session apply). One that names the repository
+// it checked (the repository pass) still refuses a target that vanished
+// since its re-check — an unmounted checkout — rather than let git drop it.
+func TestBackgroundWriteArgsIn_GoneTargetOfANamedRepositoryRefuses(t *testing.T) {
+	bin, ok := Locate()
+	if !ok {
+		t.Skip("no git")
+	}
+	dir, _ := plantedFilterRepo(t, bin)
+	gone := filepath.Join(t.TempDir(), "gone")
+	if _, err := BackgroundWriteArgsIn(context.Background(), bin, dir, filepath.Join(dir, ".git"), "worktree", "remove", gone); err == nil {
+		t.Fatal("a named repository's gone target did not refuse the write")
+	}
+}
