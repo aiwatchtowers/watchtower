@@ -438,13 +438,15 @@ func TestBackgroundWriteArgsIn_NoHookAndNoFilter(t *testing.T) {
 		t.Skip("no git")
 	}
 	dir, _ := plantedFilterRepo(t, bin)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustGit(t, bin, dir, "worktree", "add", "-q", "--detach", wt)
 	for _, args := range [][]string{
 		{"update-ref", "-d", "refs/heads/x", "abc"},
 		{"config", "--remove-section", "branch.x"},
-		{"worktree", "unlock", "/tmp/wt"},
-		{"worktree", "remove", "/tmp/wt"},
+		{"worktree", "unlock", wt},
+		{"worktree", "remove", wt},
 	} {
-		argv, err := BackgroundWriteArgsIn(context.Background(), bin, dir, args...)
+		argv, err := BackgroundWriteArgsIn(context.Background(), bin, dir, "", args...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -461,5 +463,55 @@ func TestBackgroundWriteArgsIn_NoHookAndNoFilter(t *testing.T) {
 		if want := args[0] == "worktree" && args[1] == "remove"; blanks != want {
 			t.Errorf("argv %q: filters blanked %v, want %v", joined, blanks, want)
 		}
+	}
+}
+
+// TestBackgroundWriteArgsIn_TargetWorktreesOwnFilters (#2402 fix round 2,
+// R2-2): `worktree remove` checks the target worktree with the config it
+// sees — its own config.worktree included — so a filter driver defined
+// only there is blanked too, beside the folder's.
+func TestBackgroundWriteArgsIn_TargetWorktreesOwnFilters(t *testing.T) {
+	bin, ok := Locate()
+	if !ok {
+		t.Skip("no git")
+	}
+	dir, _ := plantedFilterRepo(t, bin)
+	mustGit(t, bin, dir, "config", "extensions.worktreeConfig", "true")
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustGit(t, bin, dir, "worktree", "add", "-q", "--detach", wt)
+	mustGit(t, bin, wt, "config", "--worktree", "filter.only-here.clean", "touch /nonexistent/x")
+
+	argv, err := BackgroundWriteArgsIn(context.Background(), bin, dir, "", "worktree", "remove", wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	for _, want := range []string{"-c filter.only-here.clean=", "-c filter.only-here.required=false",
+		"-c filter.planted.clean="} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argv %q lacks %q", joined, want)
+		}
+	}
+	if strings.Count(joined, "-c filter.planted.clean=") != 1 {
+		t.Errorf("argv %q blanks one key twice", joined)
+	}
+}
+
+// TestBackgroundWriteArgsIn_NamesTheGitDir (#2402 fix round 2, R2-3): a
+// background write given the repository it was checked against names it
+// (--git-dir) after the guard, never discovering it from the folder again.
+func TestBackgroundWriteArgsIn_NamesTheGitDir(t *testing.T) {
+	bin, ok := Locate()
+	if !ok {
+		t.Skip("no git")
+	}
+	dir, _ := plantedFilterRepo(t, bin)
+	argv, err := BackgroundWriteArgsIn(context.Background(), bin, dir, "/repo/.git", "update-ref", "-d", "refs/heads/x", "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(argv, " "); !strings.HasSuffix(joined, " --git-dir=/repo/.git update-ref -d refs/heads/x abc") ||
+		!strings.Contains(joined, "-c core.hooksPath=/dev/null") {
+		t.Fatalf("argv %q", joined)
 	}
 }

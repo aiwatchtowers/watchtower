@@ -49,6 +49,9 @@ type passRepo struct {
 	// them, and a re-check fails once the folder left that bench.
 	folder      string
 	workbenchID int64
+	// benches is every workbench with a folder in it: a live session of
+	// one that has not said where it works may be in any of its trees.
+	benches []int64
 }
 
 // repositoryPass is AutoRun's second part: the repository pass of every
@@ -71,10 +74,12 @@ func (ad AutoDeps) repositoryPass(ctx context.Context, out *AutoResult) error {
 		}
 		items, err := ad.passRepository(ctx, rp)
 		if err != nil && ctx.Err() != nil {
-			ad.countPassRepo(out, rp, items, "") // what went before the stop counts
+			// What went, and what failed, before the stop counts; the step
+			// the stop cut off does not (R2-8).
+			ad.countPassRepo(out, rp, items, passFailure(items, ctx.Err()))
 			return fmt.Errorf("the repository pass stopped: %w", ctx.Err())
 		}
-		failure := passFailure(items)
+		failure := passFailure(items, nil)
 		if err != nil {
 			failure = strings.Join(slices.DeleteFunc([]string{err.Error(), failure}, func(s string) bool { return s == "" }), "; ")
 		}
@@ -106,13 +111,18 @@ func (ad AutoDeps) countPassRepo(out *AutoResult, rp passRepo, items []Item, fai
 // passFailure names what a repository's pass recorded as failed: an item's
 // or a build folder's error (resultFailure), and a worktree or branch kept
 // because a check could not be made or git refused its removal; "" for
-// none.
-func passFailure(items []Item) string {
+// none. An item whose failure is stop (the pass's ctx error: the step it
+// cut off) is left out.
+func passFailure(items []Item, stop error) string {
+	cutOff := func(text string) bool { return stop != nil && strings.Contains(text, stop.Error()) }
+	kept := slices.DeleteFunc(slices.Clone(items), func(it Item) bool {
+		return cutOff(it.Detail) || cutOff(it.Error) || cutOff(it.BuildError)
+	})
 	var parts []string
-	if f := resultFailure(Result{Plan: Plan{Items: items}}); f != "" {
+	if f := resultFailure(Result{Plan: Plan{Items: kept}}); f != "" {
 		parts = append(parts, f)
 	}
-	for _, it := range items {
+	for _, it := range kept {
 		if it.Action == ActionKeep && (it.Reason == ReasonCheckFailed || it.Reason == ReasonGitRefused) {
 			parts = append(parts, fmt.Sprintf("%s: %s (%s)", it.Key, it.Reason, it.Detail))
 		}
@@ -128,7 +138,7 @@ func passFailure(items []Item) string {
 // failure (repositoryPass says so).
 func (ad AutoDeps) passRepos(ctx context.Context, wbs []int64, out *AutoResult) []passRepo {
 	var repos []passRepo
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	for _, wb := range wbs {
 		folders, err := ad.Deps.DB.BenchFolders(ctx, wb)
 		if ctx.Err() != nil {
@@ -154,11 +164,14 @@ func (ad AutoDeps) passRepos(ctx context.Context, wbs []int64, out *AutoResult) 
 				}
 				continue
 			}
-			if seen[keys[0]] {
+			if i, ok := seen[keys[0]]; ok {
+				if !slices.Contains(repos[i].benches, wb) {
+					repos[i].benches = append(repos[i].benches, wb)
+				}
 				continue
 			}
-			seen[keys[0]] = true
-			repos = append(repos, passRepo{key: keys[0], folder: resolvePath(f), workbenchID: wb})
+			seen[keys[0]] = len(repos)
+			repos = append(repos, passRepo{key: keys[0], folder: resolvePath(f), workbenchID: wb, benches: []int64{wb}})
 		}
 	}
 	return repos
@@ -214,11 +227,11 @@ func (ad AutoDeps) passRepository(ctx context.Context, rp passRepo) ([]Item, err
 // of sweepBatch) with their branches, and prune the builds of those kept
 // for their work. more = candidates are left and the pass may go on.
 func (ad AutoDeps) passBatch(ctx context.Context, rp passRepo, live []int64, st *passState) ([]Item, bool, error) {
-	ctx = withBackgroundWrites(ctx)
+	ctx = withBackgroundWrites(ctx, rp.key)
 	d := ad.tryingDeps()
 	r := Request{Sweep: true, WorkbenchID: rp.workbenchID, LiveSessions: live, NoSize: true, NoTerminate: true,
 		PruneBuilds: true, repoPass: true, folder: rp.folder, allOwners: true, liveNow: ad.liveIDs,
-		repoKey: rp.key, scope: &repoScope{bench: []string{rp.folder}, locked: []string{rp.key}}}
+		repoKey: rp.key, repoBenches: rp.benches, scope: &repoScope{bench: []string{rp.folder}, locked: []string{rp.key}}}
 	// The lock of the repository found at discovery, not of whatever the
 	// folder resolves to now; every evaluation below checks that the folder
 	// still resolves to it (Request.repoKey).
@@ -266,29 +279,18 @@ func (ad AutoDeps) passBatch(ctx context.Context, rp passRepo, live []int64, st 
 }
 
 // take is the next batch of st.order: at most sweepBatch roots still
-// listed as linked worktrees (a prunable one included) that no session
-// works in by b's facts (read under this batch's lock).
+// listed as linked worktrees with their directory (never a prunable one)
+// that no session works in by b's facts (read under this batch's lock).
 func (st *passState) take(b *builder) []string {
 	var roots []string
 	for st.next < len(st.order) && len(roots) < sweepBatch {
 		root := st.order[st.next]
 		st.next++
-		if w, ok := b.linkedWorktree(root); ok && !b.sessionWorksIn(w) {
+		if w, ok := b.listedWorktree(root); ok && !b.sessionWorksIn(w) {
 			roots = append(roots, root)
 		}
 	}
 	return roots
-}
-
-// linkedWorktree is root as git lists it now, when it is a linked
-// worktree, its directory there or gone (prunable).
-func (b *builder) linkedWorktree(root string) (worktree, bool) {
-	for _, w := range b.repo.worktrees {
-		if w.Root == root && !w.Bare && !w.Main {
-			return w, true
-		}
-	}
-	return worktree{}, false
 }
 
 // sessionWorksIn is W6's rule: a session live in the session host, or a
@@ -301,11 +303,13 @@ func (b *builder) sessionWorksIn(w worktree) bool {
 // passCandidates are the linked worktrees under the main checkout's
 // .claude/worktrees that no session works in and that have been idle for
 // idleFor, the oldest activity first. A worktree whose activity cannot be
-// measured is not idle (left out). One whose directory is gone (prunable:
-// a `git worktree remove` cut off part-way) is measured by its admin dir
-// and the ledger (worktreeActivity) and goes by the existing rule. The
-// measures run checkWorkers at a time; when ctx is done nothing is a
-// candidate.
+// measured is not idle (left out). A prunable one is never a candidate
+// (fix round 2, R2-1): git calls a worktree prunable whenever it cannot
+// see its directory — gone, but also unreadable (EACCES) or on a volume
+// not mounted — and `git worktree remove` would then detach it, staged
+// work in its index included, with no one confirming; the owner's Clean Up
+// shows it as a row. The measures run checkWorkers at a time; when ctx is
+// done nothing is a candidate.
 func (b *builder) passCandidates(ctx context.Context) []string {
 	under := b.claudeWorktrees()
 	if under == "" {
@@ -313,7 +317,7 @@ func (b *builder) passCandidates(ctx context.Context) []string {
 	}
 	var list []worktree
 	for _, w := range b.repo.worktrees {
-		if w.Bare || w.Main || w.Root == under || !pathWithin(w.Root, under) ||
+		if w.Bare || w.Main || w.Prunable || w.Root == under || !pathWithin(w.Root, under) ||
 			b.repo.adminDirs[w.Root] == "" || b.sessionWorksIn(w) {
 			continue
 		}
@@ -328,7 +332,7 @@ func (b *builder) passCandidates(ctx context.Context) []string {
 		slots <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-slots }()
-			t, err := worktreeActivity(ctx, b.deps, w, b.repo.adminDirs[w.Root])
+			t, err := lastActivity(ctx, b.deps, w.Root, b.repo.adminDirs[w.Root])
 			at[i], idle[i] = t, err == nil && now.Sub(t) >= idleFor
 		})
 	}
@@ -424,29 +428,59 @@ func passSelection(items []Item, roots []string, limit int) []string {
 }
 
 // errLiveInIt: the live runs read right before a destructive step show a
-// session working in the worktree.
-var errLiveInIt = errors.New("a session the host lists live works in it now")
+// session holding the worktree — or one that may, by what is known of it.
+var errLiveInIt = errors.New("a session the host lists live holds it now")
+
+// errLiveUnreadable: the live runs, or what a live session holds, could
+// not be read right before a destructive step: the repository's pass stops
+// (as an unreadable live set before a batch skips it).
+var errLiveUnreadable = errors.New("the live sessions could not be read")
 
 // liveClear reads the session host's live runs once more, right before a
 // removal or a build folder's move (the repository pass: Request.liveNow),
-// and each live run's row by id: nil when none works in root.
-// errLiveInIt when one does; any other error when that cannot be told —
-// the caller keeps the work. Other requests: nil.
+// with the ledger's owners and each live run's row by id. A live session
+// holds root (errLiveInIt) when its working directory is inside, as stored
+// or resolved (M1); when it recorded root in its ledger (the sweep's W2
+// owners, R2-4); when its row is gone, or when it belongs to a workbench
+// over this repository (Request.repoBenches) and has not said where it
+// works (R2-5): the tree waits for the next pass. Any other error: what
+// holds it cannot be told, the caller keeps the work. nil = none holds it;
+// other requests: nil.
 func (a *applier) liveClear(ctx context.Context, root string) error {
 	if a.req.liveNow == nil {
 		return nil
 	}
 	live, err := a.req.liveNow(ctx)
 	if err != nil {
-		return fmt.Errorf("listing the live sessions: %w", err)
+		return fmt.Errorf("%w: %w", errLiveUnreadable, err)
+	}
+	if len(live) == 0 {
+		return nil
+	}
+	ledger, err := a.deps.DB.SessionWorktreeOwners(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: the session worktree owners: %w", errLiveUnreadable, err)
+	}
+	var owners []int64
+	for r, ids := range ledger {
+		if r == root || resolvePath(r) == root {
+			owners = append(owners, ids...)
+		}
 	}
 	for _, id := range live {
-		s, ok, err := a.deps.DB.SessionActivityOf(ctx, id)
-		if err != nil {
-			return fmt.Errorf("reading live session %d: %w", id, err)
+		if slices.Contains(owners, id) {
+			return fmt.Errorf("%w: session %d recorded it", errLiveInIt, id)
 		}
-		if ok && s.AgentCwd != "" && pathWithin(resolvePath(s.AgentCwd), root) {
-			return fmt.Errorf("%w (%s)", errLiveInIt, s.Title)
+		s, ok, err := a.deps.DB.SessionActivityOf(ctx, id)
+		switch {
+		case err != nil:
+			return fmt.Errorf("%w: live session %d: %w", errLiveUnreadable, id, err)
+		case !ok:
+			return fmt.Errorf("%w: session %d has no row that says where it works", errLiveInIt, id)
+		case s.AgentCwd == "" && slices.Contains(a.req.repoBenches, s.WorkbenchID):
+			return fmt.Errorf("%w: session %d (%s) has not said where it works", errLiveInIt, id, s.Title)
+		case s.AgentCwd != "" && (pathWithin(s.AgentCwd, root) || pathWithin(resolvePath(s.AgentCwd), root)):
+			return fmt.Errorf("%w: session %d (%s) works in it", errLiveInIt, id, s.Title)
 		}
 	}
 	return nil

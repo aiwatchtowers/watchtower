@@ -425,7 +425,7 @@ func (a *applier) fresh(ctx context.Context) (*builder, error) {
 	if r.liveNow != nil {
 		live, err := r.liveNow(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("re-checking: listing the live sessions: %w", err)
+			return nil, fmt.Errorf("re-checking: %w: %w", errLiveUnreadable, err)
 		}
 		r.LiveSessions = live
 	}
@@ -537,7 +537,7 @@ func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string, wa
 		}
 		// The repository pass took the worktree for being idle: right
 		// before the removal it still must be (#2402 §2).
-		if walk && a.req.repoPass && !worktreeIdle(ctx, a.deps, w, b.repo.adminDirs[root]) {
+		if admin := b.repo.adminDirs[root]; walk && a.req.repoPass && (admin == "" || !isIdle(ctx, a.deps, root, admin)) {
 			keepItem(it, reasonNotIdle, "active again since the pass chose it")
 			return nil, false
 		}
@@ -723,9 +723,18 @@ func (a *applier) unregisterBundles(ctx context.Context, root string) {
 	}
 }
 
+// bundleRegisterTimeout bounds registering a stayed worktree's bundles
+// again, on a ctx of its own (reregisterBundles).
+const bundleRegisterTimeout = 30 * time.Second
+
 // reregisterBundles registers again the bundles unregistered for root
-// when root stays: they are reported kept, not removed.
+// when root stays: they are reported kept, not removed. It runs on a ctx
+// that ignores the apply's cancellation, bounded by bundleRegisterTimeout
+// (as relock does): an apply stopped after the unregister still leaves
+// the worktree's entries as they were (#2402 fix round 2, R2-6).
 func (a *applier) reregisterBundles(ctx context.Context, root string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bundleRegisterTimeout)
+	defer cancel()
 	for i := range a.items {
 		it := &a.items[i]
 		if it.Kind != KindLsreg || !it.Done || !pathWithin(it.Detail, root) {

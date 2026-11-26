@@ -69,20 +69,9 @@ func (s SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) 
 // RunGitInput is RunGit feeding stdin (nil = none) to git, under the same
 // read or owner arguments and environment.
 func (SystemGit) RunGitInput(ctx context.Context, dir, bin string, stdin []byte, args ...string) ([]byte, int, error) {
-	argv := gitbin.OwnerArgs(args...)
-	if ownerWrite(args) && backgroundWrites(ctx) {
-		bg, err := gitbin.BackgroundWriteArgsIn(ctx, bin, dir, args...)
-		if err != nil {
-			return nil, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-		}
-		argv = bg
-	}
-	if !ownerWrite(args) {
-		read, err := gitbin.ReadArgsIn(ctx, bin, dir, args...)
-		if err != nil {
-			return nil, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-		}
-		argv = read
+	argv, err := gitArgv(ctx, dir, bin, args)
+	if err != nil {
+		return nil, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, bin, argv...)
 	if err == nil {
@@ -95,23 +84,44 @@ func (SystemGit) RunGitInput(ctx context.Context, dir, bin string, stdin []byte,
 	return nil, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 }
 
-// backgroundWritesKey marks a ctx whose git writes no owner asked for
-// (withBackgroundWrites).
+// gitArgv is the argv SystemGit runs for args in dir: a read under
+// gitbin's read guard; a write the owner's way (OwnerArgs) — or, under a
+// ctx withBackgroundWrites marked, in gitbin's background mode, naming the
+// repository the mark carries (or the one the args name already) with
+// --git-dir.
+func gitArgv(ctx context.Context, dir, bin string, args []string) ([]string, error) {
+	if !ownerWrite(args) {
+		return gitbin.ReadArgsIn(ctx, bin, dir, args...) //nolint:wrapcheck // the caller names the command
+	}
+	gitDir, on := backgroundWrites(ctx)
+	if !on {
+		return gitbin.OwnerArgs(args...), nil
+	}
+	if len(args) > 0 && strings.HasPrefix(args[0], "--git-dir=") {
+		gitDir, args = strings.TrimPrefix(args[0], "--git-dir="), args[1:]
+	}
+	return gitbin.BackgroundWriteArgsIn(ctx, bin, dir, gitDir, args...) //nolint:wrapcheck // the caller names the command
+}
+
 type backgroundWritesKey struct{}
 
 // withBackgroundWrites marks ctx: SystemGit runs every write under it in
 // gitbin's background mode — no hook, no fsmonitor, and for `worktree
-// remove` no filter driver of the folder (#2402, fix round 1). The
-// repository pass sets it: it writes over trees no session of the owner's
-// owns, so nothing it does may run the repository's commands. The mark
-// travels with the ctx through any runner that wraps SystemGit.
-func withBackgroundWrites(ctx context.Context) context.Context {
-	return context.WithValue(ctx, backgroundWritesKey{}, true)
+// remove` no filter driver the folder or the target worktree sees (#2402,
+// fix rounds 1–2) — naming commonDir, the repository whose lock is held
+// and that every evaluation was checked against, with --git-dir, so no
+// write discovers another repository from its folder. The repository pass
+// sets it: it writes over trees no session of the owner's owns, so nothing
+// it does may run the repository's commands. The mark travels with the ctx
+// through any runner that wraps SystemGit.
+func withBackgroundWrites(ctx context.Context, commonDir string) context.Context {
+	return context.WithValue(ctx, backgroundWritesKey{}, commonDir)
 }
 
-func backgroundWrites(ctx context.Context) bool {
-	on, _ := ctx.Value(backgroundWritesKey{}).(bool)
-	return on
+// backgroundWrites is the mark's repository, and whether ctx carries one.
+func backgroundWrites(ctx context.Context) (string, bool) {
+	dir, on := ctx.Value(backgroundWritesKey{}).(string)
+	return dir, on
 }
 
 // ownerWrite: args are one of the writes an apply runs on the owner's

@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"watchtower/internal/gitbin"
 )
 
 // newRepoPassFixture is an autoFixture whose pass also runs the repository
@@ -823,47 +825,36 @@ func TestAutoRun_RepositoryPassRemovesTheOldestFirst(t *testing.T) {
 	}
 }
 
-// TestAutoRun_RepositoryPassPrunesAHalfRemovedWorktree (#2402, failure
-// modes; fix round 1 C7): a worktree whose `git worktree remove` was cut
-// off after its directory went — git lists it prunable — is reached by the
-// next pass: its admin entry goes through the existing rule (`git worktree
-// remove`), and its merged branch with it.
-func TestAutoRun_RepositoryPassPrunesAHalfRemovedWorktree(t *testing.T) {
+// TestAutoRun_RepositoryPassNeverTouchesAPrunableTree (#2402, fix round 2
+// R2-1): a worktree git lists as prunable — its directory gone after a cut
+// off `git worktree remove`, or there but unreadable (a volume not
+// mounted reads the same) — is never a candidate of the unattended pass:
+// its admin entry, index and branch stay for the owner's Clean Up.
+func TestAutoRun_RepositoryPassNeverTouchesAPrunableTree(t *testing.T) {
 	t.Parallel()
 	a := newRepoPassFixture(t)
-	root := a.mergedClaudeWork("agent-1", "worktree-agent-1")
-	if err := os.RemoveAll(root); err != nil { // the interrupted remove
+	gone := a.mergedClaudeWork("agent-gone", "worktree-agent-gone")
+	if err := os.RemoveAll(gone); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(gitIn(t, a.repo, "worktree", "list", "--porcelain"), "prunable") {
-		t.Fatal("the fixture is not prunable")
+	hidden := a.mergedClaudeWork("agent-hidden", "worktree-agent-hidden")
+	if err := os.Chmod(hidden, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hidden, 0o755) })
+	listing := gitIn(t, a.repo, "worktree", "list", "--porcelain")
+	if strings.Count(listing, "prunable") != 2 {
+		t.Skipf("git does not list both as prunable here: %s", listing)
 	}
 
 	res, err := a.run(time.Now())
-	if err != nil || res.RepoChanged != 1 || res.RepoFailed != 0 {
+	if err != nil || res.RepoChanged != 0 {
 		t.Fatalf("res %+v, err %v", res, err)
 	}
-	if a.listsWorktree(root) || a.branchExists("worktree-agent-1") {
-		t.Fatal("the half-removed worktree or its branch stayed")
-	}
-}
-
-// TestAutoRun_RepositoryPassLeavesAnActiveHalfRemovedWorktree: a prunable
-// worktree whose admin entry moved lately is not idle and stays.
-func TestAutoRun_RepositoryPassLeavesAnActiveHalfRemovedWorktree(t *testing.T) {
-	t.Parallel()
-	a := newRepoPassFixture(t)
-	root := a.mergedClaudeWork("agent-1", "worktree-agent-1")
-	admin := adminOf(t, root)
-	if err := os.RemoveAll(root); err != nil {
-		t.Fatal(err)
-	}
-	at := a.clock().Add(-time.Hour)
-	if err := os.Chtimes(filepath.Join(admin, "HEAD"), at, at); err != nil {
-		t.Fatal(err)
-	}
-	if res, err := a.run(time.Now()); err != nil || res.RepoChanged != 0 || !a.listsWorktree(root) {
-		t.Fatalf("res %+v, err %v", res, err)
+	for _, name := range []string{"agent-gone", "agent-hidden"} {
+		if !exists(filepath.Join(a.repo, ".git", "worktrees", name)) || !a.branchExists("worktree-"+name) {
+			t.Fatalf("%s: its admin entry or branch went", name)
+		}
 	}
 }
 
@@ -927,5 +918,238 @@ func TestLoadOwners_EachSessionOnce(t *testing.T) {
 	}
 	if got := b.rootOwners[root]; !slices.Equal(got, []int64{5, 6}) && !slices.Equal(got, []int64{6, 5}) {
 		t.Fatalf("owners %v", got)
+	}
+}
+
+// TestGitArgv_RepositoryPassWritesNameTheLockedRepository (#2402, fix round
+// 2 R2-3): under the repository pass's mark every write — the removal, its
+// unlock and relock, the ref delete, the config section's — names the
+// common dir whose lock is held, after the hooks-off guard; a read does
+// not, and without the mark a write is the owner's as before.
+func TestGitArgv_RepositoryPassWritesNameTheLockedRepository(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	wt := f.claudeWorktree("agent-1", "worktree-agent-1")
+	bin, _ := gitbin.Locate()
+	common := filepath.Join(f.repo, ".git")
+	ctx := withBackgroundWrites(context.Background(), common)
+	for _, args := range [][]string{
+		{"worktree", "remove", wt}, {"worktree", "unlock", wt}, {"update-ref", "-d", "refs/heads/x", "abc"},
+		{"config", "--remove-section", "branch.x"}, {"--git-dir=" + common, "worktree", "lock", "--reason", "r", wt},
+	} {
+		argv, err := gitArgv(ctx, f.repo, bin, args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined := strings.Join(argv, " ")
+		if strings.Count(joined, "--git-dir=") != 1 || !strings.Contains(joined, "--git-dir="+common+" ") ||
+			!strings.Contains(joined, "core.hooksPath=/dev/null") {
+			t.Errorf("%v: argv %q", args, joined)
+		}
+	}
+	read, err := gitArgv(ctx, f.repo, bin, []string{"worktree", "list", "--porcelain"})
+	if err != nil || strings.Contains(strings.Join(read, " "), "--git-dir") {
+		t.Fatalf("read argv %q, %v", read, err)
+	}
+	owner, err := gitArgv(context.Background(), f.repo, bin, []string{"update-ref", "-d", "refs/heads/x", "abc"})
+	if err != nil || strings.Contains(strings.Join(owner, " "), "--git-dir") || strings.Contains(strings.Join(owner, " "), "hooksPath") {
+		t.Fatalf("owner argv %q, %v", owner, err)
+	}
+}
+
+// TestLiveClear_EveryWayALiveSessionHoldsTheTree (#2402, fix round 2 R2-4,
+// R2-5, M1): right before a destructive step, a live session holds the
+// tree when its working directory is inside — as stored or resolved —,
+// when it recorded the tree in its ledger (the sweep's W2 owners), when
+// its row is gone, or when it belongs to a workbench over this repository
+// and has not said where it works. A live session elsewhere, or of another
+// repository's workbench with no location, does not.
+func TestLiveClear_EveryWayALiveSessionHoldsTheTree(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.claudeWorktree("agent-1", "worktree-agent-1")
+	link := filepath.Join(f.base, "link")
+	if err := os.Symlink(f.repo, link); err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(root, "sub")
+	outside := filepath.Join(f.base, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "out")); err != nil {
+		t.Fatal(err)
+	}
+	f.store.ledgerOwners = map[string][]int64{root + "/": {42}}
+	f.store.activity = []SessionActivity{
+		{ID: 40, WorkbenchID: testWorkbench, AgentCwd: inside},
+		{ID: 41, WorkbenchID: testWorkbench, AgentCwd: filepath.Join(link, ".claude", "worktrees", "agent-1")},
+		{ID: 42, WorkbenchID: 99, AgentCwd: filepath.Join(f.base, "elsewhere")},
+		{ID: 44, WorkbenchID: testWorkbench},
+		{ID: 45, WorkbenchID: 99},
+		{ID: 46, WorkbenchID: testWorkbench, AgentCwd: filepath.Join(f.base, "elsewhere")},
+		// Inside as stored, outside once resolved: W6's stored form counts.
+		{ID: 47, WorkbenchID: testWorkbench, AgentCwd: filepath.Join(root, "out")},
+	}
+	for id, holds := range map[int64]bool{40: true, 41: true, 42: true, 43: true, 44: true, 45: false, 46: false,
+		47: true} {
+		a := &applier{deps: f.deps(), req: Request{repoBenches: []int64{testWorkbench},
+			liveNow: func(context.Context) ([]int64, error) { return []int64{id}, nil }}}
+		err := a.liveClear(context.Background(), root)
+		if got := errors.Is(err, errLiveInIt); got != holds || (!holds && err != nil) {
+			t.Errorf("live session %d: err %v, want holds %v", id, err, holds)
+		}
+	}
+}
+
+// TestAutoRun_RepositoryPassLiveLedgerOwnerKeepsIt (#2402, fix round 2
+// R2-4): a session that recorded the tree and goes live during the final
+// idle walk keeps it, although it reports from elsewhere.
+func TestAutoRun_RepositoryPassLiveLedgerOwnerKeepsIt(t *testing.T) {
+	t.Parallel()
+	a := newRepoPassFixture(t)
+	root := a.mergedClaudeWork("agent-1", "worktree-agent-1")
+	a.store.ledgerOwners = map[string][]int64{root: {31}}
+	a.store.activity = []SessionActivity{{ID: 31, WorkbenchID: 99, Title: "owner", Finished: true,
+		AgentCwd: filepath.Join(a.base, "elsewhere")}}
+	var mu sync.Mutex
+	live, walks := false, 0
+	a.store.onLastSeen = func(string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if walks++; walks == 2 {
+			live = true
+		}
+	}
+	a.liveFn = func() (map[int64]bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return map[int64]bool{31: live}, nil
+	}
+	if res, err := a.run(time.Now()); err != nil || res.RepoChanged != 0 || !a.listsWorktree(root) {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+}
+
+// TestAutoRun_StoppedAfterUnregisteringRegistersTheBundlesAgain (#2402,
+// fix round 2 R2-6): a pass stopped between unregistering a worktree's app
+// bundles and removing it registers them again on a ctx of its own, so a
+// worktree that stays never loses its LaunchServices entries.
+func TestAutoRun_StoppedAfterUnregisteringRegistersTheBundlesAgain(t *testing.T) {
+	t.Parallel()
+	a := newRepoPassFixture(t)
+	root := a.mergedClaudeWork("agent-1", "worktree-agent-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	log := &opLog{}
+	var registerErr error
+	registered := false
+	a.ls = &fakeLS{log: log, onUnregister: func(string) { cancel() },
+		onRegister: func(c context.Context) { registered, registerErr = true, c.Err() }}
+	a.ctx = ctx
+
+	if _, err := a.run(time.Now()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	if !a.listsWorktree(root) {
+		t.Fatal("removed after the stop")
+	}
+	if !registered || registerErr != nil {
+		t.Fatalf("registered again %v, on a ctx done with %v; ops %v", registered, registerErr, log.list())
+	}
+}
+
+// TestAutoRun_RepositoryPassUnreadableLiveRunsAtAPruneStopTheRepository
+// (#2402, fix round 2 R2-7): live runs that cannot be read right before a
+// build folder's delete keep it and stop the repository's pass — as an
+// unreadable live set before a batch does — so no later build is deleted
+// on the strength of an older read. A failure, logged.
+func TestAutoRun_RepositoryPassUnreadableLiveRunsAtAPruneStopTheRepository(t *testing.T) {
+	t.Parallel()
+	a := newRepoPassFixture(t)
+	var builds []string
+	for i, name := range []string{"agent-a", "agent-b"} {
+		root := a.claudeWorktree(name, "worktree-"+name)
+		a.commit(root, ".gitignore", ".build/\n")
+		builds = append(builds, swiftBuild(t, filepath.Join(root, ".build")))
+		ageWorktree(t, root, time.Now().Add(-time.Duration(48-i)*time.Hour))
+	}
+	failNext, failed := false, false
+	a.liveFn = func() (map[int64]bool, error) {
+		if failNext {
+			failNext = false
+			return nil, errors.New("host gone")
+		}
+		return map[int64]bool{}, nil
+	}
+	a.git = &loggingGit{log: &opLog{}, before: func(args []string) *gitAnswer {
+		if lsFilesOfABuild(args) && !failed {
+			// The read right before the first folder's delete fails, once.
+			failNext, failed = true, true
+		}
+		return nil
+	}}
+
+	res, err := a.run(time.Now())
+	if err != nil || res.RepoFailed != 1 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	for _, b := range builds {
+		if !exists(filepath.Join(b, buildMarker)) {
+			t.Fatalf("%s went after the live runs could not be read", b)
+		}
+	}
+}
+
+// refuseFirstCancelSecond is the real git whose first `worktree remove`
+// is refused (git's own refusal), and that cancels the pass right after
+// its second one finished.
+type refuseFirstCancelSecond struct {
+	SystemGit
+	cancel  context.CancelFunc
+	removes int
+}
+
+func (g *refuseFirstCancelSecond) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	if len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
+		if g.removes++; g.removes == 1 {
+			return nil, 128, &GitError{Args: args, Code: 128, Stderr: "fatal: refused for the test"}
+		}
+		out, code, err := g.SystemGit.RunGit(ctx, dir, bin, args...)
+		g.cancel()
+		return out, code, err
+	}
+	return g.SystemGit.RunGit(ctx, dir, bin, args...)
+}
+
+// TestAutoRun_StoppedRepositoryPassKeepsItsEarlierFailures (#2402, fix
+// round 2 R2-8): a pass stopped part-way still counts and logs what failed
+// before the stop — a removal git refused — and what it removed; the
+// interrupted step is no failure.
+func TestAutoRun_StoppedRepositoryPassKeepsItsEarlierFailures(t *testing.T) {
+	t.Parallel()
+	a := newRepoPassFixture(t)
+	var roots []string
+	for i, name := range []string{"agent-a", "agent-b", "agent-c"} {
+		root := a.claudeWorktree(name, "worktree-"+name)
+		ageWorktree(t, root, time.Now().Add(-time.Duration(48-i)*time.Hour))
+		roots = append(roots, root)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.git = &refuseFirstCancelSecond{cancel: cancel}
+	a.ctx = ctx
+	var lines []string
+	a.logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+
+	res, err := a.run(time.Now())
+	if !errors.Is(err, context.Canceled) || res.RepoFailed != 1 || res.RepoChanged != 1 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if !a.listsWorktree(roots[0]) || !a.gone(roots[1]) || !a.listsWorktree(roots[2]) {
+		t.Fatal("the fixture did not stop where the test meant")
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], ReasonGitRefused) || strings.Contains(lines[0], "context canceled") {
+		t.Fatalf("log %q", lines)
 	}
 }

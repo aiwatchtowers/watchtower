@@ -186,7 +186,9 @@ func (db *DB) WorkbenchSessionWorktrees(ctx context.Context, workbenchID int64) 
 // any workbench, to those sessions' ids, ascending; never nil. The
 // cleanup's repository pass reads it (#2402): a tree a session of another
 // workbench, or of a folder that left its bench, saw lately is still that
-// session's.
+// session's. Rows marked for deletion (delete_requested_at) are included
+// on purpose: until such a row goes, what it recorded stays protected
+// (fail closed).
 func (db *DB) SessionWorktreeOwners(ctx context.Context) (map[string][]int64, error) {
 	rows, err := db.QueryContext(ctx, `SELECT DISTINCT root, session_id
 		FROM terminal_session_worktrees ORDER BY root, session_id`)

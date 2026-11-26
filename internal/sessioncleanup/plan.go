@@ -117,6 +117,9 @@ type Request struct {
 	// caller holds (the repository pass): an evaluation whose folder now
 	// resolves to another repository fails (errRepositoryMoved).
 	repoKey string
+	// repoBenches are the workbenches with a folder over the repository the
+	// repository pass covers (liveClear).
+	repoBenches []int64
 }
 
 // errRepositoryMoved: the evaluated folder resolves to another repository

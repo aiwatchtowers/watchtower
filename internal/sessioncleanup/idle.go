@@ -115,30 +115,6 @@ func adminActivity(ctx context.Context, d Deps, root, adminDir string) (time.Tim
 	return newest, nil
 }
 
-// worktreeActivity is w's last activity (lastActivity); for a prunable
-// worktree, whose directory and builds are gone, its admin dir's and the
-// ledger's alone. Any failure returns now with the error (fail closed).
-func worktreeActivity(ctx context.Context, d Deps, w worktree, adminDir string) (time.Time, error) {
-	if !w.Prunable {
-		return lastActivity(ctx, d, w.Root, adminDir)
-	}
-	newest, err := adminActivity(ctx, d, w.Root, adminDir)
-	if err != nil {
-		return clockNow(d), fmt.Errorf("last activity of %s: %w", w.Root, err)
-	}
-	return newest, nil
-}
-
-// worktreeIdle: w has shown no activity for idleFor (worktreeActivity);
-// any failure measuring it, or no admin dir, is "not idle".
-func worktreeIdle(ctx context.Context, d Deps, w worktree, adminDir string) bool {
-	if adminDir == "" {
-		return false
-	}
-	at, err := worktreeActivity(ctx, d, w, adminDir)
-	return err == nil && clockNow(d).Sub(at) >= idleFor
-}
-
 // buildActivity is the newest mtime of dir and of the directories inside
 // it down to buildActivityDepth, skipping fetchedPackageDirs; directories
 // only, no symlink followed, under budget.

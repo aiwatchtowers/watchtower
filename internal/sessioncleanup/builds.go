@@ -206,6 +206,9 @@ func (a *applier) pruneBuilds(ctx context.Context) {
 		return
 	}
 	for i := range a.items {
+		if a.halt != nil {
+			return // the live runs could not be read: nothing more goes
+		}
 		it := &a.items[i]
 		if it.Kind == KindWorktree && it.Action == ActionKeep && pruneReasons[it.Reason] {
 			a.pruneWorktreeBuilds(ctx, it)
@@ -260,6 +263,7 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 		b, ok, err := a.mayPrune(ctx, root)
 		if err != nil {
 			it.BuildError = err.Error()
+			a.haltOnLiveUnreadable(err)
 			return
 		}
 		if !ok {
@@ -283,6 +287,7 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 		})
 		if err != nil {
 			it.BuildError = err.Error()
+			a.haltOnLiveUnreadable(err)
 			return
 		}
 		switch outcome {
@@ -298,6 +303,17 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 		}
 	}
 	it.BuildsChecked = !doubt
+}
+
+// haltOnLiveUnreadable stops the apply when err is the live runs (or what
+// a live session holds) that could not be read (#2402 fix round 2, R2-7):
+// the repository pass skips the rest of the repository then, as it does
+// when they cannot be read before a batch. A real occupant is a keep, not
+// an error, and never gets here.
+func (a *applier) haltOnLiveUnreadable(err error) {
+	if errors.Is(err, errLiveUnreadable) && a.halt == nil {
+		a.halt = err
+	}
 }
 
 // holdsForeignGit walks a find without following symlinks for the first `.git`

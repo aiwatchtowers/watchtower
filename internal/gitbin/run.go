@@ -138,19 +138,33 @@ func overridesFor(fields []string) ([]string, error) {
 // in dir — no owner asked for it and no session of the owner's owns what it
 // writes (the automatic cleanup's repository pass, #2402): ReadArgs' guard
 // (no hook — a reference-transaction hook on a ref delete included —, no
-// fsmonitor, no signature check), and for a write that inspects the work
-// tree's content (`worktree remove` checks it for changes) every filter
-// driver of the folder blanked as ReadArgsIn does. An error refuses the
-// write rather than run it unprotected.
-func BackgroundWriteArgsIn(ctx context.Context, bin, dir string, args ...string) ([]string, error) {
-	if len(args) < 2 || args[0] != "worktree" || args[1] != "remove" {
-		return ReadArgs(args...), nil
+// fsmonitor, no signature check), and for a write that inspects a work
+// tree's content (`worktree remove <path>` checks it for changes) every
+// filter driver blanked that either dir or the target worktree sees — the
+// target's own config.worktree and includes included. gitDir, when set, is
+// the repository the caller checked, named with --git-dir so git never
+// discovers another one from dir. An error refuses the write rather than
+// run it unprotected.
+func BackgroundWriteArgsIn(ctx context.Context, bin, dir, gitDir string, args ...string) ([]string, error) {
+	argv := slices.Clone(readConfig)
+	if len(args) > 2 && args[0] == "worktree" && args[1] == "remove" {
+		seen := map[string]bool{}
+		for _, from := range []string{dir, args[len(args)-1]} {
+			overrides, err := filterOverrides(ctx, bin, from)
+			if err != nil {
+				return nil, err
+			}
+			for i := 0; i+1 < len(overrides); i += 2 {
+				if !seen[overrides[i+1]] {
+					seen[overrides[i+1]] = true
+					argv = append(argv, overrides[i], overrides[i+1])
+				}
+			}
+		}
 	}
-	overrides, err := filterOverrides(ctx, bin, dir)
-	if err != nil {
-		return nil, err
+	if gitDir != "" {
+		argv = append(argv, "--git-dir="+gitDir)
 	}
-	argv := append(slices.Clone(readConfig), overrides...)
 	return append(argv, args...), nil
 }
 
