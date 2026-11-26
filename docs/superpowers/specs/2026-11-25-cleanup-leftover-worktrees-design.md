@@ -43,7 +43,7 @@ The apply passes `RequireEnded: false` for such a row (it is ended by this rule,
 
 After the session applies, each pass runs one **repository pass** per distinct repository of the workbenches' folders (keyed by the git common dir, under the same repository cleanup lock, `TryLock`; busy → next pass).
 
-**Scope.** Linked worktrees whose root is under `<main checkout>/.claude/worktrees/` — the folder Watchtower's placement and Claude Code's `isolation: worktree` both create worktrees in. A worktree anywhere else is never touched by this pass: outside that folder Watchtower cannot tell an agent's worktree from one the owner made and works in by hand, so a worktree there that the owner made by hand is covered by the same checks and the 3-day idle rule (no session working in it, clean, merged or pushed, idle). The owner's worktrees elsewhere are the owner's. Those outside stay reachable through the Clean Up screen's sweep, as today.
+**Scope.** Linked worktrees whose root is under `<main checkout>/.claude/worktrees/` — the folder Watchtower's placement and Claude Code's `isolation: worktree` both create worktrees in. A worktree outside that folder is never touched by this pass: there Watchtower cannot tell an agent's worktree from one the owner made and works in by hand. Inside it, any idle linked worktree is eligible, a hand-made one included, and goes only when every catch and the 3-day idle rule pass. Worktrees outside stay reachable through the Clean Up screen's sweep, as today.
 
 **Skip.** A worktree is skipped (not evaluated) when any of these hold:
 
