@@ -48,7 +48,7 @@ The new-session and **Work on It** menus offer **In This Folder** and **In Its O
 
 `.worktreeinclude` at the repository root lists ignored files, such as `.env`, to copy into new worktrees.
 
-**Worktree Setup Command…** in the title row's **…** menu sets one shell command, such as a dependency install, that runs in each new worktree before the agent starts. A failure prints a line; the agent starts anyway.
+**Worktree Setup Command…** in the title row's **…** menu sets one shell command, such as a dependency install, that runs in each new worktree before the agent starts. A failure prints a line; the agent starts anyway. It does not run on resume.
 
 **Show Worktree in Finder** opens a session's worktree. Resuming a session whose worktree was deleted re-creates it from its branch; with the branch gone too, or on a branch its agent never used there, the row says to start a new session.
 
@@ -95,7 +95,7 @@ Every session delete cleans up once its **Undo** bar goes away: the worktrees an
 <!-- learn
 id: worktrees-auto-cleanup-sweep
 title: Idle worktrees clean up by themselves
-text: Merged worktrees go when a session ends or after 3 idle days under .claude/worktrees/; kept ones lose idle builds.
+text: Merged or pushed worktrees under .claude/worktrees/ go when a session ends or after 3 idle days; idle builds go too.
 area: development
 level: next
 kind: feature
@@ -128,7 +128,7 @@ action: nav:projects
 - **Clean Up…** in the row menu, or **Clean Up Old Worktrees…** in the title row's **…** menu, opens the **Clean Up** screen. It covers the workspace and is not a dialog: you can leave it, and a cleanup keeps working. From a row it shows that session's worktrees and branches, with a "Session: …" chip; click the ✕ on the chip to see the whole repository. From the menu it lists every worktree and branch of the repository, with an owner hint.
 - Nothing is ticked at first. Tick rows, **⇧-click** for a range, or choose **Select All That Can Go** (⌘A, except in the search box); Esc clears the ticks. Narrow the list with search, **All / Worktrees / Branches**, an age, an owner and **Merged only**. A worktree's row includes its branch when that can go too.
 - **Clean Up…** waits until every row is checked, asks once, then removes in the background: rows leave as they go, a bar reports "Freed ~X · removed …", and kept rows fold away with their reason.
-- Close the screen with **Clean Up ✕** in the title row, or by picking a session. One cleanup runs per workbench at a time.
+- Close the screen with **Clean Up ✕** or by picking a session. One cleanup runs per workbench at a time.
 - A banner "Old worktrees use ~N GB." appears once, after the workbench page has stayed open 30 seconds, when removable worktrees exceed 1 GB, and not while the Clean Up screen is open; its **Clean Up…** opens the Clean Up screen.
 - A session Watchtower put in a worktree that exits on its own cleans up that worktree at once.
 
