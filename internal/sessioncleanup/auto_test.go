@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -97,6 +98,8 @@ type autoFixture struct {
 	liveCtx func(context.Context)
 	// ls is Deps.LS; nil = none.
 	ls LaunchServices
+	// held is whether a run holds the repository lock right now.
+	held atomic.Bool
 }
 
 func newAutoFixture(t *testing.T) *autoFixture {
@@ -147,7 +150,8 @@ func (a *autoFixture) run(now time.Time) (AutoResult, error) {
 			}
 			taken++
 			a.locked = append(a.locked, repo)
-			return func() {}, true, nil
+			a.held.Store(true)
+			return func() { a.held.Store(false) }, true, nil
 		},
 		Logf: a.logf,
 	}, now)

@@ -271,8 +271,8 @@ func restoreScope(ctx context.Context, d Deps, r Request) []string {
 }
 
 // restoreLocks turns every unlock marker of the repository at commonDir
-// whose worktree still exists back into its lock (relock), before anything
-// is evaluated. It returns a note per marker it could not restore; such a
+// whose worktree still exists — or cannot be told gone — back into its lock
+// (relock), before anything is evaluated. It returns a note per marker it could not restore; such a
 // marker stays and W3 keeps its worktree (errUnlockPending) until a later
 // apply restores it. A marker whose worktree is gone is left: git drops its
 // admin dir with it.
@@ -295,7 +295,11 @@ func restoreLocks(ctx context.Context, g gitCmd, commonDir string) []string {
 		if !ok {
 			continue
 		}
-		if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+		// Only a tree that does not exist is gone. One that cannot be read now
+		// (EACCES, a volume not mounted) is locked again through its admin
+		// entry, which git reaches by --git-dir (final review F4): left
+		// unlocked, git's own `worktree prune` could drop it.
+		if fi, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) || err == nil && !fi.IsDir() {
 			continue
 		}
 		if err := relock(ctx, g, "", commonDir, admin, root); err != nil {

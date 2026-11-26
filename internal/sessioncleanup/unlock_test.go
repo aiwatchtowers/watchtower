@@ -3,6 +3,7 @@ package sessioncleanup
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -811,5 +812,42 @@ func TestLocked_FIFOLockFileNeverBlocks(t *testing.T) {
 	}
 	if _, _, ok := isTrashLeftover(trash, filepath.Base(trash), true); ok {
 		t.Fatal("a FIFO marker made a leftover")
+	}
+}
+
+// TestRestoreLocks_UnreadableTreeIsRelocked (final review F4): a marker whose
+// worktree cannot be read right now (EACCES here; an unmounted volume alike)
+// is not a gone tree: it is locked again through the admin entry, so git's
+// own `worktree prune` never drops it unlocked. Only a tree that does not
+// exist is left with its marker.
+func TestRestoreLocks_UnreadableTreeIsRelocked(t *testing.T) {
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("root reads every directory")
+	}
+	f := newFixture(t)
+	root := f.rootedWorktree(".claude/worktrees/plan-x", "feat/plan-x")
+	f.lock(root)
+	admin := adminOf(t, root)
+	interruptedUnlock(t, f, root)
+	parent := filepath.Dir(root)
+	if err := os.Chmod(parent, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+	if _, err := os.Stat(root); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("stat %v, want a permission error", err)
+	}
+
+	notes := restoreLocks(context.Background(), gitCmd{run: SystemGit{}, bin: gitBinOrSkip(t)},
+		filepath.Join(f.repo, ".git"))
+	if len(notes) != 0 {
+		t.Fatalf("notes %v", notes)
+	}
+	if body, err := os.ReadFile(filepath.Join(admin, lockFile)); err != nil || string(body) != planReason+"\n" {
+		t.Fatalf("lock %q, err %v", body, err)
+	}
+	if exists(filepath.Join(admin, unlockMarker)) {
+		t.Fatal("the marker stayed")
 	}
 }

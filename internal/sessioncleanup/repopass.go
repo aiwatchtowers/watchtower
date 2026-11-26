@@ -172,7 +172,7 @@ func (ad AutoDeps) passRepos(ctx context.Context, wbs []int64, out *AutoResult) 
 // passState is one repository's pass across its batches.
 type passState struct {
 	order    []string // the candidates, the oldest activity first
-	measured bool     // order was read (the first batch, under the lock)
+	measured bool     // order was read (before the first batch's lock)
 	next     int      // order[:next] were taken by a batch
 	removed  int      // worktrees removed so far
 }
@@ -224,6 +224,21 @@ func (ad AutoDeps) passBatch(ctx context.Context, rp passRepo, live []int64, st 
 	r := Request{Sweep: true, WorkbenchID: rp.workbenchID, LiveSessions: live, NoSize: true, NoTerminate: true,
 		PruneBuilds: true, repoPass: true, folder: rp.folder, allOwners: true, liveNow: ad.liveIDs,
 		repoKey: rp.key, scope: &repoScope{bench: []string{rp.folder}, locked: []string{rp.key}}}
+	if !st.measured {
+		// The candidates are measured before the lock is taken (final review
+		// F2): an idle walk may take nestedScanBudget per worktree, and the
+		// owner's Clean Up waits for this lock. Measuring only selects: each
+		// batch re-plans under the lock and idleness is read again right
+		// before every removal and prune.
+		mb, err := newBuilder(ctx, d, r)
+		if err != nil {
+			return nil, false, err
+		}
+		st.order, st.measured = mb.passCandidates(ctx), true
+		if ctx.Err() != nil {
+			return nil, false, ctx.Err()
+		}
+	}
 	// The lock of the repository found at discovery, not of whatever the
 	// folder resolves to now; every evaluation below checks that the folder
 	// still resolves to it (Request.repoKey).
@@ -238,9 +253,6 @@ func (ad AutoDeps) passBatch(ctx context.Context, rp passRepo, live []int64, st 
 	b, err := newBuilder(ctx, d, r)
 	if err != nil {
 		return nil, false, err
-	}
-	if !st.measured {
-		st.order, st.measured = b.passCandidates(ctx), true
 	}
 	roots := st.take(b)
 	if len(roots) == 0 {
