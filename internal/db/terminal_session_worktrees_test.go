@@ -574,3 +574,24 @@ func TestEndedSessionsForCleanup_UnparsableStampSkipsTheRow(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+// TestEndedSessionsForCleanup_WholeSecondAgentState: an old agent_state_at
+// written in whole seconds is a valid stamp for the listing, and
+// ParseActivityStamp (the rule the cleanup's re-check shares) reads it.
+func TestEndedSessionsForCleanup_WholeSecondAgentState(t *testing.T) {
+	f := newEndedFixture(t)
+	old := f.now.Add(-48 * time.Hour)
+	id := f.row(`last_active_at = ?, agent_state_at = ?`, old.Format(time.RFC3339), old.Format(time.RFC3339))
+	got := f.list()
+	if len(got) != 1 || got[0].SessionID != id || !got[0].Quiet || !got[0].EndedAt.Equal(old) {
+		t.Fatalf("got %+v", got)
+	}
+	for _, st := range []string{old.Format(time.RFC3339), AgentStateStamp(old)} {
+		if at, ok := ParseActivityStamp(st); !ok || !at.Equal(old) {
+			t.Fatalf("ParseActivityStamp(%q) = %v, %v", st, at, ok)
+		}
+	}
+	if _, ok := ParseActivityStamp("garbage"); ok {
+		t.Fatal("garbage parsed")
+	}
+}

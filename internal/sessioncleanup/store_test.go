@@ -190,3 +190,19 @@ func TestDBStore_NeverReportedIsZero(t *testing.T) {
 		t.Fatalf("a session that never reported = %+v", got[0])
 	}
 }
+
+// TestDBStore_AllSessionActivityReadsWholeSecondAgentState: an
+// agent_state_at in whole seconds reads as that time, not as "now" (which
+// would keep a quiet session's work and skip it every pass).
+func TestDBStore_AllSessionActivityReadsWholeSecondAgentState(t *testing.T) {
+	s, _, id := storeFixture(t)
+	now := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return now }
+	if _, err := s.DB.Exec(`UPDATE terminal_sessions SET agent_state_at = '2026-10-10T12:00:00Z' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.AllSessionActivity(context.Background())
+	if err != nil || len(got) != 1 || !got[0].ReportedAt.Equal(time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}

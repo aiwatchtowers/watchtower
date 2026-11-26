@@ -356,6 +356,16 @@ func (db *DB) EndedSessionsForCleanup(ctx context.Context, since, quietBefore ti
 	return out, nil
 }
 
+// ParseActivityStamp reads one of the stamps that say a session was active
+// (last_active_at: whole seconds; agent_state_at: milliseconds): RFC 3339
+// with or without a fraction. The quiet-session listing and the cleanup's
+// re-check both read their stamps through it, so they cannot disagree on
+// which stamps parse; false when s is not one.
+func ParseActivityStamp(s string) (time.Time, bool) {
+	at, err := time.Parse(time.RFC3339Nano, s)
+	return at, err == nil
+}
+
 // lastActivity is the newest of the given stamps (RFC 3339, whole seconds
 // or fractions; "" = absent); false when none is present or one does not
 // parse.
@@ -365,8 +375,8 @@ func lastActivity(stamps ...string) (time.Time, bool) {
 		if st == "" {
 			continue
 		}
-		at, err := time.Parse(time.RFC3339Nano, st)
-		if err != nil {
+		at, ok := ParseActivityStamp(st)
+		if !ok {
 			return time.Time{}, false
 		}
 		if at.After(newest) {

@@ -110,12 +110,41 @@ func (b *builder) endStands() bool {
 		return b.sessionFinished()
 	case b.req.Quiet:
 		a, ok := b.activity[b.req.SessionID]
-		if !ok || a.DeleteRequested {
-			return false
-		}
-		return a.Finished || (!a.ReportedAt.After(b.req.QuietBefore) && !a.LastActive.After(b.req.QuietBefore))
+		return quietStands(b.req, a, ok)
 	}
 	return true
+}
+
+// quietStands: a quiet request's session is known, not being deleted, and
+// finished or still quiet. closed_at, which the listing also reads, is not
+// re-read: it is legacy (no Close action writes it since 2026-10-01), so
+// nothing moves it after the listing.
+func quietStands(r Request, a SessionActivity, known bool) bool {
+	if !known || a.DeleteRequested {
+		return false
+	}
+	return a.Finished || (!a.ReportedAt.After(r.QuietBefore) && !a.LastActive.After(r.QuietBefore))
+}
+
+// quietStillStands re-reads the activity of the request's session right now
+// (the Desktop writes last_active_at without the repository lock, so a
+// builder's snapshot can be stale after its expensive checks) — for a quiet
+// request, right before a destructive step. Other requests: true. A read
+// that fails is an error: the caller keeps the work.
+func (a *applier) quietStillStands(ctx context.Context) (bool, error) {
+	if !a.req.Quiet {
+		return true, nil
+	}
+	acts, err := a.deps.DB.AllSessionActivity(ctx)
+	if err != nil {
+		return false, fmt.Errorf("re-reading the session's activity: %w", err)
+	}
+	for _, s := range acts {
+		if s.ID == a.req.SessionID {
+			return quietStands(a.req, s, true), nil
+		}
+	}
+	return false, nil
 }
 
 // sessionEnded: the planned session finished (finish_session) or is being
@@ -289,6 +318,9 @@ func (a *applier) mayPrune(ctx context.Context, root string) (*builder, bool, er
 		if reason != "" {
 			return nil, false, nil
 		}
+	}
+	if ok, err := a.quietStillStands(ctx); err != nil || !ok {
+		return nil, false, err
 	}
 	return b, true, nil
 }

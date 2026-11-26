@@ -176,8 +176,8 @@ func (s DBStore) AllSessionActivity(ctx context.Context) ([]SessionActivity, err
 	for _, r := range rows {
 		out = append(out, SessionActivity{
 			ID: r.ID, WorkbenchID: r.WorkbenchID, Title: r.Title, AgentCwd: r.AgentCwd,
-			ReportedAt: activityStamp(r.AgentStateAt, now, db.ParseAgentStateStamp),
-			LastActive: activityStamp(r.LastActiveAt, now, parseRFC3339),
+			ReportedAt: activityStamp(r.AgentStateAt, now, db.ParseActivityStamp),
+			LastActive: activityStamp(r.LastActiveAt, now, db.ParseActivityStamp),
 			Finished:   r.Finished, DeleteRequested: r.DeleteRequested,
 		})
 	}

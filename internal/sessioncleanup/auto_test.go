@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -513,8 +514,10 @@ func TestProj18_QuietCandidateActiveAgainRemovesNothing(t *testing.T) {
 // TestProj18_QuietSessionReopenedAfterListingKeepsItsWork: a quiet row whose
 // stored activity moved forward after the candidate list was read (a reopen
 // writes last_active_at before the host run exists, so the live set is
-// still empty) loses nothing and is no failure; the same when the activity
-// moves between the apply's evaluation and its removals.
+// still empty) loses nothing and is no failure; when the activity moves
+// during the apply, nothing more is removed and the worktree is kept as a
+// check_failed item (a keep, not an item error: AutoResult.Failed stays 0,
+// the next pass retries).
 func TestProj18_QuietSessionReopenedAfterListingKeepsItsWork(t *testing.T) {
 	t.Parallel()
 	for name, late := range map[string]bool{"before the apply": false, "during the apply": true} {
@@ -535,13 +538,60 @@ func TestProj18_QuietSessionReopenedAfterListingKeepsItsWork(t *testing.T) {
 				reopen()
 			}
 			res, err := a.run(now)
-			if err != nil || res.Changed != 0 || (!late && res.Failed != 0) {
+			if err != nil || res.Changed != 0 || res.Failed != 0 {
 				t.Fatalf("res %+v, err %v", res, err)
 			}
 			if !a.listsWorktree(root) || !a.branchExists("feat/x") || !exists(filepath.Join(build, buildMarker)) {
 				t.Fatal("something of the reopened session went")
 			}
 		})
+	}
+}
+
+// flipOnStatus runs flip once, before the first `git status` that follows
+// the afterLists-th `worktree list`: the expensive checks of a re-check, run
+// after its facts were read.
+type flipOnStatus struct {
+	SystemGit
+	mu         sync.Mutex
+	lists      int
+	afterLists int
+	flip       func()
+	done       bool
+}
+
+func (g *flipOnStatus) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	g.mu.Lock()
+	switch {
+	case slices.Equal(args, []string{"worktree", "list", "--porcelain"}):
+		g.lists++
+	case len(args) > 0 && args[0] == "status" && g.lists >= g.afterLists && !g.done:
+		g.done = true
+		g.flip()
+	}
+	g.mu.Unlock()
+	return g.SystemGit.RunGit(ctx, dir, bin, args...)
+}
+
+// TestProj18_QuietSessionReopenedDuringTheFinalChecksKeepsItsWorktree: the
+// session reopens (last_active_at written without any lock) while the final
+// re-check of the worktree is running, after that re-check's facts were
+// read; the worktree stays.
+func TestProj18_QuietSessionReopenedDuringTheFinalChecksKeepsItsWorktree(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root := a.pushedWork("wt", "feat/x")
+	a.record(root, "feat/x")
+	now := time.Now()
+	a.quietSession(now.Add(-30 * time.Hour))
+	// afterLists 3: the last re-check's list; its facts are read, its checks still run.
+	a.git = &flipOnStatus{afterLists: 3, flip: func() { a.store.activity[0].LastActive = now.Add(-time.Minute) }}
+	res, err := a.run(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed != 0 || !a.listsWorktree(root) || !a.branchExists("feat/x") {
+		t.Fatalf("res %+v: the reopened session's work went", res)
 	}
 }
 

@@ -512,6 +512,16 @@ func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string, wa
 			keepItem(it, ev.Reason, ev.Detail)
 			return nil, false
 		}
+		// The walks above can take long; a quiet session may have reopened
+		// meanwhile: read its activity once more, right before the removal.
+		switch ok, err := a.quietStillStands(ctx); {
+		case err != nil:
+			a.fail(it, err)
+			return nil, false
+		case !ok:
+			a.fail(it, ErrSessionNotEnded)
+			return nil, false
+		}
 		return b, true
 	}
 	keepItem(it, ReasonNotAWorktree, "git no longer lists it")
