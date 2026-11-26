@@ -116,7 +116,7 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 	if err != nil {
 		return res, err
 	}
-	if r.RequireEnded && !r.Sweep && !parts[0].sessionFinished() {
+	if (r.RequireEnded || r.Quiet) && !r.Sweep && !parts[0].endStands() {
 		return res, fmt.Errorf("session %d: %w", r.SessionID, ErrSessionNotEnded)
 	}
 	reportListing(parts)
@@ -419,7 +419,7 @@ var ErrSessionNotEnded = errors.New("the session is no longer finished")
 // session no longer finished stops the apply (check_failed, the rest
 // not_attempted).
 func (a *applier) stillEnded(it *Item, b *builder) bool {
-	if !a.req.RequireEnded || b.sessionFinished() {
+	if b.endStands() {
 		return true
 	}
 	a.fail(it, ErrSessionNotEnded)
@@ -510,6 +510,16 @@ func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string, wa
 		ev := b.evaluateWorktree(ctx, w)
 		if ev.Action != ActionRemove {
 			keepItem(it, ev.Reason, ev.Detail)
+			return nil, false
+		}
+		// The walks above can take long; a quiet session may have reopened
+		// meanwhile: read its activity once more, right before the removal.
+		switch ok, err := a.quietStillStands(ctx); {
+		case err != nil:
+			a.fail(it, err)
+			return nil, false
+		case !ok:
+			a.fail(it, ErrSessionNotEnded)
 			return nil, false
 		}
 		return b, true
@@ -724,6 +734,16 @@ func (a *applier) unregisterStale(ctx context.Context, it *Item) {
 func (a *applier) deleteBranch(ctx context.Context, it *Item) {
 	tip, ok := a.recheckBranch(ctx, it)
 	if !ok || !a.notCheckedOutNow(ctx, it) {
+		return
+	}
+	// The last thing before the ref delete: a quiet session's activity read
+	// afresh (the evaluation above and the re-listing can take long).
+	switch ok, err := a.quietStillStands(ctx); {
+	case err != nil:
+		a.fail(it, err)
+		return
+	case !ok:
+		a.fail(it, ErrSessionNotEnded)
 		return
 	}
 	gctx, cancel := context.WithTimeout(ctx, gitTimeout)

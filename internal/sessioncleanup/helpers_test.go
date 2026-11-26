@@ -280,6 +280,15 @@ func (s *fakeStore) AllSessionActivity(context.Context) ([]SessionActivity, erro
 	return s.activity, nil
 }
 
+func (s *fakeStore) SessionActivityOf(_ context.Context, id int64) (SessionActivity, bool, error) {
+	for _, a := range s.activity {
+		if a.ID == id {
+			return a, true, nil
+		}
+	}
+	return SessionActivity{}, false, nil
+}
+
 func (s *fakeStore) WorktreeLastSeen(_ context.Context, root string) (time.Time, bool, error) {
 	at, ok := s.lastSeen[root]
 	return at, ok, s.seenErr

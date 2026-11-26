@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -403,6 +404,370 @@ func TestProj18_AutoCleanupOfAResumedSessionRemovesNothing(t *testing.T) {
 				t.Fatal("something of the resumed session went")
 			}
 		})
+	}
+}
+
+// quietSession registers the session as never finished (no finish_session),
+// quiet since ended, and lists it as a quiet candidate.
+func (a *autoFixture) quietSession(ended time.Time) {
+	a.store.activity = append(a.store.activity, SessionActivity{ID: testSession, WorkbenchID: testWorkbench, Title: "the session"})
+	a.cands = []AutoCandidate{{SessionID: testSession, WorkbenchID: testWorkbench, EndedAt: ended, Quiet: true}}
+}
+
+// TestProj18_QuietSessionIsCleanedUp (#2402): a session that never called
+// finish_session but has been quiet for 24 h is applied like a finished one:
+// its pushed work goes, and the kept worktree loses its build.
+func TestProj18_QuietSessionIsCleanedUp(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	pushed := a.pushedWork("wt-pushed", "feat/pushed")
+	a.record(pushed, "feat/pushed")
+	kept := a.worktree("wt-kept", "feat/kept")
+	a.commit(kept, ".gitignore", ".build/\n")
+	a.record(kept, "feat/kept")
+	build := swiftBuild(t, filepath.Join(kept, ".build"))
+	now := time.Now()
+	a.quietSession(now.Add(-30 * time.Hour))
+
+	res, err := a.run(now)
+	if err != nil || res.Applied != 1 || res.Failed != 0 || res.Changed != 1 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if exists(pushed) || a.branchExists("feat/pushed") {
+		t.Fatal("the pushed work of the quiet session stayed")
+	}
+	if !a.listsWorktree(kept) || exists(build) {
+		t.Fatalf("kept worktree listed %v, build exists %v (the quiet session's build must go)", a.listsWorktree(kept), exists(build))
+	}
+}
+
+// TestProj18_QuietSessionLosesKeptWorktreesBuild: a quiet session's kept
+// (unpushed) worktree loses its build in the same apply, the work stays.
+func TestProj18_QuietSessionLosesKeptWorktreesBuild(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root, builds := a.unpushedWithBuild()
+	now := time.Now()
+	a.quietSession(now.Add(-25 * time.Hour))
+
+	if res, err := a.run(now); err != nil || res.Failed != 0 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if !a.listsWorktree(root) || !a.branchExists("feat/x") {
+		t.Fatal("the unpushed work went")
+	}
+	for _, b := range builds {
+		if exists(b) {
+			t.Fatalf("build %s survived", b)
+		}
+	}
+}
+
+// TestProj18_LiveQuietSessionIsSkipped: a quiet row that is live in the host
+// is skipped for this pass (not a failure), nothing of it is touched.
+func TestProj18_LiveQuietSessionIsSkipped(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root := a.pushedWork("wt", "feat/x")
+	a.record(root, "feat/x")
+	now := time.Now()
+	a.quietSession(now.Add(-30 * time.Hour))
+	a.live[testSession] = true
+
+	res, err := a.run(now)
+	if err != nil || res != (AutoResult{}) {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if !a.listsWorktree(root) || !a.branchExists("feat/x") || len(a.locked) != 0 {
+		t.Fatal("something of the live quiet session was touched")
+	}
+}
+
+// TestProj18_QuietCandidateActiveAgainRemovesNothing: a quiet row that is
+// active again by the apply (its terminal reopened, or it lists no longer
+// quiet) loses nothing — the host's live set read right before the apply
+// skips it, a candidate under 24 h is not due.
+func TestProj18_QuietCandidateActiveAgainRemovesNothing(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		ended time.Duration
+		live  bool
+	}{"reopened before the apply": {ended: 30 * time.Hour, live: true}, "active within 24 h": {ended: 2 * time.Hour}} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a := newAutoFixture(t)
+			root := a.pushedWork("wt", "feat/x")
+			a.record(root, "feat/x")
+			now := time.Now()
+			a.quietSession(now.Add(-tc.ended))
+			a.live[testSession] = tc.live
+			if res, err := a.run(now); err != nil || res.Changed != 0 || res.Failed != 0 {
+				t.Fatalf("res %+v, err %v", res, err)
+			}
+			if !a.listsWorktree(root) || !a.branchExists("feat/x") {
+				t.Fatal("something of the active session went")
+			}
+		})
+	}
+}
+
+// TestProj18_QuietSessionReopenedAfterListingKeepsItsWork: a quiet row whose
+// stored activity moved forward after the candidate list was read (a reopen
+// writes last_active_at before the host run exists, so the live set is
+// still empty) loses nothing and is no failure; when the activity moves
+// during the apply, nothing more is removed and the worktree is kept as a
+// check_failed item (a keep, not an item error: AutoResult.Failed stays 0,
+// the next pass retries).
+func TestProj18_QuietSessionReopenedAfterListingKeepsItsWork(t *testing.T) {
+	t.Parallel()
+	for name, late := range map[string]bool{"before the apply": false, "during the apply": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a := newAutoFixture(t)
+			root := a.pushedWork("wt", "feat/x")
+			a.commit(root, ".gitignore", ".build/\n")
+			gitIn(t, root, "push", "-q", "origin", "feat/x")
+			a.record(root, "feat/x")
+			build := swiftBuild(t, filepath.Join(root, ".build"))
+			now := time.Now()
+			a.quietSession(now.Add(-30 * time.Hour))
+			reopen := func() { a.store.activity[0].LastActive = now.Add(-time.Minute) }
+			if late {
+				a.git = &flipGit{flip: reopen}
+			} else {
+				reopen()
+			}
+			res, err := a.run(now)
+			if err != nil || res.Changed != 0 || res.Failed != 0 {
+				t.Fatalf("res %+v, err %v", res, err)
+			}
+			if !a.listsWorktree(root) || !a.branchExists("feat/x") || !exists(filepath.Join(build, buildMarker)) {
+				t.Fatal("something of the reopened session went")
+			}
+		})
+	}
+}
+
+// flipOnStatus runs flip once, before the first `git status` that follows
+// the afterLists-th `worktree list`: the expensive checks of a re-check, run
+// after its facts were read.
+type flipOnStatus struct {
+	SystemGit
+	mu         sync.Mutex
+	lists      int
+	afterLists int
+	flip       func()
+	done       bool
+}
+
+func (g *flipOnStatus) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	g.mu.Lock()
+	switch {
+	case slices.Equal(args, []string{"worktree", "list", "--porcelain"}):
+		g.lists++
+	case len(args) > 0 && args[0] == "status" && g.lists >= g.afterLists && !g.done:
+		g.done = true
+		g.flip()
+	}
+	g.mu.Unlock()
+	return g.SystemGit.RunGit(ctx, dir, bin, args...)
+}
+
+// TestProj18_QuietSessionReopenedDuringTheFinalChecksKeepsItsWorktree: the
+// session reopens (last_active_at written without any lock) while the final
+// re-check of the worktree is running, after that re-check's facts were
+// read; the worktree stays.
+func TestProj18_QuietSessionReopenedDuringTheFinalChecksKeepsItsWorktree(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root := a.pushedWork("wt", "feat/x")
+	a.record(root, "feat/x")
+	now := time.Now()
+	a.quietSession(now.Add(-30 * time.Hour))
+	// afterLists 3: the last re-check's list; its facts are read, its checks still run.
+	a.git = &flipOnStatus{afterLists: 3, flip: func() { a.store.activity[0].LastActive = now.Add(-time.Minute) }}
+	res, err := a.run(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed != 0 || !a.listsWorktree(root) || !a.branchExists("feat/x") {
+		t.Fatalf("res %+v: the reopened session's work went", res)
+	}
+}
+
+// flipOnGit runs flip once, before the first git command match accepts.
+type flipOnGit struct {
+	SystemGit
+	mu    sync.Mutex
+	match func(args []string) bool
+	flip  func()
+	done  bool
+}
+
+func (g *flipOnGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	g.mu.Lock()
+	if !g.done && g.match(args) {
+		g.done = true
+		g.flip()
+	}
+	g.mu.Unlock()
+	return g.SystemGit.RunGit(ctx, dir, bin, args...)
+}
+
+// TestProj18_QuietSessionReopenedDuringTheBranchChecksKeepsItsBranch: the
+// session reopens while the branch is checked one last time (the re-listing
+// of worktrees right before the ref delete, after the worktree went); the
+// branch stays, a check_failed keep that is no failure.
+func TestProj18_QuietSessionReopenedDuringTheBranchChecksKeepsItsBranch(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root := a.pushedWork("wt", "feat/x")
+	a.record(root, "feat/x")
+	now := time.Now()
+	a.quietSession(now.Add(-30 * time.Hour))
+	removed, listsAfter := false, 0
+	g := &flipOnGit{
+		match: func(args []string) bool {
+			switch {
+			case len(args) > 1 && args[0] == "worktree" && args[1] == "remove":
+				removed = true
+			case removed && slices.Equal(args, []string{"worktree", "list", "--porcelain"}):
+				listsAfter++
+				// After the remove: the branch re-check's fresh facts, then
+				// notCheckedOutNow's re-listing — the last git call before
+				// the final activity read and update-ref -d.
+				return listsAfter == 2
+			}
+			return false
+		},
+		flip: func() { a.store.activity[0].LastActive = now.Add(-time.Minute) },
+	}
+	a.git = g
+	res, err := a.run(now)
+	if err != nil || res.Failed != 0 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if !g.done {
+		t.Fatalf("the reopen never happened (lists after the remove %d)", listsAfter)
+	}
+	if a.listsWorktree(root) {
+		t.Fatal("the worktree stayed: the run never reached the branch's last check")
+	}
+	if !a.branchExists("feat/x") {
+		t.Fatal("the reopened session's branch went")
+	}
+	if it := savedItem(t, a, "branch:feat/x"); it.Action != ActionKeep || it.Reason != ReasonCheckFailed || it.Error != "" {
+		t.Fatalf("branch item %+v, want a check_failed keep", it)
+	}
+}
+
+// savedItem is the item of the result the pass saved, by key.
+func savedItem(t *testing.T, a *autoFixture, key string) Item {
+	t.Helper()
+	var saved Result
+	if err := json.Unmarshal([]byte(a.results.body), &saved); err != nil {
+		t.Fatalf("saved result: %v", err)
+	}
+	for _, it := range saved.Items {
+		if it.Key == key {
+			return it
+		}
+	}
+	t.Fatalf("no %s in the saved result %s", key, a.results.body)
+	return Item{}
+}
+
+// lsFilesOfABuild: the `git ls-files` pruneBuildDir runs on a build folder.
+func lsFilesOfABuild(args []string) bool {
+	return len(args) > 0 && args[0] == "ls-files" && slices.ContainsFunc(args, func(s string) bool { return strings.HasPrefix(s, ":(literal)") })
+}
+
+// TestProj18_QuietSessionReopenedDuringLsFilesKeepsItsBuild: the session
+// reopens while git lists what it tracks in a build folder (right before the
+// folder is moved aside); the build stays, quietly (no failure, no build
+// error), and the worktree is not marked builds-checked.
+func TestProj18_QuietSessionReopenedDuringLsFilesKeepsItsBuild(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root, builds := a.unpushedWithBuild()
+	now := time.Now()
+	a.quietSession(now.Add(-30 * time.Hour))
+	g := &flipOnGit{match: lsFilesOfABuild, flip: func() { a.store.activity[0].LastActive = now.Add(-time.Minute) }}
+	a.git = g
+	res, err := a.run(now)
+	if err != nil || res.Failed != 0 {
+		t.Fatalf("res %+v, err %v", res, err)
+	}
+	if !g.done {
+		t.Fatal("the reopen never happened: no build folder reached ls-files")
+	}
+	for _, b := range builds {
+		if !exists(b) {
+			t.Fatalf("build %s went", b)
+		}
+	}
+	if it := savedItem(t, a, "worktree:"+root); it.BuildsChecked || it.BuildError != "" || len(it.BuildsRemoved) != 0 {
+		t.Fatalf("worktree item %+v: want builds unchecked, no error, none removed", it)
+	}
+}
+
+// TestProj18_QuietSessionReopenedDuringLsFilesOfItsLastBuildIsPrunedLater
+// (F4-1): the reopen lands on the ls-files of the worktree's only build —
+// no later folder's re-check can notice it — so the stop itself must keep
+// the root unchecked; the pass after the session went quiet again walks the
+// root and deletes the build.
+func TestProj18_QuietSessionReopenedDuringLsFilesOfItsLastBuildIsPrunedLater(t *testing.T) {
+	t.Parallel()
+	a := newAutoFixture(t)
+	root := a.worktree("wt", "feat/x")
+	a.commit(root, ".gitignore", ".build/\n")
+	a.record(root, "feat/x")
+	build := swiftBuild(t, filepath.Join(root, ".build"))
+	now := time.Now()
+	a.quietSession(now.Add(-30 * time.Hour))
+	reopened := now.Add(-time.Minute)
+	g := &flipOnGit{match: lsFilesOfABuild, flip: func() { a.store.activity[0].LastActive = reopened }}
+	a.git = g
+	if res, err := a.run(now); err != nil || res.Failed != 0 {
+		t.Fatalf("first pass: res %+v, err %v", res, err)
+	}
+	if !g.done || !exists(build) {
+		t.Fatalf("first pass: reopen fired %v, build kept %v", g.done, exists(build))
+	}
+	if it := savedItem(t, a, "worktree:"+root); it.BuildsChecked {
+		t.Fatalf("first pass: worktree item %+v marked builds-checked", it)
+	}
+
+	// Quiet again for 30 h; the candidate carries the first pass's result.
+	later := now.Add(30 * time.Hour)
+	a.git = nil
+	a.cands = []AutoCandidate{{SessionID: testSession, WorkbenchID: testWorkbench, EndedAt: reopened, Quiet: true,
+		CleanupAt: now, CleanupResult: a.results.body}}
+	if res, err := a.run(later); err != nil || res.Failed != 0 {
+		t.Fatalf("second pass: res %+v, err %v", res, err)
+	}
+	if exists(build) {
+		t.Fatal("second pass: the build of the quiet-again session survived")
+	}
+	if !a.listsWorktree(root) || !a.branchExists("feat/x") {
+		t.Fatal("second pass: the unpushed work went")
+	}
+}
+
+// TestAutoDue_QuietMeasuresFromEndedAt: a quiet row's retry and "cleaned
+// since it ended" read from EndedAt, not the zero FinishedAt.
+func TestAutoDue_QuietMeasuresFromEndedAt(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	ended := now.Add(-30 * time.Hour)
+	if !autoDue(AutoCandidate{Quiet: true, EndedAt: ended, CleanupAt: ended.Add(-time.Minute), CleanupResult: "{}"}, now) {
+		t.Error("cleaned before it went quiet: due")
+	}
+	if autoDue(AutoCandidate{Quiet: true, EndedAt: ended, CleanupAt: now.Add(-time.Hour), CleanupResult: "{}"}, now) {
+		t.Error("cleaned after, nothing left: not due")
+	}
+	if autoDue(AutoCandidate{Quiet: true, EndedAt: now.Add(-time.Hour)}, now) {
+		t.Error("quiet for under autoQuiet: not due")
 	}
 }
 

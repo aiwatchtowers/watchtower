@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,6 +28,9 @@ const (
 	// autoWindow is how long after its finish a session is still cleaned
 	// up automatically.
 	autoWindow = 14 * 24 * time.Hour
+	// autoQuiet is how long a session that never called finish_session must
+	// have had no activity to count as ended (#2402).
+	autoQuiet = 24 * time.Hour
 	// autoRetry is how long a session whose last cleanup left work behind
 	// waits before the next try (a branch merged or pushed since).
 	autoRetry = time.Hour
@@ -37,7 +41,8 @@ const (
 	autoBatch = 10
 )
 
-// AutoCandidate is a finished, not deleting, agent session of a workbench
+// AutoCandidate is an ended — finished, or quiet for autoQuiet with no
+// finish_session (Quiet) — not deleting, agent session of a workbench
 // (db.FinishedSessionForCleanup).
 type AutoCandidate = db.FinishedSessionForCleanup
 
@@ -45,7 +50,7 @@ type AutoCandidate = db.FinishedSessionForCleanup
 type AutoDeps struct {
 	// Deps are the apply's; their Lock is replaced by TryLock.
 	Deps Deps
-	// Candidates lists the sessions finished at or after since, the
+	// Candidates lists the sessions ended at or after since, the
 	// longest-waiting first.
 	Candidates func(ctx context.Context, since time.Time) ([]AutoCandidate, error)
 	// Live is the session host's live terminal rows, read right before
@@ -115,9 +120,18 @@ func AutoRun(ctx context.Context, ad AutoDeps, now time.Time) (AutoResult, error
 			ad.logf("session cleanup: session %d: listing the live sessions: %v", c.SessionID, err)
 			continue
 		}
+		// A quiet row has no finish for the apply to re-check: the host's
+		// live set is its only sign of life, so one live there is skipped
+		// this pass (it is not a failure; W6 would keep its worktree too).
+		if c.Quiet && slices.Contains(liveIDs, c.SessionID) {
+			continue
+		}
 		res, applyErr := autoApply(ctx, ad, c, liveIDs, now)
 		switch {
 		case errors.Is(applyErr, errCleanupBusy):
+			continue
+		case c.Quiet && errors.Is(applyErr, ErrSessionNotEnded):
+			// Active again since it was listed: nothing removed, no failure.
 			continue
 		case applyErr != nil:
 			out.Failed++
@@ -159,7 +173,7 @@ func autoApply(ctx context.Context, ad AutoDeps, c AutoCandidate, live []int64, 
 		return unlock, nil
 	}
 	res, err := Apply(ctx, d, Request{SessionID: c.SessionID, WorkbenchID: c.WorkbenchID, LiveSessions: live,
-		NoSize: true, PruneBuilds: true, NoTerminate: true, RequireEnded: true, BuildsChecked: checkedRoots(c),
+		NoSize: true, PruneBuilds: true, NoTerminate: true, RequireEnded: !c.Quiet, Quiet: c.Quiet, QuietBefore: now.Add(-autoQuiet), BuildsChecked: checkedRoots(c),
 		Now: now}, nil)
 	if err != nil {
 		return res, fmt.Errorf("applying: %w", err)
@@ -186,13 +200,22 @@ func resultFailure(res Result) string {
 	return strings.Join(parts, "; ")
 }
 
+// endedAt is when the candidate ended: finished_at, or for a quiet row its
+// last activity (a candidate built with only FinishedAt reads as it).
+func endedAt(c AutoCandidate) time.Time {
+	if c.EndedAt.IsZero() {
+		return c.FinishedAt
+	}
+	return c.EndedAt
+}
+
 // checkedRoots are the worktree roots whose builds the session's last
 // cleanup, when it ran after the session's latest finish, found nothing
 // left to delete in (builds_checked): a retry does not walk them again. A
 // result from before the finish (the session worked, and may have built,
 // since) names none.
 func checkedRoots(c AutoCandidate) []string {
-	if c.CleanupAt.IsZero() || c.CleanupAt.Before(c.FinishedAt) {
+	if c.CleanupAt.IsZero() || c.CleanupAt.Before(endedAt(c)) {
 		return nil
 	}
 	var r Result
@@ -239,10 +262,15 @@ func (ad AutoDeps) logf(format string, args ...any) {
 	}
 }
 
-// autoDue: the session has had no cleanup since it finished, or its last
-// one left something that may go later and is autoRetry old.
+// autoDue: the session has had no cleanup since it ended, or its last
+// one left something that may go later and is autoRetry old. A quiet row
+// younger than autoQuiet is not due (it was active again after being
+// listed).
 func autoDue(c AutoCandidate, now time.Time) bool {
-	if c.CleanupAt.IsZero() || c.CleanupAt.Before(c.FinishedAt) {
+	if c.Quiet && now.Sub(c.EndedAt) < autoQuiet {
+		return false
+	}
+	if c.CleanupAt.IsZero() || c.CleanupAt.Before(endedAt(c)) {
 		return true
 	}
 	return now.Sub(c.CleanupAt) >= autoRetry && leftWork(c.CleanupResult)
@@ -282,4 +310,12 @@ func leftWork(resultJSON string) bool {
 		return true
 	}
 	return false
+}
+
+// DBCandidates is AutoDeps.Candidates over the database: finished sessions
+// and ones quiet for autoQuiet at the time now() reads.
+func DBCandidates(database *db.DB, now func() time.Time) func(context.Context, time.Time) ([]AutoCandidate, error) {
+	return func(ctx context.Context, since time.Time) ([]AutoCandidate, error) {
+		return database.EndedSessionsForCleanup(ctx, since, now().Add(-autoQuiet)) //nolint:wrapcheck // the caller names it
+	}
 }

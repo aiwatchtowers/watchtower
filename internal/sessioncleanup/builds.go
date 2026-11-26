@@ -100,11 +100,54 @@ func (b *builder) sessionFinished() bool {
 	return ok && a.Finished && !a.DeleteRequested
 }
 
+// endStands: the end the apply was started for still stands on the facts b
+// holds: the finish for RequireEnded; for a Quiet request the session is
+// not being deleted and is finished or still quiet (Request.QuietBefore);
+// anything else has nothing to re-check.
+func (b *builder) endStands() bool {
+	switch {
+	case b.req.RequireEnded:
+		return b.sessionFinished()
+	case b.req.Quiet:
+		a, ok := b.activity[b.req.SessionID]
+		return quietStands(b.req, a, ok)
+	}
+	return true
+}
+
+// quietStands: a quiet request's session is known, not being deleted, and
+// finished or still quiet. closed_at, which the listing also reads, is not
+// re-read: it is legacy (no Close action writes it since 2026-10-01), so
+// nothing moves it after the listing.
+func quietStands(r Request, a SessionActivity, known bool) bool {
+	if !known || a.DeleteRequested {
+		return false
+	}
+	return a.Finished || (!a.ReportedAt.After(r.QuietBefore) && !a.LastActive.After(r.QuietBefore))
+}
+
+// quietStillStands re-reads the activity of the request's session right now
+// (the Desktop writes last_active_at without the repository lock, so a
+// builder's snapshot can be stale after its expensive checks) — for a quiet
+// request, right before a destructive step. Other requests: true. A read
+// that fails is an error: the caller keeps the work.
+func (a *applier) quietStillStands(ctx context.Context) (bool, error) {
+	if !a.req.Quiet {
+		return true, nil
+	}
+	s, ok, err := a.deps.DB.SessionActivityOf(ctx, a.req.SessionID)
+	if err != nil {
+		return false, fmt.Errorf("re-reading the session's activity: %w", err)
+	}
+	return quietStands(a.req, s, ok), nil
+}
+
 // sessionEnded: the planned session finished (finish_session) or is being
-// deleted — the end of the session the prune waits for.
+// deleted, or quiet for 24 h (Request.Quiet) — the end of the session the
+// prune waits for. The one place that honours Request.Quiet.
 func (b *builder) sessionEnded() bool {
 	a, ok := b.activity[b.req.SessionID]
-	return ok && (a.Finished || a.DeleteRequested)
+	return ok && (a.Finished || a.DeleteRequested || b.req.Quiet)
 }
 
 // pruneBuilds deletes the build output of every worktree the apply kept
@@ -133,7 +176,8 @@ func (a *applier) pruneBuilds(ctx context.Context) {
 // re-check. A root the request names in BuildsChecked (an earlier
 // automatic apply checked it since the session's finish) is not walked
 // again. BuildsChecked is set once nothing is left to delete: no build
-// found, or every one found deleted or kept for certain.
+// found, or every one found deleted or kept for certain — never when a
+// quiet session reopened part-way (pruneStopped).
 func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 	root := strings.TrimPrefix(it.Key, "worktree:")
 	if slices.Contains(a.req.BuildsChecked, root) {
@@ -177,13 +221,21 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 		if holder := b.worktreeInside(f.path); holder != "" {
 			continue // a linked worktree lives in it: its work is not build output
 		}
-		removed, err := b.pruneBuildDir(ctx, root, f)
+		outcome, err := b.pruneBuildDir(ctx, root, f, a.quietStillStands)
 		if err != nil {
 			it.BuildError = err.Error()
 			return
 		}
-		if removed {
+		switch outcome {
+		case pruneKept:
+			// kept for good (git tracks a file in it): on to the next folder
+		case pruneRemoved:
 			it.BuildsRemoved = append(it.BuildsRemoved, f.path)
+		case pruneStopped:
+			// The session is no longer quiet: the rest is left, and the
+			// root not marked checked, so the pass after it goes quiet
+			// again walks it.
+			return
 		}
 	}
 	it.BuildsChecked = !doubt
@@ -255,7 +307,7 @@ func (a *applier) mayPrune(ctx context.Context, root string) (*builder, bool, er
 	if err != nil {
 		return nil, false, err
 	}
-	if !b.sessionEnded() || (a.req.RequireEnded && !b.sessionFinished()) {
+	if !b.sessionEnded() || !b.endStands() {
 		return nil, false, nil
 	}
 	w, ok := b.listedWorktree(root)
@@ -309,14 +361,29 @@ type foundBuild struct {
 	kind  buildKind
 }
 
-// pruneBuildDir deletes one find of root and says whether it did: a folder
+// pruneOutcome is what pruneBuildDir did with one find.
+type pruneOutcome int
+
+const (
+	// pruneKept: the folder stays for good (git tracks a file in it).
+	pruneKept pruneOutcome = iota
+	// pruneRemoved: the folder was deleted.
+	pruneRemoved
+	// pruneStopped: the folder stays because the session no longer
+	// qualifies (lastCheck said so); the prune stops and the root is not
+	// marked checked.
+	pruneStopped
+)
+
+// pruneBuildDir deletes one find of root and says what it did: a folder
 // git tracks a file in (its path matched literally) stays (it is the repository's, not build output); a
 // build folder is moved aside and deleted (removeBuildDir), a marked trash
-// leftover deleted as it is.
-func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) (bool, error) {
+// leftover deleted as it is; a session lastCheck no longer lets go stops it.
+func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild,
+	lastCheck func(context.Context) (bool, error)) (pruneOutcome, error) {
 	rel, err := filepath.Rel(root, f.path)
 	if err != nil {
-		return false, fmt.Errorf("locating %s: %w", f.path, err)
+		return pruneKept, fmt.Errorf("locating %s: %w", f.path, err)
 	}
 	// ":(literal)": the folder's path is a path, never pathspec magic or a
 	// glob (a folder named ":(literal)x" or "a*" must still match itself).
@@ -333,15 +400,24 @@ func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) 
 	}
 	out, err := b.repo.git.output(ctx, root, append(args, "--", ":(literal)"+rel)...)
 	if err != nil {
-		return false, fmt.Errorf("reading what git tracks in %s: %w", f.path, err)
+		return pruneKept, fmt.Errorf("reading what git tracks in %s: %w", f.path, err)
 	}
 	if len(out) > 0 {
-		return false, nil
+		return pruneKept, nil
+	}
+	// The last thing before the move or the delete: the session's activity
+	// read afresh (the ls-files above can take long). It stays on a
+	// failed read.
+	switch ok, err := lastCheck(ctx); {
+	case err != nil:
+		return pruneKept, err
+	case !ok:
+		return pruneStopped, nil
 	}
 	if f.trash {
-		return true, finishTrash(f.path, f.kind.name, os.RemoveAll)
+		return pruneRemoved, finishTrash(f.path, f.kind.name, os.RemoveAll)
 	}
-	return true, removeBuildDir(f.path, os.RemoveAll)
+	return pruneRemoved, removeBuildDir(f.path, os.RemoveAll)
 }
 
 // removeBuildDir makes a fresh trash folder beside dir
