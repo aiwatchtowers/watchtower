@@ -1,122 +1,142 @@
-# Chat text highlights — design
+# Chat text highlights v2 — design
 
-**Status:** draft, 2026-11-26. Size: a small change (short design).
+**Status:** draft, 2026-11-26, round 2. Size: a small change (short design). Extends the
+Workchat's agent-text highlighting (spec `2026-11-24-workchat-polish-design.md` §2, D3, C1,
+C2; `AgentTextHighlights`, `AgentTextHighlightRender`, `WorkchatHighlights`, `SyntaxTint`).
 
 ## Intent
 
-A session agent's chat messages are long prose with almost no markup: commit hashes, file
-paths, board references and dates sit in plain body text, so the eye has nothing to catch on.
-Watchtower should colour these spans on its own, without the agent marking them up. The
-highlighter is a module any chat surface switches on with one line; the session chat feed and
-the main AI chat get it first, every other chat later.
+The owner looked at a Workchat feed and found almost nothing coloured. The cause is not the
+palette: the agent puts hashes, file names, branches and dates in inline code (`` `4d434597` ``,
+`` `team_kpi.json` ``), and today's highlighter reads inline code only for a command
+(`AgentTextHighlights.commandSpan(inCode:)`). Those spans render monospaced but in the plain
+text colour, which is what the screenshot shows. A few common spans (dates, `PR #N`, `ask #N`)
+have no kind at all, and `ask #990` is even coloured and clicked as target `#990`.
+
+v2 colours what the agent actually writes, and turns the Workchat-only switch into one any chat
+feed sets with one line, so other chats can opt in later.
 
 ## Goals
 
-- Colour-only highlights (owner's call): no links, no click actions, no new menus.
-- One rule set shared by the Mac and the iPhone; one place to add a rule.
-- A surface opts in with one modifier; a surface that does not is unchanged.
-- Inline code on the Mac gets the background plate the iPhone already draws.
+- Inline code that is, as a whole, a hash, a ref, a resolving path or a date takes that kind's
+  colour (as a command already does).
+- New colour-only kinds: a date or time; a `PR #N` / `ask #N` reference.
+- `ask #N` and `PR #N` stop being target refs (no "Show on the board" for a wrong id).
+- One opt-in value on `ChatFeedContext` replaces the `highlightsAgentText` flag plus the
+  separate `resolvesPath` action.
 
 ## Non-goals
 
-- Clickable spans (commit → diff, `#N` → target, path → file). Not wanted now.
-- Status-word sentiment ("tests green" in green, "not sure" in amber): a noisy two-language
-  heuristic; a later iteration if wanted.
-- Highlighting inside code blocks (they keep `CodeHighlighter`), inline code, links or
-  headings' existing styling.
-- Changing what the agent writes (bolding its outcome is a separate prompt target, #1170).
-
-## Anti-goals
-
-- Copied or quoted text changes: highlights are attributes only, the characters stay as written.
-- Rainbow text: at most three tones; a false positive must look harmless.
-- A scroll or streaming slowdown (`ChatScrollBenchmarkTests`, `TextRenderingBenchmarkTests`
-  stay within their current bounds).
+- Turning highlighting on in the AI chat or on the iPhone: C2 stands for v2; each is a later
+  one-line opt-in plus, for the phone, its renderer (target to be filed).
+- Clicks on the new kinds (owner, ask #990: colour only). Existing clicks (ref → board, hash and
+  command → copy, path → Files) stay as they are.
+- Status words ("green", "not sure") and durations — C1 keeps them out.
+- Task numbers ("Task 3", «задача 3», `A1a`): Russian inflects the word (задачу, задаче) and a
+  bare `A1a` is indistinguishable from any short id; left out rather than guessed.
+- Colouring a path that does not resolve in a session folder: the resolution rule stays.
+- A background plate under inline code on the Mac (see Decisions, Q2).
 
 ## Approaches
 
-- **A — mark the rendered inlines in `WatchtowerChatText` (picked, ask #991).** A rule set
-  ("regex → kind") marks spans of plain text with a highlight attribute; each platform maps a
-  kind to a colour. Shared, memoised with the existing inline memo.
-- B — rewrite the markdown text, wrapping matches in `` `code` `` (as `CodeLineLinks` does).
-  No renderer change, but every match looks like code and sentiment can never fit. Rejected.
-- C — colour the final `AttributedString` per platform. Rules duplicated on the Mac and the
-  iPhone, harder to keep off code and links. Rejected.
+- **A — extend the existing pass (picked, ask #991, refined).** Ask #991 approved "mark the
+  rendered inlines in `WatchtowerChatText`, colour per platform". That pass already exists as
+  `AgentTextHighlights` + `AgentTextHighlightRender`; v2 extends it instead of building a second.
+- B — wrap matches in `` `code` `` in the markdown text. Everything looks like code. Rejected.
+- C — a second highlighter beside the existing one (round 1 of this spec). Two palettes and two
+  rule sets for the same spans, both running in the Workchat. Rejected by the spec review.
 
 ## Design
 
-**Module (`WatchtowerChatText`, Foundation only).**
-- `ChatHighlightKind` (`identifier`, `reference`, `time`) and an `AttributedStringKey`
-  `chatHighlight` carrying it.
-- `ChatHighlightRule` — a compiled regex and a kind; `ChatHighlights` — a named, `Hashable`
-  set of rules, with `.none` and `.standard`.
-- `ChatHighlighter.mark(_ text: inout AttributedString, with: ChatHighlights)` — runs the
-  rules over the runs that carry no `.code` intent and no link, and sets `chatHighlight` on
-  each match. First rule wins on an overlap. Pure.
-- Marking happens inside the existing `MarkdownInlineRenderer.memoized` build; the rule set's
-  name joins the memo context, so a hit costs nothing extra.
+**Rules (`AgentTextHighlights`, `WatchtowerChatText`).**
 
-**Rules in `.standard`.**
+| Kind | Plain text | Whole inline code | Click |
+|------|------------|-------------------|-------|
+| `ref(N)` | `#N` not preceded by `PR` / `ask` (today's rule otherwise) | `#N` | board (as today) |
+| `hash` | as today | 7–40 hex, one digit and one letter | copy (as today) |
+| `path` | as today, kept when it resolves | a path candidate, kept when it resolves | Files (as today) |
+| `command` | — | as today | copy (as today) |
+| `time` (new) | `YYYY-MM-DD`, `HH:MM` (00–23:00–59), alone | the same, alone or quoted (`"2026-11-16"`) | none |
+| `pullRequest(N)`, `ask(N)` (new) | `PR #N`, `ask #N`, case-insensitive, the whole phrase | the same | none |
 
-| Kind | Matches | Leaves alone |
-|------|---------|--------------|
-| `identifier` | a commit hash: 7–40 hex chars with at least one digit and one letter, a whole word (`4d434597`) | words, numbers, hex inside a longer token |
-| `identifier` | a path with a `/` and a file part (`.superpowers/sdd/x/progress.md`, `cmd/run.go`), or a file name with a lowercase 1–5 letter extension and a `_` or `-` in the name (`team_kpi.json`) | web addresses, `example.com`, versions (`v1.2`), mail addresses |
-| `reference` | `#N`, `PR #N`, `ask #N`, `target #N` | `#` not followed by digits, headings |
-| `time` | `YYYY-MM-DD`, `HH:MM` | ratios (`3:2`), versions |
+`spans(inPlain:)` gains the new kinds; `commandSpan(inCode:)` becomes `codeSpan(inCode:)`, which
+returns the one kind the whole code span is, command first. Inline code that holds more than
+one token (`marking_started: "2026-11-16"`) is only coloured if it is a command, as today.
 
-A builder may tune a pattern against the test cases; adding a kind is a design change.
+**Colours (`SyntaxTint`).** One new token, `time`, foreground at the same `opacity` 0.7 (D3:
+no fill, box or weight). `pullRequest` and `ask` use `ref`. The style guide's token table gains
+the row. Hashes and paths keep their monospaced design; a code span keeps its own font.
 
-**Colours (`WatchtowerDesign`).** One token per kind, light and dark, following
-`docs/design/desktop-style-guide.md`: `identifier` a muted teal, `reference` the accent,
-`time` the strong secondary label. Font and weight do not change.
+**Render (`AgentTextHighlightRender`, Mac).** The scan reads a whole inline-code piece with
+`codeSpan(inCode:)`; the new kinds colour without the click attribute; VoiceOver names them
+("PR #12", "ask #990", the date) with no action.
 
-**Renderers.**
-- Mac, `MarkdownTextRun.appendInlines` (NSTextView path): `chatHighlight` → foreground
-  colour; inline code (`.code` intent) → background plate (`Fill.card` equivalent).
-- Mac, `MarkdownView` SwiftUI `Text` path (tables, lists outside runs): the same mapping,
-  applied to the `AttributedString` before `Text`.
-- iPhone, `MarkdownRuns.inline`: `chatHighlight` → foreground colour (plate already exists).
+**Opt-in.** `ChatFeedContext.highlightsAgentText: Bool` and `ChatPartActions.resolvesPath`
+become one value:
 
-**Opt-in.** An environment value `\.chatHighlights` (default `.none`), read by
-`MarkdownBlocksView` / `MarkdownTextRun` and the iPhone runs, and carried in
-`InlineLinkContext` (the memo context). v1 sets `.standard` at the session chat feed
-(`SessionChatRow`, `PeerBubbleCard`), the main AI chat feed and the iPhone chat feed. Another
-chat opts in with `.chatHighlights(.standard)`.
+```swift
+public struct AgentTextHighlighting {           // ChatUI
+    public var resolvesPath: ((String, Int64) -> Bool)?   // nil: paths are never coloured
+    public var onSpan: ((AgentTextHighlights.Span, Int64) -> Void)?  // nil: colour only
+}
+ChatFeedContext.agentTextHighlighting: AgentTextHighlighting?   // nil: off (default)
+```
 
-**Mockup** (owner's screenshot is the "before"; `[i]` identifier, `[r]` reference, `[t]` time):
+The Workchat (`SessionChatView`, `SessionChatRow`)
+sets it with `WorkchatHighlights` as today; no other surface changes in v2. A chat that opts in
+later writes one line, `context.agentTextHighlighting = AgentTextHighlighting()`, and gets
+refs, hashes, commands, dates, PR and ask refs coloured, without clicks or paths.
+
+**Mockup.** Before: the owner's screenshot (target #1169). After (`[h]` hash purple, `[t]` time
+new token, `[r]` ref accent, `⟦…⟧` inline code):
 
 ```
-Реализация началась. Дизайн и план закоммичены в ветку ⟦domain-kpi-v2⟧ ([i]4d434597).
-Задача 1 готова, два коммита:
- • [i]75e1e176: общие тестовые хелперы вынесены…
- • [i]f5df21ff: ⟦marking_started: "[t]2026-11-16"⟧, отдельным коммитом.
-Прогресс записываю в журнал [i].superpowers/sdd/2026-11-26-domain-kpi-v2/progress.md.
-Вопрос — в ask [r]#990, таргет [r]#1169.
+Дизайн и план закоммичены в ветку ⟦domain-kpi-v2⟧ (⟦[h]4d434597⟧).
+ • ⟦[h]75e1e176⟧: общие тестовые хелперы вынесены…
+ • ⟦[h]f5df21ff⟧: ⟦marking_started: "2026-11-16"⟧, отдельным коммитом.   ← two tokens: plain
+Отметка с [t]2026-11-16, ответ в [r]ask #990, PR [r]#1124 → [r]PR #1124.
 ```
-`⟦…⟧` = inline code, now on a plate on the Mac too (its contents are not re-coloured).
+
+The as-built screen is shot with `make desktop-shots` on the Workchat fixture and attached to
+the target before review; this spec does not add a screen or a state.
+
+## Decisions
+
+| # | Decision | By |
+|---|----------|----|
+| D1 | Colour only for the new kinds, no clicks | owner, ask #990 |
+| D2 | Extend the existing pass rather than build a new one | owner, ask #991 (refined after the spec review) |
+| D3' | Workchat-polish D3 (no fill, box, weight; opacity 0.7) holds; one new token `time` | author's call, from D3 |
+| C1' | v2 adds dates and PR/ask refs to C1's kinds; status words, durations, task numbers stay out | author's call; approved by ask #992 |
+| C2' | C2 stands: AI chat and iPhone unchanged in v2; the opt-in becomes one value | author's call; approved by ask #992 |
+| Q2 | No Mac inline-code plate: it is a fill D3 rules out. If ask #992 asks for it, it becomes its own target | author's call; approved by ask #992 |
+
+If ask #992 is declined, nothing changes and the work stops at this spec.
 
 ## Failure paths
 
-The highlighter is pure and cannot fail at run time; a bad pattern is a test failure. A false
-positive only colours a word. Performance is covered by the existing benchmarks plus one case
-in `ChatHighlighterTests` timing a long paragraph.
+The scan is pure and cannot fail at run time; a bad pattern is a test failure. A false positive
+only colours a word; a new kind never clicks. A path lookup keeps today's behaviour
+(`WorkchatHighlights`: off main, stamped, re-asked). The scan stays linear (the existing
+`steps` test covers the new patterns). A surface with `agentTextHighlighting == nil` renders
+exactly as before.
 
 ## Tests
 
-- `WatchtowerChatText`: one test per rule row above, both columns, using the screenshot's
-  sentences (neutral placeholders); overlap; code and link runs untouched; characters
-  unchanged after marking; `.none` marks nothing.
-- ChatUI (Mac): a run with a highlight gets the token colour; inline code gets the plate; a
-  surface without the modifier renders as before.
-- iPhone: `MarkdownRuns.inline` colours a highlight.
+- `AgentTextHighlightsTests` (`WatchtowerChatText`): each table row's plain and inline-code
+  column, both matching and not (`3:2`, `v1.2`, `24:00`, `issue#12`, `PR#12` glued,
+  `ask #990` not a `ref`); multi-token code stays uncoloured; the existing cases unchanged.
+- `AgentTextHighlightTests` (ChatUI): an inline-code hash gets `SyntaxTint.hash` and the copy
+  click; a `time` span gets the colour and no `agentHighlight` click attribute; a context with
+  `agentTextHighlighting == nil` adds no attribute; the existing Workchat cases unchanged.
+- Workchat (`WorkchatHighlights` tests): the migration to `AgentTextHighlighting` keeps the
+  ref/hash/command/path actions.
 
 ## Docs
 
-A feature note `docs/features/chat-text-highlights.md` (+ CLAUDE.md line, README summary);
-the chat page of `docs/guide/` mentions the colours.
+`docs/features/session-chat-feed.md` (highlighting section) and its README summary; the style
+guide's `SyntaxTint` row; the Workchat page of `docs/guide/` mentions dates and PR/ask refs.
 
 ## Left to the builder
 
-Exact regexes, token colour values within the style guide, where the environment value is
-read inside `MarkdownBlocksView`.
+Exact regexes within the table, VoiceOver wording, the `time` hue within the style guide.
