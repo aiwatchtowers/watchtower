@@ -74,12 +74,14 @@ enum AgentTextHighlightRender {
         return out.sorted { $0.range.location < $1.range.location }
     }
 
-    /// What VoiceOver offers for a span, as the Workchat acts on it.
-    static func accessibilityName(_ span: AgentTextHighlights.Span) -> String {
+    /// What VoiceOver offers for a span, as the Workchat acts on it; nil for a colour-only kind (nothing to act on,
+    /// VoiceOver reads it as the plain text it is).
+    static func accessibilityName(_ span: AgentTextHighlights.Span) -> String? {
         switch span.kind {
         case .ref: "Show \(span.text) on the board"
         case .hash, .command: "Copy \(span.text)"
         case .path: "Open \(span.text)"
+        case .time, .pullRequest, .ask: nil
         }
     }
 
@@ -89,6 +91,8 @@ enum AgentTextHighlightRender {
         case .hash: NSColor(SyntaxTint.hash)
         case .path: NSColor(SyntaxTint.path)
         case .command: NSColor(SyntaxTint.command)
+        case .time: NSColor(SyntaxTint.time)
+        case .pullRequest, .ask: NSColor(SyntaxTint.ref)
         }
     }
 
@@ -98,7 +102,7 @@ enum AgentTextHighlightRender {
         return stretches(text).flatMap { range, isCode -> [Found] in
             let piece = string.substring(with: range)
             let spans = isCode
-                ? AgentTextHighlights.commandSpan(inCode: piece).map { [$0] } ?? []
+                ? AgentTextHighlights.codeSpan(inCode: piece).map { [$0] }?.filter { $0.kind == .command } ?? []
                 : AgentTextHighlights.spans(inPlain: piece)
             return spans.map { span in
                 let local = NSRange(span.range, in: piece)

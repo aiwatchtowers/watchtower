@@ -132,6 +132,7 @@ final class WorkchatHighlights {
         switch span.kind {
         case let .ref(number): return .showTarget(Int64(number))
         case .hash, .command: return .copy(span.text)
+        case .time, .pullRequest, .ask: return .nothing
         case .path:
             guard let root else { return .nothing }
             let key = Key(messageID: messageID, path: span.text, root: root)

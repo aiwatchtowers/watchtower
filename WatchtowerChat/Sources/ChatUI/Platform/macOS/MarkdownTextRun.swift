@@ -612,8 +612,9 @@ class MarkdownRunTextView: NSTextView {
         guard onHighlight != nil, let storage = textStorage else { return super.accessibilityCustomActions() }
         var actions: [NSAccessibilityCustomAction] = []
         storage.enumerateAttribute(.agentHighlight, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
-            guard let span = (value as? AgentTextHighlightBox)?.span else { return }
-            actions.append(NSAccessibilityCustomAction(name: AgentTextHighlightRender.accessibilityName(span)) { [weak self] in
+            guard let span = (value as? AgentTextHighlightBox)?.span,
+                  let name = AgentTextHighlightRender.accessibilityName(span) else { return }
+            actions.append(NSAccessibilityCustomAction(name: name) { [weak self] in
                 self?.onHighlight?(span)
                 return self?.onHighlight != nil
             })

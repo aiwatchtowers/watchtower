@@ -119,11 +119,16 @@ struct AgentFinishedRow: View {
         }
     }
 
-    /// The title with its `#N` refs in `SyntaxTint.ref` (C8); colour only, the row's click expands it.
+    /// The title with its refs — `#N`, `PR #N`, `ask #N` — in `SyntaxTint.ref` (C8); colour only, the row's click
+    /// expands it. Dates and the other kinds stay plain.
     static func title(_ title: String) -> AttributedString {
         var text = AttributedString(title)
         for span in AgentTextHighlights.spans(inPlain: title) {
-            guard case .ref = span.kind, let range = Range(span.range, in: text) else { continue }
+            switch span.kind {
+            case .ref, .pullRequest, .ask: break
+            case .hash, .path, .command, .time: continue
+            }
+            guard let range = Range(span.range, in: text) else { continue }
             text[range].foregroundColor = SyntaxTint.ref
         }
         return text
