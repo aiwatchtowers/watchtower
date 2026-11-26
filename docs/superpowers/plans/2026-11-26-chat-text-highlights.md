@@ -39,7 +39,7 @@ Depends on: none.
 **Files:**
 - Modify: `WatchtowerChatText/Sources/WatchtowerChatText/AgentTextHighlights.swift`
 - Modify: `WatchtowerKit/Sources/WatchtowerDesign/SyntaxTint.swift` (add `time`)
-- Modify (exhaustive switches only, to keep every package building): `WatchtowerChat/Sources/ChatUI/Platform/macOS/AgentTextHighlightRender.swift` (`color`, `accessibilityName`), `WatchtowerDesktop/Sources/Views/Workbench/WorkchatHighlights.swift` (`action(for:…)`)
+- Modify (exhaustive switches only, to keep every package building): `WatchtowerChat/Sources/ChatUI/Platform/macOS/AgentTextHighlightRender.swift` (`color`, `accessibilityName`), `WatchtowerChat/Sources/ChatUI/Platform/macOS/MarkdownTextRun.swift:614-616` (the custom-action loop: `guard let name = AgentTextHighlightRender.accessibilityName(span) else { return }` before building the `NSAccessibilityCustomAction`), `WatchtowerDesktop/Sources/Views/Workbench/WorkchatHighlights.swift` (`action(for:…)`)
 - Modify: `WatchtowerDesktop/Sources/Views/Workbench/AgentFinishedRow.swift:122-129` (`title(_:)`, the other `spans(inPlain:)` consumer: today it colours `.ref`; `PR #N` / `ask #N` were refs there, so it colours `.ref`, `.pullRequest` and `.ask` in `SyntaxTint.ref` — the row looks as before; dates stay plain, C8 coloured refs only)
 - Test: `WatchtowerChatText/Tests/WatchtowerChatTextTests/AgentTextHighlightsTests.swift`; create `WatchtowerDesktop/Tests/AgentFinishedRowTitleTests.swift`
 
@@ -102,9 +102,13 @@ func testADateGluedToAWordIsNotADate() {
 In `AgentFinishedRowTitleTests`:
 
 ```swift
-func testTitleColoursRefsAndPrefixedRefsOnly() {
+func testTitleColoursRefsAndPrefixedRefsOnly() throws {
     let text = AgentFinishedRow.title("Fixed #12, see PR #1124 and ask #990 on 2026-11-16")
-    // runs with SyntaxTint.ref: "#12", "PR #1124", "ask #990"; the date has no foreground colour
+    let tinted = text.runs.filter { $0.foregroundColor == SyntaxTint.ref }
+        .map { String(text[$0.range].characters) }
+    XCTAssertEqual(tinted, ["#12", "PR #1124", "ask #990"])
+    let date = try XCTUnwrap(text.range(of: "2026-11-16"))
+    XCTAssertTrue(text[date].runs.allSatisfy { $0.foregroundColor == nil })
 }
 ```
 
