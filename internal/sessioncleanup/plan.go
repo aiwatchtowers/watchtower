@@ -121,7 +121,10 @@ type builder struct {
 	// so a worktree is walked once there and once more right before
 	// `git worktree remove`.
 	walked map[string]string
-	walkMu sync.Mutex // guards walked: worktrees are checked concurrently
+	walkMu sync.Mutex // guards walked and judged: worktrees are checked concurrently
+	// judged is, per root, the lock W3 let pass (merged and idle): the only
+	// lock an apply may then unlock (unlock.go).
+	judged map[string]lockSeen
 	report *reporter
 	// notes are the plan's notes (Plan.Notes), in session mode.
 	notes []string

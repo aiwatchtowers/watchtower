@@ -152,12 +152,29 @@ func (b *builder) recentlyActive(a SessionActivity) bool {
 	return !a.Finished && !last.IsZero() && b.now.Sub(last) <= recentOwnerWindow
 }
 
-// catchLocked is W3.
-func catchLocked(_ context.Context, _ *builder, w worktree) (string, string, error) {
-	if w.Locked {
-		return ReasonLocked, "", nil
+// catchLocked is W3: a locked worktree is kept unless its branch is merged
+// with a commit of its own and it has been idle for idleFor (#2402 §3,
+// lockedMayGo); its lock is read afresh from its admin dir. A worktree an
+// earlier apply unlocked and could not lock again (its marker is there) is
+// kept as check_failed.
+func catchLocked(ctx context.Context, b *builder, w worktree) (string, string, error) {
+	admin := b.repo.adminDirs[w.Root]
+	st, err := readLock(w, admin)
+	switch {
+	case err != nil:
+		return "", "", err
+	case st.marked:
+		return "", "", errUnlockPending
+	case !st.locked:
+		return "", "", nil
+	case w.Locked && b.sameLockAsListed(admin, st.seen) && b.lockedMayGo(ctx, w, admin):
+		// Only the lock the listing showed is judged (fix rounds 2–3,
+		// R2-1/R3-1): one taken or replaced since is someone claiming the
+		// worktree now, whatever its idleness says.
+		b.judge(w.Root, st.seen)
+		return "", "", nil
 	}
-	return "", "", nil
+	return ReasonLocked, "", nil
 }
 
 // catchUncommitted is W4.

@@ -482,3 +482,67 @@ func TestIdle_UnreadableCacheFolderIsNotAnError(t *testing.T) {
 		t.Fatal("an unreadable node_modules, never entered, made the worktree busy")
 	}
 }
+
+// TestPruneIdle_LockedOrSweepWaitsForIdle: the prune's idle check applies
+// to a locked worktree, one an unlock of ours left marked, and any worktree
+// in a sweep (the repository pass); an unlocked worktree of a session's
+// prune does not wait (#2131).
+func TestPruneIdle_LockedOrSweepWaitsForIdle(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		file   string
+		sweep  bool
+		recent bool
+		want   string
+	}{
+		"unlocked, session, active": {recent: true},
+		"locked, active":            {file: lockFile, recent: true, want: reasonNotIdle},
+		"marked, active":            {file: unlockMarker, recent: true, want: reasonNotIdle},
+		"sweep, active":             {sweep: true, recent: true, want: reasonNotIdle},
+		"locked, idle":              {file: lockFile},
+		"sweep, idle":               {sweep: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tr := newIdleTree(t)
+			if tc.file != "" {
+				tr.write(filepath.Join(tr.admin, tc.file), "")
+			}
+			if tc.recent {
+				tr.touch(filepath.Join(tr.admin, "HEAD"), idleNow.Add(-time.Hour))
+			}
+			b := &builder{deps: tr.deps(), req: Request{Sweep: tc.sweep},
+				repo: &repoState{adminDirs: map[string]string{tr.root: tr.admin}}}
+			reason, _, err := catchPruneIdle(context.Background(), b, worktree{Root: tr.root})
+			if err != nil || reason != tc.want {
+				t.Fatalf("reason %q, err %v; want %q", reason, err, tc.want)
+			}
+		})
+	}
+}
+
+// TestIdle_DerivedDataInADotBuildCountsAsActivity (fix round 1, F8): a
+// .build an Xcode build was pointed at (-derivedDataPath .build: no
+// workspace-state.json) is a build folder by its content; its fresh output
+// is activity, and the prune finds it.
+func TestIdle_DerivedDataInADotBuildCountsAsActivity(t *testing.T) {
+	t.Parallel()
+	tr := newIdleTree(t)
+	dir := filepath.Join(tr.root, "Pkg", "Sub", ".build")
+	tr.write(filepath.Join(dir, "info.plist"), "<plist/>")
+	tr.write(filepath.Join(dir, "Build", "Products", "App"), "x")
+	tr.write(filepath.Join(dir, "Logs", "Build", "x"), "x")
+	old := idleNow.Add(-7 * 24 * time.Hour)
+	for _, d := range []string{"", "Build", "Logs", "Logs/Build"} {
+		tr.touch(filepath.Join(dir, d), old)
+	}
+	recent := idleNow.Add(-time.Hour)
+	tr.touch(filepath.Join(dir, "Build", "Products"), recent)
+	if tr.idle() || !tr.activity().Equal(recent) {
+		t.Fatalf("idle %v, activity %v, want %v", tr.idle(), tr.activity(), recent)
+	}
+	found, err := findBuildDirs(context.Background(), tr.root, time.Minute)
+	if err != nil || len(found) != 1 || found[0].path != dir {
+		t.Fatalf("found %+v, err %v", found, err)
+	}
+}

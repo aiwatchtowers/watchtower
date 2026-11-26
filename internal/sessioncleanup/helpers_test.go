@@ -31,6 +31,8 @@ type fixture struct {
 	// projects is the Claude Code projects directory the plan reads: an
 	// empty one under base, never the developer's.
 	projects string
+	// clock is Deps.Clock; nil = the wall clock.
+	clock func() time.Time
 }
 
 // stampBirth stands in for the filesystem birth time: a fixture's admin dir
@@ -139,7 +141,7 @@ func (f *fixture) deps() Deps {
 	}
 	projects := f.projects
 	return Deps{Git: g, DB: f.store, Procs: f.procs, Home: f.home, WorktreeBirth: birth,
-		ClaudeProjects: func() string { return projects }}
+		ClaudeProjects: func() string { return projects }, Clock: f.clock}
 }
 
 func (f *fixture) plan(r Request) Plan {

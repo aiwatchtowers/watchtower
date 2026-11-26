@@ -55,8 +55,20 @@ type SystemGit struct{}
 // GitBinary is gitbin.Locate.
 func (SystemGit) GitBinary() (string, bool) { return gitbin.Locate() }
 
+// GitInputRunner is a GitRunner that can also feed git a stdin (the drift
+// check's `git patch-id`, unlock.go); SystemGit is one.
+type GitInputRunner interface {
+	RunGitInput(ctx context.Context, dir, bin string, stdin []byte, args ...string) (stdout []byte, code int, err error)
+}
+
 // RunGit runs bin with args in dir.
-func (SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+func (s SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	return s.RunGitInput(ctx, dir, bin, nil, args...)
+}
+
+// RunGitInput is RunGit feeding stdin (nil = none) to git, under the same
+// read or owner arguments and environment.
+func (SystemGit) RunGitInput(ctx context.Context, dir, bin string, stdin []byte, args ...string) ([]byte, int, error) {
 	argv := gitbin.OwnerArgs(args...)
 	if !ownerWrite(args) {
 		read, err := gitbin.ReadArgsIn(ctx, bin, dir, args...)
@@ -65,7 +77,7 @@ func (SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([
 		}
 		argv = read
 	}
-	stdout, stderr, err := gitbin.Exec(ctx, dir, nil, bin, argv...)
+	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, bin, argv...)
 	if err == nil {
 		return stdout, 0, nil
 	}
@@ -77,16 +89,20 @@ func (SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([
 }
 
 // ownerWrite: args are one of the writes an apply runs on the owner's
-// confirmation (worktree remove, update-ref -d, config --remove-section);
+// confirmation (worktree remove, its unlock and relock, update-ref -d,
+// config --remove-section);
 // everything else is a read.
 func ownerWrite(args []string) bool {
+	if len(args) > 0 && strings.HasPrefix(args[0], "--git-dir=") {
+		args = args[1:] // the restore names the repository (unlock.go)
+	}
 	switch {
 	case len(args) == 0:
 		return false
 	case args[0] == "update-ref":
 		return true
 	case args[0] == "worktree":
-		return len(args) > 1 && args[1] == "remove"
+		return len(args) > 1 && slices.Contains([]string{"remove", "lock", "unlock"}, args[1])
 	case args[0] == "config":
 		return slices.Contains(args[1:], "--remove-section")
 	}

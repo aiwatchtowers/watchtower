@@ -16,8 +16,10 @@ const nestedClockEvery = 1024
 // regenerableCaches names the dependency and build caches W9's walk skips
 // at any depth: a `.git` inside them is a package manager's checkout
 // (`.build/checkouts/<pkg>/.git`, `node_modules/**/.git`), rebuilt on
-// demand, not someone's work. A listed worktree placed inside one is still
-// found by catchNested's listing check, which does not walk.
+// demand, not someone's work. A DerivedData folder of another name,
+// recognised by its content near the root (derivedDataByContent), is one
+// too. A listed worktree placed inside one is still found by catchNested's
+// listing check, which does not walk.
 var regenerableCaches = map[string]bool{
 	".build":       true,
 	"node_modules": true,
@@ -47,6 +49,23 @@ func findNestedRepository(ctx context.Context, root string, budget time.Duration
 		}
 		if d.IsDir() && path != root && (path == own || regenerableCaches[d.Name()]) {
 			return filepath.SkipDir
+		}
+		if d.IsDir() && path != root && withinDerivedDataDepth(root, path) && derivedDataAt(path) {
+			// Skipped only when nothing but its own package clones holds a
+			// .git (fix round 1, F3): an independent clone inside is walked
+			// to, and keeps the worktree.
+			foreign, err := holdsForeignGit(ctx, foundBuild{path: path, name: d.Name(), kind: derivedDataKind},
+				time.Until(deadline))
+			if err != nil {
+				return err
+			}
+			if foreign == "" {
+				return filepath.SkipDir
+			}
+			// The clone the check found is the one reported (fix round 2,
+			// R2-4): the walk on would skip by other rules.
+			found = filepath.Dir(foreign)
+			return errNestedFound
 		}
 		seen++
 		if seen%nestedClockEvery == 0 {

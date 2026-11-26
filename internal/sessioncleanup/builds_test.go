@@ -345,7 +345,7 @@ func TestRemoveBuildDir_UniqueTrashAndMarker(t *testing.T) {
 	writeFile(t, filepath.Join(lookalike, "precious"), "x\n")
 	old := filepath.Join(dir, ".build.removing-by-watchtower")
 	writeFile(t, filepath.Join(old, "precious"), "x\n")
-	if err := removeBuildDir(build, os.RemoveAll); err != nil {
+	if err := removeBuildDir(build, buildKinds[0], os.RemoveAll); err != nil {
 		t.Fatal(err)
 	}
 	if exists(build) {
@@ -611,7 +611,7 @@ func TestHoldsGitfile_FailsClosed(t *testing.T) {
 	if _, err := holdsForeignGit(context.Background(), foundBuild{path: dir, kind: buildKinds[0]}, -time.Second); err == nil {
 		t.Fatal("no error over budget")
 	}
-	if holds, err := holdsForeignGit(context.Background(), foundBuild{path: dir, kind: buildKinds[0]}, time.Minute); holds || err != nil {
+	if holds, err := holdsForeignGit(context.Background(), foundBuild{path: dir, kind: buildKinds[0]}, time.Minute); holds != "" || err != nil {
 		t.Fatalf("holds %v, err %v", holds, err)
 	}
 }
@@ -686,7 +686,7 @@ func TestFinishTrash_InterruptedDeleteIsFinishedLater(t *testing.T) {
 	dir := t.TempDir()
 	build := swiftBuild(t, filepath.Join(dir, ".build"))
 	interrupted := errors.New("interrupted")
-	err := removeBuildDir(build, func(p string) error {
+	err := removeBuildDir(build, buildKinds[0], func(p string) error {
 		_ = os.Remove(filepath.Join(p, buildMarker)) // part of it went
 		return interrupted
 	})
@@ -812,4 +812,243 @@ func TestProj18_UnlockableRepositoryIsNeverEvaluated(t *testing.T) {
 			t.Fatalf("notes %v", res.Notes)
 		}
 	})
+}
+
+// lockedUnpushedWithBuild is unpushedWithBuild, locked as a plan locks its
+// worktree, with uncommitted work, of a finished session.
+func (f *fixture) lockedUnpushedWithBuild() (root string, builds []string) {
+	f.t.Helper()
+	root, builds = f.unpushedWithBuild()
+	f.lock(root)
+	writeFile(f.t, filepath.Join(root, "notes.txt"), "untracked\n")
+	f.endSession()
+	return root, builds
+}
+
+func wantBuildsStay(t *testing.T, it Item, builds []string) {
+	t.Helper()
+	if len(it.BuildsRemoved) > 0 || it.BuildsChecked {
+		t.Fatalf("item %+v", it)
+	}
+	for _, b := range builds {
+		if !exists(filepath.Join(b, buildMarker)) {
+			t.Fatalf("%s went", b)
+		}
+	}
+}
+
+// TestProj18_IdleLockedWorktreeLosesItsBuild (#2402 §4): a locked
+// worktree that stays (its work is not merged) loses its build output once
+// it has been idle for idleFor; the worktree and its lock stay.
+func TestProj18_IdleLockedWorktreeLosesItsBuild(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root, builds := f.lockedUnpushedWithBuild()
+	f.clock = idleLater()
+
+	res := f.apply(Request{PruneBuilds: true, RequireEnded: true}, nil, nil)
+	it := wantResultItem(t, res, "worktree:"+root, ActionKeep, ReasonLocked, false)
+	slices.Sort(it.BuildsRemoved)
+	want := slices.Clone(builds)
+	slices.Sort(want)
+	if !slices.Equal(it.BuildsRemoved, want) || !it.BuildsChecked || it.BuildError != "" {
+		t.Fatalf("item %+v", it)
+	}
+	if !f.listsWorktree(root) || !exists(filepath.Join(root, "notes.txt")) {
+		t.Fatal("the worktree went")
+	}
+	wantLocked(t, root)
+}
+
+// TestProj18_RecentBuildStays: a build folder used within idleFor — its
+// nested directories' mtimes — keeps every build of the locked worktree.
+func TestProj18_RecentBuildStays(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root, builds := f.lockedUnpushedWithBuild()
+	f.clock = idleLater()
+	recent := f.clock().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(builds[1], "debug"), recent, recent); err != nil {
+		t.Fatal(err)
+	}
+
+	res := f.apply(Request{PruneBuilds: true, RequireEnded: true}, nil, nil)
+	wantBuildsStay(t, findItem(t, res.Plan, "worktree:"+root), builds)
+}
+
+// TestProj18_LockedWorktreeBuildStaysAtSessionEndUntilIdle: a locked plan
+// worktree keeps its build at its session's end (the #2131 prune of a
+// worktree kept for its work does not reach it) until it has been idle for
+// idleFor; a later pass then removes it.
+func TestProj18_LockedWorktreeBuildStaysAtSessionEndUntilIdle(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root, builds := f.lockedUnpushedWithBuild()
+
+	res := f.apply(Request{PruneBuilds: true, RequireEnded: true}, nil, nil)
+	wantBuildsStay(t, findItem(t, res.Plan, "worktree:"+root), builds)
+
+	f.clock = idleLater()
+	res = f.apply(Request{PruneBuilds: true, RequireEnded: true}, nil, nil)
+	it := findItem(t, res.Plan, "worktree:"+root)
+	if len(it.BuildsRemoved) != len(builds) {
+		t.Fatalf("item %+v", it)
+	}
+	for _, b := range builds {
+		if exists(b) {
+			t.Fatalf("%s stayed", b)
+		}
+	}
+}
+
+// TestProj18_BuildStartedDuringThePruneStops: a build that starts in the
+// locked worktree while its first build folder is deleted (it touches the
+// next one) makes the worktree active again: the re-check before the next
+// folder keeps it.
+func TestProj18_BuildStartedDuringThePruneStops(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root, builds := f.lockedUnpushedWithBuild() // <root>/.build is walked before <root>/Pkg/.build
+	f.clock = idleLater()
+	// Runs: the evaluation's, the re-check before the first folder, the
+	// re-check before the second.
+	f.git = &flipGit{at: 3, flip: func() {
+		now := f.clock()
+		if err := os.Chtimes(filepath.Join(builds[1], "debug"), now, now); err != nil {
+			t.Error(err)
+		}
+	}}
+	res := f.apply(Request{PruneBuilds: true, RequireEnded: true}, nil, nil)
+	it := findItem(t, res.Plan, "worktree:"+root)
+	if !slices.Equal(it.BuildsRemoved, []string{builds[0]}) || it.BuildsChecked {
+		t.Fatalf("item %+v", it)
+	}
+	if !exists(filepath.Join(builds[1], buildMarker)) {
+		t.Fatal("the build in use went")
+	}
+}
+
+// derivedData makes an Xcode DerivedData folder at dir by its content
+// (info.plist, Build/ and the given one of Logs/, Index.noindex/,
+// ModuleCache.noindex/) and returns dir.
+func derivedData(t *testing.T, dir, third string) string {
+	t.Helper()
+	writeFile(t, filepath.Join(dir, "info.plist"), "<plist/>\n")
+	writeFile(t, filepath.Join(dir, "Build", "Products", "App"), "binary\n")
+	if third != "" {
+		writeFile(t, filepath.Join(dir, third, "x"), "x\n")
+	}
+	return dir
+}
+
+// TestProj18_RenamedDerivedDataIsABuild (#2402 §4): a DerivedData folder a
+// build was pointed at under another name, at the worktree's root or one
+// level below, is build output by its content; deeper, or without one of
+// Logs/, Index.noindex/, ModuleCache.noindex/, it stays.
+func TestProj18_RenamedDerivedDataIsABuild(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root, _ := f.unpushedWithBuild()
+	f.commit(root, ".gitignore", ".build/\nDerivedData/\n.derived*/\n.dd/\n")
+	atRoot := derivedData(t, filepath.Join(root, ".derived"), "Logs")
+	below := derivedData(t, filepath.Join(root, "Mobile", ".dd"), "ModuleCache.noindex")
+	indexed := derivedData(t, filepath.Join(root, ".derived-mobile"), "Index.noindex")
+	deep := derivedData(t, filepath.Join(root, "a", "b", ".dd"), "Logs")
+	partial := derivedData(t, filepath.Join(root, ".derived-partial"), "")
+	f.endSession()
+
+	res := f.apply(Request{PruneBuilds: true}, nil, nil)
+	it := findItem(t, res.Plan, "worktree:"+root)
+	for _, gone := range []string{atRoot, below, indexed} {
+		if !slices.Contains(it.BuildsRemoved, gone) || exists(gone) {
+			t.Fatalf("%s stayed: %+v", gone, it)
+		}
+	}
+	for _, kept := range []string{deep, partial} {
+		if !exists(filepath.Join(kept, "info.plist")) {
+			t.Fatalf("%s went", kept)
+		}
+	}
+	if len(trashIn(t, root)) > 0 || len(trashIn(t, filepath.Join(root, "Mobile"))) > 0 {
+		t.Fatal("a trash folder is left")
+	}
+}
+
+// TestPrune_RenamedDerivedDataLeftoverIsFinished: an interrupted prune of
+// a renamed DerivedData folder left its marked trash folder; the next
+// prune finishes it.
+func TestPrune_RenamedDerivedDataLeftoverIsFinished(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	trash := markedTrash(t, filepath.Join(dir, ".derived"+trashInfix+"abc"))
+	deep := markedTrash(t, filepath.Join(dir, "a", "b", ".dd"+trashInfix+"abc"))
+	found, err := findBuildDirs(context.Background(), dir, time.Minute)
+	if err != nil || len(found) != 1 || !found[0].trash || found[0].path != trash {
+		t.Fatalf("found %+v, err %v", found, err)
+	}
+	if err := finishTrash(found[0].path, found[0].name, os.RemoveAll); err != nil {
+		t.Fatal(err)
+	}
+	if exists(trash) || !exists(deep) {
+		t.Fatalf("leftover there %v, deep leftover there %v", exists(trash), exists(deep))
+	}
+}
+
+// TestPrune_TrashOfADotNameIsNoLeftover (fix round 1, F2): a marked folder
+// whose moved name would be "." or ".." is no trash leftover, and
+// finishTrash never deletes anything but a child of the trash folder.
+func TestPrune_TrashOfADotNameIsNoLeftover(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"." + trashInfix + "a", ".." + trashInfix + "b"} {
+		dir := t.TempDir()
+		keep := filepath.Join(dir, "keep.txt")
+		writeFile(t, keep, "x\n")
+		trash := filepath.Join(dir, name)
+		writeFile(t, filepath.Join(trash, trashMarker), trashMarkerBody)
+		found, err := findBuildDirs(context.Background(), dir, time.Minute)
+		if err != nil || len(found) != 0 {
+			t.Fatalf("%s: found %+v, err %v", name, found, err)
+		}
+		for _, moved := range []string{".", "..", "a/b", ""} {
+			removed := false
+			if err := finishTrash(trash, moved, func(string) error { removed = true; return nil }); err == nil || removed {
+				t.Fatalf("finishTrash(%q) = %v, removed %v", moved, err, removed)
+			}
+		}
+		if !exists(keep) || !exists(filepath.Join(trash, trashMarker)) {
+			t.Fatalf("%s: something went", name)
+		}
+	}
+}
+
+// TestPrune_DerivedDataDotBuildLeftoverKeepsItsKind (fix round 2, R2-5): an
+// interrupted prune of a .build recognised as DerivedData by its content
+// leaves a trash folder that is recovered as DerivedData, so its Xcode
+// package clones (SourcePackages/checkouts) are the tool's own, not
+// foreign; a marker of the old form keeps the kind its name gives.
+func TestPrune_DerivedDataDotBuildLeftoverKeepsItsKind(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	build := derivedData(t, filepath.Join(root, ".build"), "Logs")
+	if err := os.MkdirAll(filepath.Join(build, "SourcePackages", "checkouts", "pkg", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	found, err := findBuildDirs(context.Background(), root, time.Minute)
+	if err != nil || len(found) != 1 || found[0].kind.name != derivedDataKind.name {
+		t.Fatalf("found %+v, err %v", found, err)
+	}
+	if err := removeBuildDir(build, found[0].kind, func(string) error { return errors.New("killed") }); err == nil {
+		t.Fatal("the interrupted delete succeeded")
+	}
+	left, err := findBuildDirs(context.Background(), root, time.Minute)
+	if err != nil || len(left) != 1 || !left[0].trash || left[0].kind.name != derivedDataKind.name {
+		t.Fatalf("leftover %+v, err %v", left, err)
+	}
+	if foreign, err := holdsForeignGit(context.Background(), left[0], time.Minute); foreign != "" || err != nil {
+		t.Fatalf("foreign %q, err %v", foreign, err)
+	}
+	old := markedTrash(t, filepath.Join(t.TempDir(), ".build"+trashInfix+"old"))
+	if k, _, ok := isTrashLeftover(old, filepath.Base(old), true); !ok || k.name != ".build" {
+		t.Fatalf("old marker: kind %q ok %v", k.name, ok)
+	}
 }

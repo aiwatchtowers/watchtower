@@ -568,3 +568,25 @@ func TestIgnoredJudge_CacheName(t *testing.T) {
 		}
 	}
 }
+
+// TestProj18_TrackedAppFolderIsNoDerivedData (fix round 1, F4): a tracked
+// source folder that happens to hold info.plist, Build/ and Logs/ is no
+// DerivedData cache for W10: an ignored file in it (signing settings) is
+// unsaved work.
+func TestProj18_TrackedAppFolderIsNoDerivedData(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.worktree("wt", "feat/x")
+	f.commit(root, ".gitignore", "*.xcconfig\n")
+	f.commit(root, "App/info.plist", "<plist/>\n")
+	f.commit(root, "App/Build/keep", "x\n")
+	f.commit(root, "App/Logs/keep", "x\n")
+	gitIn(t, root, "push", "-q", "origin", "feat/x")
+	writeFile(t, filepath.Join(root, "App", "signing.xcconfig"), "secret\n")
+	f.record(root, "feat/x")
+
+	it := wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonIgnoredFiles)
+	if !strings.Contains(it.Detail, "signing.xcconfig") {
+		t.Fatalf("detail %q", it.Detail)
+	}
+}
