@@ -18,7 +18,7 @@ enum WorkchatHighlightShotFixtures {
     static let shots: [DesignShot] = [
         DesignShot(name: "workchat-polish-real-04-agent-text-highlights", prepare: {
             try await prepared()
-        }, size: NSSize(width: 720, height: 600))
+        }, size: NSSize(width: 720, height: 480))
     ]
 
     static let agentText = """
