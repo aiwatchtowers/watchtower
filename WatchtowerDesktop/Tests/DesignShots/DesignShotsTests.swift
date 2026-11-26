@@ -308,6 +308,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(AskExplainMockShotFixtures.shots)
     }
 
+    /// "Not clear?" on each item of an ask, design only (#2412).
+    func testAskExplainItemsShotsRender() throws {
+        try renderShots(AskExplainItemsMockShotFixtures.shots)
+    }
+
     /// The same states from the built views (#2355 T5), plus the question
     /// view scrolled to its bottom, the chat opened and closed over it: the
     /// scroll survives the chat.
