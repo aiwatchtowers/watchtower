@@ -6,9 +6,9 @@ import WatchtowerDesign
 import XCTest
 @testable import ChatUI
 
-/// Spec 2026-11-24-workchat-polish §2: the agent's text in a highlighting feed gets its refs, hashes, resolved paths
-/// and commands in their `SyntaxTint` — the foreground only, never in a link or non-command inline code — and only
-/// there.
+/// Spec 2026-11-24-workchat-polish §2 and 2026-11-26-chat-text-highlights: the agent's text in a highlighting feed gets
+/// its refs, hashes, resolved paths, commands, dates and times and `PR #N` / `ask #N` phrases in their `SyntaxTint` —
+/// the foreground only, never in a link or in inline code that is not one whole span — and only there.
 @MainActor
 final class AgentTextHighlightTests: XCTestCase {
     private let markdown = """
@@ -98,6 +98,58 @@ final class AgentTextHighlightTests: XCTestCase {
         let base = runText("Round 3 of #2201/T2 is ready")
         XCTAssertEqual(kind(of: "#2201", in: AgentTextHighlightRender.highlighted(base) { _ in false }), .ref(2201))
         XCTAssertEqual(kind(of: "2201/T2", in: AgentTextHighlightRender.highlighted(base) { _ in true }), .path)
+    }
+
+    private func color(of needle: String, in text: NSAttributedString) -> NSColor? {
+        attributes(of: needle, in: text)[.foregroundColor] as? NSColor
+    }
+
+    /// Spec 2026-11-26 §1: inline code that is one whole span takes that kind's tint and click.
+    func testInlineCodeHashGetsItsTintAndClick() {
+        let base = runText("Landed as `4d434597` today")
+        let text = AgentTextHighlightRender.highlighted(base) { _ in false }
+        XCTAssertNotNil(base.attribute(.markdownInlineCode, at: (base.string as NSString).range(of: "4d434597").location,
+                                       effectiveRange: nil))
+        XCTAssertEqual(color(of: "4d434597", in: text), NSColor(SyntaxTint.hash))
+        XCTAssertEqual(kind(of: "4d434597", in: text), .hash)
+    }
+
+    /// D1: a date and an `ask #N` are coloured and carry no click; the `#990` is the phrase's, not a ref.
+    func testColourOnlyKindsCarryNoClick() {
+        let base = runText("since 2026-11-16, ask #990")
+        let text = AgentTextHighlightRender.highlighted(base) { _ in false }
+        XCTAssertEqual(color(of: "2026-11-16", in: text), NSColor(SyntaxTint.time))
+        XCTAssertEqual(color(of: "ask #990", in: text), NSColor(SyntaxTint.ref))
+        XCTAssertNil(attributes(of: "2026-11-16", in: text)[.agentHighlight])
+        XCTAssertNil(attributes(of: "ask #990", in: text)[.agentHighlight])
+        XCTAssertNil(attributes(of: "#990", in: text)[.agentHighlight])
+        XCTAssertEqual(AgentTextHighlightRender.scan(base).map(\.span.kind), [.time, .ask(990)])
+    }
+
+    func testMultiTokenInlineCodeStaysPlain() {
+        let base = runText("Set `marking_started: \"2026-11-16\"` first")
+        let text = AgentTextHighlightRender.highlighted(base) { _ in true }
+        XCTAssertTrue(text === base, "no span: the run text is unchanged")
+        XCTAssertEqual(color(of: "2026-11-16", in: text), color(of: "2026-11-16", in: base))
+    }
+
+    func testADateInsideAResolvingPathTakesThePathColour() {
+        let base = runText("Wrote logs/2026-11-16.txt now")
+        let path = (base.string as NSString).range(of: "logs/2026-11-16.txt")
+        let resolved = AgentTextHighlightRender.highlighted(base) { $0 == "logs/2026-11-16.txt" }
+        var effective = NSRange()
+        let pathColor = resolved.attribute(.foregroundColor, at: path.location, effectiveRange: &effective) as? NSColor
+        XCTAssertEqual(pathColor, NSColor(SyntaxTint.path))
+        XCTAssertEqual(effective, path, "the whole path, the date inside it too, takes the path colour")
+        resolved.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: resolved.length)) { value, _, _ in
+            XCTAssertNotEqual(value as? NSColor, NSColor(SyntaxTint.time))
+        }
+
+        let unresolved = AgentTextHighlightRender.highlighted(base) { _ in false }
+        let date = (base.string as NSString).range(of: "2026-11-16")
+        let dateColor = unresolved.attribute(.foregroundColor, at: date.location, effectiveRange: &effective) as? NSColor
+        XCTAssertEqual(dateColor, NSColor(SyntaxTint.time))
+        XCTAssertEqual(effective, date, "only the date is coloured")
     }
 
     func testOnlyACompletedPlainSingleClickFires() {

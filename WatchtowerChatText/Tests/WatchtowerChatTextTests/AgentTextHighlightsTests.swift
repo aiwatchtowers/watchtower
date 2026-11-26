@@ -136,4 +136,23 @@ final class AgentTextHighlightsTests: XCTestCase {
     func testADateGluedToAWordIsNotADate() {
         XCTAssertEqual(kinds("tag v2026-11-16 shipped"), [])
     }
+
+    /// A `#` before a time or a date leaves only the ref: the spans other than paths never overlap.
+    func testARefBeforeAColonOrADashIsTheRefOnly() {
+        XCTAssertEqual(kinds("#12:30"), [.ref(12)])
+        XCTAssertEqual(kinds("#2026-11-16"), [.ref(2026)])
+    }
+
+    /// A time ends a sentence as a date does; seconds and dotted numbers stay refused.
+    func testATimeMayEndASentence() {
+        XCTAssertEqual(kinds("at 10:05."), [.time])
+        XCTAssertEqual(kinds("10:05:33"), [])
+        XCTAssertEqual(kinds("10:05.1"), [])
+    }
+
+    /// `PR #N` / `ask #N` hold on one line: a line break between the word and the ref leaves the ref alone.
+    func testAPhraseDoesNotSpanALineBreak() {
+        XCTAssertEqual(kinds("ask\n#990"), [.ref(990)])
+        XCTAssertEqual(kinds("ask\t#990"), [.ask(990)])
+    }
 }

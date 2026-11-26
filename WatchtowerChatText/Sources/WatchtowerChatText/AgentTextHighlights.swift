@@ -99,17 +99,19 @@ public enum AgentTextHighlights {
 
     // MARK: - Patterns
 
-    /// `PR #N` / `ask #N` (any case), standing alone.
-    private static let prefixedRefPattern = regex(#"(?i)(?<![\w])(PR|ask)\s#(\d{1,6})(?![\w])"#)
+    /// `PR #N` / `ask #N` (any case), standing alone, the word and the ref on one line.
+    private static let prefixedRefPattern = regex(#"(?i)(?<![\w])(PR|ask)[ \t]+#(\d{1,6})(?![\w])"#)
     /// `#` and 1–6 digits at a word boundary, not inside a URL or a word (`issue#12`).
     private static let refPattern = regex(#"(?<![\w/#&])#(\d{1,6})(?![\w])"#)
     /// 7–40 lowercase hex characters standing alone (not part of a word, a path or a dotted version).
     private static let hashPattern = regex(#"(?<![\w./:-])[0-9a-f]{7,40}(?![\w/-])"#)
-    /// `YYYY-MM-DD` not glued to a word, a version or a time; a path's `/` before it and a file's extension after it
-    /// leave it a date inside that path candidate (`logs/2026-11-16.txt`). Month and day are checked in `timeSpan`.
-    private static let datePattern = regex(#"(?<![\w.:-])\d{4}-(\d{2})-(\d{2})(?![\w:/-]|\.\d)"#)
-    /// `HH:MM`, 00:00–23:59, not glued to a word, a ratio or seconds (`10:05:33`).
-    private static let clockPattern = regex(#"(?<![\w.:/-])([01]\d|2[0-3]):[0-5]\d(?![\w.:/-]|:\d)"#)
+    /// `YYYY-MM-DD` not glued to a word, a version, a time or a ref's `#` (`#2026-11-16` is the ref); a path's `/`
+    /// before it and a file's extension after it leave it a date inside that path candidate (`logs/2026-11-16.txt`).
+    /// Month and day are checked in `timeSpan`.
+    private static let datePattern = regex(#"(?<![\w.:#-])\d{4}-(\d{2})-(\d{2})(?![\w:/-]|\.\d)"#)
+    /// `HH:MM`, 00:00–23:59, not glued to a word, a ratio, a ref's `#` (`#12:30` is the ref), seconds (`10:05:33`) or
+    /// a dotted number (`10:05.1`); a sentence's full stop after it leaves it a time (`at 10:05.`).
+    private static let clockPattern = regex(#"(?<![\w.:/#-])([01]\d|2[0-3]):[0-5]\d(?![\w:/-]|\.\d|:\d)"#)
     /// A run of path characters not glued to a scheme's `:` or another path character.
     private static let pathToken = regex(#"(?<![\w.+@~/:-])[\w.+@~/-]+"#)
 

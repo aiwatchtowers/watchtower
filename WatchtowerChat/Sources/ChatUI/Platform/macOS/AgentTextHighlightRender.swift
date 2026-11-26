@@ -5,9 +5,11 @@ import WatchtowerChatText
 import WatchtowerDesign
 
 extension NSAttributedString.Key {
-    /// Inline code in a run (`MarkdownRunText.appendInlines`): highlighting reads only a command there.
+    /// Inline code in a run (`MarkdownRunText.appendInlines`): highlighting reads it as one whole token
+    /// (`AgentTextHighlights.codeSpan(inCode:)`).
     static let markdownInlineCode = NSAttributedString.Key("watchtower.markdownInlineCode")
-    /// A highlighted span of the agent's text (`AgentTextHighlightBox`): a click opens it.
+    /// A highlighted span of the agent's text that a click opens (`AgentTextHighlightBox`); colour-only kinds
+    /// (`Kind.opens` false) never carry it.
     static let agentHighlight = NSAttributedString.Key("watchtower.agentHighlight")
 }
 
@@ -26,12 +28,14 @@ final class AgentTextHighlightBox: NSObject {
     override var hash: Int { span.text.hashValue }
 }
 
-/// A finished run of the agent's text with its refs, hashes, paths and commands in their `SyntaxTint` (spec
-/// 2026-11-24-workchat-polish §2, D3): the foreground colour — no background, no weight; hashes and paths also in the
-/// monospaced design of their own font, as mock 04 draws them (#2201 T8). Plain text is scanned
-/// with `AgentTextHighlights.spans(inPlain:)`, inline code only for a command, links never (code blocks are not in a
-/// run). A path keeps its colour only when `resolvesPath` says it is a file of the session's folders. Memoised: the
-/// scan per run, the coloured text per run and set of resolved paths.
+/// A finished run of the agent's text with its refs, hashes, paths, commands, dates and times and `PR #N` / `ask #N`
+/// phrases in their `SyntaxTint` (spec 2026-11-24-workchat-polish §2, D3; spec 2026-11-26-chat-text-highlights): the
+/// foreground colour — no background, no weight; hashes and paths in plain text also in the monospaced design of their
+/// own font, as mock 04 draws them (#2201 T8). Only the kinds that open (`Kind.opens`) carry the click attribute; the
+/// others are colour only. Plain text is scanned with `AgentTextHighlights.spans(inPlain:)`, inline code as one whole
+/// token with `codeSpan(inCode:)`, links never (code blocks are not in a run). A path keeps its colour only when
+/// `resolvesPath` says it is a file of the session's folders. Memoised: the scan per run, the coloured text per run and
+/// set of resolved paths.
 @MainActor
 enum AgentTextHighlightRender {
     struct Found {
@@ -59,7 +63,7 @@ enum AgentTextHighlightRender {
         })
     }
 
-    /// The paths that resolve, and the refs and hashes outside them: a candidate that does not resolve leaves a ref
+    /// The paths that resolve, and the other spans outside them: a candidate that does not resolve leaves a ref
     /// inside it coloured (`#2201/T2`). One ordered pass over both lists (`found` is in text order).
     static func kept(_ found: [Found], resolved: Set<String>) -> [Found] {
         let paths = found.filter { $0.span.kind == .path && resolved.contains($0.span.text) }
@@ -102,7 +106,7 @@ enum AgentTextHighlightRender {
         return stretches(text).flatMap { range, isCode -> [Found] in
             let piece = string.substring(with: range)
             let spans = isCode
-                ? AgentTextHighlights.codeSpan(inCode: piece).map { [$0] }?.filter { $0.kind == .command } ?? []
+                ? AgentTextHighlights.codeSpan(inCode: piece).map { [$0] } ?? []
                 : AgentTextHighlights.spans(inPlain: piece)
             return spans.map { span in
                 let local = NSRange(span.range, in: piece)
@@ -130,9 +134,13 @@ enum AgentTextHighlightRender {
     private static func apply(_ found: [Found], to text: NSAttributedString) -> NSAttributedString {
         let out = NSMutableAttributedString(attributedString: text)
         for item in found {
-            out.addAttributes([.foregroundColor: color(item.span.kind), .agentHighlight: AgentTextHighlightBox(item.span)],
-                              range: item.range)
-            if item.span.kind == .hash || item.span.kind == .path { monospace(item.range, in: out) }
+            out.addAttribute(.foregroundColor, value: color(item.span.kind), range: item.range)
+            if item.span.kind.opens {
+                out.addAttribute(.agentHighlight, value: AgentTextHighlightBox(item.span), range: item.range)
+            }
+            // Inline code already has its monospaced font.
+            let isCode = text.attribute(.markdownInlineCode, at: item.range.location, effectiveRange: nil) != nil
+            if !isCode, item.span.kind == .hash || item.span.kind == .path { monospace(item.range, in: out) }
         }
         return out
     }
