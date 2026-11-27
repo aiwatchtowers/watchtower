@@ -90,7 +90,7 @@ replaces: [asks-not-clear]
 changed: The entry moved from under the whole ask to each question and step, each with its own chat.
 -->
 
-Each question of an ask, open or closed, ends with **Not clear?**, and each step of a check has a small **?** on its row. Click one and the drawer becomes a chat about that item: a short card of the question and its options (or the step and its hint) stays on top, and the first message explains it in plain words. **Back to question** (or Esc, unless the composer holds text) brings back your picks and notes, scrolled where you left them.
+Each question of an ask, open or closed, ends with **Not clear?**, and each step of a check has a small **?** on its row. Click one and the drawer becomes a chat about that item: a short card of the question and its options (or the step and its hint) stays on top, and the first message explains it in plain words. **Back to question** (**Back to check** for a step; or Esc, unless the composer holds text) brings back your picks and notes, scrolled where you left them.
 
 The assistant reads the whole ask and, on Claude or Codex, the workbench folder; it never changes anything and never answers for you. Each question and step keeps its own chat, so opening it again continues it. It runs on your provider's strong model, only when you click, and is on the Mac only.
 

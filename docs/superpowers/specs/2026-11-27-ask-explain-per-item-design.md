@@ -1,6 +1,6 @@
 # Ask: "Not clear?" on each item of an ask, with the item pinned over the chat
 
-**Board:** #2412 (follow-up to #2355 and its race fixes #2383). **Mockups:** [`docs/design/mockups/ask-explain-per-item/`](../../design/mockups/ask-explain-per-item/) (DesignShotCatalog `ask-explain-*` from `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+AskExplainItemsMock.swift`, light and dark; the first eight shots approved in ask #1862, the six spec-review shots — busy, queued, finding, open-failed, card-expanded, back-scrolled — under review in ask #1869). **Builds on:** [`2026-11-24-ask-explain-chat-design.md`](2026-11-24-ask-explain-chat-design.md) (D1–D14) and the feature note [`docs/features/ask-explain-chat.md`](../../features/ask-explain-chat.md). Everything this spec does not change stays as written there.
+**Board:** #2412 (follow-up to #2355 and its race fixes #2383). **Mockups:** [`docs/design/mockups/ask-explain-per-item/`](../../design/mockups/ask-explain-per-item/) (DesignShotCatalog `ask-explain-*` from `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+AskExplainItemsMock.swift`, light and dark; the first eight shots approved in ask #1862, the six spec-review shots — busy, queued, finding, open-failed, card-expanded, back-scrolled — approved in ask #1870). **Builds on:** [`2026-11-24-ask-explain-chat-design.md`](2026-11-24-ask-explain-chat-design.md) (D1–D14) and the feature note [`docs/features/ask-explain-chat.md`](../../features/ask-explain-chat.md). Everything this spec does not change stays as written there.
 
 ## Problem
 
