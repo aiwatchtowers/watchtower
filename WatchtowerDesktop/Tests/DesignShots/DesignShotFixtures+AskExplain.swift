@@ -6,22 +6,48 @@ import XCTest
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// "Not clear?" on an ask (#2355) as built: the real `OwnerAskDrawer`, its
-/// entry and `AskExplainPane`, over a test workbench, the app's embedded chat
-/// center and a scripted AI service, in every state of the spec's States
+/// "Not clear?" on each item of an ask (#2412) as built: the real
+/// `OwnerAskDrawer`, its per-question and per-step entries and
+/// `AskExplainPane`, over a test workbench, the app's embedded chat center and
+/// a scripted AI service, in every state of the 2026-11-27 spec's States
 /// table. Compared with the approved mockups in
-/// `docs/design/mockups/ask-explain-chat/` (`AskExplainMockShotFixtures`).
-/// Sample data only.
+/// `docs/design/mockups/ask-explain-per-item/` (`AskExplainItemsMockShotFixtures`),
+/// whose sample asks it files. Sample data only.
 @MainActor
 enum AskExplainBuiltShotFixtures {
     enum State: String, CaseIterable {
-        case entry, finding, queued, loading, explained, long, busy, error, narrow
+        case itemsEntry = "items-entry"
+        case checkEntry = "check-entry"
+        case finding, queued, loading
+        /// Question 2's chat, explained.
+        case explained
+        /// Step 2's chat, explained.
+        case step
+        /// The long question's chat: its card clamped with Show more.
+        case long
+        /// The same card after Show more.
+        case expanded
+        case busy, error, narrow
         /// A hidden first turn that failed before it started.
         case errorStart = "error-start"
         /// The open itself failed: the workbench is gone.
         case errorOpen = "error-open"
 
         var width: CGFloat { self == .narrow ? 320 : 440 }
+
+        /// The mockups' entry shot of three questions is taller than the drawer.
+        var height: CGFloat { self == .itemsEntry ? 760 : AskExplainBuiltShotFixtures.height }
+
+        var ask: Sample.Ask {
+            switch self {
+            case .checkEntry, .step: .check
+            case .long, .expanded: .long
+            default: .questions
+            }
+        }
+
+        /// The item whose chat the shot opens.
+        var item: AskExplainItem { ask == .check ? .step(2) : .question(2) }
     }
 
     static let height: CGFloat = 620
@@ -32,7 +58,7 @@ enum AskExplainBuiltShotFixtures {
     static var shots: [DesignShot] {
         State.allCases.map { state in
             DesignShot(name: "ask-explain-built-\(state.rawValue)", prepare: { try await view(state) },
-                       size: NSSize(width: state.width, height: height))
+                       size: NSSize(width: state.width, height: state.height))
         }
     }
 
@@ -44,41 +70,39 @@ enum AskExplainBuiltShotFixtures {
     // MARK: - Scenes
 
     private static func view(_ state: State) async throws -> AnyView {
-        let scene = try Scene(gateLimit: state == .queued ? 1 : 3, holdChatNew: state == .finding)
+        let scene = try Scene(state.ask, gateLimit: state == .queued ? 1 : 3, holdChatNew: state == .finding)
         scenes.append(scene)
         let ask = try await scene.open()
         let asks = scene.vm.asks
+        let item = state.item
         switch state {
-        case .entry:
+        case .itemsEntry, .checkEntry:
             break
         case .finding:
-            scene.openTask = Task { await asks.openExplain(ask, item: .question(1)) }
+            scene.openTask = Task { await asks.openExplain(ask, item: item) }
             await waitForCondition { asks.isExplaining(ask.id) }
         case .queued:
             // The gate's only place is taken by another chat's turn.
             _ = scene.gate.tryAcquire(UUID())
-            await asks.openExplain(ask, item: .question(1))
+            await asks.openExplain(ask, item: item)
         case .loading:
-            await asks.openExplain(ask, item: .question(1))
-            try await XCTUnwrap(asks.explainEngine(for: ask, item: .question(1))).started()
-        case .explained, .narrow:
-            try await scene.store(ask, turns: 0)
-            await asks.openExplain(ask, item: .question(1))
-        case .long:
-            try await scene.store(ask, turns: Sample.followUps.count)
-            await asks.openExplain(ask, item: .question(1))
+            await asks.openExplain(ask, item: item)
+            try await XCTUnwrap(asks.explainEngine(for: ask, item: item)).started()
+        case .explained, .narrow, .step, .long, .expanded:
+            try await scene.store(ask, item: item)
+            await asks.openExplain(ask, item: item)
         case .busy:
-            try await scene.store(ask, turns: Sample.followUps.count)
-            await asks.openExplain(ask, item: .question(1))
-            let engine = try XCTUnwrap(asks.explainEngine(for: ask, item: .question(1)))
+            try await scene.store(ask, item: item)
+            await asks.openExplain(ask, item: item)
+            let engine = try XCTUnwrap(asks.explainEngine(for: ask, item: item))
             guard engine.send(Sample.busyQuestion) else { throw NoTurn(what: "the follow-up was refused") }
             await engine.started()
             try scene.requireCall(1)
             scene.ai.emit(.text(Sample.streamingReply))
             await waitForCondition { engine.liveTurn?.text.isEmpty == false }
         case .error:
-            await asks.openExplain(ask, item: .question(1))
-            let engine = try XCTUnwrap(asks.explainEngine(for: ask, item: .question(1)))
+            await asks.openExplain(ask, item: item)
+            let engine = try XCTUnwrap(asks.explainEngine(for: ask, item: item))
             await engine.started()
             try scene.requireCall(1)
             scene.ai.emit(.error(Sample.turnError), .done)
@@ -87,21 +111,24 @@ enum AskExplainBuiltShotFixtures {
             await engine.finished()
         case .errorStart:
             scene.ai.persistStartError = EarlyExit()
-            await asks.openExplain(ask, item: .question(1))
-            await asks.explainEngine(for: ask, item: .question(1))?.finished()
+            await asks.openExplain(ask, item: item)
+            await asks.explainEngine(for: ask, item: item)?.finished()
         case .errorOpen:
             try await scene.dropWorkbench()
-            await asks.openExplain(ask, item: .question(1))
+            await asks.openExplain(ask, item: item)
         }
-        return scene.drawer(ask)
+        let drawer = scene.drawer(ask)
+        // Show more pressed, through the card's own state.
+        return state == .expanded ? AnyView(drawer.environment(\.askExplainCardStartsExpanded, true)) : drawer
     }
 
-    /// The question view of a long ask scrolled to its bottom, the chat
-    /// opened and closed again through the view model, drawn after the
-    /// close in the same window: the question must still be at its bottom.
-    /// Returns the PNG and the scroll offset (bottom expected) after the close.
+    /// The question view of the three-question ask scrolled to its bottom
+    /// (question 3), question 3's chat opened and closed again through the
+    /// view model, drawn after the close in the same window: question 3 must
+    /// still be where it was. Returns the PNG and the scroll offset (bottom
+    /// expected) after the close.
     static func backScrolled(_ appearance: NSAppearance) throws -> (png: Data, offset: CGFloat, bottom: CGFloat) {
-        let scene = try Scene(gateLimit: 3, holdChatNew: false, long: true)
+        let scene = try Scene(.questions, gateLimit: 3, holdChatNew: false)
         scenes.append(scene)
         var opened: OwnerAsk?
         run("the asks did not load") { opened = try? await scene.open() }
@@ -121,12 +148,12 @@ enum AskExplainBuiltShotFixtures {
 
         let scroll = try XCTUnwrap(questionScroll(in: host), "the question view has no scroll view to scroll")
         let bottom = scrollToBottom(scroll)
-        XCTAssertGreaterThan(bottom, 0, "the long question must overflow the drawer")
+        XCTAssertGreaterThan(bottom, 0, "the three questions must overflow the drawer")
         settle(host)
 
-        run("the open did not finish") { await scene.vm.asks.openExplain(ask, item: .question(1)) }
+        run("the open did not finish") { await scene.vm.asks.openExplain(ask, item: .question(3)) }
         settle(host)
-        XCTAssertTrue(scene.vm.asks.isExplaining(ask.id))
+        XCTAssertEqual(scene.vm.asks.explainItem(ask.id), .question(3))
         scene.vm.asks.closeExplain(ask.id)
         settle(host)
         XCTAssertFalse(scene.vm.asks.isExplaining(ask.id))
@@ -209,54 +236,70 @@ enum AskExplainBuiltShotFixtures {
 
     // MARK: - Sample
 
+    /// The mockups' sample asks (`AskExplainItemsMock`), filed as Go files them.
     enum Sample {
-        static let title = "Queue agent writes to its own settings (.mcp.json, hooks) for your approval?"
-        static let payload = #"{"questions":[{"id":"a","question":"Queue the agent's writes to its own settings?","#
-            + #""options":[{"label":"Yes, queue them","description":"The agent cannot lift its own guard from a shell; "#
-            + #"normal work is not affected","recommended":true},"#
-            + #"{"label":"No, keep as is","description":"Log it as an accepted risk"}]}]}"#
-        static let explanation = """
-            Right now an agent in the terminal can rewrite its own settings (.mcp.json, the hooks file) and so switch off the guard put on it.
+        typealias Mock = AskExplainItemsMock
 
-            Queue means such a write is not applied at once: you get it as a separate ask with the diff and decide.
+        enum Ask {
+            /// Three questions.
+            case questions
+            /// Four steps.
+            case check
+            /// The mockups' first question, then their long question.
+            case long
 
-            Yes costs a rare extra ask; the agent can no longer disable its guard. \
-            No keeps today's behaviour, and the risk is written to the audit log.
-            """
-        static let followUps: [(question: String, answer: String)] = [
-            ("Will my own scripts that write .mcp.json be queued too?",
-             "No. Only writes from agent sessions are queued. What you run yourself writes as before."),
-            ("How often will these asks come?",
-             "Rarely: an agent touches these files when it sets up a new MCP server or hook.")
-        ]
-        static let busyQuestion = "Which servers count as settings?"
-        static let streamingReply = "Only when the agent adds or changes a server; reading them"
+            var kind: String { self == .check ? "check" : "question" }
+            var title: String { self == .check ? Mock.checkTitle : Mock.questionTitle }
+
+            var payload: String {
+                switch self {
+                case .questions: Sample.questionsPayload(Mock.questions)
+                case .long: Sample.questionsPayload([Mock.questions[0], Mock.longQuestion])
+                case .check: Sample.json(["checklist": Mock.steps.map { ["text": $0.text, "hint": $0.hint] }])
+                }
+            }
+
+            /// The stored explanation of the item the shot opens.
+            var explanation: String {
+                let paragraphs = switch self {
+                case .questions: Mock.questionExplanation
+                case .check: Mock.stepExplanation
+                case .long: Mock.longExplanation
+                }
+                return paragraphs.joined(separator: "\n\n")
+            }
+        }
+
+        fileprivate static func questionsPayload(_ questions: [Mock.Question]) -> String {
+            json(["questions": questions.enumerated().map { index, question -> [String: Any] in
+                let options = question.options.map { option -> [String: Any] in
+                    var row: [String: Any] = ["label": option.label]
+                    if !option.detail.isEmpty { row["description"] = option.detail }
+                    if option.recommended { row["recommended"] = true }
+                    return row
+                }
+                return ["id": "q\(index + 1)", "question": question.text, "options": options]
+            }])
+        }
+
+        fileprivate static func json(_ object: Any) -> String {
+            let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+            return String(bytes: data, encoding: .utf8) ?? ""
+        }
+
+        /// The workbench's two other open asks ("1 of 3").
+        static let otherTitles = ["Rename the acme_auth package now or after the release?",
+                                  "Run the migration on the shared database now?"]
+        static let otherPayload = #"{"questions":[{"id":"a","question":"Now?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
+        static let busyQuestion = Mock.followUp
+        static let streamingReply = Mock.followUpReply
         static let turnError = "the provider did not answer in time."
-
-        /// A question long enough to scroll: a summary and three questions.
-        static let longSummary = """
-            The guard on agent sessions blocks writes outside the workbench folder, but an agent can still rewrite \
-            its own .mcp.json and hooks file, and those decide which tools it gets and which checks run. \
-            This ask settles three things before the guard ships: whether such writes are queued for you, \
-            how long a queued write waits, and what happens to the writes an agent made before the guard.
-            """
-        static let longPayload = #"{"questions":["#
-            + #"{"id":"a","question":"Queue the agent's writes to its own settings?","options":["#
-            + #"{"label":"Yes, queue them","description":"The agent cannot lift its own guard from a shell; "#
-            + #"normal work is not affected","recommended":true},"#
-            + #"{"label":"No, keep as is","description":"Log it as an accepted risk"}]},"#
-            + #"{"id":"b","question":"How long does a queued write wait for you?","options":["#
-            + #"{"label":"Until you answer","description":"The agent works on; the write lands when you approve it","recommended":true},"#
-            + #"{"label":"One day","description":"After a day the write is dropped and the agent is told"},"#
-            + #"{"label":"One hour","description":"Short; most writes would be dropped overnight"}]},"#
-            + #"{"id":"c","question":"What about the writes made before the guard?","options":["#
-            + #"{"label":"List them once","description":"One ask with every change since the workbench was made","recommended":true},"#
-            + #"{"label":"Leave them","description":"Only new writes are queued"}]}]}"#
     }
 }
 
-/// One shot's world: a workbench with three open asks, its view model wired
-/// to an embedded chat center over a scripted AI service and a fake tower.
+/// One shot's world: a workbench with three open asks (the shot's sample
+/// first), its view model wired to an embedded chat center over a scripted
+/// AI service and a fake tower.
 @MainActor
 private final class Scene {
     let pool: DatabasePool
@@ -269,15 +312,17 @@ private final class Scene {
     let vm: WorkbenchesViewModel
     let projectID: Int64
     private let askID: Int64
+    private let subject: AskExplainBuiltShotFixtures.Sample.Ask
     private let release: AsyncStream<Void>.Continuation
     /// The finding shot's open, held at `chat.new` until `cleanUp`.
     var openTask: Task<Void, Never>?
 
-    init(gateLimit: Int, holdChatNew: Bool, long: Bool = false) throws {
+    init(_ subject: AskExplainBuiltShotFixtures.Sample.Ask, gateLimit: Int, holdChatNew: Bool) throws {
         (pool, path) = try TestDatabase.createPool()
         (writes, tower) = FakeChatTower.writes(pool)
         let (stream, release) = AsyncStream<Void>.makeStream()
         self.release = release
+        self.subject = subject
         if holdChatNew {
             // The conversation is never found: the pane stays on its spinner.
             tower.beforeApply = { command in
@@ -290,14 +335,11 @@ private final class Scene {
             let id = try TestDatabase.insertWorkbench(db, name: "acme", folder: "/tmp/acme")
             let session = try TerminalSessionQueries.create(
                 db, .init(projectID: id, kind: .shell, title: "Guard agent settings writes", folderPath: "/tmp/acme"))
-            let ask = try TestDatabase.insertOwnerAsk(db, projectID: id, sessionID: session.id, title: sample.title,
-                                                      payload: long ? sample.longPayload : sample.payload)
-            if long {
-                try db.execute(sql: "UPDATE owner_asks SET summary = ? WHERE id = ?", arguments: [sample.longSummary, ask])
-            }
-            for title in ["Rename the acme_auth package now or after the release?", "Run the migration on the shared database now?"] {
+            let ask = try TestDatabase.insertOwnerAsk(db, projectID: id, sessionID: session.id, kind: subject.kind,
+                                                      title: subject.title, payload: subject.payload)
+            for title in sample.otherTitles {
                 _ = try TestDatabase.insertOwnerAsk(db, projectID: id, sessionID: session.id, title: title,
-                                                    payload: sample.payload)
+                                                    payload: sample.otherPayload)
             }
             return (id, session, ask)
         }
@@ -341,22 +383,13 @@ private final class Scene {
         AnyView(OwnerAskDrawer(vm: vm, ask: ask).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top))
     }
 
-    /// The explanation, then `turns` follow-ups and their answers, as stored
-    /// rows: opening such a chat starts nothing.
-    func store(_ ask: OwnerAsk, turns: Int) async throws {
-        let conversationID = try await AskExplainSurface.conversationID(ask: ask, item: .question(1), dbPool: pool, writes: writes)
-        let sample = AskExplainBuiltShotFixtures.Sample.self
+    /// The item's explanation as a stored reply: opening its chat starts nothing.
+    func store(_ ask: OwnerAsk, item: AskExplainItem) async throws {
+        let conversationID = try await AskExplainSurface.conversationID(ask: ask, item: item, dbPool: pool, writes: writes)
+        let text = subject.explanation
         try await pool.write { db in
-            let start = Date().timeIntervalSince1970 - 600
-            var parent = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "assistant",
-                                                            text: sample.explanation, createdAt: start)
-            for (index, turn) in sample.followUps.prefix(turns).enumerated() {
-                let at = start + Double(index + 1) * 60
-                parent = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "user",
-                                                            text: turn.question, parentID: parent, createdAt: at)
-                parent = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "assistant",
-                                                            text: turn.answer, parentID: parent, createdAt: at + 20)
-            }
+            _ = try TestDatabase.insertChatMessage(db, conversationID: conversationID, role: "assistant", text: text,
+                                                   createdAt: Date().timeIntervalSince1970 - 600)
         }
     }
 

@@ -12,12 +12,16 @@ import WatchtowerCore
 /// so expansion resets when another item's chat shows.
 struct AskExplainItemCard: View {
     let card: AskExplainCard
-    @State private var expanded = false
+    @State private var expanded: Bool
     /// The content's own height, read after layout.
     @State private var contentHeight: CGFloat = 0
 
-    init(card: AskExplainCard) {
+    /// `startsExpanded` draws the card as after **Show more**: the expanded
+    /// design shot only (`askExplainCardStartsExpanded`); the app always
+    /// starts clamped.
+    init(card: AskExplainCard, startsExpanded: Bool = false) {
         self.card = card
+        _expanded = State(initialValue: startsExpanded)
     }
 
     var body: some View {
@@ -78,11 +82,16 @@ struct AskExplainItemCard: View {
 }
 
 /// The card's content at its natural height: the question with its option
-/// labels, or the step with its hint.
+/// labels, or the step with its hint, in callout as the mockups draw it.
 struct AskExplainItemCardContent: View {
     let card: AskExplainCard
 
     var body: some View {
+        content.font(.callout)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch card {
         case let .question(text, options):
             VStack(alignment: .leading, spacing: Spacing.small) {

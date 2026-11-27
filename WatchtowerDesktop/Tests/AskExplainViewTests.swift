@@ -411,6 +411,18 @@ final class AskExplainViewTests: XCTestCase {
                           "whole, no toggle row")
     }
 
+    /// The expanded shot's seam draws the long card whole (it fits the
+    /// expanded cap), as after Show more; the app's default starts clamped.
+    func testCardStartsExpandedThroughTheShotSeam() {
+        let long = AskExplainCard.question(
+            text: AskExplainItemsMock.longQuestion.text,
+            options: AskExplainItemsMock.longQuestion.options.map { .init(label: $0.label, recommended: $0.recommended) })
+        let whole = height(AskExplainItemCardContent(card: long).frame(width: 400 - 2 * Spacing.medium))
+        let expanded = settledHeight(AskExplainItemCard(card: long, startsExpanded: true))
+        XCTAssertGreaterThanOrEqual(expanded, whole, "whole, with the Show less row")
+        XCTAssertGreaterThan(expanded, settledHeight(AskExplainItemCard(card: long)), "taller than the clamped card")
+    }
+
     /// The question view stays in the tree, hidden, under the chat: its
     /// scroll and the answer bar's state survive.
     func testQuestionLayerStaysInTree() {

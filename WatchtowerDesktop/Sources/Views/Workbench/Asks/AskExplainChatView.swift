@@ -161,7 +161,7 @@ struct AskExplainPane: View {
                 chat()
             case let .failure(error):
                 AskExplainErrorRow(text: AskExplainErrorRow.openFailure(error), onRetry: onRetry)
-                    .padding(.vertical, Spacing.regular)
+                    .padding(.vertical, Spacing.large)
                 Spacer(minLength: 0)
             case .finding:
                 ProgressView()
@@ -208,12 +208,13 @@ struct AskExplainItemHeader: View {
     let subject: AskExplainSubject
     let card: AskExplainCard?
     let onBack: () -> Void
+    @Environment(\.askExplainCardStartsExpanded) private var startsExpanded
 
     var body: some View {
         VStack(spacing: 0) {
             AskExplainStrip(item: subject.item, onBack: onBack)
             if let card {
-                AskExplainItemCard(card: card)
+                AskExplainItemCard(card: card, startsExpanded: startsExpanded)
                     .id(subject)
                     .padding(.horizontal, Spacing.medium)
             }
@@ -273,4 +274,10 @@ struct AskExplainErrorRow: View {
         }
         .padding(.horizontal, Spacing.medium)
     }
+}
+
+extension EnvironmentValues {
+    /// Draws the item's card expanded, as after **Show more**: set by the
+    /// built design shot `expanded` only, never by the app.
+    @Entry var askExplainCardStartsExpanded = false
 }

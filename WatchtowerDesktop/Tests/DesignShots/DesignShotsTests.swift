@@ -313,9 +313,10 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(AskExplainItemsMockShotFixtures.shots)
     }
 
-    /// The same states from the built views (#2355 T5), plus the question
-    /// view scrolled to its bottom, the chat opened and closed over it: the
-    /// scroll survives the chat.
+    /// The same states from the built views (#2412): an entry on each
+    /// question and step, each item's chat with its card, plus the question
+    /// view scrolled to question 3, that question's chat opened and closed
+    /// over it: the scroll survives the chat.
     func testAskExplainBuiltShotsRender() throws {
         try renderShots(AskExplainBuiltShotFixtures.shots)
         let outputDir = try shotsDir()
