@@ -388,11 +388,10 @@ struct OwnerAskDrawer: View {
             },
             decorate: { question, body in
                 let block = Group {
-                    if let explain, let item = AskExplainItem.forQuestion(id: question.id, in: explain.ask),
-                       let action = explainAction(for: question, in: explain.ask, open: explain.open) {
+                    if let explain, let entry = explainEntry(for: question, in: explain.ask, open: explain.open) {
                         VStack(alignment: .leading, spacing: Spacing.compact) {
                             body
-                            AskExplainEntry(item: item, kind: explain.ask.kind, hasCLI: true, action: action)
+                            entry
                         }
                     } else {
                         body
@@ -411,8 +410,16 @@ struct OwnerAskDrawer: View {
     static func explainAction(
         for question: ChatQuestion, in ask: OwnerAsk, open: @escaping (AskExplainItem) -> Void
     ) -> (() -> Void)? {
+        explainEntry(for: question, in: ask, open: open)?.action
+    }
+
+    /// `question`'s **Not clear?**, opening it by its position in `ask`; nil
+    /// when the question is not in the ask.
+    private static func explainEntry(
+        for question: ChatQuestion, in ask: OwnerAsk, open: @escaping (AskExplainItem) -> Void
+    ) -> AskExplainEntry? {
         guard let item = AskExplainItem.forQuestion(id: question.id, in: ask) else { return nil }
-        return { open(item) }
+        return AskExplainEntry(item: item) { open(item) }
     }
 
     private var hasTopSections: Bool {

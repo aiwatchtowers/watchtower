@@ -1,5 +1,6 @@
 import GRDB
 import SwiftUI
+import ViewInspector
 import XCTest
 import ChatUI
 import WatchtowerChatText
@@ -233,13 +234,20 @@ final class AskExplainViewTests: XCTestCase {
         XCTAssertNil(OwnerAskDrawer.explainAction(for: stranger, in: ask) { opened.append($0) })
     }
 
-    /// Each step of a check has its own `?`, by its 1-based position.
+    /// Each step of a check has its own `?`, named for its 1-based
+    /// position; the second one opens step 2. Without an opener, none.
     func testEachStepGetsAnEntry() throws {
         let check = try fx.insertAsk(kind: "check")
-        func body(_ explain: ((AskExplainItem) -> Void)?) -> some View {
-            OwnerAskChecklistBody(items: check.payload.checklist, marks: [:], notes: [:], editable: true, explain: explain)
+        var opened: [AskExplainItem] = []
+        let body = OwnerAskChecklistBody(items: check.payload.checklist, marks: [:], notes: [:], editable: true) {
+            opened.append($0)
         }
-        XCTAssertGreaterThanOrEqual(height(body { _ in }), height(body(nil)))
+        let entries = try stepEntries(body)
+        XCTAssertEqual(entries.map(\.label), ["Not clear? Step 1", "Not clear? Step 2", "Not clear? Step 3"])
+        try entries[1].button.tap()
+        XCTAssertEqual(opened, [.step(2)])
+        let without = OwnerAskChecklistBody(items: check.payload.checklist, marks: [:], notes: [:], editable: true)
+        XCTAssertTrue(try stepEntries(without).isEmpty)
         XCTAssertGreaterThan(height(AskExplainEntry(item: .step(2), kind: .check, hasCLI: true) {}), 0)
         XCTAssertEqual(OwnerAskChecklistBody.stepItem(index: 1), .step(2))
         XCTAssertEqual(OwnerAskChecklistBody.stepItem(index: 0), .step(1))
@@ -304,14 +312,41 @@ final class AskExplainViewTests: XCTestCase {
         let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(2)))
         for shown in [AskExplainPane.Shown.finding, .failure("The database is busy."), .chat] {
             XCTAssertTrue(AskExplainPane.showsCard(shown), "\(shown)")
-            func state(_ card: AskExplainCard?) -> some View {
-                AskExplainPane.layout(shown, item: .question(2), card: card, onRetry: nil, onBack: {}, chat: {
-                    AskExplainChatView(ask: ask, item: .question(2), card: card, engine: engine) {}
-                })
-            }
-            XCTAssertGreaterThan(height(state(card)), height(state(nil)), "\(shown)")
+            XCTAssertGreaterThan(height(paneState(shown, ask, engine, card: card)),
+                                 height(paneState(shown, ask, engine, card: nil)), "\(shown)")
         }
         await finishTurn(engine)
+    }
+
+    /// The strip and the card are drawn once, above whatever the state
+    /// shows: a card expanded while the chat is found stays expanded when
+    /// the chat loads (its view, and so its state, is the same).
+    func testCardHeaderStaysAcrossPaneStates() async throws {
+        let ask = try fx.insertAsk()
+        let card = try XCTUnwrap(AskExplainCard.make(ask: ask, item: .question(2)))
+        await fx.vm.openExplain(ask, item: .question(2))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(2)))
+        for shown in [AskExplainPane.Shown.finding, .failure("The database is busy."), .chat] {
+            let stack = try paneState(shown, ask, engine, card: card).inspect().vStack()
+            let header = try stack.view(AskExplainItemHeader.self, 0)
+            XCTAssertEqual(try header.actualView().subject, AskExplainSubject(askID: ask.id, item: .question(2)), "\(shown)")
+            XCTAssertNoThrow(try header.find(AskExplainItemCard.self), "\(shown)")
+        }
+        await finishTurn(engine)
+    }
+
+    /// The card's identity is its subject: another item's chat, of this ask
+    /// or of another, starts it collapsed.
+    func testCardExpansionResetsPerSubject() throws {
+        let card = AskExplainCard.question(text: "Which store?", options: [])
+        func cardID(_ subject: AskExplainSubject) throws -> AnyHashable {
+            try AskExplainItemHeader(subject: subject, card: card) {}.inspect().find(AskExplainItemCard.self).id()
+        }
+        let first = AskExplainSubject(askID: 1, item: .question(2))
+        XCTAssertEqual(try cardID(first), AnyHashable(first))
+        XCTAssertNotEqual(try cardID(first), try cardID(AskExplainSubject(askID: 2, item: .question(2))),
+                          "the same item of another ask")
+        XCTAssertNotEqual(try cardID(first), try cardID(AskExplainSubject(askID: 1, item: .question(3))))
     }
 
     /// Past the clamp a card is cut to it with Show more under it; a short
@@ -325,6 +360,9 @@ final class AskExplainViewTests: XCTestCase {
         }.buttonStyle(KitQuietButtonStyle(label: .secondary)))
         let padding = 2 * Spacing.cozy
         let longHeight = settledHeight(AskExplainItemCard(card: long))
+        let whole = height(AskExplainItemCardContent(card: long).frame(width: 400 - 2 * Spacing.medium))
+        XCTAssertGreaterThan(whole, AskExplainCardLayout.clampHeight, "the sample is taller than the clamp")
+        XCTAssertLessThan(longHeight, whole + padding, "cut, not shown whole")
         XCTAssertLessThanOrEqual(longHeight, AskExplainCardLayout.clampHeight + Spacing.small + toggle + padding + 2,
                                  "clamped, with the toggle row")
         XCTAssertGreaterThan(longHeight, AskExplainCardLayout.clampHeight, "the clamp, not less")
@@ -366,7 +404,25 @@ final class AskExplainViewTests: XCTestCase {
     }
 
     private func chatView(_ ask: OwnerAsk, _ item: AskExplainItem, _ engine: EmbeddedChatEngine) -> AskExplainChatView {
-        AskExplainChatView(ask: ask, item: item, card: AskExplainCard.make(ask: ask, item: item), engine: engine) {}
+        AskExplainChatView(ask: ask, item: item, engine: engine) {}
+    }
+
+    /// One pane state of `ask`'s question 2, with or without its card.
+    private func paneState(
+        _ shown: AskExplainPane.Shown, _ ask: OwnerAsk, _ engine: EmbeddedChatEngine, card: AskExplainCard?
+    ) -> some View {
+        AskExplainPane.layout(shown, subject: AskExplainSubject(askID: ask.id, item: .question(2)), card: card,
+                              onRetry: nil, onBack: {}, chat: {
+            AskExplainChatView(ask: ask, item: .question(2), engine: engine) {}
+        })
+    }
+
+    /// The step entries of a checklist: each button and its accessibility label.
+    private func stepEntries(_ body: OwnerAskChecklistBody) throws -> [(label: String, button: InspectableView<ViewType.Button>)] {
+        try body.inspect().findAll(AskExplainEntry.self).map { entry in
+            let button = try entry.find(ViewType.Button.self)
+            return (try button.accessibilityLabel().string(), button)
+        }
     }
 
     private func finishTurn(_ engine: EmbeddedChatEngine) async {

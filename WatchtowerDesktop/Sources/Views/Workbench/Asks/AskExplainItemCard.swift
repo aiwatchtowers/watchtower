@@ -53,7 +53,7 @@ struct AskExplainItemCard: View {
 
     /// The content at its full height, which it reports to `contentHeight`.
     private var measured: some View {
-        content
+        AskExplainItemCardContent(card: card)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(GeometryReader { geometry in
@@ -75,13 +75,18 @@ struct AskExplainItemCard: View {
             .buttonStyle(KitQuietButtonStyle(label: .secondary))
         }
     }
+}
 
-    @ViewBuilder
-    private var content: some View {
+/// The card's content at its natural height: the question with its option
+/// labels, or the step with its hint.
+struct AskExplainItemCardContent: View {
+    let card: AskExplainCard
+
+    var body: some View {
         switch card {
         case let .question(text, options):
             VStack(alignment: .leading, spacing: Spacing.small) {
-                MarkdownView(text: text).font(.callout.weight(.semibold))
+                MarkdownView(text: text).fontWeight(.semibold)
                 if !options.isEmpty {
                     VStack(alignment: .leading, spacing: Spacing.tight) {
                         ForEach(Array(options.enumerated()), id: \.offset) { _, option in

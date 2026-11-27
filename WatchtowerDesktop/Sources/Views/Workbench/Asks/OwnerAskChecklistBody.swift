@@ -59,7 +59,7 @@ struct OwnerAskChecklistBody: View {
                 if let explain {
                     Spacer(minLength: Spacing.small)
                     let step = Self.stepItem(index: index)
-                    AskExplainEntry(item: step, kind: .check, hasCLI: true) { explain(step) }
+                    AskExplainEntry(item: step) { explain(step) }
                 }
             }
             HStack(spacing: 4) {

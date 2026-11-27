@@ -8,14 +8,22 @@ import WatchtowerCore
 /// a review ask or without a CLI (`AskExplainPresentation.showsEntry`).
 struct AskExplainEntry: View {
     let item: AskExplainItem
-    let kind: OwnerAskKind
-    let hasCLI: Bool
     let action: () -> Void
+    private let shows: Bool
 
     init(item: AskExplainItem, kind: OwnerAskKind, hasCLI: Bool, action: @escaping () -> Void) {
+        self.init(item: item, shows: AskExplainPresentation.showsEntry(kind: kind, hasCLI: hasCLI), action: action)
+    }
+
+    /// For a caller that already decided the ask shows entries (the drawer
+    /// hands its question card and checklist an opener only then).
+    init(item: AskExplainItem, action: @escaping () -> Void) {
+        self.init(item: item, shows: true, action: action)
+    }
+
+    private init(item: AskExplainItem, shows: Bool, action: @escaping () -> Void) {
         self.item = item
-        self.kind = kind
-        self.hasCLI = hasCLI
+        self.shows = shows
         self.action = action
     }
 
@@ -25,7 +33,7 @@ struct AskExplainEntry: View {
     }
 
     var body: some View {
-        if AskExplainPresentation.showsEntry(kind: kind, hasCLI: hasCLI) {
+        if shows {
             if item.isStep {
                 button { Image(systemName: "questionmark.circle").font(.caption) }
             } else {
