@@ -25,8 +25,8 @@ final class AskExplainViewTests: XCTestCase {
     /// does nothing.
     func testComposerEscapeNeverStops() async throws {
         let ask = try fx.insertAsk()
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
         await engine.started()
         XCTAssertTrue(engine.isBusy)
         var backs = 0
@@ -56,11 +56,11 @@ final class AskExplainViewTests: XCTestCase {
         struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
         let ask = try fx.insertAsk()
         fx.ai.persistStartError = EarlyExit()
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
         await engine.finished()
         XCTAssertTrue(engine.messages.isEmpty, "no reply row")
-        XCTAssertNil(fx.vm.explainErrors[ask.id])
+        XCTAssertNil(fx.vm.explainErrors[AskExplainSubject(askID: ask.id, item: .question(1))])
         let failure = try XCTUnwrap(AskExplainChatView.startFailure(engine))
         XCTAssertTrue(failure.contains("the CLI exited"), failure)
         XCTAssertEqual(AskExplainChatView.failureLine(openError: nil, engine: engine), failure,
@@ -72,7 +72,7 @@ final class AskExplainViewTests: XCTestCase {
         engine.draft = ""
 
         fx.ai.persistStartError = nil
-        await fx.vm.openExplain(ask)
+        await fx.vm.openExplain(ask, item: .question(1))
         await engine.started()
         XCTAssertEqual(fx.hiddenTurns.count, 2, "Retry starts the first turn again")
         XCTAssertNil(AskExplainChatView.startFailure(engine), "nothing while it runs")
@@ -90,8 +90,8 @@ final class AskExplainViewTests: XCTestCase {
         struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
         let ask = try fx.insertAsk()
         fx.ai.persistStartError = EarlyExit()
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
         await engine.finished()
         XCTAssertNotNil(AskExplainChatView.failureLine(openError: nil, engine: engine), "the row shows it")
         XCTAssertTrue(AskExplainChatView.composerHidesError(engine))
@@ -112,8 +112,8 @@ final class AskExplainViewTests: XCTestCase {
         struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
         let ask = try fx.insertAsk()
         fx.ai.persistStartError = EarlyExit()
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
         await engine.finished()
         XCTAssertTrue(AskExplainChatView(ask: ask, engine: engine) {}.composer.hidesError)
         XCTAssertTrue(engine.send("Why?"))
@@ -126,13 +126,13 @@ final class AskExplainViewTests: XCTestCase {
     func testPaneOffersNoRetryForAGoneWorkbench() async throws {
         let ask = try fx.insertAsk()
         fx.tower.refuse(.chatNew, with: "The database is busy.")
-        await fx.vm.openExplain(ask)
-        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask) {}.retryIfItCanHelp, "another failure: Retry")
+        await fx.vm.openExplain(ask, item: .question(1))
+        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask, item: .question(1)) {}.retryIfItCanHelp, "another failure: Retry")
 
         fx.tower.refuse(.chatNew, with: nil)
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
-        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask) {}.chatView(engine).onRetry)
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
+        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask, item: .question(1)) {}.chatView(engine).onRetry)
 
         let projectID = fx.projectID
         try await fx.pool.write { db in
@@ -141,10 +141,10 @@ final class AskExplainViewTests: XCTestCase {
             try db.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [projectID])
         }
         fx.vm.closeExplain(ask.id)
-        await fx.vm.openExplain(ask)
-        let pane = AskExplainPane(asks: fx.vm, ask: ask) {}
-        XCTAssertEqual(AskExplainPane.shown(hasEngine: fx.vm.explainEngine(for: ask) != nil,
-                                            error: fx.vm.explainErrors[ask.id]),
+        await fx.vm.openExplain(ask, item: .question(1))
+        let pane = AskExplainPane(asks: fx.vm, ask: ask, item: .question(1)) {}
+        XCTAssertEqual(AskExplainPane.shown(hasEngine: fx.vm.explainEngine(for: ask, item: .question(1)) != nil,
+                                            error: fx.vm.explainErrors[AskExplainSubject(askID: ask.id, item: .question(1))]),
                        .failure("This workbench no longer exists."))
         XCTAssertNil(pane.retryIfItCanHelp, "a final state: no Retry")
         XCTAssertNil(pane.chatView(engine).onRetry)
@@ -162,8 +162,8 @@ final class AskExplainViewTests: XCTestCase {
         struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
         let ask = try fx.insertAsk()
         fx.ai.persistStartError = EarlyExit()
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
         await engine.finished()
         XCTAssertNotNil(AskExplainChatView.startFailure(engine), "the hidden first turn failed")
 
@@ -190,8 +190,8 @@ final class AskExplainViewTests: XCTestCase {
     /// A failure after the reply row exists keeps the feed's own card.
     func testFailureWithAReplyRowKeepsTheFeedCard() async throws {
         let ask = try fx.insertAsk()
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
         await engine.started()
         fx.ai.emit(.error("Not logged in"), .done)
         fx.ai.finish()

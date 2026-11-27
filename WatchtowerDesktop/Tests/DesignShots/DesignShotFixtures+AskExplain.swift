@@ -52,33 +52,33 @@ enum AskExplainBuiltShotFixtures {
         case .entry:
             break
         case .finding:
-            scene.openTask = Task { await asks.openExplain(ask) }
+            scene.openTask = Task { await asks.openExplain(ask, item: .question(1)) }
             await waitForCondition { asks.isExplaining(ask.id) }
         case .queued:
             // The gate's only place is taken by another chat's turn.
             _ = scene.gate.tryAcquire(UUID())
-            await asks.openExplain(ask)
+            await asks.openExplain(ask, item: .question(1))
         case .loading:
-            await asks.openExplain(ask)
-            try await XCTUnwrap(asks.explainEngine(for: ask)).started()
+            await asks.openExplain(ask, item: .question(1))
+            try await XCTUnwrap(asks.explainEngine(for: ask, item: .question(1))).started()
         case .explained, .narrow:
             try await scene.store(ask, turns: 0)
-            await asks.openExplain(ask)
+            await asks.openExplain(ask, item: .question(1))
         case .long:
             try await scene.store(ask, turns: Sample.followUps.count)
-            await asks.openExplain(ask)
+            await asks.openExplain(ask, item: .question(1))
         case .busy:
             try await scene.store(ask, turns: Sample.followUps.count)
-            await asks.openExplain(ask)
-            let engine = try XCTUnwrap(asks.explainEngine(for: ask))
+            await asks.openExplain(ask, item: .question(1))
+            let engine = try XCTUnwrap(asks.explainEngine(for: ask, item: .question(1)))
             guard engine.send(Sample.busyQuestion) else { throw NoTurn(what: "the follow-up was refused") }
             await engine.started()
             try scene.requireCall(1)
             scene.ai.emit(.text(Sample.streamingReply))
             await waitForCondition { engine.liveTurn?.text.isEmpty == false }
         case .error:
-            await asks.openExplain(ask)
-            let engine = try XCTUnwrap(asks.explainEngine(for: ask))
+            await asks.openExplain(ask, item: .question(1))
+            let engine = try XCTUnwrap(asks.explainEngine(for: ask, item: .question(1)))
             await engine.started()
             try scene.requireCall(1)
             scene.ai.emit(.error(Sample.turnError), .done)
@@ -87,11 +87,11 @@ enum AskExplainBuiltShotFixtures {
             await engine.finished()
         case .errorStart:
             scene.ai.persistStartError = EarlyExit()
-            await asks.openExplain(ask)
-            await asks.explainEngine(for: ask)?.finished()
+            await asks.openExplain(ask, item: .question(1))
+            await asks.explainEngine(for: ask, item: .question(1))?.finished()
         case .errorOpen:
             try await scene.dropWorkbench()
-            await asks.openExplain(ask)
+            await asks.openExplain(ask, item: .question(1))
         }
         return scene.drawer(ask)
     }
@@ -124,7 +124,7 @@ enum AskExplainBuiltShotFixtures {
         XCTAssertGreaterThan(bottom, 0, "the long question must overflow the drawer")
         settle(host)
 
-        run("the open did not finish") { await scene.vm.asks.openExplain(ask) }
+        run("the open did not finish") { await scene.vm.asks.openExplain(ask, item: .question(1)) }
         settle(host)
         XCTAssertTrue(scene.vm.asks.isExplaining(ask.id))
         scene.vm.asks.closeExplain(ask.id)
@@ -344,7 +344,7 @@ private final class Scene {
     /// The explanation, then `turns` follow-ups and their answers, as stored
     /// rows: opening such a chat starts nothing.
     func store(_ ask: OwnerAsk, turns: Int) async throws {
-        let conversationID = try await AskExplainSurface.conversationID(ask: ask, dbPool: pool, writes: writes)
+        let conversationID = try await AskExplainSurface.conversationID(ask: ask, item: .question(1), dbPool: pool, writes: writes)
         let sample = AskExplainBuiltShotFixtures.Sample.self
         try await pool.write { db in
             let start = Date().timeIntervalSince1970 - 600

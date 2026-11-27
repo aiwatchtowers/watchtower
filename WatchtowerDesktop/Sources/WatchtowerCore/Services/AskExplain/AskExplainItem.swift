@@ -31,9 +31,12 @@ package enum AskExplainItem: Hashable, Sendable {
             + ask.payload.checklist.indices.map { .step($0 + 1) }
     }
 
-    /// The position of the question with this id (ids are unique within a card).
+    /// The position of the question with this id (ids are unique within a
+    /// card); nil also on a kind with no items.
     package static func forQuestion(id: String, in ask: OwnerAsk) -> Self? {
-        ask.payload.questions.firstIndex { $0.id == id }.map { .question($0 + 1) }
+        guard let index = ask.payload.questions.firstIndex(where: { $0.id == id }) else { return nil }
+        let item = Self.question(index + 1)
+        return items(of: ask).contains(item) ? item : nil
     }
 
     /// Whether this is the ask's only item (spec D4: the legacy whole-ask
@@ -70,18 +73,18 @@ package enum AskExplainCard: Equatable {
     case question(text: String, options: [Option])
     case step(number: Int, text: String, hint: String)
 
-    /// The item's card, or nil when the ask has no such item.
+    /// The item's card, or nil when the ask has no such item
+    /// (`AskExplainItem.items(of:)`: out of range, or a kind with no entry).
     package static func make(ask: OwnerAsk, item: AskExplainItem) -> Self? {
+        guard AskExplainItem.items(of: ask).contains(item) else { return nil }
         let index = item.number - 1
         switch item {
         case .question:
-            guard ask.payload.questions.indices.contains(index) else { return nil }
             let question = ask.payload.questions[index]
             return .question(
                 text: question.question,
                 options: question.options.map { Option(label: $0.label, recommended: $0.recommended) })
         case .step(let number):
-            guard ask.payload.checklist.indices.contains(index) else { return nil }
             let step = ask.payload.checklist[index]
             return .step(number: number, text: step.text, hint: step.hint)
         }

@@ -3,11 +3,6 @@ import Foundation
 /// What the "Not clear?" assistant is told (spec 2026-11-24 "The assistant").
 /// The ask's text is the agent's, so it goes in as fenced data.
 package enum AskExplainPrompt {
-    /// The hidden first turn: no owner row.
-    package static let firstTurn =
-        "Explain this question to the owner in plain words: what is being decided, what each option changes for them, "
-        + "and what the agent recommends and why. Short; no jargon the question does not explain."
-
     /// The hidden first turn of an item's chat: no owner row.
     package static func firstTurn(_ item: AskExplainItem) -> String {
         switch item {
@@ -30,10 +25,6 @@ package enum AskExplainPrompt {
             ask: ask, target: target,
             itemLine: "The owner opened this chat from \(place) (numbered as listed there). "
                 + "Explain that one; use the rest of the ask as context.\n\n")
-    }
-
-    package static func system(ask: OwnerAsk, target: (title: String, intent: String)?) -> String {
-        system(ask: ask, target: target, itemLine: "")
     }
 
     private static func system(ask: OwnerAsk, target: (title: String, intent: String)?, itemLine: String) -> String {

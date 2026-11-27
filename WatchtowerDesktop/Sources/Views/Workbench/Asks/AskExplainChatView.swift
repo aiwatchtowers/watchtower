@@ -100,12 +100,15 @@ struct AskExplainChatView: View {
 struct AskExplainPane: View {
     let asks: OwnerAsksViewModel
     let ask: OwnerAsk
+    let item: AskExplainItem
     let onBack: () -> Void
 
+    private var subject: AskExplainSubject { AskExplainSubject(askID: ask.id, item: item) }
+
     var body: some View {
-        let engine = asks.explainEngine(for: ask)
+        let engine = asks.explainEngine(for: ask, item: item)
         Group {
-            switch Self.shown(hasEngine: engine != nil, error: asks.explainErrors[ask.id]) {
+            switch Self.shown(hasEngine: engine != nil, error: asks.explainErrors[subject]) {
             case .chat:
                 if let engine { chat(engine) }
             case let .failure(error):
@@ -124,7 +127,7 @@ struct AskExplainPane: View {
                 }
             }
         }
-        .task(id: ask.id) { asks.ensureExplainEngine(ask) }
+        .task(id: subject) { asks.ensureExplainEngine(ask, item: item) }
     }
 
     /// What the pane shows: the chat once the engine is there (its own
@@ -140,7 +143,7 @@ struct AskExplainPane: View {
     /// The chat over `engine`, with the open's error and its Retry when one
     /// can help.
     func chatView(_ engine: EmbeddedChatEngine) -> AskExplainChatView {
-        AskExplainChatView(ask: ask, engine: engine, error: asks.explainErrors[ask.id],
+        AskExplainChatView(ask: ask, engine: engine, error: asks.explainErrors[subject],
                            onRetry: retryIfItCanHelp, onBack: onBack)
     }
 
@@ -157,12 +160,12 @@ struct AskExplainPane: View {
     /// Retry, unless the open failed for good (the workbench is gone): the
     /// line then stays as the final state, Back leaves it.
     var retryIfItCanHelp: (() -> Void)? {
-        asks.explainOffersRetry(ask.id) ? retry : nil
+        asks.explainOffersRetry(subject) ? retry : nil
     }
 
     private func retry() {
-        let (asks, ask) = (asks, ask)
-        Task { await asks.openExplain(ask) }
+        let (asks, ask, item) = (asks, ask, item)
+        Task { await asks.openExplain(ask, item: item) }
     }
 }
 

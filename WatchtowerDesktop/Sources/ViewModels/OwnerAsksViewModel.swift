@@ -236,30 +236,32 @@ final class OwnerAsksViewModel {
     @ObservationIgnored private(set) var roomySessions: Set<Int64> = []
     /// The drawer takes the whole session pane; closing it resets this.
     var drawerExpanded = false
-    /// Asks whose drawer shows the "Not clear?" chat in place of the question
-    /// (spec 2026-11-24 "The chat view"): per ask, in memory only; closing
-    /// the drawer forgets it, the chat itself is kept (D5).
-    private(set) var explainOpen: Set<Int64> = []
-    /// Each open explain chat's surface by ask id, once its conversation is
-    /// known: the engine lives in `chats` by its key. Dropped on close.
-    private var explainSpecs: [Int64: ChatSurfaceSpec] = [:]
+    /// The item whose "Not clear?" chat each ask's drawer shows in place of
+    /// the question (specs 2026-11-24 "The chat view", 2026-11-27 D10): per
+    /// ask, at most one item, in memory only; closing the drawer forgets it,
+    /// the chats themselves are kept (D5).
+    private(set) var explainOpen: [Int64: AskExplainItem] = [:]
+    /// Each open explain chat's surface by subject (ask + item), once its
+    /// conversation is known: the engine lives in `chats` by its key.
+    /// Dropped on close.
+    private var explainSpecs: [AskExplainSubject: ChatSurfaceSpec] = [:]
     /// Why an explain chat could not be opened (its conversation or the
-    /// workbench could not be read), by ask id; cleared on close and on the
+    /// workbench could not be read), by subject; cleared on close and on the
     /// next open.
-    private(set) var explainErrors: [Int64: String] = [:]
+    private(set) var explainErrors: [AskExplainSubject: String] = [:]
     /// The workbench of each ask in `explainOpen`, so a drawer's close
     /// forgets its asks' mode only.
     @ObservationIgnored private var explainProjects: [Int64: Int64] = [:]
-    /// Failed opens Retry cannot mend (the workbench is gone), by ask id:
+    /// Failed opens Retry cannot mend (the workbench is gone), by subject:
     /// their failure shows without Retry. Cleared on close and on the next open.
-    private(set) var explainFinal: Set<Int64> = []
-    /// Asks whose `openExplain` is running, claimed before its first await:
-    /// a second open meanwhile starts no second hidden turn.
-    @ObservationIgnored private var explainStarting: Set<Int64> = []
-    /// An open asked while one of the same ask was running (Back, then
+    private(set) var explainFinal: Set<AskExplainSubject> = []
+    /// Subjects whose `openExplain` is running, claimed before its first
+    /// await: a second open meanwhile starts no second hidden turn.
+    @ObservationIgnored private var explainStarting: Set<AskExplainSubject> = []
+    /// An open asked while one of the same subject was running (Back, then
     /// reopen before `chat.new` answered), with that open's ask: the running
     /// open reads the surface again for it, so the latest open's read wins.
-    @ObservationIgnored private var explainReopened: [Int64: OwnerAsk] = [:]
+    @ObservationIgnored private var explainReopened: [AskExplainSubject: OwnerAsk] = [:]
     /// The sessions waiting in the Undo window of a session delete
     /// (`WorkbenchesViewModel.pendingDeletes`, PROJ-17): deleted as far as
     /// the owner can tell, so an explain chat never reads their folder.
@@ -273,8 +275,8 @@ final class OwnerAsksViewModel {
     @ObservationIgnored var explainConfigProvider: @MainActor () -> String? = { ConfigService().aiProvider }
     @ObservationIgnored var explainCatalog: AIModelCatalog = .shared
     /// Each explain engine made again after the center let it go, counted by
-    /// ask id: what `explainEngine(for:)` observes.
-    private var explainBuilds: [Int64: Int] = [:]
+    /// subject: what `explainEngine(for:item:)` observes.
+    private var explainBuilds: [AskExplainSubject: Int] = [:]
     /// A (or ⌃⌘A) on the workbench page (board #412): that workbench's
     /// stack gives its oldest card the keyboard once its
     /// `OwnerAskStackSection` shows it (`takeStackKeyboardRequest`).
@@ -724,107 +726,126 @@ final class OwnerAsksViewModel {
         for (askID, project) in explainProjects where project == projectID { closeExplain(askID) }
     }
 
-    // MARK: - Not clear? (spec 2026-11-24)
+    // MARK: - Not clear? (specs 2026-11-24, 2026-11-27)
 
     func isExplaining(_ askID: Int64) -> Bool {
-        explainOpen.contains(askID)
+        explainOpen[askID] != nil
     }
 
-    /// Shows `ask`'s explain chat: reads its workbench, finds or creates its
-    /// conversation, then starts the hidden first turn when the chat's
-    /// history was read and holds nothing, no turn is busy and no other open
-    /// of this ask is under way. A chat whose last reply ended partial or in
-    /// a retryable error offers Retry instead (never a second hidden turn on
-    /// its own), unless the owner stopped it. Nothing without a CLI, or for
-    /// a kind the entry does not show on. A failure lands in `explainErrors`;
-    /// a gone workbench's also in `explainFinal` (no Retry).
+    /// The item whose chat the ask's drawer shows; nil: the question.
+    func explainItem(_ askID: Int64) -> AskExplainItem? {
+        explainOpen[askID]
+    }
+
+    /// Shows the chat of `item` of `ask`: reads its workbench, finds or
+    /// creates its conversation, then starts the item's hidden first turn
+    /// when the chat's history was read and holds nothing, no turn is busy
+    /// and no other open of this item is under way. A chat whose last reply
+    /// ended partial or in a retryable error offers Retry instead (never a
+    /// second hidden turn on its own), unless the owner stopped it. Nothing
+    /// without a CLI, or for an item the ask does not have (out of range, or
+    /// a kind the entry does not show on). A failure lands in
+    /// `explainErrors`; a gone workbench's also in `explainFinal` (no Retry).
     ///
-    /// An open asked while this one runs (Back, then reopen before `chat.new`
-    /// answered) adds nothing of its own: this one reads the surface again
-    /// for it — `chat.new` finds the same conversation — so there is one
-    /// conversation, one engine and one hidden turn, carrying the latest read.
-    func openExplain(_ ask: OwnerAsk) async {
-        guard chats != nil, AskExplainPresentation.showsEntry(kind: ask.kind, hasCLI: true) else { return }
-        explainOpen.insert(ask.id)
+    /// An open asked while one of the same item runs (Back, then reopen
+    /// before `chat.new` answered) adds nothing of its own: the running one
+    /// reads the surface again for it — `chat.new` finds the same
+    /// conversation — so there is one conversation, one engine and one
+    /// hidden turn, carrying the latest read. An open whose item is no longer
+    /// the drawer's (Back, or Back and another item) writes nothing.
+    func openExplain(_ ask: OwnerAsk, item: AskExplainItem) async {
+        guard chats != nil, AskExplainCard.make(ask: ask, item: item) != nil else { return }
+        let subject = AskExplainSubject(askID: ask.id, item: item)
+        // Another item shown without Back: it is left as Back leaves it.
+        if let shown = explainOpen[ask.id], shown != item {
+            forgetExplain(AskExplainSubject(askID: ask.id, item: shown))
+        }
+        explainOpen[ask.id] = item
         explainProjects[ask.id] = ask.projectID
-        explainErrors[ask.id] = nil
-        explainFinal.remove(ask.id)
-        guard explainStarting.insert(ask.id).inserted else {
-            explainReopened[ask.id] = ask
+        explainErrors[subject] = nil
+        explainFinal.remove(subject)
+        guard explainStarting.insert(subject).inserted else {
+            explainReopened[subject] = ask
             return
         }
         defer {
-            explainStarting.remove(ask.id)
-            explainReopened[ask.id] = nil
+            explainStarting.remove(subject)
+            explainReopened[subject] = nil
         }
         var current = ask
         var spec: ChatSurfaceSpec?
         while spec == nil {
             do {
-                spec = try await explainSpec(current)
+                spec = try await explainSpec(current, item: item)
             } catch {
-                if let again = explainReopened.removeValue(forKey: ask.id), explainOpen.contains(ask.id) {
+                if let again = explainReopened.removeValue(forKey: subject), explainOpen[ask.id] == item {
                     current = again
                     continue
                 }
-                NSLog("OwnerAsksViewModel: opening the explain chat of ask %lld: %@", ask.id, error.localizedDescription)
-                // Back pressed meanwhile: closing already forgot this ask.
-                guard explainOpen.contains(ask.id) else { return }
-                explainErrors[ask.id] = error.localizedDescription
+                NSLog("OwnerAsksViewModel: opening the explain chat of ask %lld %@: %@",
+                      ask.id, item.token, error.localizedDescription)
+                // Back pressed meanwhile: closing already forgot this item.
+                guard explainOpen[ask.id] == item else { return }
+                explainErrors[subject] = error.localizedDescription
                 // A gone workbench took its chat along: never served or made
                 // again, and a Retry would fail the same way.
                 if error is ExplainWorkbenchGone {
-                    explainSpecs[ask.id] = nil
-                    explainFinal.insert(ask.id)
+                    explainSpecs[subject] = nil
+                    explainFinal.insert(subject)
                 }
                 return
             }
             // Back and a reopen meanwhile: read again for that open.
-            if let again = explainReopened.removeValue(forKey: ask.id), explainOpen.contains(ask.id) {
+            if let again = explainReopened.removeValue(forKey: subject), explainOpen[ask.id] == item {
                 current = again
                 spec = nil
             }
         }
-        // Back pressed while the conversation was found: the result is
-        // dropped, no engine is made and no turn starts on its own.
-        guard explainOpen.contains(ask.id), let spec else { return }
-        explainSpecs[ask.id] = spec
-        guard let engine = ensureExplainEngine(current) else { return }
-        if !engine.startFirstTurnIfEmpty(hidden: AskExplainPrompt.firstTurn) {
+        // Back pressed (or another item opened) while the conversation was
+        // found: the result is dropped, no engine is made and no turn starts.
+        guard explainOpen[ask.id] == item, let spec else { return }
+        explainSpecs[subject] = spec
+        guard let engine = ensureExplainEngine(current, item: item) else { return }
+        if !engine.startFirstTurnIfEmpty(hidden: AskExplainPrompt.firstTurn(item)) {
             // The history may have been read only now (its first read failed).
-            offerExplainRetry(engine)
+            offerExplainRetry(engine, item: item)
         }
     }
 
     /// Whether a failed open's line offers Retry: not when the workbench is
     /// gone (Retry would fail the same way).
-    func explainOffersRetry(_ askID: Int64) -> Bool {
-        !explainFinal.contains(askID)
+    func explainOffersRetry(_ subject: AskExplainSubject) -> Bool {
+        !explainFinal.contains(subject)
     }
 
     /// Back to the question: the chat (and a running turn) stays in `chats`
-    /// by its key (D5); the per-ask surface, error and rebuild count are
-    /// forgotten — the next open reads them again.
+    /// by its key (D5); the shown item's surface, error and rebuild count
+    /// are forgotten — the next open reads them again.
     func closeExplain(_ askID: Int64) {
-        explainOpen.remove(askID)
         explainProjects[askID] = nil
-        explainSpecs[askID] = nil
-        explainErrors[askID] = nil
-        explainFinal.remove(askID)
-        explainBuilds[askID] = nil
+        guard let item = explainOpen.removeValue(forKey: askID) else { return }
+        forgetExplain(AskExplainSubject(askID: askID, item: item))
     }
 
-    /// The ask's explain chat as the center holds it; nil until its
+    private func forgetExplain(_ subject: AskExplainSubject) {
+        explainSpecs[subject] = nil
+        explainErrors[subject] = nil
+        explainFinal.remove(subject)
+        explainBuilds[subject] = nil
+    }
+
+    /// The item's explain chat as the center holds it; nil until its
     /// conversation is known, without a CLI, or after the center let an idle
     /// one go (`ensureExplainEngine` makes it again). Only reads: safe in a
     /// view's body.
-    func explainEngine(for ask: OwnerAsk) -> EmbeddedChatEngine? {
-        _ = explainBuilds[ask.id]  // a rebuild shows
-        guard let chats, let spec = explainSpecs[ask.id] else { return nil }
+    func explainEngine(for ask: OwnerAsk, item: AskExplainItem) -> EmbeddedChatEngine? {
+        let subject = AskExplainSubject(askID: ask.id, item: item)
+        _ = explainBuilds[subject]  // a rebuild shows
+        guard let chats, let spec = explainSpecs[subject] else { return nil }
         return chats.loaded(spec.key)
     }
 
-    /// The ask's explain chat, made again from its surface when the center
+    /// The item's explain chat, made again from its surface when the center
     /// let it go while idle (its history reloads): a stored partial or failed
     /// reply offers Retry, as on open, unless the owner stopped it; nothing
     /// is sent. An engine still held under the ask's old workbench (a merge
@@ -832,10 +853,11 @@ final class OwnerAsksViewModel {
     /// the chat never has two engines. nil until `openExplain` found the
     /// conversation. The chat view calls it from `.task`, never from its body.
     @discardableResult
-    func ensureExplainEngine(_ ask: OwnerAsk) -> EmbeddedChatEngine? {
-        guard let chats, let spec = explainSpecs[ask.id] else { return nil }
+    func ensureExplainEngine(_ ask: OwnerAsk, item: AskExplainItem) -> EmbeddedChatEngine? {
+        let subject = AskExplainSubject(askID: ask.id, item: item)
+        guard let chats, let spec = explainSpecs[subject] else { return nil }
         if chats.loaded(spec.key) == nil, chats.adopt(spec) != nil {
-            explainBuilds[ask.id, default: 0] += 1
+            explainBuilds[subject, default: 0] += 1
         }
         let kept = chats.loaded(spec.key) != nil
         // A kept engine takes the surface read on this open (its prompt
@@ -843,26 +865,27 @@ final class OwnerAsksViewModel {
         let engine = chats.engine(for: spec)
         engine.onOwnerStop = { [weak self] turnID in self?.recordExplainStop(turnID) }
         if kept { return engine }
-        offerExplainRetry(engine)
-        explainBuilds[ask.id, default: 0] += 1
+        offerExplainRetry(engine, item: item)
+        explainBuilds[subject, default: 0] += 1
         return engine
     }
 
-    /// The stored reply's Retry (`offerRetryOfStoredReply`), except for a
-    /// reply the owner stopped: Stop and quit store the same `partial` row,
-    /// so the stop is remembered here (D12, ask #1849).
-    private func offerExplainRetry(_ engine: EmbeddedChatEngine) {
+    /// The stored reply's Retry (`offerRetryOfStoredReply`), re-sending the
+    /// item's own first turn, except for a reply the owner stopped: Stop and
+    /// quit store the same `partial` row, so the stop is remembered here
+    /// (D12, ask #1849).
+    private func offerExplainRetry(_ engine: EmbeddedChatEngine, item: AskExplainItem) {
         if let last = engine.messages.last, stoppedExplainTurns.contains(last.message.turnID) { return }
-        engine.offerRetryOfStoredReply(hiddenPrompt: AskExplainPrompt.firstTurn)
+        engine.offerRetryOfStoredReply(hiddenPrompt: AskExplainPrompt.firstTurn(item))
     }
 
     /// The explain turns the owner stopped, by turn id, newest last, kept
     /// across launches (only this surface reads them); the oldest go past
     /// `stoppedExplainRepliesLimit`. A turn id is a random UUID the engine
     /// gave the turn and wrote into its reply row (`turn_id`), so a marker
-    /// never matches a reply of another workspace's database sharing these
-    /// preferences, nor one of a database recreated since (row ids restart,
-    /// turn ids do not).
+    /// never matches a reply of another item's chat, of another workspace's
+    /// database sharing these preferences, nor of a database recreated since
+    /// (row ids restart, turn ids do not).
     private var stoppedExplainTurns: [String] {
         defaults.stringArray(forKey: Self.stoppedExplainRepliesKey) ?? []
     }
@@ -876,27 +899,46 @@ final class OwnerAsksViewModel {
     static let stoppedExplainRepliesKey = "askExplain.stoppedTurnIDs"
     static let stoppedExplainRepliesLimit = 200
 
-    /// The ask's surface: its workbench (gone: no conversation is made), the
-    /// conversation, the ask's folder (`AskExplainSurface.readFolder`) and the
-    /// ask's target. A workbench deleted between the read and `chat.new` is
-    /// refused there (Go checks it in the creating transaction), and the
-    /// refusal reads as a gone workbench.
-    private func explainSpec(_ ask: OwnerAsk) async throws -> ChatSurfaceSpec {
+    /// The item's surface: its workbench (gone: no conversation is made),
+    /// the conversation, the ask's folder (`AskExplainSurface.readFolder`)
+    /// and the ask's target. On the ask's only item the same read looks for
+    /// a 0.29.5 whole-ask chat first (spec D4): found, it is the item's chat
+    /// under its own key and no `chat.new` is sent. A workbench deleted
+    /// between the read and `chat.new` is refused there (Go checks it in the
+    /// creating transaction), and the refusal reads as a gone workbench.
+    private func explainSpec(_ ask: OwnerAsk, item: AskExplainItem) async throws -> ChatSurfaceSpec {
         let hidden = hiddenSessions()
-        let (folder, target) = try await dbPool.read { db -> (String?, Target?) in
-            guard let workbench = try WorkbenchQueries.fetch(db, id: ask.projectID) else { return (nil, nil) }
+        let looksForLegacy = AskExplainItem.isOnlyItem(item, of: ask)
+        let (folder, target, legacy) = try await dbPool.read { db -> (String?, Target?, Int64?) in
+            guard let workbench = try WorkbenchQueries.fetch(db, id: ask.projectID) else { return (nil, nil, nil) }
             let folder = try AskExplainSurface.readFolder(db, ask: ask, homeFolder: workbench.folderPath,
                                                           hiddenSessions: hidden)
             let target = try ask.targetID.flatMap { try TargetQueries.fetchByID(db, id: Int($0)) }
-            return (folder, target)
+            let legacy = looksForLegacy ? try AskExplainSurface.legacyConversationID(db, ask: ask) : nil
+            return (folder, target, legacy)
         }
         guard let folder else { throw ExplainWorkbenchGone() }
+        let contextID: String
         let conversationID: Int64
+        if let legacy {
+            contextID = AskExplainKey.legacyContextID(workbenchID: ask.projectID, askID: ask.id)
+            conversationID = legacy
+        } else {
+            contextID = AskExplainKey.contextID(workbenchID: ask.projectID, askID: ask.id, item: item)
+            conversationID = try await newExplainConversation(ask, item: item)
+        }
+        return AskExplainSurface.spec(ask: ask, item: item, contextID: contextID, conversationID: conversationID,
+                                      folder: folder, target: target.map { (title: $0.text, intent: $0.intent) },
+                                      configProvider: explainConfigProvider, catalog: explainCatalog)
+    }
+
+    /// The item's conversation through `chat.new`; a refusal because the
+    /// workbench went meanwhile reads as a gone workbench. A failed re-read
+    /// keeps the original error (logged; Retry stays).
+    private func newExplainConversation(_ ask: OwnerAsk, item: AskExplainItem) async throws -> Int64 {
         do {
-            conversationID = try await AskExplainSurface.conversationID(ask: ask, dbPool: dbPool, writes: chatWrites)
+            return try await AskExplainSurface.conversationID(ask: ask, item: item, dbPool: dbPool, writes: chatWrites)
         } catch {
-            // Refused because the workbench went meanwhile? A failed re-read
-            // keeps the original error (logged; Retry stays).
             do {
                 if try await dbPool.read({ try WorkbenchQueries.fetch($0, id: ask.projectID) == nil }) {
                     throw ExplainWorkbenchGone()
@@ -909,9 +951,6 @@ final class OwnerAsksViewModel {
             }
             throw error
         }
-        return AskExplainSurface.spec(ask: ask, conversationID: conversationID, folder: folder,
-                                      target: target.map { (title: $0.text, intent: $0.intent) },
-                                      configProvider: explainConfigProvider, catalog: explainCatalog)
     }
 
     private struct ExplainWorkbenchGone: LocalizedError {

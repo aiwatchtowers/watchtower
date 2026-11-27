@@ -48,12 +48,10 @@ package enum AskExplainKey {
     /// The `ai query --purpose` tag; the usage ledger names it "Ask explanations".
     package static let purpose = "ask.explain"
 
-    package static func contextID(workbenchID: Int64, askID: Int64) -> String {
+    /// `<workbench>:<ask>`, the whole-ask chat of 0.29.5 (spec D4): only
+    /// the key of such a chat found on a single-item ask; nothing makes one.
+    package static func legacyContextID(workbenchID: Int64, askID: Int64) -> String {
         "\(workbenchID):\(askID)"
-    }
-
-    package static func title(askID: Int64) -> String {
-        "Ask #\(askID)"
     }
 
     /// `<workbench>:<ask>:<item>`, the item by its 1-based position: "3:41:q2".

@@ -276,7 +276,10 @@ struct OwnerAskDrawer: View {
     private func layer(_ layer: OwnerAskDrawerExplainLayers.Layer) -> some View {
         switch layer {
         case .question: questionLayer
-        case .chat: AskExplainPane(asks: asks, ask: ask, onBack: closeExplain)
+        case .chat:
+            if let item = asks.explainItem(ask.id) {
+                AskExplainPane(asks: asks, ask: ask, item: item, onBack: closeExplain)
+            }
         }
     }
 
@@ -309,12 +312,15 @@ struct OwnerAskDrawer: View {
     }
 
     /// **Not clear?**: the keyboard leaves the question's fields before the
-    /// chat covers them; its composer takes it when it shows.
+    /// chat covers them; its composer takes it when it shows. Until each
+    /// item draws its own entry (plan Task 5) the whole-ask entry opens the
+    /// ask's first item.
     private func openExplain() {
+        guard let item = AskExplainItem.items(of: ask).first else { return }
         fieldFocus = nil
         NSApp.keyWindow?.makeFirstResponder(nil)
         let (asks, ask) = (asks, ask)
-        Task { await asks.openExplain(ask) }
+        Task { await asks.openExplain(ask, item: item) }
     }
 
     /// **Back to question** (or Esc): the drawer's keys work again.

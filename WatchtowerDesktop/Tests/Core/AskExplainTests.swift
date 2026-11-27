@@ -68,6 +68,7 @@ final class AskExplainTests: XCTestCase {
         XCTAssertEqual(AskExplainKey.contextID(workbenchID: 3, askID: 41, item: .step(10)), "3:41:s10")
         XCTAssertEqual(AskExplainKey.title(askID: 41, item: .question(2)), "Ask #41 · Question 2")
         XCTAssertEqual(AskExplainKey.title(askID: 41, item: .step(3)), "Ask #41 · Step 3")
+        XCTAssertEqual(AskExplainKey.legacyContextID(workbenchID: 3, askID: 41), "3:41", "a 0.29.5 whole-ask chat")
         XCTAssertEqual(AskExplainKey.contextType, "owner_ask_explain")
         XCTAssertEqual(AskExplainKey.purpose, "ask.explain")
     }
@@ -135,6 +136,14 @@ final class AskExplainTests: XCTestCase {
         XCTAssertNil(AskExplainCard.make(ask: owner, item: .question(5)))
         XCTAssertNil(AskExplainCard.make(ask: owner, item: .question(0)))
         XCTAssertNil(AskExplainCard.make(ask: owner, item: .step(1)))
+    }
+
+    /// A kind with no entry has no items, whatever its payload carries: no
+    /// card and no question item, so nothing can open a chat on it.
+    func testKindWithoutAnEntryHasNoCardNorItem() throws {
+        let review = try ask(kind: "review", payload: Self.threeQuestionPayload)
+        XCTAssertNil(AskExplainCard.make(ask: review, item: .question(1)))
+        XCTAssertNil(AskExplainItem.forQuestion(id: "q2", in: review))
     }
 
     /// Spec D18, the Swift half of the payload guard: `OwnerAsk` is

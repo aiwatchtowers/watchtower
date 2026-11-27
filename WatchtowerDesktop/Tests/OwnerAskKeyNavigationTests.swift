@@ -686,9 +686,9 @@ final class OwnerAskKeyNavigationTests: XCTestCase {
         vm.asks.chatWrites = writes
         vm.asks.explainConfigProvider = { "claude" }
         vm.asks.explainCatalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
-        await vm.asks.openExplain(ask)
+        await vm.asks.openExplain(ask, item: .question(1))
         // Its hidden turn is under way, so the test's `finish()` has a call to end.
-        await vm.asks.explainEngine(for: ask)?.started()
+        await vm.asks.explainEngine(for: ask, item: .question(1))?.started()
         XCTAssertEqual(ai.calls.count, 1)
         return ai
     }
