@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -196,6 +197,27 @@ func (db *DB) WorkbenchByFolder(folder string) (*Workbench, error) {
 		return nil, fmt.Errorf("finding the workbench of %s: %w", folder, err)
 	}
 	return p, nil
+}
+
+// WorkbenchIDs returns every workbench's id in order, reading under ctx.
+func (db *DB) WorkbenchIDs(ctx context.Context) ([]int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id FROM projects ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing project ids: %w", err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning project id: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing project ids: %w", err)
+	}
+	return out, nil
 }
 
 // ListWorkbenches returns every workbench in id order.

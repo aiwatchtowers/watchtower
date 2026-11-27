@@ -12,39 +12,8 @@ final class AudioFileDecoderTests: XCTestCase {
     private let sampleRate = 16_000.0
     private let durationSec = 2.6 // deliberately NOT a whole multiple of AAC's 1024-frame packets
 
-    /// Writes a sine wave through the same AAC writer settings SystemAudioRecorder uses.
-    private func writeAACFixture(fileExtension: String) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("decoder-fixture-\(UUID().uuidString).\(fileExtension)")
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 32_000
-        ]
-        let file = try AVAudioFile(
-            forWriting: url, settings: settings,
-            commonFormat: .pcmFormatFloat32, interleaved: false
-        )
-        guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false
-        ), let buffer = AVAudioPCMBuffer(
-            pcmFormat: format, frameCapacity: AVAudioFrameCount(sampleRate * durationSec)
-        ), let data = buffer.floatChannelData else {
-            XCTFail("fixture allocation failed")
-            throw AudioFileDecoderError.unsupportedFormat
-        }
-        let frames = Int(sampleRate * durationSec)
-        for i in 0..<frames {
-            data[0][i] = sinf(2 * .pi * 440 * Float(i) / Float(sampleRate)) * 0.5
-        }
-        buffer.frameLength = AVAudioFrameCount(frames)
-        try file.write(from: buffer)
-        return url
-    }
-
     private func assertDecodesFully(fileExtension: String) throws {
-        let url = try writeAACFixture(fileExtension: fileExtension)
+        let url = try AACFixture.write(durationSec: durationSec, fileExtension: fileExtension)
         defer { try? FileManager.default.removeItem(at: url) }
 
         let samples = try AudioFileDecoder.decodePCM16k(url: url)
@@ -60,6 +29,39 @@ final class AudioFileDecoderTests: XCTestCase {
 
     func testDecodesAACInCAFToTheLastFrame() throws {
         try assertDecodesFully(fileExtension: "caf")
+    }
+
+    func testDecodesADTSToTheLastFrame() throws {
+        try assertDecodesFully(fileExtension: "aac")
+    }
+
+    /// ADTS has no priming metadata, so the decoder trims the encoder's
+    /// priming itself: a tone starting at frame 16 000 must decode at sample
+    /// 16 000 (± 2 ms), as it does from a CAF — not ~132 ms late — so decoded
+    /// times line up with the player and the `.activity` bins.
+    func testAKnownOnsetDecodesAtItsWrittenSampleInEveryContainer() throws {
+        let onset = 16_000
+        for ext in ["aac", "caf", "m4a"] {
+            let url = try AACFixture.writeSilenceThenTone(onsetFrame: onset, totalFrames: 48_000, fileExtension: ext)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let samples = try AudioFileDecoder.decodePCM16k(url: url)
+            let first = try XCTUnwrap(samples.firstIndex { abs($0) > 0.05 }, ext)
+            XCTAssertEqual(first, onset, accuracy: 32, "\(ext): onset decoded at \(first)")
+            XCTAssertEqual(samples.count, 48_000, accuracy: 1023, "\(ext): under one packet of padding")
+        }
+    }
+
+    /// The priming the decoder trims is read from an AAC encoder for the
+    /// file's own format; for the recorder's settings it is Apple's AAC-LC
+    /// 2112 frames (measured: the onset above decodes 2113 samples late
+    /// untrimmed). Non-ADTS containers trim nothing here.
+    func testADTSPrimingIsTheEncodersAndOtherContainersHaveNone() throws {
+        for (ext, expected) in [("aac", 2112), ("caf", 0), ("m4a", 0)] {
+            let url = try AACFixture.write(durationSec: 1, fileExtension: ext)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let file = try AVAudioFile(forReading: url)
+            XCTAssertEqual(AudioFileDecoder.adtsPrimingFrames(of: file, at: url), AVAudioFramePosition(expected), ext)
+        }
     }
 
     func testDecodesLegacyM4AToTheLastFrame() throws {

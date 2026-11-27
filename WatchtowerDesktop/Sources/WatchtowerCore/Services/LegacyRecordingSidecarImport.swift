@@ -59,7 +59,8 @@ package enum LegacyRecordingSidecarImport {
     ) async -> Bool {
         let fm = FileManager.default
         let file = { (ext: String) in dir.appendingPathComponent("\(stem).\(ext)") }
-        let audioName = ["caf", "m4a"].map { "\(stem).\($0)" }
+        // Older builds wrote `.caf` (`.m4a` from the phone); `.aac` is today's.
+        let audioName = ["caf", "m4a", "aac"].map { "\(stem).\($0)" }
             .first { fm.fileExists(atPath: dir.appendingPathComponent($0).path) } ?? "\(stem).caf"
         let started = (try? fm.attributesOfItem(atPath: dir.appendingPathComponent(audioName).path))?[.modificationDate]
             as? Date ?? Date()

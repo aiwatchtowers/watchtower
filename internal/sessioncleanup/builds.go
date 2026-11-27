@@ -42,9 +42,23 @@ type buildKind struct {
 // at inside the worktree with -derivedDataPath (its info.plist and Build).
 var buildKinds = []buildKind{
 	{name: ".build", files: []string{"workspace-state.json"}, managed: []string{"checkouts", "repositories"}},
-	{name: "DerivedData", files: []string{"info.plist"}, dirs: []string{"Build"},
-		managed: []string{filepath.Join("SourcePackages", "checkouts"), filepath.Join("SourcePackages", "repositories")}},
+	derivedDataKind,
 }
+
+// derivedDataKind is Xcode's DerivedData. A folder of another name a build
+// was pointed at (-derivedDataPath .derived, .build-mobile-dd, …) is one by
+// its content (derivedDataByContent, #2402 §4), at the worktree's root or
+// one level below (derivedDataDepth).
+var derivedDataKind = buildKind{name: "DerivedData", files: []string{"info.plist"}, dirs: []string{"Build"},
+	managed: []string{filepath.Join("SourcePackages", "checkouts"), filepath.Join("SourcePackages", "repositories")}}
+
+// derivedDataLogs are the folders, one of which a DerivedData folder of any
+// name holds besides its kind's info.plist and Build.
+var derivedDataLogs = []string{"Logs", "Index.noindex", "ModuleCache.noindex"}
+
+// derivedDataDepth is how deep below a worktree's root a DerivedData folder
+// of another name is recognised: 1 at the root, 2 one level below.
+const derivedDataDepth = 2
 
 const (
 	// trashInfix names where a build folder is moved before it is deleted:
@@ -60,24 +74,56 @@ const (
 )
 
 // pruneReasons are the keep reasons of a worktree kept only for the work
-// in it: its build output can go. Every other reason (in use, locked, an
-// operation in progress, not the session's, a folder, a failed check)
-// leaves the worktree untouched.
+// in it, or for its lock (#2402 §4): its build output can go. Every other
+// reason (in use, an operation in progress, not the session's, a folder, a
+// failed check) leaves the worktree untouched.
 var pruneReasons = map[string]bool{
 	ReasonUncommittedChanges: true,
 	ReasonUnpushedCommits:    true,
 	ReasonIgnoredFiles:       true,
 	ReasonContainsWorktree:   true,
+	ReasonLocked:             true,
 }
 
 // pruneCatches are the checks a kept worktree passes again, on fresh
 // facts, before its build output goes: it is under no ~/.claude and no
-// workbench folder, it is the session's own, it is not locked, nothing
-// runs in it (orphans included: a binary of the build itself), no session
-// works in it and no git operation is in progress.
-func pruneCatches() []worktreeCatch {
-	return []worktreeCatch{catchClaudeHome, catchFolders, catchOwnWorktree, catchLocked, catchAnyProcess,
-		catchSessionInIt, catchOperation}
+// workbench folder, it is the session's own (in the repository pass: no
+// session that recorded it was active lately, the sweep's W2), nothing runs in it (orphans
+// included: a binary of the build itself), no session works in it, no git
+// operation is in progress, and — locked, or in the repository pass — it
+// has been idle for idleFor (catchPruneIdle).
+func (b *builder) pruneCatches() []worktreeCatch {
+	own := catchOwnWorktree
+	if b.req.Sweep {
+		own = catchRecentOwner // the repository pass: no session to own it
+	}
+	return []worktreeCatch{catchClaudeHome, catchFolders, own, catchAnyProcess,
+		catchSessionInIt, catchOperation, catchPruneIdle}
+}
+
+// reasonNotIdle is catchPruneIdle's keep: the prune alone reads it.
+const reasonNotIdle = "not_idle"
+
+// catchPruneIdle keeps the build of a locked worktree (its lock, or an
+// unlock of ours not undone yet, read afresh), and in a sweep — the
+// repository pass — of any worktree, until the worktree has been idle for
+// idleFor (#2402 §4): a build used in the last idleFor stays, so the next
+// build is not slowed down. The prune at a session's end of a worktree
+// kept for its work alone (#2131) does not wait. A lock that cannot be
+// read is an error, an idleness that cannot be measured is not idle.
+func catchPruneIdle(ctx context.Context, b *builder, w worktree) (string, string, error) {
+	admin := b.repo.adminDirs[w.Root]
+	st, err := readLock(w, admin)
+	if err != nil {
+		return "", "", err
+	}
+	if !st.locked && !st.marked && !b.req.Sweep {
+		return "", "", nil
+	}
+	if admin == "" || !isIdle(ctx, b.deps, w.Root, admin) {
+		return reasonNotIdle, "", nil
+	}
+	return "", "", nil
 }
 
 // catchAnyProcess keeps a worktree any process works in or runs from,
@@ -100,25 +146,82 @@ func (b *builder) sessionFinished() bool {
 	return ok && a.Finished && !a.DeleteRequested
 }
 
+// endStands: the end the apply was started for still stands on the facts b
+// holds: the finish for RequireEnded; for a Quiet request the session is
+// not being deleted and is finished or still quiet (Request.QuietBefore);
+// anything else has nothing to re-check.
+func (b *builder) endStands() bool {
+	switch {
+	case b.req.RequireEnded:
+		return b.sessionFinished()
+	case b.req.Quiet:
+		a, ok := b.activity[b.req.SessionID]
+		return quietStands(b.req, a, ok)
+	}
+	return true
+}
+
+// quietStands: a quiet request's session is known, not being deleted, and
+// finished or still quiet. closed_at, which the listing also reads, is not
+// re-read: it is legacy (no Close action writes it since 2026-10-01), so
+// nothing moves it after the listing.
+func quietStands(r Request, a SessionActivity, known bool) bool {
+	if !known || a.DeleteRequested {
+		return false
+	}
+	return a.Finished || (!a.ReportedAt.After(r.QuietBefore) && !a.LastActive.After(r.QuietBefore))
+}
+
+// quietStillStands re-reads the activity of the request's session right now
+// (the Desktop writes last_active_at without the repository lock, so a
+// builder's snapshot can be stale after its expensive checks) — for a quiet
+// request, right before a destructive step — and, when the request reads
+// the host's live runs (Request.liveNow), those too: a quiet session the
+// host lists live again does not stand (final review C1). Other requests:
+// true. A read that fails is an error: the caller keeps the work.
+func (a *applier) quietStillStands(ctx context.Context) (bool, error) {
+	if !a.req.Quiet {
+		return true, nil
+	}
+	s, ok, err := a.deps.DB.SessionActivityOf(ctx, a.req.SessionID)
+	if err != nil {
+		return false, fmt.Errorf("re-reading the session's activity: %w", err)
+	}
+	if stands := quietStands(a.req, s, ok); !stands || a.req.liveNow == nil {
+		return stands, nil
+	}
+	live, err := a.req.liveNow(ctx)
+	if err != nil {
+		return false, fmt.Errorf("%w: %w", errLiveUnreadable, err)
+	}
+	return !slices.Contains(live, a.req.SessionID), nil
+}
+
 // sessionEnded: the planned session finished (finish_session) or is being
-// deleted — the end of the session the prune waits for.
+// deleted, or quiet for 24 h (Request.Quiet) — the end of the session the
+// prune waits for. The one place that honours Request.Quiet.
 func (b *builder) sessionEnded() bool {
 	a, ok := b.activity[b.req.SessionID]
-	return ok && (a.Finished || a.DeleteRequested)
+	return ok && (a.Finished || a.DeleteRequested || b.req.Quiet)
 }
 
 // pruneBuilds deletes the build output of every worktree the apply kept
 // only for its work, when the request asks for it (an automatic apply of an
-// ended session, outside a terminal session) and the apply did not stop.
+// ended session, outside a terminal session, or the repository pass — never
+// the owner's sweep) and the apply did not stop.
 // A failure is recorded on the item's BuildError and never stops anything.
 func (a *applier) pruneBuilds(ctx context.Context) {
-	if !a.req.PruneBuilds || a.req.Sweep || a.req.CallerSessionID != 0 || a.halt != nil {
+	if !a.req.PruneBuilds || a.req.Sweep && !a.req.repoPass || a.req.CallerSessionID != 0 || a.halt != nil {
 		return
 	}
 	for i := range a.items {
+		if a.halt != nil {
+			return // the live runs could not be read: nothing more goes
+		}
 		it := &a.items[i]
 		if it.Kind == KindWorktree && it.Action == ActionKeep && pruneReasons[it.Reason] {
 			a.pruneWorktreeBuilds(ctx, it)
+			markFailure(ctx, it)
 		}
 	}
 }
@@ -133,7 +236,8 @@ func (a *applier) pruneBuilds(ctx context.Context) {
 // re-check. A root the request names in BuildsChecked (an earlier
 // automatic apply checked it since the session's finish) is not walked
 // again. BuildsChecked is set once nothing is left to delete: no build
-// found, or every one found deleted or kept for certain.
+// found, or every one found deleted or kept for certain — never when a
+// quiet session reopened part-way (pruneStopped).
 func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 	root := strings.TrimPrefix(it.Key, "worktree:")
 	if slices.Contains(a.req.BuildsChecked, root) {
@@ -151,10 +255,10 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 	doubt := false
 	var found []foundBuild
 	for _, f := range all {
-		switch holds, err := holdsForeignGit(ctx, f, nestedScanBudget); {
+		switch foreign, err := holdsForeignGit(ctx, f, nestedScanBudget); {
 		case err != nil:
 			doubt = true // unreadable or over budget: kept, quietly
-		case !holds:
+		case foreign == "":
 			found = append(found, f)
 		}
 	}
@@ -169,6 +273,7 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 		b, ok, err := a.mayPrune(ctx, root)
 		if err != nil {
 			it.BuildError = err.Error()
+			a.haltOnLiveUnreadable(err)
 			return
 		}
 		if !ok {
@@ -177,28 +282,64 @@ func (a *applier) pruneWorktreeBuilds(ctx context.Context, it *Item) {
 		if holder := b.worktreeInside(f.path); holder != "" {
 			continue // a linked worktree lives in it: its work is not build output
 		}
-		removed, err := b.pruneBuildDir(ctx, root, f)
+		outcome, err := b.pruneBuildDir(ctx, root, f, func(ctx context.Context) (bool, error) {
+			if ok, err := a.quietStillStands(ctx); err != nil || !ok {
+				return ok, err
+			}
+			// The repository pass: no session the host lists live in it.
+			switch err := a.liveClear(ctx, root); {
+			case errors.Is(err, errLiveInIt):
+				return false, nil
+			case err != nil:
+				return false, err
+			}
+			return true, nil
+		})
 		if err != nil {
 			it.BuildError = err.Error()
+			a.haltOnLiveUnreadable(err)
 			return
 		}
-		if removed {
+		switch outcome {
+		case pruneKept:
+			// kept for good (git tracks a file in it): on to the next folder
+		case pruneRemoved:
 			it.BuildsRemoved = append(it.BuildsRemoved, f.path)
+		case pruneStopped:
+			// The session is no longer quiet: the rest is left, and the
+			// root not marked checked, so the pass after it goes quiet
+			// again walks it.
+			return
 		}
 	}
 	it.BuildsChecked = !doubt
 }
 
-// holdsForeignGit walks a find without following symlinks for a `.git`
+// haltOnLiveUnreadable stops the repository pass's apply when err is the
+// live runs (or what a live session holds) that could not be read (#2402
+// fix round 2, R2-7):
+// the repository pass skips the rest of the repository then, as it does
+// when they cannot be read before a batch. A real occupant is a keep, not
+// an error, and never gets here.
+func (a *applier) haltOnLiveUnreadable(err error) {
+	// The repository pass only (R4-4): a session-end or owner apply keeps
+	// recording the BuildError and goes on, as before.
+	if a.req.repoPass && errors.Is(err, errLiveUnreadable) && a.halt == nil {
+		a.halt = err
+	}
+}
+
+// holdsForeignGit walks a find without following symlinks for the first `.git`
 // entry of any kind (a directory, a gitfile of a linked worktree or
 // submodule checkout, anything of that name) outside its kind's managed
 // folders, whose children it does not enter: true keeps the find, whose
 // .git could be anyone's work. Over budget, or on an unreadable entry, it
 // fails, and the find is kept.
-func holdsForeignGit(ctx context.Context, f foundBuild, budget time.Duration) (bool, error) {
+func holdsForeignGit(ctx context.Context, f foundBuild, budget time.Duration) (string, error) {
 	deadline := time.Now().Add(budget)
 	n := 0
 	errFound := errors.New("found")
+	found := ""
 	err := filepath.WalkDir(f.path, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -218,17 +359,18 @@ func holdsForeignGit(ctx context.Context, f foundBuild, budget time.Duration) (b
 			return filepath.SkipDir // the tool's own clone or mirror of a package
 		}
 		if d.Name() == ".git" {
+			found = path
 			return errFound
 		}
 		return nil
 	})
 	switch {
 	case errors.Is(err, errFound):
-		return true, nil
+		return found, nil
 	case err != nil:
-		return false, fmt.Errorf("looking for repositories in %s: %w", f.path, err)
+		return "", fmt.Errorf("looking for repositories in %s: %w", f.path, err)
 	}
-	return false, nil
+	return "", nil
 }
 
 // managedChild: path is a direct child of one of the find's managed
@@ -236,7 +378,7 @@ func holdsForeignGit(ctx context.Context, f foundBuild, budget time.Duration) (b
 func (f foundBuild) managedChild(path string) bool {
 	content := f.path
 	if f.trash {
-		content = filepath.Join(f.path, f.kind.name)
+		content = filepath.Join(f.path, f.name)
 	}
 	rel, err := filepath.Rel(content, path)
 	if err != nil {
@@ -247,7 +389,7 @@ func (f foundBuild) managedChild(path string) bool {
 
 // mayPrune re-reads every fact (a fresh evaluation) and says whether root's
 // build may go now: the session ended (and, for RequireEnded, its finish
-// stands), root is still a listed linked worktree, and it passes every
+// stands; the repository pass has no session), root is still a listed linked worktree, and it passes every
 // pruneCatches check. The fresh builder comes back for the per-folder
 // checks; err is a check that could not be made.
 func (a *applier) mayPrune(ctx context.Context, root string) (*builder, bool, error) {
@@ -255,14 +397,16 @@ func (a *applier) mayPrune(ctx context.Context, root string) (*builder, bool, er
 	if err != nil {
 		return nil, false, err
 	}
-	if !b.sessionEnded() || (a.req.RequireEnded && !b.sessionFinished()) {
+	// The repository pass has no session to have ended: what holds it
+	// back is pruneCatches (the sweep's W2, W6, idle).
+	if !b.req.repoPass && !b.sessionEnded() || !b.endStands() {
 		return nil, false, nil
 	}
 	w, ok := b.listedWorktree(root)
 	if !ok {
 		return nil, false, nil
 	}
-	for _, c := range pruneCatches() {
+	for _, c := range b.pruneCatches() {
 		reason, _, err := c(ctx, b, w)
 		if err != nil {
 			return nil, false, err
@@ -302,21 +446,38 @@ func (b *builder) worktreeInside(dir string) string {
 }
 
 // foundBuild is a build folder, or a marked trash leftover, of a walk,
-// and its kind.
+// and its kind. name is the build folder's own name (for a leftover, of
+// the build folder moved into it).
 type foundBuild struct {
 	path  string
+	name  string
 	trash bool
 	kind  buildKind
 }
 
-// pruneBuildDir deletes one find of root and says whether it did: a folder
+// pruneOutcome is what pruneBuildDir did with one find.
+type pruneOutcome int
+
+const (
+	// pruneKept: the folder stays for good (git tracks a file in it).
+	pruneKept pruneOutcome = iota
+	// pruneRemoved: the folder was deleted.
+	pruneRemoved
+	// pruneStopped: the folder stays because the session no longer
+	// qualifies (lastCheck said so); the prune stops and the root is not
+	// marked checked.
+	pruneStopped
+)
+
+// pruneBuildDir deletes one find of root and says what it did: a folder
 // git tracks a file in (its path matched literally) stays (it is the repository's, not build output); a
 // build folder is moved aside and deleted (removeBuildDir), a marked trash
-// leftover deleted as it is.
-func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) (bool, error) {
+// leftover deleted as it is; a session lastCheck no longer lets go stops it.
+func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild,
+	lastCheck func(context.Context) (bool, error)) (pruneOutcome, error) {
 	rel, err := filepath.Rel(root, f.path)
 	if err != nil {
-		return false, fmt.Errorf("locating %s: %w", f.path, err)
+		return pruneKept, fmt.Errorf("locating %s: %w", f.path, err)
 	}
 	// ":(literal)": the folder's path is a path, never pathspec magic or a
 	// glob (a folder named ":(literal)x" or "a*" must still match itself).
@@ -333,15 +494,24 @@ func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) 
 	}
 	out, err := b.repo.git.output(ctx, root, append(args, "--", ":(literal)"+rel)...)
 	if err != nil {
-		return false, fmt.Errorf("reading what git tracks in %s: %w", f.path, err)
+		return pruneKept, fmt.Errorf("reading what git tracks in %s: %w", f.path, err)
 	}
 	if len(out) > 0 {
-		return false, nil
+		return pruneKept, nil
+	}
+	// The last thing before the move or the delete: the session's activity
+	// read afresh (the ls-files above can take long). It stays on a
+	// failed read.
+	switch ok, err := lastCheck(ctx); {
+	case err != nil:
+		return pruneKept, err
+	case !ok:
+		return pruneStopped, nil
 	}
 	if f.trash {
-		return true, finishTrash(f.path, f.kind.name, os.RemoveAll)
+		return pruneRemoved, finishTrash(f.path, f.name, os.RemoveAll)
 	}
-	return true, removeBuildDir(f.path, os.RemoveAll)
+	return pruneRemoved, removeBuildDir(f.path, f.kind, os.RemoveAll)
 }
 
 // removeBuildDir makes a fresh trash folder beside dir
@@ -351,12 +521,12 @@ func (b *builder) pruneBuildDir(ctx context.Context, root string, f foundBuild) 
 // after the mark leaves a marked trash folder a later prune finishes; one
 // before it leaves an empty folder at worst, and the build folder
 // untouched.
-func removeBuildDir(dir string, rm func(string) error) error {
+func removeBuildDir(dir string, kind buildKind, rm func(string) error) error {
 	trash, err := os.MkdirTemp(filepath.Dir(dir), filepath.Base(dir)+trashInfix)
 	if err != nil {
 		return fmt.Errorf("making room to move %s aside: %w", dir, err)
 	}
-	if err := os.WriteFile(filepath.Join(trash, trashMarker), []byte(trashMarkerBody), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(trash, trashMarker), []byte(trashMarkerOf(kind)), 0o600); err != nil {
 		_ = os.RemoveAll(trash) // our own folder; the build stays
 		return fmt.Errorf("marking %s: %w", trash, err)
 	}
@@ -373,6 +543,11 @@ func removeBuildDir(dir string, rm func(string) error) error {
 // trash folder. An interrupted delete leaves the marker, so a later prune
 // finishes it.
 func finishTrash(trash, name string, rm func(string) error) error {
+	// Only a direct child of the trash folder is ever deleted: never the
+	// trash folder itself or its parent (a name "." or "..").
+	if !movedName(name) || filepath.Dir(filepath.Join(trash, name)) != filepath.Clean(trash) {
+		return fmt.Errorf("deleting %s: %q is not a folder moved into it", trash, name)
+	}
 	if err := rm(filepath.Join(trash, name)); err != nil {
 		return fmt.Errorf("deleting %s: %w", trash, err)
 	}
@@ -385,6 +560,13 @@ func finishTrash(trash, name string, rm func(string) error) error {
 	return nil
 }
 
+// movedName: name can be a build folder's own name — one path element,
+// not "." or "..".
+func movedName(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsRune(name, filepath.Separator) &&
+		filepath.Base(name) == name
+}
+
 // errBuildScanBudget: the walk for build folders ran over its budget.
 var errBuildScanBudget = errors.New("looking for build folders took too long")
 
@@ -395,6 +577,15 @@ var errBuildScanBudget = errors.New("looking for build folders took too long")
 // (regenerableCaches), and never into what it found. Over budget it fails,
 // and nothing is deleted.
 func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]foundBuild, error) {
+	return findBuilds(ctx, root, budget, false)
+}
+
+// findBuilds is findBuildDirs; strict makes a directory whose .git entry
+// cannot be looked at (a permission error) an error instead of a directory
+// to leave alone. The prune wants the lenient reading (what it cannot see
+// it does not delete); the activity measure wants the strict one (what it
+// cannot see it cannot call quiet).
+func findBuilds(ctx context.Context, root string, budget time.Duration, strict bool) ([]foundBuild, error) {
 	deadline := time.Now().Add(budget)
 	var found []foundBuild
 	n := 0
@@ -417,72 +608,208 @@ func findBuildDirs(ctx context.Context, root string, budget time.Duration) ([]fo
 		if name == ".git" {
 			return filepath.SkipDir
 		}
-		if k, ok := isBuildDir(path, name); ok {
-			found = append(found, foundBuild{path: path, kind: k})
+		k, ok, err := buildDirKind(path, name, strict)
+		if err != nil {
+			return err
+		}
+		// A cache W9 skips is never probed for content near the root (it
+		// may be unreadable); a folder of a build kind's name that is not
+		// that kind — a .build an Xcode build was pointed at — is, at any
+		// depth (fix round 1, F8).
+		shallow := withinDerivedDataDepth(root, path) && !regenerableCaches[name]
+		if !ok && (shallow || buildKindName(name)) {
+			if ok, err = derivedDataByContent(path, strict); err != nil {
+				return err
+			}
+			k = derivedDataKind
+		}
+		if ok {
+			found = append(found, foundBuild{path: path, name: name, kind: k})
 			return filepath.SkipDir
 		}
-		if k, ok := isTrashLeftover(path, name); ok {
-			found = append(found, foundBuild{path: path, trash: true, kind: k})
+		if k, moved, ok := isTrashLeftover(path, name, shallow); ok {
+			found = append(found, foundBuild{path: path, name: moved, trash: true, kind: k})
 			return filepath.SkipDir
 		}
-		if regenerableCaches[name] || hasGitEntry(path) {
-			return filepath.SkipDir // a cache, or a nested worktree or repository: not ours
+		if regenerableCaches[name] {
+			return filepath.SkipDir // a cache: never entered, so never probed
+		}
+		_, gitErr := os.Lstat(filepath.Join(path, ".git"))
+		if gitErr == nil || !errors.Is(gitErr, fs.ErrNotExist) {
+			if strict && gitErr != nil {
+				return gitErr // cannot tell: the caller measuring activity must not guess
+			}
+			return filepath.SkipDir // a nested worktree or repository: not ours
 		}
 		return nil
 	})
+	if err == nil && strict {
+		err = ctx.Err()
+		if err == nil && time.Now().After(deadline) {
+			err = errBuildScanBudget
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("looking for build folders in %s: %w", root, err)
 	}
 	return found, nil
 }
 
-// isBuildDir: dir (named name, a real directory) is one of buildKinds,
-// returned —
-// it holds no .git entry (a repository or worktree of that name is never
-// build output) and every marker of its kind.
-func isBuildDir(dir, name string) (buildKind, bool) {
+// buildDirKind: dir (named name, a real directory) is one of buildKinds,
+// returned — it holds no .git entry (a repository or worktree of that name
+// is never build output) and every marker of its kind. Lenient (the
+// prune's reading), a lookup that fails for any reason is "not a build
+// folder"; strict (the activity measure's), only an absent or wrongly
+// typed entry is, and any other failure is an error: a build folder that
+// cannot be recognised must not be taken for a plain directory.
+func buildDirKind(dir, name string, strict bool) (buildKind, bool, error) {
 	for _, k := range buildKinds {
-		if k.name != name || hasGitEntry(dir) {
+		if k.name != name {
+			continue
+		}
+		if strict {
+			if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+				continue
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return buildKind{}, false, err
+			}
+		} else if hasGitEntry(dir) {
 			continue
 		}
 		ok := true
+		check := func(sub string, want func(fs.FileInfo) bool) error {
+			fi, err := os.Lstat(filepath.Join(dir, sub))
+			if strict && err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			ok = ok && err == nil && want(fi)
+			return nil
+		}
 		for _, f := range k.files {
-			fi, err := os.Lstat(filepath.Join(dir, f))
-			ok = ok && err == nil && fi.Mode().IsRegular()
+			if err := check(f, func(fi fs.FileInfo) bool { return fi.Mode().IsRegular() }); err != nil {
+				return buildKind{}, false, err
+			}
 		}
 		for _, sub := range k.dirs {
-			fi, err := os.Lstat(filepath.Join(dir, sub))
-			ok = ok && err == nil && fi.IsDir()
+			if err := check(sub, fs.FileInfo.IsDir); err != nil {
+				return buildKind{}, false, err
+			}
 		}
 		if ok {
-			return k, true
+			return k, true, nil
 		}
 	}
-	return buildKind{}, false
+	return buildKind{}, false, nil
+}
+
+// buildKindName: name is one of buildKinds' names.
+func buildKindName(name string) bool {
+	return slices.ContainsFunc(buildKinds, func(k buildKind) bool { return k.name == name })
+}
+
+// withinDerivedDataDepth: dir is at root's top level or one level below
+// (derivedDataDepth).
+func withinDerivedDataDepth(root, dir string) bool {
+	rel, err := filepath.Rel(root, dir)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) &&
+		relDepth(rel) <= derivedDataDepth
+}
+
+// derivedDataByContent: dir, a real directory of any name, is an Xcode
+// DerivedData folder by its content — no .git entry, a regular info.plist,
+// and the directories Build and one of derivedDataLogs. Strict and lenient
+// as buildDirKind: lenient, a lookup that fails is "not one" and no error
+// is returned.
+func derivedDataByContent(dir string, strict bool) (bool, error) {
+	_, err := os.Lstat(filepath.Join(dir, ".git"))
+	switch {
+	case err == nil:
+		return false, nil
+	case !errors.Is(err, fs.ErrNotExist):
+		if strict {
+			return false, err
+		}
+		return false, nil
+	}
+	is := func(sub string, want func(fs.FileInfo) bool) (bool, error) {
+		fi, err := os.Lstat(filepath.Join(dir, sub))
+		switch {
+		case err == nil:
+			return want(fi), nil
+		case strict && !errors.Is(err, fs.ErrNotExist):
+			return false, err
+		}
+		return false, nil
+	}
+	if ok, err := is("info.plist", func(fi fs.FileInfo) bool { return fi.Mode().IsRegular() }); err != nil || !ok {
+		return false, err
+	}
+	if ok, err := is("Build", fs.FileInfo.IsDir); err != nil || !ok {
+		return false, err
+	}
+	for _, logs := range derivedDataLogs {
+		if ok, err := is(logs, fs.FileInfo.IsDir); err != nil || ok {
+			return ok, err
+		}
+	}
+	return false, nil
+}
+
+// derivedDataAt is derivedDataByContent's lenient reading, which never
+// fails: what cannot be read is not a DerivedData folder (so it is walked
+// and judged).
+func derivedDataAt(dir string) bool {
+	ok, err := derivedDataByContent(dir, false)
+	return ok && err == nil
 }
 
 // isTrashLeftover: dir is a folder an interrupted prune moved aside —
-// named <build kind><trashInfix>…, with no .git entry, and carrying
-// trashMarker with trashMarkerBody as a regular file. A folder of that
-// name without the marker is someone else's and stays.
-func isTrashLeftover(dir, name string) (buildKind, bool) {
-	var kind buildKind
-	named := false
+// named <build folder><trashInfix>…, with no .git entry, and carrying
+// trashMarker as a regular file (trashMarkerOf, whose kind it is
+// recovered as; the bare trashMarkerBody of an older prune gives the
+// name's kind); moved is the build folder's name. That name is a build
+// kind's or — shallow, within
+// derivedDataDepth of the root — any name (a DerivedData folder recognised
+// by its content, which a half-finished delete may have taken). A folder
+// of such a name without the marker is someone else's and stays.
+func isTrashLeftover(dir, name string, shallow bool) (kind buildKind, moved string, ok bool) {
+	moved, _, found := strings.Cut(name, trashInfix)
+	if !found || !movedName(moved) {
+		return buildKind{}, "", false
+	}
+	kind, named := derivedDataKind, false
 	for _, k := range buildKinds {
-		if strings.HasPrefix(name, k.name+trashInfix) {
+		if moved == k.name {
 			kind, named = k, true
 		}
 	}
-	if !named || hasGitEntry(dir) {
-		return buildKind{}, false
+	if (!named && !shallow) || hasGitEntry(dir) {
+		return buildKind{}, "", false
 	}
-	marker := filepath.Join(dir, trashMarker)
-	fi, err := os.Lstat(marker)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() != int64(len(trashMarkerBody)) {
-		return buildKind{}, false
+	body, _, err := readSmallFile(filepath.Join(dir, trashMarker), trashMarkerMax)
+	if err != nil {
+		return buildKind{}, "", false
 	}
-	body, err := os.ReadFile(marker)
-	return kind, err == nil && bytes.Equal(body, []byte(trashMarkerBody))
+	if bytes.Equal(body, []byte(trashMarkerBody)) {
+		return kind, moved, true // a marker from before the kind was written: the name's
+	}
+	for _, k := range buildKinds {
+		if bytes.Equal(body, []byte(trashMarkerOf(k))) {
+			return k, moved, true
+		}
+	}
+	return buildKind{}, "", false
+}
+
+// trashMarkerMax bounds a marker the prune reads: its body and a kind line.
+const trashMarkerMax = 256
+
+// trashMarkerOf is the marker body of a trash folder of kind k: the fixed
+// body, then the kind the build folder was found as (fix round 2, R2-5), so
+// a leftover is recovered as that kind — a .build found as DerivedData by
+// its content keeps its package clones managed.
+func trashMarkerOf(k buildKind) string {
+	return trashMarkerBody + "kind: " + k.name + "\n"
 }
 
 // hasGitEntry: dir holds a .git file or directory (or anything of that

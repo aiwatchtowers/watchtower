@@ -159,6 +159,11 @@ func (s DBStore) WorkbenchSessionWorktrees(ctx context.Context, workbenchID int6
 	return s.DB.WorkbenchSessionWorktrees(ctx, workbenchID)
 }
 
+// SessionWorktreeOwners is db.DB.SessionWorktreeOwners.
+func (s DBStore) SessionWorktreeOwners(ctx context.Context) (map[string][]int64, error) {
+	return s.DB.SessionWorktreeOwners(ctx) //nolint:wrapcheck // names the read
+}
+
 // AllSessionActivity is every terminal session with its agent's working
 // directory (agent_cwd, board #565). A stamp that is stored but does not
 // read is taken as now: the session counts as active, so what it may be
@@ -174,14 +179,38 @@ func (s DBStore) AllSessionActivity(ctx context.Context) ([]SessionActivity, err
 	}
 	out := make([]SessionActivity, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, SessionActivity{
-			ID: r.ID, WorkbenchID: r.WorkbenchID, Title: r.Title, AgentCwd: r.AgentCwd,
-			ReportedAt: activityStamp(r.AgentStateAt, now, db.ParseAgentStateStamp),
-			LastActive: activityStamp(r.LastActiveAt, now, parseRFC3339),
-			Finished:   r.Finished, DeleteRequested: r.DeleteRequested,
-		})
+		out = append(out, activityOf(r, now))
 	}
 	return out, nil
+}
+
+// SessionActivityOf is AllSessionActivity's row of one session, read by id
+// (the last check before a destructive step); false when there is no row.
+func (s DBStore) SessionActivityOf(ctx context.Context, id int64) (SessionActivity, bool, error) {
+	r, ok, err := s.DB.TerminalSessionActivityOf(ctx, id)
+	if err != nil || !ok {
+		return SessionActivity{}, false, err //nolint:wrapcheck // names the read
+	}
+	now := time.Now
+	if s.Now != nil {
+		now = s.Now
+	}
+	return activityOf(r, now), true, nil
+}
+
+// activityOf reads a stored row, the stamps by the one shared rule.
+func activityOf(r db.TerminalSessionActivity, now func() time.Time) SessionActivity {
+	return SessionActivity{
+		ID: r.ID, WorkbenchID: r.WorkbenchID, Title: r.Title, AgentCwd: r.AgentCwd,
+		ReportedAt: activityStamp(r.AgentStateAt, now, db.ParseActivityStamp),
+		LastActive: activityStamp(r.LastActiveAt, now, db.ParseActivityStamp),
+		Finished:   r.Finished, DeleteRequested: r.DeleteRequested, Kind: r.Kind, Folder: r.Folder,
+	}
+}
+
+// WorktreeLastSeen is the database's newest ledger sighting of root.
+func (s DBStore) WorktreeLastSeen(ctx context.Context, root string) (time.Time, bool, error) {
+	return s.DB.WorktreeLastSeen(ctx, root)
 }
 
 // activityStamp reads a stored stamp: zero when none is stored, now when

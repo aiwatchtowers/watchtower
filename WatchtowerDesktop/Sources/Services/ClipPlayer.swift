@@ -1,8 +1,9 @@
 import AVFoundation
 import Observation
+import os
 import WatchtowerCore
 
-/// Plays one time range of a recording straight from the `.caf` — no clip
+/// Plays one time range of a recording straight from the recording file — no clip
 /// files are ever written (spec §3.1). A view-local helper, not an
 /// AppState-owned center: a clip preview is scoped to whichever Voices card
 /// is on screen and has no state worth surviving navigation away from it.
@@ -10,7 +11,7 @@ import WatchtowerCore
 @MainActor
 @Observable
 final class ClipPlayer {
-    @ObservationIgnored private let playerFactory: (URL) throws -> AudioPlayback
+    @ObservationIgnored private let playerFactory: @MainActor (URL) throws -> AudioPlayback
     @ObservationIgnored private var player: AudioPlayback?
     @ObservationIgnored private var timer: Timer?
     private(set) var playingSpan: ClipSpan?
@@ -21,7 +22,7 @@ final class ClipPlayer {
     /// or the output refused to start) — cleared by the next play or stop.
     private(set) var errorMessage: String?
 
-    init(playerFactory: @escaping (URL) throws -> AudioPlayback = { try AVAudioPlayer(contentsOf: $0) }) {
+    init(playerFactory: @escaping @MainActor (URL) throws -> AudioPlayback = { try PreciseAudioPlayback(url: $0) }) {
         self.playerFactory = playerFactory
     }
 
@@ -40,20 +41,24 @@ final class ClipPlayer {
     }
 
     /// Seeks to `span.start` and plays until `span.end`, then stops on its
-    /// own (`tick`). A load/play failure leaves nothing playing and is
-    /// reported through `errorMessage`.
+    /// own (`tick`). A failure leaves nothing playing and is reported through
+    /// `errorMessage`: the file cannot be opened (the factory throws), the
+    /// player already knows it cannot play it (`play()` returns false — the
+    /// production player only when its `playbackError` is set, which right
+    /// after creation is rare), or it finds that out while playing (`tick`).
     func play(url: URL, span: ClipSpan) {
         stop()
         let p: AudioPlayback
         do {
             p = try playerFactory(url)
         } catch {
-            fail("Can't play this clip: \(error.localizedDescription)", url: url)
+            fail("Can't play this clip: \(error.localizedDescription)", url: url, error: error)
             return
         }
         p.currentTime = span.start
         guard p.play() else {
-            fail("Can't play this clip: audio output did not start", url: url)
+            fail("Can't play this clip: \(p.playbackError?.localizedDescription ?? "the player refused to start")",
+                 url: url, error: p.playbackError)
             return
         }
         player = p
@@ -69,8 +74,13 @@ final class ClipPlayer {
     /// `private`) so tests can call it directly instead of spinning a
     /// `RunLoop` to let a real `Timer` fire.
     func tick() {
-        guard let p = player, let s = playingSpan else { return }
-        if p.currentTime >= s.end || !p.isPlaying { stop() }
+        guard let p = player, let s = playingSpan, let url = playingURL else { return }
+        if let error = p.playbackError {
+            stop()
+            fail("Can't play this clip: \(error.localizedDescription)", url: url, error: error)
+        } else if p.currentTime >= s.end || !p.isPlaying {
+            stop()
+        }
     }
 
     func stop() {
@@ -83,8 +93,13 @@ final class ClipPlayer {
         errorMessage = nil
     }
 
-    private func fail(_ message: String, url: URL) {
-        NSLog("ClipPlayer: %@ (%@)", message, url.lastPathComponent)
+    private static let log = Logger(subsystem: Constants.bundleID, category: "playback")
+
+    private func fail(_ message: String, url: URL, error: Error? = nil) {
+        let detail = error.map { AudioPlaybackCenter.describe($0) } ?? "-"
+        Self.log.error("""
+            clip: \(message, privacy: .public) (\(url.lastPathComponent, privacy: .public); \(detail, privacy: .public))
+            """)
         errorMessage = message
     }
 }

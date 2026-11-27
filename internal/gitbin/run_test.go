@@ -426,3 +426,147 @@ func TestExecOwnerNetwork_KillsTheProcessGroup(t *testing.T) {
 	}
 	waitGone(pid)
 }
+
+// TestBackgroundWriteArgsIn_NoHookAndNoFilter (#2402): a write Watchtower
+// runs on its own runs no hook (a reference-transaction hook on update-ref
+// included) and no fsmonitor; one that inspects the work tree (worktree
+// remove) also blanks the folder's filter drivers. Other writes list no
+// config.
+func TestBackgroundWriteArgsIn_NoHookAndNoFilter(t *testing.T) {
+	bin, ok := Locate()
+	if !ok {
+		t.Skip("no git")
+	}
+	dir, _ := plantedFilterRepo(t, bin)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustGit(t, bin, dir, "worktree", "add", "-q", "--detach", wt)
+	for _, args := range [][]string{
+		{"update-ref", "-d", "refs/heads/x", "abc"},
+		{"config", "--remove-section", "branch.x"},
+		{"worktree", "unlock", wt},
+		{"worktree", "remove", wt},
+	} {
+		argv, err := BackgroundWriteArgsIn(context.Background(), bin, dir, "", args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined := strings.Join(argv, " ")
+		for _, want := range []string{"-c core.hooksPath=/dev/null", "-c core.fsmonitor=false"} {
+			if !strings.Contains(joined, want) {
+				t.Errorf("argv %q lacks %q", joined, want)
+			}
+		}
+		if !strings.HasSuffix(joined, " "+strings.Join(args, " ")) {
+			t.Errorf("argv %q does not end with the subcommand", joined)
+		}
+		blanks := strings.Contains(joined, "-c filter.planted.clean=")
+		if want := args[0] == "worktree" && args[1] == "remove"; blanks != want {
+			t.Errorf("argv %q: filters blanked %v, want %v", joined, blanks, want)
+		}
+	}
+}
+
+// TestBackgroundWriteArgsIn_TargetWorktreesOwnFilters (#2402 fix round 2,
+// R2-2): `worktree remove` checks the target worktree with the config it
+// sees — its own config.worktree included — so a filter driver defined
+// only there is blanked too, beside the folder's.
+func TestBackgroundWriteArgsIn_TargetWorktreesOwnFilters(t *testing.T) {
+	bin, ok := Locate()
+	if !ok {
+		t.Skip("no git")
+	}
+	dir, _ := plantedFilterRepo(t, bin)
+	mustGit(t, bin, dir, "config", "extensions.worktreeConfig", "true")
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustGit(t, bin, dir, "worktree", "add", "-q", "--detach", wt)
+	mustGit(t, bin, wt, "config", "--worktree", "filter.only-here.clean", "touch /nonexistent/x")
+
+	argv, err := BackgroundWriteArgsIn(context.Background(), bin, dir, "", "worktree", "remove", wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	for _, want := range []string{"-c filter.only-here.clean=", "-c filter.only-here.required=false",
+		"-c filter.planted.clean="} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argv %q lacks %q", joined, want)
+		}
+	}
+	if strings.Count(joined, "-c filter.planted.clean=") != 1 {
+		t.Errorf("argv %q blanks one key twice", joined)
+	}
+}
+
+// TestBackgroundWriteArgsIn_NamesTheGitDir (#2402 fix round 2, R2-3): a
+// background write given the repository it was checked against names it
+// (--git-dir) after the guard, never discovering it from the folder again.
+func TestBackgroundWriteArgsIn_NamesTheGitDir(t *testing.T) {
+	bin, ok := Locate()
+	if !ok {
+		t.Skip("no git")
+	}
+	dir, _ := plantedFilterRepo(t, bin)
+	argv, err := BackgroundWriteArgsIn(context.Background(), bin, dir, "/repo/.git", "update-ref", "-d", "refs/heads/x", "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(argv, " "); !strings.HasSuffix(joined, " --git-dir=/repo/.git update-ref -d refs/heads/x abc") ||
+		!strings.Contains(joined, "-c core.hooksPath=/dev/null") {
+		t.Fatalf("argv %q", joined)
+	}
+}
+
+// TestBackgroundWriteArgsIn_GoneTargetKeepsTheFoldersGuard (final review
+// residual R1): `worktree remove` of a worktree whose directory is gone has
+// no checkout for a filter to run in, so only the target's filter lookup is
+// skipped — the folder's filters stay blanked and hooks stay off; a target
+// that exists but cannot be read still refuses the write.
+func TestBackgroundWriteArgsIn_GoneTargetKeepsTheFoldersGuard(t *testing.T) {
+	bin, ok := Locate()
+	if !ok {
+		t.Skip("no git")
+	}
+	dir, _ := plantedFilterRepo(t, bin)
+	gone := filepath.Join(t.TempDir(), "gone")
+	argv, err := BackgroundWriteArgsIn(context.Background(), bin, dir, "", "worktree", "remove", gone)
+	if err != nil {
+		t.Fatalf("gone target: %v", err)
+	}
+	joined := strings.Join(argv, " ")
+	for _, want := range []string{"-c filter.planted.clean=", "-c core.hooksPath=/dev/null"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argv %q lacks %q", joined, want)
+		}
+	}
+	if os.Getuid() == 0 {
+		return
+	}
+	parent := t.TempDir()
+	if err := os.Mkdir(filepath.Join(parent, "wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+	if _, err := BackgroundWriteArgsIn(context.Background(), bin, dir, "", "worktree", "remove", filepath.Join(parent, "wt")); err == nil {
+		t.Fatal("an unreadable target did not refuse the write")
+	}
+}
+
+// TestBackgroundWriteArgsIn_GoneTargetOfANamedRepositoryRefuses (final
+// review residual Q1): the gone-target skip is for a write that names no
+// repository (an unattended session apply). One that names the repository
+// it checked (the repository pass) still refuses a target that vanished
+// since its re-check — an unmounted checkout — rather than let git drop it.
+func TestBackgroundWriteArgsIn_GoneTargetOfANamedRepositoryRefuses(t *testing.T) {
+	bin, ok := Locate()
+	if !ok {
+		t.Skip("no git")
+	}
+	dir, _ := plantedFilterRepo(t, bin)
+	gone := filepath.Join(t.TempDir(), "gone")
+	if _, err := BackgroundWriteArgsIn(context.Background(), bin, dir, filepath.Join(dir, ".git"), "worktree", "remove", gone); err == nil {
+		t.Fatal("a named repository's gone target did not refuse the write")
+	}
+}

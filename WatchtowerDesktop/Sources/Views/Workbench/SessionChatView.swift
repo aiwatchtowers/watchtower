@@ -432,11 +432,9 @@ struct SessionChatView: View {
         workchatFeed.answerPending = !(workchat?.outgoing.isEmpty ?? true)
         workchatFeed.onOpenArtifact = { artifact = $0 }
         workchatFeed.transcriptDirs = store.transcriptDirs
-        let handlers = highlightHandlers()
-        highlightProbe?(handlers, highlights)
-        workchatFeed.onHighlight = handlers.open
-        workchatFeed.resolvesPath = handlers.resolvesPath
+        workchatFeed.highlighting = highlightHandlers()
         var context = workchatFeed.context()
+        highlightProbe?(context.agentTextHighlighting, highlights)
         context.hasEarlier = Self.hasEarlier(windowHasEarlier: window.hasEarlier(total: total),
                                              hasEarlierPage: store.hasEarlierPage,
                                              pageFailed: store.earlierPageError != nil)
@@ -471,7 +469,7 @@ struct SessionChatView: View {
     /// The span click and path lookup the feed and a subagent's run share. The session's code root is worked out
     /// once here, per feed build, never per span (review round 1). An answer is asked again once the dialog or the
     /// root's file list changes (`filesRevision`).
-    private func highlightHandlers() -> WorkchatHighlightHandlers {
+    private func highlightHandlers() -> AgentTextHighlighting {
         let root = sessionCodeRoot
         let index = root.map { appState.codeIndexCenter.index(for: $0) }
         let epoch = dialogEntries.count
@@ -480,8 +478,13 @@ struct SessionChatView: View {
             WorkchatHighlights.IndexView(files: { index.files }, revision: { index.filesRevision })
         } ?? .none
         let (highlights, vm, hostPane) = (highlights, vm, hostPane)
-        return WorkchatHighlightHandlers(
-            open: { span, messageID in
+        return AgentTextHighlighting(
+            resolvesPath: { path, messageID in
+                guard let root else { return false }
+                return highlights.resolves(path, messageID: messageID, root: root, epoch: epoch, revision: revision,
+                                           indexFiles: index?.files ?? [])
+            },
+            openHighlight: { span, messageID in
                 highlights.click(span, messageID: messageID, root: root, index: indexView) { action in
                     switch action {
                     case let .showTarget(targetID):
@@ -506,11 +509,6 @@ struct SessionChatView: View {
                         NSSound.beep()
                     }
                 }
-            },
-            resolvesPath: { path, messageID in
-                guard let root else { return false }
-                return highlights.resolves(path, messageID: messageID, root: root, epoch: epoch, revision: revision,
-                                           indexFiles: index?.files ?? [])
             }
         )
     }

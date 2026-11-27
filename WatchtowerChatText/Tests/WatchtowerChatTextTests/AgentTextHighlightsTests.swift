@@ -71,22 +71,120 @@ final class AgentTextHighlightsTests: XCTestCase {
         XCTAssertEqual(found("build/abc1234/out.go"), [Found(text: "build/abc1234/out.go", kind: .path)])
     }
 
-    func testCommandSpanInInlineCode() {
+    func testCodeSpanReadsACommandInInlineCode() {
         for code in ["make test-swift", "go test ./internal/db", "swift test", "git log", "gh pr view",
                      "xcodebuild -scheme X", "npm run build", "./scripts/leak-check.sh"] {
-            let span = AgentTextHighlights.commandSpan(inCode: code)
+            let span = AgentTextHighlights.codeSpan(inCode: code)
             XCTAssertEqual(span?.kind, .command, code)
             XCTAssertEqual(span?.text, code, code)
         }
-        XCTAssertNil(AgentTextHighlights.commandSpan(inCode: "foo bar"))
-        XCTAssertNil(AgentTextHighlights.commandSpan(inCode: "makefile"))
-        XCTAssertNil(AgentTextHighlights.commandSpan(inCode: ""))
+        XCTAssertNil(AgentTextHighlights.codeSpan(inCode: "foo bar"))
+        XCTAssertNil(AgentTextHighlights.codeSpan(inCode: "makefile"))
+        XCTAssertNil(AgentTextHighlights.codeSpan(inCode: ""))
     }
 
-    func testCommandSpanTrimsSurroundingSpace() {
+    func testCodeSpanTrimsSurroundingSpace() {
         let code = " make lint-all "
-        let span = AgentTextHighlights.commandSpan(inCode: code)
+        let span = AgentTextHighlights.codeSpan(inCode: code)
         XCTAssertEqual(span?.text, "make lint-all")
         XCTAssertEqual(span.map { String(code[$0.range]) }, "make lint-all")
+    }
+
+    private func kinds(_ text: String) -> [AgentTextHighlights.Kind] {
+        found(text).map(\.kind)
+    }
+
+    private func texts(_ text: String) -> [String] {
+        found(text).map(\.text)
+    }
+
+    /// Spec 2026-11-26 §1: `PR #N` and `ask #N` are their own kinds, the whole phrase one span.
+    func testPrefixedRefsAreTheirOwnKinds() {
+        XCTAssertEqual(kinds("answered in ask #990"), [.ask(990)])
+        XCTAssertEqual(kinds("see PR #1124 and pr #7"), [.pullRequest(1124), .pullRequest(7)])
+        XCTAssertEqual(texts("ask #990"), ["ask #990"])
+        XCTAssertEqual(kinds("target #12"), [.ref(12)])
+        XCTAssertEqual(kinds("PR#12"), []) // glued: not the phrase, and the ref rule refuses `#` after a word char
+    }
+
+    func testDatesAndTimes() {
+        XCTAssertEqual(kinds("since 2026-11-16 at 10:05"), [.time, .time])
+        XCTAssertEqual(kinds("ratio 3:2, 24:00, 12:345, 10:05:33, 2026-13-01, v1.2"), [])
+    }
+
+    func testCodeSpanTakesTheWholeTokensKind() {
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "4d434597")?.kind, .hash)
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: " #1169 ")?.text, "#1169")
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "\"2026-11-16\"")?.text, "2026-11-16")
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "ask #990")?.kind, .ask(990))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "team_kpi.json")?.kind, .path)
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "make test")?.kind, .command)
+        XCTAssertNil(AgentTextHighlights.codeSpan(inCode: "marking_started: \"2026-11-16\""))
+        XCTAssertNil(AgentTextHighlights.codeSpan(inCode: "domain-kpi-v2"))
+    }
+
+    func testOnlyTheOldKindsOpen() {
+        XCTAssertTrue([.ref(1), .hash, .path, .command].allSatisfy { (kind: AgentTextHighlights.Kind) in kind.opens })
+        XCTAssertFalse([.time, .pullRequest(1), .ask(1)].contains { (kind: AgentTextHighlights.Kind) in kind.opens })
+    }
+
+    func testADateInsideAPathIsListedInsideTheCandidate() {
+        let spans = AgentTextHighlights.spans(inPlain: "logs/2026-11-16.txt")
+        XCTAssertEqual(spans.map(\.kind), [.path, .time])
+    }
+
+    func testADateGluedToAWordIsNotADate() {
+        XCTAssertEqual(kinds("tag v2026-11-16 shipped"), [])
+    }
+
+    /// A `#` before a time or a date leaves only the ref: the spans other than paths never overlap.
+    func testARefBeforeAColonOrADashIsTheRefOnly() {
+        XCTAssertEqual(kinds("#12:30"), [.ref(12)])
+        XCTAssertEqual(kinds("#2026-11-16"), [.ref(2026)])
+    }
+
+    /// A time ends a sentence as a date does; seconds and dotted numbers stay refused.
+    func testATimeMayEndASentence() {
+        XCTAssertEqual(kinds("at 10:05."), [.time])
+        XCTAssertEqual(kinds("10:05:33"), [])
+        XCTAssertEqual(kinds("10:05.1"), [])
+    }
+
+    /// `PR #N` / `ask #N` hold on one line: a line break between the word and the ref leaves the ref alone.
+    func testAPhraseDoesNotSpanALineBreak() {
+        XCTAssertEqual(kinds("ask\n#990"), [.ref(990)])
+        XCTAssertEqual(kinds("ask\t#990"), [.ask(990)])
+    }
+
+    /// A ref in inline code right after `PR` / `ask` in the plain text is that phrase (final review A1): ``PR `#1124` ``
+    /// colours as the phrase and opens nothing. The span stays the code token.
+    func testCodeSpanAfterAPhraseWordTakesThePhrasesKind() {
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#1124", after: "see PR ")?.kind, .pullRequest(1124))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#990", after: "answered in ask ")?.kind, .ask(990))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#7", after: "pr\t")?.kind, .pullRequest(7))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#8", after: "ASK ")?.kind, .ask(8))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: " #1124 ", after: "PR ")?.text, "#1124")
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#12", after: "task ")?.kind, .ref(12))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#12", after: "PR\n")?.kind, .ref(12))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#12", after: "PR")?.kind, .ref(12))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "#12", after: "sPR ")?.kind, .ref(12))
+        XCTAssertEqual(AgentTextHighlights.codeSpan(inCode: "make test", after: "PR ")?.kind, .command)
+        XCTAssertNil(AgentTextHighlights.codeSpan(inCode: "domain-kpi-v2", after: "PR "))
+    }
+
+    /// Boundary decisions pinned as they stand (final review A3).
+    func testBoundaryDecisions() {
+        let cases: [(String, [AgentTextHighlights.Kind], UInt)] = [
+            ("10:00-11:00", [], #line),
+            ("12:30\u{2013}13:00", [.time, .time], #line),
+            ("2026-11-16..2026-11-20", [.time], #line),
+            ("2026-11-16T10:05", [], #line),
+            ("9:05", [], #line),
+            ("see https://x.example.com/r/2026-11-16?at=10:05", [], #line),
+            ("ask #1 #2, PR #3 #4 and #5", [.ask(1), .ref(2), .pullRequest(3), .ref(4), .ref(5)], #line)
+        ]
+        for (text, expected, line) in cases {
+            XCTAssertEqual(kinds(text), expected, text, line: line)
+        }
     }
 }

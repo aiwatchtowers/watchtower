@@ -61,6 +61,8 @@ type fakeLS struct {
 	log          *opLog
 	failWith     error
 	onUnregister func(bundle string)
+	// onRegister, when set, sees the ctx of each register.
+	onRegister func(ctx context.Context)
 }
 
 func (l *fakeLS) Bundles(root string) []string {
@@ -75,7 +77,10 @@ func (l *fakeLS) Unregister(_ context.Context, bundle string) error {
 	return l.failWith
 }
 
-func (l *fakeLS) Register(_ context.Context, bundle string) error {
+func (l *fakeLS) Register(ctx context.Context, bundle string) error {
+	if l.onRegister != nil {
+		l.onRegister(ctx)
+	}
 	l.log.add("lsregister " + bundle)
 	return nil
 }

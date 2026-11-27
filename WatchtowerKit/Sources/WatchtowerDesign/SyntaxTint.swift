@@ -13,4 +13,6 @@ public enum SyntaxTint {
     public static let path = Color.orange.opacity(opacity)
     /// A command in inline code (`make test`).
     public static let command = Color.green.opacity(opacity)
+    /// A date or a time (`2026-11-16`, `10:05`), colour only.
+    public static let time = Color.teal.opacity(opacity)
 }

@@ -94,6 +94,25 @@ final class MeetingRecorderUpgradeTests: MeetingRecorderTestCase {
         XCTAssertNil(pendingRow(fresh))
     }
 
+    /// Today's ADTS `.aac` recordings are part of the `rec_*` family the
+    /// launch recovery scans: one with a row keeps its event link, one with
+    /// none is offered too, and a legacy `.caf` beside them still is.
+    func testADTSRecordingsAreRecoveredBesideALegacyCAF() async throws {
+        let center = try center()
+        let legacy = recordingsDir.appendingPathComponent("rec_20260801_130000.caf")
+        let withRow = recordingsDir.appendingPathComponent("rec_20260801_131000.aac")
+        let withoutRow = recordingsDir.appendingPathComponent("rec_20260801_132000.aac")
+        for url in [legacy, withRow, withoutRow] {
+            try Data([0x00]).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: url.path)
+        }
+        try await pendingStore.begin(recording: withRow.lastPathComponent, eventID: "evt-aac", title: "ADTS",
+                                     isPrivate: false, at: Date())
+        await center.restorePendingOnLaunch()
+        XCTAssertEqual(center.recoverable.map(\.audioURL), [legacy, withRow, withoutRow])
+        XCTAssertEqual(center.recoverable.first { $0.audioURL == withRow }?.eventID, "evt-aac")
+    }
+
     /// The pass fails on launch 1 (no database for it); a recording made in
     /// launch 1 whose row never landed is still this version's at launch 2:
     /// the cutoff stamped on launch 1 keeps it recoverable.

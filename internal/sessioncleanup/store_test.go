@@ -190,3 +190,59 @@ func TestDBStore_NeverReportedIsZero(t *testing.T) {
 		t.Fatalf("a session that never reported = %+v", got[0])
 	}
 }
+
+// TestDBStore_AllSessionActivityReadsWholeSecondAgentState: an
+// agent_state_at in whole seconds reads as that time, not as "now" (which
+// would keep a quiet session's work and skip it every pass).
+func TestDBStore_AllSessionActivityReadsWholeSecondAgentState(t *testing.T) {
+	s, _, id := storeFixture(t)
+	now := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return now }
+	if _, err := s.DB.Exec(`UPDATE terminal_sessions SET agent_state_at = '2026-10-10T12:00:00Z' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.AllSessionActivity(context.Background())
+	if err != nil || len(got) != 1 || !got[0].ReportedAt.Equal(time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+// TestDBStore_SessionActivityOf reads one session by id with the same stamp
+// rule as AllSessionActivity; a missing row is reported as absent.
+func TestDBStore_SessionActivityOf(t *testing.T) {
+	s, _, id := storeFixture(t)
+	if _, err := s.DB.Exec(`UPDATE terminal_sessions SET agent_state_at = '2026-10-10T12:00:00Z' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.AllSessionActivity(context.Background())
+	if err != nil || len(all) != 1 {
+		t.Fatalf("all %+v, %v", all, err)
+	}
+	got, ok, err := s.SessionActivityOf(context.Background(), id)
+	if err != nil || !ok || got != all[0] {
+		t.Fatalf("got %+v, %v, %v; want %+v", got, ok, err, all[0])
+	}
+	if _, ok, err := s.SessionActivityOf(context.Background(), id+100); ok || err != nil {
+		t.Fatalf("missing row: ok %v, err %v", ok, err)
+	}
+}
+
+// TestDBWorkbenches_ListsEveryWorkbench: the repository pass covers the
+// folders of every workbench.
+func TestDBWorkbenches_ListsEveryWorkbench(t *testing.T) {
+	s, wb, _ := storeFixture(t)
+	other, err := s.DB.CreateWorkbench("other", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := DBWorkbenches(s.DB)(context.Background())
+	if err != nil || !slices.Equal(ids, []int64{wb, other}) {
+		t.Fatalf("ids %v, err %v", ids, err)
+	}
+	// Fix round 1 C10: the read honours its ctx.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := DBWorkbenches(s.DB)(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancelled read: %v", err)
+	}
+}

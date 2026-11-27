@@ -90,8 +90,10 @@ type Result struct {
 // --force; then each branch by compare-and-delete (`update-ref -d <ref>
 // <checked sha>`). A failure that is not git's own refusal stops the apply:
 // the rest is left untouched and reported not_attempted. In session mode
-// the result is saved through Deps.Results (best effort). The error is
-// non-nil only when nothing was done. A sweep over several repositories
+// the result is saved through Deps.Results (best effort). Under the
+// repository locks, before anything is evaluated, every unlock an
+// interrupted apply left is undone first (restoreScope). The error is
+// non-nil only when nothing was removed — that relock aside. A sweep over several repositories
 // applies them one after another (sweepBuilders); a failure that stops one
 // leaves the later ones not_attempted.
 func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error) {
@@ -112,11 +114,15 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 		return res, fmt.Errorf("session cleanup: %w", err)
 	}
 	defer unlock()
+	// Undo an unlock an interrupted apply left (#2402 §3), under the
+	// repository locks taken above, before any fact is loaded.
+	restored := restoreScope(ctx, d, r)
 	parts, err := evaluationBuilders(ctx, d, r)
 	if err != nil {
 		return res, err
 	}
-	if r.RequireEnded && !r.Sweep && !parts[0].sessionFinished() {
+	parts[0].notes = append(parts[0].notes, restored...)
+	if (r.RequireEnded || r.Quiet) && !r.Sweep && !parts[0].endStands() {
 		return res, fmt.Errorf("session %d: %w", r.SessionID, ErrSessionNotEnded)
 	}
 	reportListing(parts)
@@ -161,6 +167,9 @@ type repoScope struct {
 	// unlocked are the folders (resolved) whose repository lockKeys could
 	// not tell, each with its note: never evaluated (sweepBuilders).
 	unlocked map[string]string
+	// locked are the canonical common dirs whose lock Apply took (Deps.Lock):
+	// the only repositories an unlock marker is restored in (restoreScope).
+	locked []string
 }
 
 // folders are the folders the scope evaluates.
@@ -192,6 +201,13 @@ func readScope(ctx context.Context, d Deps, r Request) (*repoScope, error) {
 		s, err := d.DB.CleanupSession(ctx, r.SessionID)
 		if err != nil {
 			return nil, err //nolint:wrapcheck // names the session already
+		}
+		// The session must be the request's workbench's before anything
+		// is done, the recovery of an interrupted unlock included (fix
+		// round 2, R2-3); loadSession checks it again.
+		if r.WorkbenchID != 0 && s.WorkbenchID != r.WorkbenchID {
+			return nil, fmt.Errorf("%w: session %d belongs to workbench %d, not %d",
+				ErrWrongWorkbench, s.ID, s.WorkbenchID, r.WorkbenchID)
 		}
 		sc.sessionFolder, wb = s.Folder, s.WorkbenchID
 	}
@@ -242,6 +258,7 @@ func lockRepositories(ctx context.Context, d Deps, r Request) (func(), error) {
 			return nil, fmt.Errorf("waiting for another cleanup of %s: %w", k, err)
 		}
 		unlocks = append(unlocks, unlock)
+		r.scope.locked = append(r.scope.locked, k)
 	}
 	return unlockAll, nil
 }
@@ -372,6 +389,7 @@ func (a *applier) run(ctx context.Context) {
 func (a *applier) actReported(ctx context.Context, i int) {
 	a.report.removing(a.items[i].Key)
 	a.act(ctx, i)
+	a.noteFailures(ctx)
 	a.report.removed(a.items[i])
 }
 
@@ -389,6 +407,14 @@ func (a *applier) act(ctx context.Context, i int) {
 	case KindWorktree:
 		a.removeWorktree(ctx, it)
 	case KindBranch:
+		if a.req.repoPass && !a.worktreeRemovedOn(it.Name) {
+			// The repository pass selects a branch only with its worktree
+			// (passSelection): a worktree kept at its re-check keeps the
+			// branch too, even once no longer checked out there (final
+			// review C5).
+			keepItem(it, ReasonNotAttempted, "its worktree was not removed")
+			return
+		}
 		a.deleteBranch(ctx, it)
 	case KindLsreg:
 		a.unregisterStale(ctx, it)
@@ -399,12 +425,31 @@ func (a *applier) act(ctx context.Context, i int) {
 	}
 }
 
+// worktreeRemovedOn: a worktree item of this apply whose branch was branch
+// was removed.
+func (a *applier) worktreeRemovedOn(branch string) bool {
+	return slices.ContainsFunc(a.items, func(w Item) bool {
+		return w.Kind == KindWorktree && w.Branch == branch && w.Done
+	})
+}
+
 // fresh is a new evaluation of the request: the re-check's facts.
 func (a *applier) fresh(ctx context.Context) (*builder, error) {
+	if a.deps.rechecking != nil {
+		a.deps.rechecking()
+	}
 	if err := benchFolderGone(ctx, a.deps, a.req); err != nil {
 		return nil, fmt.Errorf("re-checking: %w", err)
 	}
-	b, err := newBuilder(ctx, a.deps, a.req)
+	r := a.req
+	if r.liveNow != nil {
+		live, err := r.liveNow(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("re-checking: %w: %w", errLiveUnreadable, err)
+		}
+		r.LiveSessions = live
+	}
+	b, err := newBuilder(ctx, a.deps, r)
 	if err != nil {
 		return nil, fmt.Errorf("re-checking: %w", err)
 	}
@@ -419,7 +464,7 @@ var ErrSessionNotEnded = errors.New("the session is no longer finished")
 // session no longer finished stops the apply (check_failed, the rest
 // not_attempted).
 func (a *applier) stillEnded(it *Item, b *builder) bool {
-	if !a.req.RequireEnded || b.sessionFinished() {
+	if b.endStands() {
 		return true
 	}
 	a.fail(it, ErrSessionNotEnded)
@@ -433,14 +478,17 @@ func (a *applier) fail(it *Item, err error) {
 }
 
 // removeWorktree clears the worktree's orphans, unregisters its bundles,
-// re-checks it once more and only then runs `git worktree remove`. When it
-// stays, the bundles unregistered for it are registered again.
+// re-checks it once more and only then runs `git worktree remove`, a locked
+// one unlocked right before it (removeWorktreeNow). When it stays, the
+// bundles unregistered for it are registered again.
 func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 	root := strings.TrimPrefix(it.Key, "worktree:")
 	if !a.clearOrphans(ctx, it, root) {
+		a.noteFailures(ctx)
 		return
 	}
 	a.unregisterBundles(ctx, root)
+	a.noteFailures(ctx) // a bundle's error, before anything else runs
 	// The final re-check runs under the worktree lock, right before the
 	// removal: a wait for the lock never stands between them.
 	lctx, cancelLock := context.WithTimeout(ctx, worktreeRemoveTimeout)
@@ -449,14 +497,14 @@ func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 	if err != nil {
 		a.fail(it, err)
 	} else {
-		if a.recheckClear(ctx, it, root, "process in use: ", true) {
-			rctx, cancel := context.WithTimeout(ctx, worktreeRemoveTimeout)
-			_, code, err := a.git.run.RunGit(rctx, a.folder, a.git.bin, "worktree", "remove", root)
-			cancel()
-			a.settleGit(it, code, err)
+		if b, ok := a.recheckClear(ctx, it, root, "process in use: ", true); ok {
+			a.removeWorktreeNow(ctx, it, root, b)
 		}
 		unlock()
 	}
+	// Noted before the bundles are put back (its own bounded wait): a
+	// refusal while the pass ran stays the pass's failure (R4-3).
+	a.noteFailures(ctx)
 	if !it.Done {
 		a.reregisterBundles(ctx, root)
 	}
@@ -507,9 +555,33 @@ func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string, wa
 		if w.Root != root || w.Bare {
 			continue
 		}
+		// The repository pass never takes a prunable tree (R2-1): one that
+		// turned prunable since it was chosen (its directory unreadable, a
+		// volume not mounted) is left for the owner's Clean Up, before its
+		// bundles are unregistered and before the remove (R3-3).
+		if a.req.repoPass && w.Prunable {
+			keepItem(it, ReasonCheckFailed, "git lists it prunable now (its directory cannot be seen); left for the owner's Clean Up")
+			return nil, false
+		}
 		ev := b.evaluateWorktree(ctx, w)
 		if ev.Action != ActionRemove {
 			keepItem(it, ev.Reason, ev.Detail)
+			return nil, false
+		}
+		// The repository pass took the worktree for being idle: right
+		// before the removal it still must be (#2402 §2).
+		if admin := b.repo.adminDirs[root]; walk && a.req.repoPass && (admin == "" || !isIdle(ctx, a.deps, root, admin)) {
+			keepItem(it, reasonNotIdle, "active again since the pass chose it")
+			return nil, false
+		}
+		// The walks above can take long; a quiet session may have reopened
+		// meanwhile: read its activity once more, right before the removal.
+		switch ok, err := a.quietStillStands(ctx); {
+		case err != nil:
+			a.fail(it, err)
+			return nil, false
+		case !ok:
+			a.fail(it, ErrSessionNotEnded)
 			return nil, false
 		}
 		return b, true
@@ -541,23 +613,25 @@ func (a *applier) clearOrphans(ctx context.Context, it *Item, root string) bool 
 	if !a.terminate(it, orphans) || !a.awaitExit(ctx, it, root) {
 		return false
 	}
-	return a.recheckClear(ctx, it, root, "survived SIGTERM: ", false)
+	_, ok = a.recheckClear(ctx, it, root, "survived SIGTERM: ", false)
+	return ok
 }
 
 // recheckClear is a full re-check of root that also wants no orphan left
 // (prefix words the keep detail of one that is); the process items of
-// root that are gone are marked done; walk as in recheckWorktree.
-func (a *applier) recheckClear(ctx context.Context, it *Item, root, prefix string, walk bool) bool {
+// root that are gone are marked done; walk as in recheckWorktree. The
+// fresh facts come back with true.
+func (a *applier) recheckClear(ctx context.Context, it *Item, root, prefix string, walk bool) (*builder, bool) {
 	b, ok := a.recheckWorktree(ctx, it, root, walk)
 	if !ok {
-		return false
+		return nil, false
 	}
 	if orphans, _ := OrphansIn(b.procs, []string{root}, a.self); len(orphans) > 0 {
 		keepItem(it, ReasonProcessRunning, prefix+procText(orphans[0]))
-		return false
+		return nil, false
 	}
 	a.markGone(root, b.procs)
-	return true
+	return b, true
 }
 
 // awaitExit re-runs the process scan alone each poll step until no orphan
@@ -682,9 +756,18 @@ func (a *applier) unregisterBundles(ctx context.Context, root string) {
 	}
 }
 
+// bundleRegisterTimeout bounds registering a stayed worktree's bundles
+// again, on a ctx of its own (reregisterBundles).
+const bundleRegisterTimeout = 30 * time.Second
+
 // reregisterBundles registers again the bundles unregistered for root
-// when root stays: they are reported kept, not removed.
+// when root stays: they are reported kept, not removed. It runs on a ctx
+// that ignores the apply's cancellation, bounded by bundleRegisterTimeout
+// (as relock does): an apply stopped after the unregister still leaves
+// the worktree's entries as they were (#2402 fix round 2, R2-6).
 func (a *applier) reregisterBundles(ctx context.Context, root string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bundleRegisterTimeout)
+	defer cancel()
 	for i := range a.items {
 		it := &a.items[i]
 		if it.Kind != KindLsreg || !it.Done || !pathWithin(it.Detail, root) {
@@ -726,6 +809,16 @@ func (a *applier) deleteBranch(ctx context.Context, it *Item) {
 	if !ok || !a.notCheckedOutNow(ctx, it) {
 		return
 	}
+	// The last thing before the ref delete: a quiet session's activity read
+	// afresh (the evaluation above and the re-listing can take long).
+	switch ok, err := a.quietStillStands(ctx); {
+	case err != nil:
+		a.fail(it, err)
+		return
+	case !ok:
+		a.fail(it, ErrSessionNotEnded)
+		return
+	}
 	gctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 	_, code, err := a.git.run.RunGit(gctx, a.folder, a.git.bin, "update-ref", "-d", "refs/heads/"+it.Name, tip)
@@ -738,6 +831,9 @@ func (a *applier) deleteBranch(ctx context.Context, it *Item) {
 	}
 }
 
+// recheckBranch re-reads the branch on fresh facts. In the repository pass
+// its reads, and notCheckedOutNow's, name the locked common dir
+// (repositoryWideRead, deps.go): keep a new read here in that list.
 func (a *applier) recheckBranch(ctx context.Context, it *Item) (string, bool) {
 	b, err := a.fresh(ctx)
 	if err != nil {

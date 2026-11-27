@@ -247,6 +247,12 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
 
     private static let imageMarker = try? NSRegularExpression(pattern: #"\[(?:Image #\d+|image)\]"#)
 
+    /// `text` is one image marker and nothing else: `[image]` or `[Image #N]`.
+    package static func isImageMarker(_ text: String) -> Bool {
+        let range = NSRange(text.startIndex..., in: text)
+        return imageMarker?.firstMatch(in: text, options: .anchored, range: range)?.range == range
+    }
+
     private static func withoutImageMarkers(_ text: String) -> String {
         let range = NSRange(text.startIndex..., in: text)
         let bare = imageMarker?.stringByReplacingMatches(in: text, range: range, withTemplate: " ") ?? text

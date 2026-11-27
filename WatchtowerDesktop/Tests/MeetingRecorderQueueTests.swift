@@ -573,7 +573,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         let first = MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: date)
         XCTAssertTrue(first.lastPathComponent.hasPrefix("rec_"),
                       "the Go orphan sweep matches on the rec_ family")
-        XCTAssertEqual(first.pathExtension, "caf")
+        XCTAssertEqual(first.pathExtension, "aac", "new Mac recordings are ADTS")
 
         try Data([0x00]).write(to: first)
         let second = MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: date)

@@ -158,21 +158,33 @@ final class SessionChatViewTests: XCTestCase {
         var feed = WorkchatFeed(entries: [SessionFeedEntry(id: "a", kind: "agent", text: "#12")],
                                 markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
         var opened: [AgentTextHighlights.Span] = []
-        feed.onHighlight = { span, _ in opened.append(span) }
-        feed.resolvesPath = { path, _ in path == "a/b.go" }
+        feed.highlighting = AgentTextHighlighting(resolvesPath: { path, _ in path == "a/b.go" },
+                                                  openHighlight: { span, _ in opened.append(span) })
         let context = feed.context()
-        XCTAssertTrue(context.highlightsAgentText)
+        let highlighting = try XCTUnwrap(context.agentTextHighlighting)
         let span = AgentTextHighlights.spans(inPlain: "#12")[0]
-        context.partActions.openHighlight?(span, 1)
+        highlighting.openHighlight?(span, 1)
         XCTAssertEqual(opened, [span])
-        XCTAssertEqual(context.partActions.resolvesPath?("a/b.go", 1), true)
-        XCTAssertEqual(context.partActions.resolvesPath?("c.go", 1), false)
+        XCTAssertEqual(highlighting.resolvesPath?("a/b.go", 1), true)
+        XCTAssertEqual(highlighting.resolvesPath?("c.go", 1), false)
 
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let chat = ChatViewModel(client: RecordingChatClient(), dbPool: pool, cliRunner: FakeCLIRunner())
-        XCTAssertFalse(chat.conversation.feedContext(composer: chat.composer, partActions: ChatPartActions())
-            .highlightsAgentText)
+        XCTAssertNil(chat.conversation.feedContext(composer: chat.composer, partActions: ChatPartActions())
+            .agentTextHighlighting)
+    }
+
+    /// Final review A2: the Workchat colours the agent's text with no setup — a feed that sets no handlers still
+    /// highlights (colour only, no path), so the colours never switch off silently; the AI chat stays plain.
+    func testAWorkchatFeedHighlightsWithoutSetup() {
+        let feed = WorkchatFeed(entries: [SessionFeedEntry(id: "a", kind: "agent", text: "#12")],
+                                markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
+        let highlighting = feed.context().agentTextHighlighting
+        XCTAssertNotNil(highlighting)
+        XCTAssertNil(highlighting?.resolvesPath)
+        XCTAssertNil(highlighting?.openHighlight)
+        XCTAssertNil(ChatFeedContext().agentTextHighlighting, "the AI chat's default stays plain")
     }
 
     private func span(_ text: String, _ kind: AgentTextHighlights.Kind) -> AgentTextHighlights.Span {

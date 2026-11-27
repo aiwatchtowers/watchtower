@@ -604,12 +604,14 @@ final class MobileSettingsModelTests: XCTestCase {
         XCTAssertEqual(Model.allowQuestion(name: try XCTUnwrap(model.pendingAllow).name),
                        "Allow \"Phone A\" to type into Claude Code sessions?")
         XCTAssertTrue(cli.writes.isEmpty)
-        await model.confirmAllow()
+        await model.confirmAllow(phoneA)
         XCTAssertNil(model.pendingAllow)
         model.requestPermissionsAllow(phoneA)
-        await model.confirmPermissionsAllow()
+        await model.confirmPermissionsAllow(phoneA)
+        XCTAssertNil(model.pendingPermissionsAllow)
         model.requestStartSessionsAllow(phoneB)
-        await model.confirmStartSessionsAllow()
+        await model.confirmStartSessionsAllow(phoneB)
+        XCTAssertNil(model.pendingStartSessionsAllow)
         await model.allow("BBBB0002", Model.typingGrant, false)
         XCTAssertEqual(cli.writes, [
             ["hub", "allow", "AAAA0001", "typing", "--json"],
@@ -622,25 +624,84 @@ final class MobileSettingsModelTests: XCTestCase {
         await model.allow("AAAA0001", Model.typingGrant, false)
         XCTAssertEqual(model.notice, "Couldn't change typing for Phone A. No such phone.")
 
-        // Remove asks first; Cancel keeps the phone.
+        // Remove asks first: the request alone writes nothing.
         model.requestRemove(phoneB)
+        XCTAssertFalse(cli.writes.contains(MobileHubCLI.unlinkArgs("BBBB0002")), "the request alone writes nothing")
         model.pendingRemove = nil
         XCTAssertEqual(model.removeSubject?.name, "Phone B", "the dialog keeps its phone while it dismisses")
-        await model.confirmRemove()
-        XCTAssertFalse(cli.writes.contains(MobileHubCLI.unlinkArgs("BBBB0002")))
 
         model.requestRemove(phoneB)
-        await model.confirmRemove()
+        await model.confirmRemove(phoneB)
+        XCTAssertNil(model.pendingRemove)
         XCTAssertEqual(cli.writes.last, ["hub", "unlink", "BBBB0002", "--json"])
         XCTAssertEqual(model.notice, "Removed Phone B. It can no longer read anything new from this Mac.")
         model.requestRemove(phoneA)
-        await model.confirmRemove()
+        await model.confirmRemove(phoneA)
         XCTAssertEqual(model.notice, "Removed Phone A.")
 
         cli.fail(MobileHubCLI.unlinkArgs("AAAA0001"), stderr: "Error: the hub did not answer")
         model.requestRemove(phoneA)
-        await model.confirmRemove()
+        await model.confirmRemove(phoneA)
         XCTAssertEqual(model.notice, "Couldn't remove Phone A. The hub did not answer.")
+    }
+
+    /// On macOS a dialog's dismissal clears its pending property before the
+    /// button's action runs (#1163): each confirm still writes for the phone
+    /// or recording the dialog presented.
+    func testConfirmsWriteAfterTheDismissalClearedThePending() async throws {
+        runningWith(MobileHubFixture.phone(id: "AAAA0001", name: "Phone A", transport: "relay"))
+        cli.answer(MobileHubCLI.recordingJobsArgs, """
+        {"ready":true,"jobs":[{"upload_id":"u-1","status":"failed","error_class":"not_audio"}]}
+        """)
+        let model = makeModel()
+        await model.load()
+        let phone = try XCTUnwrap(rows(model).first)
+        let recording = try XCTUnwrap(model.failedRecordings.first)
+
+        model.requestAllow(phone)
+        model.pendingAllow = nil
+        await model.confirmAllow(phone)
+        model.requestPermissionsAllow(phone)
+        model.pendingPermissionsAllow = nil
+        await model.confirmPermissionsAllow(phone)
+        model.requestStartSessionsAllow(phone)
+        model.pendingStartSessionsAllow = nil
+        await model.confirmStartSessionsAllow(phone)
+        model.requestDiscard(recording)
+        model.pendingDiscard = nil
+        await model.confirmDiscard(recording)
+        model.requestRemove(phone)
+        model.pendingRemove = nil
+        await model.confirmRemove(phone)
+
+        XCTAssertEqual(cli.writes, [
+            ["hub", "allow", "AAAA0001", "typing", "--json"],
+            ["hub", "allow", "AAAA0001", "permissions", "--json"],
+            ["hub", "allow", "AAAA0001", "start_sessions", "--json"],
+            ["hub", "recording", "discard", "--upload", "u-1", "--json"],
+            ["hub", "unlink", "AAAA0001", "--json"]
+        ])
+    }
+
+    /// The rename field's text outlives the alert's dismissal, so Save writes
+    /// the typed name; a cancelled draft does not come back on the next open.
+    func testRenameSavesTheTypedNameAfterTheDismissal() async {
+        runningWith()
+        let model = makeModel()
+        await model.load()
+        model.requestRename()
+        XCTAssertTrue(model.renaming)
+        XCTAssertEqual(model.renameText, model.macName)
+        model.renameText = "Studio"
+        model.renaming = false
+        await model.saveRename()
+        XCTAssertEqual(cli.writes, [["hub", "name", "Studio", "--json"]])
+
+        model.requestRename()
+        model.renameText = "Draft"
+        model.renaming = false
+        model.requestRename()
+        XCTAssertEqual(model.renameText, model.macName, "the field opens on the hub's name, not the cancelled draft")
     }
 
     func testRenameCallsHubName() async {
@@ -727,16 +788,16 @@ final class MobileSettingsModelTests: XCTestCase {
         model.requestDiscard(model.failedRecordings[0])
         XCTAssertEqual(Model.discardQuestion, "Discard this phone recording?")
         XCTAssertEqual(Model.discardMessage, "Its audio is deleted from this Mac. This can't be undone.")
+        XCTAssertEqual(cli.writes.count, 1, "the request alone discards nothing")
         model.pendingDiscard = nil
-        await model.confirmDiscard()
-        XCTAssertEqual(cli.writes.count, 1, "no discard without the confirmation")
         model.requestDiscard(model.failedRecordings[0])
-        await model.confirmDiscard()
+        await model.confirmDiscard(model.failedRecordings[0])
+        XCTAssertNil(model.pendingDiscard)
         XCTAssertEqual(cli.writes.last, ["hub", "recording", "discard", "--upload", "u-1", "--json"])
 
         cli.fail(MobileHubCLI.discardArgs("u-2"), stderr: "Error: the recording job is not in a state that allows this")
         model.requestDiscard(model.failedRecordings[1])
-        await model.confirmDiscard()
+        await model.confirmDiscard(model.failedRecordings[1])
         XCTAssertEqual(model.notice, "Couldn't discard the recording. The recording job is not in a state that allows this.")
 
         // An older CLI or a hub with no queue yet: the rows hide, nothing else changes.

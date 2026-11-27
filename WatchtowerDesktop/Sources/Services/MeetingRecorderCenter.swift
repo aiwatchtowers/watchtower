@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os
 import WatchtowerCore
 
 /// Native-notification seam for transcript completion/failure, so
@@ -1203,6 +1204,11 @@ final class MeetingRecorderCenter {
         let result: RecordingResult
         do {
             result = try await recorder.stop() // also finishes liveSamples
+        } catch AudioRecordingError.notFinalized(let kept) where ownsLivePass {
+            // Undecodable file, but this capture owns its live pass: stop as usual so the live text
+            // is saved; without live text the batch decode fails with the honest message.
+            SystemAudioRecorder.log.error("stop: not finalized (\(kept.durationSec, privacy: .public) s), saving the live text")
+            result = kept
         } catch {
             let isPrivate = currentPrivate
             // `recorder.stop()` finishes `liveSamples` before throwing, so the
@@ -1315,10 +1321,12 @@ final class MeetingRecorderCenter {
     /// recording, whose own Stop owns it — never this job. A capture that
     /// disabled the live pass never owns one either.
     private func consumeLivePassOwnership() -> Bool {
-        let owns = captureLiveEnabled && pendingLiveStart == nil
+        let owns = ownsLivePass
         pendingLiveStart = nil
         return owns
     }
+    /// `consumeLivePassOwnership`'s answer without clearing the parked start.
+    private var ownsLivePass: Bool { captureLiveEnabled && pendingLiveStart == nil }
 
     /// Releases the engine slot a finished capture's live pass held and hands it
     /// on: to a recording that started while the tail was draining (with
@@ -1414,7 +1422,7 @@ final class MeetingRecorderCenter {
     /// Recovers every recording captured before a crash, once the database is
     /// open (`pendingStore`; without it this does nothing, and AppState calls
     /// it again when the pool opens): each `pending_transcripts` row whose
-    /// `rec_*` audio is still in the recordings directory, plus every `rec_*` `.caf`/`.m4a` with no row and no
+    /// `rec_*` audio is still in the recordings directory, plus every `rec_*` audio file with no row and no
     /// saved transcript — a recording started before the database opened
     /// (Review Focus 3), recovered without its event link. The legacy `rec_*`
     /// sidecars are imported into rows first (`LegacyRecordingSidecarImport`),

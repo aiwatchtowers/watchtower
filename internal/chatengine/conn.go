@@ -94,7 +94,7 @@ type connSub struct {
 }
 
 func newConn(s *Server, nc net.Conn, peer peerCreds) *conn {
-	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: kept in the conn, called by kill
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec,nolintlint // G118 (CI's golangci-lint): kept in the conn, called by kill; newer releases see it
 	return &conn{s: s, nc: nc, peer: peer, ctx: ctx, cancel: cancel, subs: map[string]*connSub{},
 		inFlight: make(chan struct{}, maxInFlight)}
 }

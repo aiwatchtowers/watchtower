@@ -118,7 +118,9 @@ struct WorkchatOutgoingBubble: View {
         HStack {
             Spacer(minLength: 48)
             VStack(alignment: .trailing, spacing: Spacing.tight) {
-                Text(line.text)
+                // The image paths sent in place of the paste tokens read as the tokens did (`line.text` went to the
+                // terminal unchanged).
+                Text(WorkchatOwnerImages.shown(line.text))
                     .textSelection(.enabled)
                     .padding(.horizontal, Spacing.cozy)
                     .padding(.vertical, Spacing.compact)
