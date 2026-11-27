@@ -723,7 +723,7 @@ final class AskExplainModelTests: XCTestCase {
             return id
         }
         let ask = try fx.insertAsk(targetID: targetID)
-        let held = TowerHold(fx.tower)
+        let held = ChatNewHold(fx.tower)
         let (vm, tower) = (fx.vm, fx.tower)
         let first = Task { await vm.openExplain(ask, item: .question(1)) }
         await waitForCondition { tower.calls(.chatNew).count == 1 }
@@ -735,9 +735,12 @@ final class AskExplainModelTests: XCTestCase {
             try db.execute(sql: "UPDATE targets SET intent = 'New intent' WHERE id = ?", arguments: [targetID])
         }
         await vm.openExplain(ask, item: .question(1))
-        held.release()
-        await first.value
+        // q2's open returns first: were the reopen keyed by ask, q2's would
+        // take it and q1's open would keep its first, stale read.
+        held.release(1)
         await second.value
+        held.releaseAll()
+        await first.value
 
         XCTAssertEqual(vm.explainItem(ask.id), .question(1))
         XCTAssertNil(vm.explainEngine(for: ask, item: .question(2)), "q2's open, no longer shown, made nothing")
@@ -997,6 +1000,53 @@ final class AskExplainModelTests: XCTestCase {
         XCTAssertTrue(fx.tower.calls(.chatNew).isEmpty)
         await finishTurn(engine)
         XCTAssertEqual(fx.hiddenTurns.count, 1)
+    }
+
+    /// Holds each `chat.new` until it is let through by its order (0-based);
+    /// every other command passes.
+    private final class ChatNewHold: @unchecked Sendable {
+        private let lock = NSLock()
+        private var next = 0
+        private var released: Set<Int> = []
+        private var all = false
+        private var waiters: [Int: CheckedContinuation<Void, Never>] = [:]
+
+        init(_ tower: FakeChatTower) {
+            tower.beforeApply = { [self] command in
+                guard command == .chatNew else { return }
+                await wait()
+            }
+        }
+
+        private func wait() async {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let now = lock.withLock { () -> Bool in
+                    let index = next
+                    next += 1
+                    if all || released.contains(index) { return true }
+                    waiters[index] = continuation
+                    return false
+                }
+                if now { continuation.resume() }
+            }
+        }
+
+        func release(_ index: Int) {
+            let waiter = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                released.insert(index)
+                return waiters.removeValue(forKey: index)
+            }
+            waiter?.resume()
+        }
+
+        func releaseAll() {
+            let waiting = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                all = true
+                defer { waiters = [:] }
+                return Array(waiters.values)
+            }
+            waiting.forEach { $0.resume() }
+        }
     }
 
     nonisolated private static func insertFolder(_ db: Database, projectID: Int64, path: String) throws -> Int64 {
