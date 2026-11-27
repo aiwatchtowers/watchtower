@@ -195,6 +195,25 @@ mutant 'internal/db/schema.sql' swift "$WORK_DIR/swift.reads" "Swift reads schem
 mutant 'WatchtowerKit/Tests/Fixtures/**' go_input "$WORK_DIR/go.reads" "Go reads the Kit fixtures"
 mutant 'docs/inventory/**' go_input "$WORK_DIR/go.reads" "the inventory guard reads docs/inventory"
 
+# The owner_asks payload guard (internal/db/ask_payload_guard_test.go, spec
+# 2026-11-27 D18) walks every Swift source of the Desktop, the Kit and the
+# phone — roots the literal scan above misses past the first on its line.
+GUARD=internal/db/ask_payload_guard_test.go
+for root in WatchtowerDesktop/Sources WatchtowerKit/Sources WatchtowerMobile; do
+    grep -qF "\"../../$root\"" "$GUARD" || note_fail "$GUARD no longer names ../../$root — update this check"
+done
+git ls-files 'WatchtowerDesktop/Sources/*.swift' 'WatchtowerKit/Sources/*.swift' 'WatchtowerMobile/*.swift' \
+    > "$WORK_DIR/guard.reads"
+missing="$(uncovered "$WORK_DIR/go_input.re" < "$WORK_DIR/guard.reads")"
+if [ -z "$missing" ]; then
+    echo "ok: $(wc -l < "$WORK_DIR/guard.reads" | tr -d ' ') Swift sources the payload guard scans are in the go_input filter"
+else
+    note_fail "the payload guard scans Swift sources the go_input filter misses — add them to the gate's scope.go_input in ci.yml:"
+    printf '  %s\n' $missing | head -20
+fi
+mutant 'WatchtowerKit/Sources/**' go_input "$WORK_DIR/guard.reads" "the payload guard scans the Kit's Swift"
+mutant 'WatchtowerMobile/**/*.swift' go_input "$WORK_DIR/guard.reads" "the payload guard scans the phone's Swift"
+
 # 3. Swift tests that build Go code. Each one's packages are mapped by hand.
 builders="$({ git grep -lE '"/go"|env go|"go", *"(build|run|test|list|vet|generate)"' -- "${SWIFT_TESTS[@]}" || true; } | sed 's#.*/##' | sort | tr '\n' ' ')"
 if [ "$builders" = "CodeNavRealCLITests.swift SQLCipherInteropTests.swift " ]; then

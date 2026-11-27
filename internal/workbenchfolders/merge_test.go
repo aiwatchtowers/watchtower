@@ -357,8 +357,9 @@ func TestMergeRewritesStaleOtherBench(t *testing.T) {
 }
 
 // Chats keyed by the workbench id follow it: code questions, spec review
-// threads, ask explain chats (and their queued drafts), reviewer threads
-// (B's home-folder thread gains its folder).
+// threads, ask explain chats — the whole-ask `<wb>:<ask>` and the item
+// `<wb>:<ask>:q<N>` forms (spec 2026-11-27 D3) — and their queued drafts,
+// reviewer threads (B's home-folder thread gains its folder).
 func TestMergeReKeysTheChats(t *testing.T) {
 	ctx := context.Background()
 	d := testDB(t)
@@ -376,14 +377,16 @@ func TestMergeReKeysTheChats(t *testing.T) {
 	question := chat("code_question", bs+":src/main.go:12")
 	thread := chat(db.SpecReviewThreadContextType, bs+":7:item-1")
 	explain := chat(db.AskExplainContextType, bs+":9")
+	explainItem := chat(db.AskExplainContextType, bs+":9:q2")
 	home := chat("review_reviewer", bs+":main")
 	folder := chat("review_reviewer", bs+":f"+strconv.FormatInt(bHome, 10)+":wt/fix")
 	mine := chat("review_reviewer", as+":main")
 	// The explain chat's queued follow-up, by the Desktop's surface key; a
 	// bench whose id only starts with B's keeps its own.
 	explainDraft := fmt.Sprintf("owner_ask_explain.%s:9.%d", bs, explain)
+	explainItemDraft := fmt.Sprintf("owner_ask_explain.%s:9:q2.%d", bs, explainItem)
 	longerDraft := fmt.Sprintf("owner_ask_explain.%s1:9.1", bs)
-	for _, k := range []string{explainDraft, longerDraft} {
+	for _, k := range []string{explainDraft, explainItemDraft, longerDraft} {
 		_, err := d.Exec(`INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES (?, 'and B?', 1)`, k)
 		require.NoError(t, err)
 	}
@@ -407,6 +410,7 @@ func TestMergeReKeysTheChats(t *testing.T) {
 	assert.Equal(t, as+":src/main.go:12", key(question))
 	assert.Equal(t, as+":7:item-1", key(thread))
 	assert.Equal(t, as+":9", key(explain))
+	assert.Equal(t, as+":9:q2", key(explainItem))
 	assert.Equal(t, as+":f"+strconv.FormatInt(bHome, 10)+":main", key(home), "B's home is a folder of A now")
 	assert.Equal(t, as+":f"+strconv.FormatInt(bHome, 10)+":wt/fix", key(folder))
 	assert.Equal(t, as+":main", key(mine), "A's own thread untouched")
@@ -415,6 +419,41 @@ func TestMergeReKeysTheChats(t *testing.T) {
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM chat_queued_drafts WHERE surface_key = ?`, longerDraft),
 		"a longer id with B's leading digits is untouched")
 	assert.Equal(t, 0, countRows(t, d, `SELECT COUNT(*) FROM chat_queued_drafts WHERE surface_key = ?`, explainDraft))
+	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM chat_queued_drafts WHERE surface_key = ?`,
+		fmt.Sprintf("owner_ask_explain.%s:9:q2.%d", as, explainItem)), "the item chat's draft follows it to A")
+	assert.Equal(t, 0, countRows(t, d, `SELECT COUNT(*) FROM chat_queued_drafts WHERE surface_key = ?`, explainItemDraft))
+}
+
+// An ask's questions and checklist key its "Not clear?" item chats by
+// position (spec 2026-11-27 D3/D18): the merge moves a question ask and a
+// check ask without touching their payload.
+func TestMergeLeavesQuestionAndCheckPayloadsAsTheyWere(t *testing.T) {
+	ctx := context.Background()
+	d := testDB(t)
+	a := bench(t, d, "acme", dir(t, "acme"))
+	b := bench(t, d, "tools", dir(t, "tools"))
+	payloads := map[string]string{
+		"question": `{"questions":[{"id":"1","text":"Which DB?","options":["a","b"]},{"id":"pick-db","text":"Why?"}]}`,
+		// A stray other_bench naming B: only folder asks' are rewritten.
+		"check": fmt.Sprintf(`{"checklist":[{"id":"1","text":"Open the app"},{"id":"2","text":"Click  Save"}],"other_bench":{"id":%d}}`, b),
+	}
+	ids := map[string]int64{}
+	for kind, payload := range payloads {
+		res, err := d.Exec(`INSERT INTO owner_asks (project_id, kind, title, payload) VALUES (?, ?, 't', ?)`, b, kind, payload)
+		require.NoError(t, err)
+		ids[kind], err = res.LastInsertId()
+		require.NoError(t, err)
+	}
+
+	_, err := Merge(ctx, d, b, a, nil)
+	require.NoError(t, err)
+	for kind, id := range ids {
+		var got string
+		var wb int64
+		require.NoError(t, d.QueryRow(`SELECT payload, project_id FROM owner_asks WHERE id = ?`, id).Scan(&got, &wb))
+		assert.Equal(t, a, wb, kind)
+		assert.Equal(t, payloads[kind], got, "the %s ask's payload is byte for byte as filed", kind)
+	}
 }
 
 // Spec §7 "crash mid-move": a failure on any table rolls the whole merge

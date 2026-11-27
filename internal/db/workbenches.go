@@ -441,8 +441,10 @@ func (db *DB) DeleteWorkbench(id int64) error {
 // `context_id` starts with `<id>:`, the prefix matched exactly as in
 // deleteWorkbenchCodeQuestions. The asks go with the workbench. Their queued
 // follow-ups in `chat_queued_drafts` go too: the Desktop keys them by the
-// chat's surface key `owner_ask_explain.<id>:<ask>.<conversation>`
-// (AskExplainDraftKeyPrefix), matched exactly by prefix.
+// chat's surface key `owner_ask_explain.<id>:<ask>.<conversation>` or, for
+// an item chat, `owner_ask_explain.<id>:<ask>:<item>.<conversation>` (spec
+// 2026-11-27 D3) (AskExplainDraftKeyPrefix), matched exactly by prefix — the
+// one prefix covers both shapes.
 func deleteWorkbenchAskExplainChats(tx *sql.Tx, workbenchID int64) error {
 	prefix := strconv.FormatInt(workbenchID, 10) + ":"
 	if _, err := tx.Exec(`DELETE FROM chat_conversations WHERE context_type = ?
@@ -460,7 +462,8 @@ func deleteWorkbenchAskExplainChats(tx *sql.Tx, workbenchID int64) error {
 // AskExplainDraftKeyPrefix is the start of every `chat_queued_drafts`
 // surface key of workbench workbenchID's "Not clear?" chats: the Desktop's
 // EmbeddedChatKey description `<context_type>.<context_id>.<conversation>`
-// with context_id `<workbench>:<ask>`.
+// with context_id `<workbench>:<ask>` or `<workbench>:<ask>:<item>` (an item
+// chat, spec 2026-11-27 D3): both start `<workbench>:`.
 func AskExplainDraftKeyPrefix(workbenchID int64) string {
 	return AskExplainContextType + "." + strconv.FormatInt(workbenchID, 10) + ":"
 }

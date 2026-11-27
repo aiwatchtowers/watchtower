@@ -247,15 +247,22 @@ package final class FakeChatTower: ChatTowerSending, @unchecked Sendable {
         }
     }
 
-    /// Go's `db.AskExplainWorkbenchID`: `<workbench>:<ask>`, both canonical
-    /// positive ids (written back exactly as given); nil otherwise.
-    static func askExplainWorkbenchID(_ contextID: String) -> Int64? {
-        let parts = contextID.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+    /// Go's `db.AskExplainWorkbenchID`: `<workbench>:<ask>` or
+    /// `<workbench>:<ask>:<item>`, both ids canonical positive (written back
+    /// exactly as given), the item `q` or `s` and a canonical positive
+    /// number; nil for any other shape.
+    package static func askExplainWorkbenchID(_ contextID: String) -> Int64? {
+        let parts = contextID.split(separator: ":", omittingEmptySubsequences: false)
         func canonical(_ part: Substring) -> Int64? {
             guard let id = Int64(part), id > 0, String(id) == part else { return nil }
             return id
         }
-        guard parts.count == 2, let bench = canonical(parts[0]), canonical(parts[1]) != nil else { return nil }
+        guard parts.count == 2 || parts.count == 3, let bench = canonical(parts[0]), canonical(parts[1]) != nil
+        else { return nil }
+        if parts.count == 3 {
+            let item = parts[2]
+            guard let kind = item.first, kind == "q" || kind == "s", canonical(item.dropFirst()) != nil else { return nil }
+        }
         return bench
     }
 

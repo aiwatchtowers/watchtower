@@ -9,10 +9,13 @@ import WatchtowerCore
 ///
 /// - Draft-only (review-rules "The assistant & chat contracts", AGENT-04):
 ///   no tool mode; the assistant explains and never changes anything.
-/// - One conversation per ask, `context_type = 'owner_ask_explain'` and
-///   `context_id = '<workbench>:<ask>'` (`AskExplainKey`), found or created
-///   with Go's `chat.new` (`reuse: true`), so two windows opening the same
-///   ask get one conversation.
+/// - One conversation per ask item (spec 2026-11-27 D3),
+///   `context_type = 'owner_ask_explain'` and
+///   `context_id = '<workbench>:<ask>:<item>'` (`AskExplainKey`), found or
+///   created with Go's `chat.new` (`reuse: true`), so two windows opening
+///   the same item get one conversation. A 0.29.5 whole-ask chat
+///   (`'<workbench>:<ask>'`) is the chat of a single-item ask's item (D4,
+///   `legacyConversationID`); nothing makes one any more.
 /// - The config's provider at its strong tier, `--purpose ask.explain` for
 ///   the usage ledger. It reads the ask's folder (`readFolder`; `ai
 ///   query --read-folder`, read only) only when its capability row reads folders,
@@ -22,12 +25,22 @@ import WatchtowerCore
 /// - The system prompt carries the ask as fenced data (`AskExplainPrompt`).
 @MainActor
 enum AskExplainSurface {
-    /// The ask's conversation, created on first use.
-    nonisolated static func conversationID(ask: OwnerAsk, dbPool: DatabasePool, writes: ChatWrites) async throws -> Int64 {
+    /// The item's conversation, created on first use.
+    nonisolated static func conversationID(
+        ask: OwnerAsk, item: AskExplainItem, dbPool: DatabasePool, writes: ChatWrites
+    ) async throws -> Int64 {
         try await DatabaseEmbeddedChatStore.conversationID(
             dbPool: dbPool, writes: writes, contextType: AskExplainKey.contextType,
-            contextID: AskExplainKey.contextID(workbenchID: ask.projectID, askID: ask.id),
-            title: AskExplainKey.title(askID: ask.id))
+            contextID: AskExplainKey.contextID(workbenchID: ask.projectID, askID: ask.id, item: item),
+            title: AskExplainKey.title(askID: ask.id, item: item))
+    }
+
+    /// The ask's whole-ask chat from 0.29.5 (`'<workbench>:<ask>'`, spec D4),
+    /// the newest if several: a read, nil when there is none.
+    nonisolated static func legacyConversationID(_ db: Database, ask: OwnerAsk) throws -> Int64? {
+        try ChatConversationQueries.fetchByContext(
+            db, type: AskExplainKey.contextType,
+            id: AskExplainKey.legacyContextID(workbenchID: ask.projectID, askID: ask.id))?.id
     }
 
     /// The folder the assistant reads for `ask` (multi-folder workbench):
@@ -55,8 +68,12 @@ enum AskExplainSurface {
         return homeFolder
     }
 
+    /// `contextID`: the conversation's own context id — the item's, or
+    /// `'<workbench>:<ask>'` for a reused legacy chat (its drafts keep their key).
     static func spec(
         ask: OwnerAsk,
+        item: AskExplainItem,
+        contextID: String,
         conversationID: Int64,
         folder: String,
         target: (title: String, intent: String)?,
@@ -70,13 +87,12 @@ enum AskExplainSurface {
             return ChatRunOptions(readFolder: reads ? folder : nil, purpose: AskExplainKey.purpose)
         }
         return ChatSurfaceSpec(
-            key: EmbeddedChatKey(contextType: AskExplainKey.contextType,
-                                 contextID: AskExplainKey.contextID(workbenchID: ask.projectID, askID: ask.id),
+            key: EmbeddedChatKey(contextType: AskExplainKey.contextType, contextID: contextID,
                                  conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,
             ownerInstructions: true,
-            systemPrompt: { AskExplainPrompt.system(ask: ask, target: target) },
+            systemPrompt: { AskExplainPrompt.system(ask: ask, item: item, target: target) },
             emptyHint: AskExplainCopy.emptyHint,
             runOptions: runOptions
         )

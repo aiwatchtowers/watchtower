@@ -324,8 +324,7 @@ func moveTargets(ctx context.Context, tx *sql.Tx, m *merger) error {
 // is NULL — the merged bench's home folder — to that folder (where, when
 // set, narrows the rows the NULL means a folder for).
 func pinHomeThenMove(table, column, where string) func(ctx context.Context, tx *sql.Tx, m *merger) error {
-	//nolint:gosec // G202: table is a mergeTables constant; every value is a bound arg.
-	pin, move := pinHomeSQL(table, column, where), `UPDATE `+table+` SET project_id = ? WHERE project_id = ?`
+	pin, move := pinHomeSQL(table, column, where), moveSQL(table)
 	return func(ctx context.Context, tx *sql.Tx, m *merger) error {
 		if _, err := tx.ExecContext(ctx, pin, m.fromHome, m.from); err != nil {
 			return err //nolint:wrapcheck // Merge names the table
@@ -333,6 +332,13 @@ func pinHomeThenMove(table, column, where string) func(ctx context.Context, tx *
 		_, err := tx.ExecContext(ctx, move, m.into, m.from)
 		return err //nolint:wrapcheck // Merge names the table
 	}
+}
+
+// moveSQL moves table's rows from the bench in the second argument to the
+// bench in the first.
+func moveSQL(table string) string {
+	// table is a mergeTables constant; every value is a bound arg.
+	return `UPDATE ` + table + ` SET project_id = ? WHERE project_id = ?`
 }
 
 // pinHomeSQL sets table's column to the first argument on the rows of the
@@ -416,7 +422,9 @@ func reKeyChats(ctx context.Context, tx *sql.Tx, m *merger) error {
 		return err //nolint:wrapcheck // Merge names the step
 	}
 	// The "Not clear?" chats' queued follow-ups follow their conversations:
-	// the Desktop keys them `owner_ask_explain.<wb>:<ask>.<conversation>`.
+	// the Desktop keys them `owner_ask_explain.<wb>:<ask>.<conversation>`, or
+	// `owner_ask_explain.<wb>:<ask>:<item>.<conversation>` for an item chat
+	// (spec 2026-11-27 D3); the `<wb>:` prefix re-keys both shapes.
 	draftFrom, draftInto := db.AskExplainDraftKeyPrefix(m.from), db.AskExplainDraftKeyPrefix(m.into)
 	if _, err := tx.ExecContext(ctx, `UPDATE chat_queued_drafts SET surface_key = ? || substr(surface_key, length(?) + 1)
 		WHERE substr(surface_key, 1, length(?)) = ?`, draftInto, draftFrom, draftFrom, draftFrom); err != nil {

@@ -1,6 +1,9 @@
 import GRDB
 import SwiftUI
+import ViewInspector
 import XCTest
+import ChatUI
+import WatchtowerChatText
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -25,8 +28,8 @@ final class AskExplainViewTests: XCTestCase {
     /// does nothing.
     func testComposerEscapeNeverStops() async throws {
         let ask = try fx.insertAsk()
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
         await engine.started()
         XCTAssertTrue(engine.isBusy)
         var backs = 0
@@ -56,11 +59,11 @@ final class AskExplainViewTests: XCTestCase {
         struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
         let ask = try fx.insertAsk()
         fx.ai.persistStartError = EarlyExit()
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
         await engine.finished()
         XCTAssertTrue(engine.messages.isEmpty, "no reply row")
-        XCTAssertNil(fx.vm.explainErrors[ask.id])
+        XCTAssertNil(fx.vm.explainErrors[AskExplainSubject(askID: ask.id, item: .question(1))])
         let failure = try XCTUnwrap(AskExplainChatView.startFailure(engine))
         XCTAssertTrue(failure.contains("the CLI exited"), failure)
         XCTAssertEqual(AskExplainChatView.failureLine(openError: nil, engine: engine), failure,
@@ -72,7 +75,7 @@ final class AskExplainViewTests: XCTestCase {
         engine.draft = ""
 
         fx.ai.persistStartError = nil
-        await fx.vm.openExplain(ask)
+        await fx.vm.openExplain(ask, item: .question(1))
         await engine.started()
         XCTAssertEqual(fx.hiddenTurns.count, 2, "Retry starts the first turn again")
         XCTAssertNil(AskExplainChatView.startFailure(engine), "nothing while it runs")
@@ -86,12 +89,12 @@ final class AskExplainViewTests: XCTestCase {
     /// A first turn that never started shows its failure once (board #2383):
     /// the row with Retry, not the composer's status line as well. An owner
     /// send that failed the same way keeps the composer's own status.
-    func testFirstTurnFailingBeforeStartShowsItsErrorOnce() async throws {
+    func testItemFirstTurnFailingBeforeStartShowsItsErrorOnce() async throws {
         struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
         let ask = try fx.insertAsk()
         fx.ai.persistStartError = EarlyExit()
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
         await engine.finished()
         XCTAssertNotNil(AskExplainChatView.failureLine(openError: nil, engine: engine), "the row shows it")
         XCTAssertTrue(AskExplainChatView.composerHidesError(engine))
@@ -112,13 +115,13 @@ final class AskExplainViewTests: XCTestCase {
         struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
         let ask = try fx.insertAsk()
         fx.ai.persistStartError = EarlyExit()
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
         await engine.finished()
-        XCTAssertTrue(AskExplainChatView(ask: ask, engine: engine) {}.composer.hidesError)
+        XCTAssertTrue(chatView(ask, .question(1), engine).composer.hidesError)
         XCTAssertTrue(engine.send("Why?"))
         await engine.finished()
-        XCTAssertFalse(AskExplainChatView(ask: ask, engine: engine) {}.composer.hidesError)
+        XCTAssertFalse(chatView(ask, .question(1), engine).composer.hidesError)
     }
 
     /// The pane's Retry, used by both failure layouts and handed to the chat
@@ -126,13 +129,13 @@ final class AskExplainViewTests: XCTestCase {
     func testPaneOffersNoRetryForAGoneWorkbench() async throws {
         let ask = try fx.insertAsk()
         fx.tower.refuse(.chatNew, with: "The database is busy.")
-        await fx.vm.openExplain(ask)
-        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask) {}.retryIfItCanHelp, "another failure: Retry")
+        await fx.vm.openExplain(ask, item: .question(1))
+        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask, item: .question(1)) {}.retryIfItCanHelp, "another failure: Retry")
 
         fx.tower.refuse(.chatNew, with: nil)
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
-        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask) {}.chatView(engine).onRetry)
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
+        XCTAssertNotNil(AskExplainPane(asks: fx.vm, ask: ask, item: .question(1)) {}.chatView(engine).onRetry)
 
         let projectID = fx.projectID
         try await fx.pool.write { db in
@@ -141,10 +144,10 @@ final class AskExplainViewTests: XCTestCase {
             try db.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [projectID])
         }
         fx.vm.closeExplain(ask.id)
-        await fx.vm.openExplain(ask)
-        let pane = AskExplainPane(asks: fx.vm, ask: ask) {}
-        XCTAssertEqual(AskExplainPane.shown(hasEngine: fx.vm.explainEngine(for: ask) != nil,
-                                            error: fx.vm.explainErrors[ask.id]),
+        await fx.vm.openExplain(ask, item: .question(1))
+        let pane = AskExplainPane(asks: fx.vm, ask: ask, item: .question(1)) {}
+        XCTAssertEqual(AskExplainPane.shown(hasEngine: fx.vm.explainEngine(for: ask, item: .question(1)) != nil,
+                                            error: fx.vm.explainErrors[AskExplainSubject(askID: ask.id, item: .question(1))]),
                        .failure("This workbench no longer exists."))
         XCTAssertNil(pane.retryIfItCanHelp, "a final state: no Retry")
         XCTAssertNil(pane.chatView(engine).onRetry)
@@ -162,8 +165,8 @@ final class AskExplainViewTests: XCTestCase {
         struct EarlyExit: LocalizedError { var errorDescription: String? { "the CLI exited" } }
         let ask = try fx.insertAsk()
         fx.ai.persistStartError = EarlyExit()
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
         await engine.finished()
         XCTAssertNotNil(AskExplainChatView.startFailure(engine), "the hidden first turn failed")
 
@@ -190,8 +193,8 @@ final class AskExplainViewTests: XCTestCase {
     /// A failure after the reply row exists keeps the feed's own card.
     func testFailureWithAReplyRowKeepsTheFeedCard() async throws {
         let ask = try fx.insertAsk()
-        await fx.vm.openExplain(ask)
-        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask))
+        await fx.vm.openExplain(ask, item: .question(1))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
         await engine.started()
         fx.ai.emit(.error("Not logged in"), .done)
         fx.ai.finish()
@@ -201,23 +204,222 @@ final class AskExplainViewTests: XCTestCase {
         XCTAssertNil(AskExplainChatView.startFailure(engine))
     }
 
-    func testEntryHiddenOnReviewAsk() throws {
-        let review = try fx.insertAsk(kind: "review")
-        XCTAssertEqual(height(AskExplainEntry(ask: review, hasCLI: true) {}), 0)
-        let question = try fx.insertAsk()
-        XCTAssertEqual(height(AskExplainEntry(ask: question, hasCLI: false) {}), 0, "no CLI, no entry")
+    // MARK: - Entries per item (spec 2026-11-27 D1, D2)
+
+    /// Each question of the ask ends with its own entry, opening that
+    /// question by its position; a question not in the ask opens nothing.
+    func testEachQuestionGetsAnEntry() throws {
+        let ask = try fx.insertAsk()
+        let questions = ask.payload.questions
+        XCTAssertEqual(questions.map { AskExplainItem.forQuestion(id: $0.id, in: ask) },
+                       [.question(1), .question(2), .question(3)])
+        let card = ChatQuestionCard(questions: questions)
+        let picks = Binding<[String: ChatQuestionAnswer.Entry]>.constant([:])
+        func questionCard(_ explain: (ask: OwnerAsk, open: (AskExplainItem) -> Void)?) -> some View {
+            QuestionPartView(card: card, draft: OwnerAskDrawer.questionDraft(
+                picks: picks, editable: true, onKey: nil, fieldFocus: nil, stop: nil, onLeaveField: nil,
+                explain: explain))
+                .environment(\.chatUIStyle, DesignKitChatStyle(look: .ask))
+        }
+        let entry = height(AskExplainEntry(item: .question(1)) {})
+        XCTAssertGreaterThan(entry, 0)
+        XCTAssertGreaterThanOrEqual(height(questionCard((ask, { _ in }))) - height(questionCard(nil)), 3 * entry,
+                                    "an entry under each of the three questions")
+
+        var opened: [AskExplainItem] = []
+        let action = try XCTUnwrap(OwnerAskDrawer.explainAction(for: questions[1], in: ask) { opened.append($0) })
+        action()
+        XCTAssertEqual(opened, [.question(2)])
+        let stranger = ChatQuestion(id: "elsewhere", question: "Which?", options: [])
+        XCTAssertNil(OwnerAskDrawer.explainAction(for: stranger, in: ask) { opened.append($0) })
     }
 
-    func testEntryShownOnClosedQuestionAsk() throws {
-        let projectID = fx.projectID
-        let id = try fx.pool.write {
-            try TestDatabase.insertOwnerAsk($0, projectID: projectID, status: "answered", answer: #"{"note":"Fine"}"#)
-        }
-        let closed = try XCTUnwrap(try fx.pool.read { try OwnerAskQueries.ask($0, id: id, projectID: projectID) })
-        XCTAssertFalse(closed.isOpen)
-        XCTAssertGreaterThan(height(AskExplainEntry(ask: closed, hasCLI: true) {}), 0)
+    /// Each step of a check has its own `?`, named for its 1-based
+    /// position; the second one opens step 2. Without an opener, none.
+    func testEachStepGetsAnEntry() throws {
         let check = try fx.insertAsk(kind: "check")
-        XCTAssertGreaterThan(height(AskExplainEntry(ask: check, hasCLI: true) {}), 0)
+        var opened: [AskExplainItem] = []
+        let body = OwnerAskChecklistBody(items: check.payload.checklist, marks: [:], notes: [:], editable: true) {
+            opened.append($0)
+        }
+        let entries = try stepEntries(body)
+        XCTAssertEqual(entries.map(\.label), ["Not clear? Step 1", "Not clear? Step 2", "Not clear? Step 3"])
+        try XCTUnwrap(entries.dropFirst().first).button.tap()
+        XCTAssertEqual(opened, [.step(2)])
+        let without = OwnerAskChecklistBody(items: check.payload.checklist, marks: [:], notes: [:], editable: true)
+        XCTAssertTrue(try stepEntries(without).isEmpty)
+        XCTAssertEqual(OwnerAskChecklistBody.stepItem(index: 1), .step(2))
+        XCTAssertEqual(OwnerAskChecklistBody.stepItem(index: 0), .step(1))
+    }
+
+    /// The drawer's gate (`AskExplainPresentation.showsEntry`): a review
+    /// ask, though its payload carries questions, draws no entry.
+    func testNoEntriesOnReviewAsk() async throws {
+        let review = try fx.insertAsk(kind: "review")
+        XCTAssertFalse(review.payload.questions.isEmpty)
+        let entries = try await drawerEntries(review, hasCLI: true)
+        XCTAssertEqual(entries, [])
+    }
+
+    /// Without a CLI the drawer draws no entry on a question or a check.
+    func testNoEntriesWithoutACLI() async throws {
+        let (question, check) = (try fx.insertAsk(), try fx.insertAsk(kind: "check"))
+        let questionEntries = try await drawerEntries(question, hasCLI: false)
+        let checkEntries = try await drawerEntries(check, hasCLI: false)
+        let withCLI = try await drawerEntries(question, hasCLI: true)
+        XCTAssertEqual(questionEntries, [])
+        XCTAssertEqual(checkEntries, [])
+        XCTAssertEqual(withCLI, ["Not clear? Question 1", "Not clear? Question 2", "Not clear? Question 3"], "with a CLI")
+    }
+
+    /// A closed question ask and a closed check ask keep their entries.
+    func testEntriesOnAClosedAsk() async throws {
+        let projectID = fx.projectID
+        let payload = AskExplainFixture.threeQuestions
+        let steps = AskExplainFixture.threeSteps
+        let (questionID, checkID) = try await fx.pool.write { db in
+            (try TestDatabase.insertOwnerAsk(db, projectID: projectID, payload: payload, status: "answered",
+                                             answer: #"{"note":"Fine"}"#),
+             try TestDatabase.insertOwnerAsk(db, projectID: projectID, kind: "check", payload: steps, status: "answered",
+                                             answer: #"{"note":"Fine"}"#))
+        }
+        let (readQuestion, readCheck) = try await fx.pool.read {
+            (try OwnerAskQueries.ask($0, id: questionID, projectID: projectID),
+             try OwnerAskQueries.ask($0, id: checkID, projectID: projectID))
+        }
+        let closed = try XCTUnwrap(readQuestion)
+        let closedCheck = try XCTUnwrap(readCheck)
+        XCTAssertFalse(closed.isOpen)
+        XCTAssertFalse(closedCheck.isOpen)
+        let closedEntries = try await drawerEntries(closed, hasCLI: true)
+        let checkEntries = try await drawerEntries(closedCheck, hasCLI: true)
+        XCTAssertEqual(closedEntries, ["Not clear? Question 1", "Not clear? Question 2", "Not clear? Question 3"])
+        XCTAssertEqual(checkEntries, ["Not clear? Step 1", "Not clear? Step 2", "Not clear? Step 3"])
+    }
+
+    /// Every entry's accessibility label names its item; the question's
+    /// visible label stays "Not clear?".
+    func testEntryAccessibilityLabelsNameTheItem() {
+        XCTAssertEqual(AskExplainEntry.accessibilityLabel(.question(2)), "Not clear? Question 2")
+        XCTAssertEqual(AskExplainEntry.accessibilityLabel(.step(3)), "Not clear? Step 3")
+        XCTAssertEqual(AskExplainCopy.entry, "Not clear?")
+    }
+
+    /// The card's chip says what the ask's question card says.
+    func testRecommendedMatchesTheQuestionCard() {
+        XCTAssertEqual(AskExplainCopy.recommended, QuestionPartView.recommendedLabel)
+    }
+
+    // MARK: - The chat about one item (spec D5–D8, D13)
+
+    func testStripAndPlaceholderFollowTheItem() async throws {
+        XCTAssertTrue(AskExplainChatView.stripLabels(.question(2)) == ("Back to question", "Question 2"))
+        XCTAssertTrue(AskExplainChatView.stripLabels(.step(2)) == ("Back to check", "Step 2"))
+        let check = try fx.insertAsk(kind: "check")
+        await fx.vm.openExplain(check, item: .step(2))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: check, item: .step(2)))
+        XCTAssertEqual(chatView(check, .step(2), engine).composer.placeholder, "Ask about this step…")
+        XCTAssertEqual(chatView(check, .question(1), engine).composer.placeholder, "Ask about this question…")
+        await finishTurn(engine)
+    }
+
+    /// The item's card sits under the strip whatever the pane shows: the
+    /// spinner, a failed open, the chat.
+    func testCardShowsInEveryPaneState() async throws {
+        let ask = try fx.insertAsk()
+        let card = try XCTUnwrap(AskExplainCard.make(ask: ask, item: .question(2)))
+        await fx.vm.openExplain(ask, item: .question(2))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(2)))
+        for shown in [AskExplainPane.Shown.finding, .failure("The database is busy."), .chat] {
+            XCTAssertGreaterThan(height(paneState(shown, ask, engine, card: card)),
+                                 height(paneState(shown, ask, engine, card: nil)), "\(shown)")
+        }
+        await finishTurn(engine)
+    }
+
+    /// The strip and the card are drawn once, above whatever the state
+    /// shows: a card expanded while the chat is found stays expanded when
+    /// the chat loads (its view, and so its state, is the same).
+    func testCardHeaderStaysAcrossPaneStates() async throws {
+        let ask = try fx.insertAsk()
+        let card = try XCTUnwrap(AskExplainCard.make(ask: ask, item: .question(2)))
+        await fx.vm.openExplain(ask, item: .question(2))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(2)))
+        for shown in [AskExplainPane.Shown.finding, .failure("The database is busy."), .chat] {
+            let stack = try paneState(shown, ask, engine, card: card).inspect().vStack()
+            let header = try stack.view(AskExplainItemHeader.self, 0)
+            XCTAssertEqual(try header.actualView().subject, AskExplainSubject(askID: ask.id, item: .question(2)), "\(shown)")
+            XCTAssertNoThrow(try header.find(AskExplainItemCard.self), "\(shown)")
+        }
+        await finishTurn(engine)
+    }
+
+    /// The card keeps its expansion as the pane's state moves on (finding →
+    /// chat): SwiftUI keeps a view's state while it holds the same place in
+    /// the view's type, so the header must sit beside the state switch, not
+    /// inside each branch. (A live click cannot be driven here: a window
+    /// that is never ordered in delivers no synthesized click to a SwiftUI
+    /// button and exposes no accessibility tree, and ViewHosting orders a
+    /// window in, which tests must not do.)
+    func testCardHeaderSitsOutsideTheStateSwitch() async throws {
+        let ask = try fx.insertAsk()
+        let card = try XCTUnwrap(AskExplainCard.make(ask: ask, item: .question(2)))
+        await fx.vm.openExplain(ask, item: .question(2))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(2)))
+        for shown in [AskExplainPane.Shown.finding, .failure("The database is busy."), .chat] {
+            let layout = String(describing: type(of: paneState(shown, ask, engine, card: card)))
+            XCTAssertTrue(layout.hasPrefix("VStack<TupleView<(AskExplainItemHeader, _ConditionalContent<"), layout)
+        }
+        await finishTurn(engine)
+    }
+
+    /// The card's identity is its subject: another item's chat, of this ask
+    /// or of another, starts it collapsed.
+    func testCardExpansionResetsPerSubject() throws {
+        let card = AskExplainCard.question(text: "Which store?", options: [])
+        func cardID(_ subject: AskExplainSubject) throws -> AnyHashable {
+            try AskExplainItemHeader(subject: subject, card: card) {}.inspect().find(AskExplainItemCard.self).id()
+        }
+        let first = AskExplainSubject(askID: 1, item: .question(2))
+        XCTAssertEqual(try cardID(first), AnyHashable(first))
+        XCTAssertNotEqual(try cardID(first), try cardID(AskExplainSubject(askID: 2, item: .question(2))),
+                          "the same item of another ask")
+        XCTAssertNotEqual(try cardID(first), try cardID(AskExplainSubject(askID: 1, item: .question(3))))
+    }
+
+    /// Past the clamp a card is cut to it with Show more under it; a short
+    /// one shows whole, with no toggle.
+    func testCardClampsALongQuestion() {
+        let long = AskExplainCard.question(
+            text: AskExplainItemsMock.longQuestion.text,
+            options: AskExplainItemsMock.longQuestion.options.map { .init(label: $0.label, recommended: $0.recommended) })
+        let toggle = height(Button {} label: {
+            Label(AskExplainCopy.showMore, systemImage: "chevron.down").font(.caption)
+        }.buttonStyle(KitQuietButtonStyle(label: .secondary)))
+        let padding = 2 * Spacing.cozy
+        let longHeight = settledHeight(AskExplainItemCard(card: long))
+        let whole = height(AskExplainItemCardContent(card: long).frame(width: 400 - 2 * Spacing.medium))
+        XCTAssertGreaterThan(whole, AskExplainCardLayout.clampHeight, "the sample is taller than the clamp")
+        XCTAssertLessThan(longHeight, whole + padding, "cut, not shown whole")
+        XCTAssertLessThanOrEqual(longHeight, AskExplainCardLayout.clampHeight + Spacing.small + toggle + padding + 2,
+                                 "clamped, with the toggle row")
+        XCTAssertGreaterThan(longHeight, AskExplainCardLayout.clampHeight, "the clamp, not less")
+        let short = AskExplainCard.question(text: "Which store?", options: [.init(label: "Postgres", recommended: true),
+                                                                            .init(label: "SQLite", recommended: false)])
+        XCTAssertLessThan(settledHeight(AskExplainItemCard(card: short)), AskExplainCardLayout.clampHeight + padding,
+                          "whole, no toggle row")
+    }
+
+    /// The expanded shot's seam draws the long card whole (it fits the
+    /// expanded cap), as after Show more; the app's default starts clamped.
+    func testCardStartsExpandedThroughTheShotSeam() {
+        let long = AskExplainCard.question(
+            text: AskExplainItemsMock.longQuestion.text,
+            options: AskExplainItemsMock.longQuestion.options.map { .init(label: $0.label, recommended: $0.recommended) })
+        let whole = height(AskExplainItemCardContent(card: long).frame(width: 400 - 2 * Spacing.medium))
+        let expanded = settledHeight(AskExplainItemCard(card: long, startsExpanded: true))
+        XCTAssertGreaterThanOrEqual(expanded, whole, "whole, with the Show less row")
+        XCTAssertGreaterThan(expanded, settledHeight(AskExplainItemCard(card: long)), "taller than the clamped card")
     }
 
     /// The question view stays in the tree, hidden, under the chat: its
@@ -233,5 +435,68 @@ final class AskExplainViewTests: XCTestCase {
 
     private func height(_ view: some View) -> CGFloat {
         ViewRenderProbe.fittingHeight(view, width: 400)
+    }
+
+    /// Lays the hosted view out and lets its state settle: run-loop passes
+    /// that never wait.
+    private func settle(_ host: NSView) {
+        for _ in 0..<5 {
+            host.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date())
+        }
+    }
+
+    /// The entries `OwnerAskDrawer` draws for `ask`, by accessibility label,
+    /// with or without a CLI (`asks.chats`).
+    private func drawerEntries(_ ask: OwnerAsk, hasCLI: Bool) async throws -> [String] {
+        let vm = WorkbenchesViewModel(dbPool: fx.pool, cli: nil, defaults: fx.defaults)
+        vm.asks.chats = hasCLI ? fx.center : nil
+        await vm.asks.load(projectID: fx.projectID)
+        return try OwnerAskDrawer(vm: vm, ask: ask).inspect().findAll(AskExplainEntry.self).map {
+            try $0.find(ViewType.Button.self).accessibilityLabel().string()
+        }
+    }
+
+    /// The fitting height once the view's measured state has settled (the
+    /// card reads its content height after a first layout).
+    private func settledHeight(_ view: some View) -> CGFloat {
+        let host = NSHostingView(rootView: view.frame(width: 400))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 600), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        settle(host)
+        return ceil(host.fittingSize.height)
+    }
+
+    private func chatView(_ ask: OwnerAsk, _ item: AskExplainItem, _ engine: EmbeddedChatEngine) -> AskExplainChatView {
+        AskExplainChatView(ask: ask, item: item, engine: engine) {}
+    }
+
+    /// One pane state of `ask`'s question 2, with or without its card.
+    private func paneState(
+        _ shown: AskExplainPane.Shown, _ ask: OwnerAsk, _ engine: EmbeddedChatEngine, card: AskExplainCard?
+    ) -> some View {
+        AskExplainPane.layout(shown, subject: AskExplainSubject(askID: ask.id, item: .question(2)), card: card,
+                              onRetry: nil, onBack: {}, chat: {
+            AskExplainChatView(ask: ask, item: .question(2), engine: engine) {}
+        })
+    }
+
+    /// The step entries of a checklist: each button and its accessibility label.
+    private func stepEntries(_ body: OwnerAskChecklistBody) throws -> [(label: String, button: InspectableView<ViewType.Button>)] {
+        try body.inspect().findAll(AskExplainEntry.self).map { entry in
+            let button = try entry.find(ViewType.Button.self)
+            return (try button.accessibilityLabel().string(), button)
+        }
+    }
+
+    private func finishTurn(_ engine: EmbeddedChatEngine) async {
+        await engine.started()
+        fx.ai.emit(.text("It decides."), .done)
+        fx.ai.finish()
+        await waitForCondition { !engine.isBusy }
+        await engine.finished()
     }
 }

@@ -118,6 +118,10 @@ jobs:
               - 'WatchtowerKit/Sources/WatchtowerSync/Link/LinkPayload.swift'
               - 'WatchtowerKit/Sources/WatchtowerSync/Relay/RelayRecordKind.swift'
               - 'WatchtowerKit/Tests/Fixtures/**'
+              # internal/db's owner_asks payload guard scans every Swift
+              # source of the Kit and the phone (spec 2026-11-27 D18).
+              - 'WatchtowerKit/Sources/**'
+              - 'WatchtowerMobile/**/*.swift'
               # scripts/tests (Go Test's make test-scripts): the GRDB pin
               # in the licence notices, the bridge's signing files, the
               # relay proto pin.

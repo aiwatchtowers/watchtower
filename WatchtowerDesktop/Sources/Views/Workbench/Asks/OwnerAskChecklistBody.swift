@@ -20,6 +20,14 @@ struct OwnerAskChecklistBody: View {
     var keyboardStop: OwnerAskKeyStop?
     var fieldFocus: OwnerAskFieldFocus?
     var onLeaveField: (() -> Void)?
+    /// A step's **?** opens the chat about it (spec 2026-11-27 D2); nil
+    /// draws none (a review ask, no CLI).
+    var explain: ((AskExplainItem) -> Void)?
+
+    /// The item of the step at this 0-based index: its 1-based position.
+    static func stepItem(index: Int) -> AskExplainItem {
+        .step(index + 1)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -30,14 +38,15 @@ struct OwnerAskChecklistBody: View {
                     .foregroundStyle(.secondary)
             }
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                itemView(item, number: index + 1)
+                itemView(item, index: index)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func itemView(_ item: OwnerAskCheckItem, number: Int) -> some View {
+    private func itemView(_ item: OwnerAskCheckItem, index: Int) -> some View {
         let state = marks[item.id]
+        let number = index + 1
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("\(number).").foregroundStyle(.secondary).monospacedDigit()
@@ -46,6 +55,11 @@ struct OwnerAskChecklistBody: View {
                     if !item.hint.isEmpty {
                         MarkdownView(text: item.hint).font(.caption).foregroundStyle(.secondary)
                     }
+                }
+                if let explain {
+                    Spacer(minLength: Spacing.small)
+                    let step = Self.stepItem(index: index)
+                    AskExplainEntry(item: step) { explain(step) }
                 }
             }
             HStack(spacing: 4) {

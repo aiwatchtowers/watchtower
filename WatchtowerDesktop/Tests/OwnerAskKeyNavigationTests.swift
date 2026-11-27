@@ -673,7 +673,9 @@ final class OwnerAskKeyNavigationTests: XCTestCase {
 
     /// Wires the "Not clear?" chat into `vm` and opens `ask`'s: its hidden
     /// first turn waits on the returned service until the test finishes it.
-    private func explaining(_ vm: WorkbenchesViewModel, _ ask: OwnerAsk) async -> ScriptedAIService {
+    private func explaining(
+        _ vm: WorkbenchesViewModel, _ ask: OwnerAsk, item: AskExplainItem = .question(1)
+    ) async -> ScriptedAIService {
         let ai = ScriptedAIService()
         let (writes, _) = FakeChatTower.writes(pool)
         let pool: DatabasePool = pool
@@ -686,22 +688,23 @@ final class OwnerAskKeyNavigationTests: XCTestCase {
         vm.asks.chatWrites = writes
         vm.asks.explainConfigProvider = { "claude" }
         vm.asks.explainCatalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
-        await vm.asks.openExplain(ask)
+        await vm.asks.openExplain(ask, item: item)
         // Its hidden turn is under way, so the test's `finish()` has a call to end.
-        await vm.asks.explainEngine(for: ask)?.started()
+        await vm.asks.explainEngine(for: ask, item: item)?.started()
         XCTAssertEqual(ai.calls.count, 1)
         return ai
     }
 
-    /// While the chat covers the question the drawer's bare keys are off
-    /// and ⌘↩ answers nothing; Back gives them back.
-    func testKeysOffWhileExplaining() async throws {
+    /// While an item's chat covers the question the drawer's bare keys are
+    /// off and ⌘↩ answers nothing; Back gives them back.
+    func testKeysOffWhileAnItemIsExplained() async throws {
         let id = try await insert("question", payload: Self.twoQuestions)
         let vm = activeDrawer(try makeVM())
         let ask = try await loaded(vm, id)
         let box = CursorBox()
-        let ai = await explaining(vm, ask)
+        let ai = await explaining(vm, ask, item: .question(2))
         defer { ai.finish() }
+        XCTAssertEqual(vm.asks.explainItem(id), .question(2))
         XCTAssertTrue(vm.asks.isExplaining(id))
         let keys = drawerKeys(vm, ask, box)
 
@@ -716,6 +719,7 @@ final class OwnerAskKeyNavigationTests: XCTestCase {
         XCTAssertNil(keys.answerKey { _ in answered += 1 }, "⌘↩ goes to no answer button")
 
         vm.asks.closeExplain(id)
+        XCTAssertNil(vm.asks.explainItem(id))
         XCTAssertTrue(keys.press(digit("1")), "back on the question")
         let answerKey = try XCTUnwrap(keys.answerKey { _ in answered += 1 })
         answerKey(false)

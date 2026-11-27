@@ -74,7 +74,8 @@ final class ChatQuestionPartMacTests: XCTestCase {
         _ card: ChatQuestionCard, picks: Binding<[String: ChatQuestionAnswer.Entry]>, editable: Bool = true
     ) -> some View {
         QuestionPartView(card: card, draft: OwnerAskDrawer.questionDraft(
-            picks: picks, editable: editable, onKey: nil, fieldFocus: nil, stop: nil, onLeaveField: nil))
+            picks: picks, editable: editable, onKey: nil, fieldFocus: nil, stop: nil, onLeaveField: nil,
+            explain: nil))
             .environment(\.chatUIStyle, DesignKitChatStyle())
     }
 
