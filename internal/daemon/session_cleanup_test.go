@@ -56,3 +56,30 @@ func TestSessionCleanup_StopWaitsForTheLoop(t *testing.T) {
 		t.Fatal("stop returned before the pass ended")
 	}
 }
+
+// TestSessionCleanup_BudgetCoversBothParts (#2402 step 0): a pass's ctx
+// is bounded by 20 minutes, the sum of AutoRun's two parts (the session
+// applies, then the repository pass, 10 minutes each), so the repository
+// pass is not cut short by the daemon's own bound. The deadline is read,
+// never waited for.
+func TestSessionCleanup_BudgetCoversBothParts(t *testing.T) {
+	d := &Daemon{}
+	left := make(chan time.Duration, 1)
+	d.SetSessionCleanup(func(ctx context.Context) {
+		deadline, _ := ctx.Deadline()
+		left <- time.Until(deadline)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.runSessionCleanup(ctx, tick)
+	}()
+	got := <-left
+	cancel()
+	<-done
+	if got <= 19*time.Minute || got > 20*time.Minute {
+		t.Fatalf("a pass has %v, want 20 minutes", got)
+	}
+}

@@ -222,3 +222,46 @@ func TestApply_RepositoryNestedAfterThePlanIsCaughtBeforeTheRemove(t *testing.T)
 		})
 	}
 }
+
+// TestPlan_RenamedDerivedDataIsACache (#2402 §4): a DerivedData folder
+// recognised by its content, at the root or one level below, is a cache for
+// W9 (its package checkouts' .git) and W10 (its ignored files); deeper it
+// is not, and its checkout keeps the worktree.
+func TestPlan_RenamedDerivedDataIsACache(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		rel    string
+		clone  bool // an independent clone inside, outside SourcePackages (fix round 1, F3)
+		reason string
+	}{
+		"at the root":     {rel: ".derived", reason: ""},
+		"one level below": {rel: "Mobile/.dd", reason: ""},
+		"deeper":          {rel: "a/b/.dd", reason: ReasonContainsWorktree},
+		"a clone inside":  {rel: ".derived", clone: true, reason: ReasonContainsWorktree},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			root := f.worktree("wt", "feat/x")
+			f.commit(root, ".gitignore", ".derived/\n.dd/\n")
+			gitIn(t, root, "push", "-q", "origin", "feat/x")
+			dd := derivedData(t, filepath.Join(root, filepath.FromSlash(tc.rel)), "Logs")
+			if err := os.MkdirAll(filepath.Join(dd, "SourcePackages", "checkouts", "pkg", ".git"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.clone {
+				gitIn(t, f.base, "init", "-q", filepath.Join(dd, "vendor", "lib"))
+			}
+			f.record(root, "feat/x")
+			action := ActionRemove
+			if tc.reason != "" {
+				action = ActionKeep
+			}
+			it := wantItem(t, f.plan(Request{}), "worktree:"+root, action, tc.reason)
+			// fix round 2, R2-4: the clone found is the one reported.
+			if tc.clone && it.Detail != filepath.Join(dd, "vendor", "lib") {
+				t.Fatalf("detail %q", it.Detail)
+			}
+		})
+	}
+}

@@ -48,6 +48,11 @@ type ignoredJudge struct {
 	deadline    time.Time
 	budget      time.Duration
 	seen        int
+	// ignoredFrom is the index of the path component of the listing entry
+	// being judged that git lists as an ignored folder (-1 for a file
+	// entry): a DerivedData folder by content counts as a cache only there
+	// or below, never a tracked source folder above it (fix round 1, F4).
+	ignoredFrom int
 }
 
 // ignoredWork is the first git-ignored path in the worktree at root that a
@@ -81,7 +86,7 @@ func (b *builder) ignoredWork(ctx context.Context, root string, budget time.Dura
 }
 
 func (b *builder) newIgnoredJudge(ctx context.Context, root string, budget time.Duration) *ignoredJudge {
-	j := &ignoredJudge{ctx: ctx, root: root, bases: []string{""}, workbenchID: b.req.WorkbenchID,
+	j := &ignoredJudge{ctx: ctx, root: root, bases: []string{""}, workbenchID: b.req.WorkbenchID, ignoredFrom: -1,
 		git: b.repo.git, skills: map[string]bool{}, deadline: time.Now().Add(budget), budget: budget}
 	j.folder, j.worktrees = b.repo.folder, b.repo.worktrees
 	return j
@@ -135,10 +140,12 @@ func (j *ignoredJudge) tick() error {
 
 // entry judges one line of git's listing.
 func (j *ignoredJudge) entry(rel string) (string, error) {
+	j.ignoredFrom = -1
 	if !strings.HasSuffix(rel, "/") {
 		return j.file(rel)
 	}
 	rel = strings.TrimSuffix(rel, "/")
+	j.ignoredFrom = strings.Count(rel, "/")
 	info, err := os.Lstat(j.abs(rel))
 	if err != nil {
 		return "", fmt.Errorf("reading the ignored folder %s: %w", rel, err)
@@ -227,9 +234,15 @@ var errStopWalk = errors.New("stop")
 func (j *ignoredJudge) abs(rel string) string { return filepath.Join(j.root, filepath.FromSlash(rel)) }
 
 // cacheAt reports whether parts[i] names a cache: one of W9's at any depth,
-// or `build` directly at a root.
+// a DerivedData folder of any name by its content within derivedDataDepth
+// of the root (#2402 §4) that git ignores as a whole (ignoredFrom), or
+// `build` directly at a root.
 func (j *ignoredJudge) cacheAt(parts []string, i int) bool {
 	if regenerableCaches[parts[i]] {
+		return true
+	}
+	if i < derivedDataDepth && j.ignoredFrom >= 0 && i >= j.ignoredFrom &&
+		derivedDataAt(j.abs(strings.Join(parts[:i+1], "/"))) {
 		return true
 	}
 	if parts[i] != topLevelBuild {

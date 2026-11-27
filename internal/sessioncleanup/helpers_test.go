@@ -2,6 +2,7 @@ package sessioncleanup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,8 @@ type fixture struct {
 	// projects is the Claude Code projects directory the plan reads: an
 	// empty one under base, never the developer's.
 	projects string
+	// clock is Deps.Clock; nil = the wall clock.
+	clock func() time.Time
 }
 
 // stampBirth stands in for the filesystem birth time: a fixture's admin dir
@@ -139,7 +142,7 @@ func (f *fixture) deps() Deps {
 	}
 	projects := f.projects
 	return Deps{Git: g, DB: f.store, Procs: f.procs, Home: f.home, WorktreeBirth: birth,
-		ClaudeProjects: func() string { return projects }}
+		ClaudeProjects: func() string { return projects }, Clock: f.clock}
 }
 
 func (f *fixture) plan(r Request) Plan {
@@ -196,9 +199,24 @@ type fakeStore struct {
 	extraFolders   []string
 	// bench is the workbench's live folders (BenchFolders), home first;
 	// nil = its home folder alone.
-	bench      []string
+	bench []string
+	// benchErr fails BenchFolders.
+	benchErr   error
 	activity   []SessionActivity
 	rootOwners map[string][]int64
+	// ledgerOwners are the owners of every workbench's ledger
+	// (SessionWorktreeOwners); nil = rootOwners.
+	ledgerOwners map[string][]int64
+	// lastSeen is the newest ledger sighting per root; seenErr fails the read.
+	lastSeen map[string]time.Time
+	seenErr  error
+	// onLastSeen, when set, runs on every WorktreeLastSeen read (an idle
+	// walk reads it first).
+	onLastSeen func(root string)
+	// activityFailAt / ownersFailAt fail the n-th AllSessionActivity /
+	// SessionWorktreeOwners read (1-based; 0 = never), once.
+	activityFailAt, ownersFailAt int
+	activityReads, ownersReads   int
 	// agentIDs are the session's agent session ids; uuidOwners the rows
 	// holding each uuid (absent = none, which adopts nothing); idsErr and
 	// ownersErr fail those reads.
@@ -260,6 +278,9 @@ func (s *fakeStore) WorkbenchFolders(context.Context) ([]string, error) {
 }
 
 func (s *fakeStore) BenchFolders(_ context.Context, id int64) ([]string, error) {
+	if s.benchErr != nil {
+		return nil, s.benchErr
+	}
 	if s.bench == nil {
 		return []string{s.folders[id]}, nil
 	}
@@ -273,8 +294,38 @@ func (s *fakeStore) WorkbenchSessionWorktrees(context.Context, int64) (map[strin
 	return s.rootOwners, nil
 }
 
+func (s *fakeStore) SessionWorktreeOwners(ctx context.Context) (map[string][]int64, error) {
+	if s.ownersReads++; s.ownersReads == s.ownersFailAt {
+		return nil, errors.New("owners: database is locked")
+	}
+	if s.ledgerOwners == nil {
+		return s.WorkbenchSessionWorktrees(ctx, 0)
+	}
+	return s.ledgerOwners, nil
+}
+
 func (s *fakeStore) AllSessionActivity(context.Context) ([]SessionActivity, error) {
+	if s.activityReads++; s.activityReads == s.activityFailAt {
+		return nil, errors.New("activity: database is locked")
+	}
 	return s.activity, nil
+}
+
+func (s *fakeStore) SessionActivityOf(_ context.Context, id int64) (SessionActivity, bool, error) {
+	for _, a := range s.activity {
+		if a.ID == id {
+			return a, true, nil
+		}
+	}
+	return SessionActivity{}, false, nil
+}
+
+func (s *fakeStore) WorktreeLastSeen(_ context.Context, root string) (time.Time, bool, error) {
+	if s.onLastSeen != nil {
+		s.onLastSeen(root)
+	}
+	at, ok := s.lastSeen[root]
+	return at, ok, s.seenErr
 }
 
 // fakeProcs returns a fixed scan and records every Terminate.

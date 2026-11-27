@@ -18,26 +18,30 @@ import (
 // sessionCleanupPass is the daemon's automatic session-cleanup pass (board
 // #2131): sessioncleanup.AutoRun over the daemon's database, with the
 // session host's live runs of this workspace and each repository's cleanup
-// lock only tried. It logs a line only when a session's apply removed
-// something or failed, or the pass failed.
+// lock only tried — the session applies, then the repository pass over the
+// repositories of every workbench's folders (#2402). It logs a line only
+// when a session's apply or a repository's pass removed something or
+// failed, or the pass failed.
 func sessionCleanupPass(cfg *config.Config, database *db.DB, port *sessionstart.Port, logger *log.Logger) func(context.Context) {
 	return func(ctx context.Context) {
 		res, err := sessioncleanup.AutoRun(ctx, sessioncleanup.AutoDeps{
 			Deps:       cleanupDeps(database),
-			Candidates: database.FinishedSessionsForCleanup,
+			Candidates: sessioncleanup.DBCandidates(database, time.Now),
 			Live: func(ctx context.Context) (map[int64]bool, error) {
 				return liveRows(port.Runs(ctx))
 			},
 			TryLock: func(repo string) (func(), bool, error) {
 				return fsutil.TryLockFile(sessioncleanup.LockPath(cfg.DBPath(), repo)) //nolint:wrapcheck // names the lock file
 			},
-			Logf: logger.Printf,
+			Logf:        logger.Printf,
+			Workbenches: sessioncleanup.DBWorkbenches(database),
 		}, time.Now())
-		switch {
-		case err != nil:
+		if err != nil {
 			logger.Printf("session cleanup: %v", err)
-		case res.Changed+res.Failed > 0:
-			logger.Printf("session cleanup: %d session(s) cleaned up, %d failed", res.Changed, res.Failed)
+		}
+		if res.Changed+res.Failed+res.RepoChanged+res.RepoFailed > 0 {
+			logger.Printf("session cleanup: %d session(s) cleaned up, %d failed; %d repositories cleaned up, %d failed",
+				res.Changed, res.Failed, res.RepoChanged, res.RepoFailed)
 		}
 	}
 }

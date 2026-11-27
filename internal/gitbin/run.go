@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -132,6 +134,57 @@ func overridesFor(fields []string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// BackgroundWriteArgsIn is the argv of a write Watchtower runs on its own
+// in dir — no owner asked for it and no session of the owner's owns what it
+// writes (the automatic cleanup's repository pass, #2402): ReadArgs' guard
+// (no hook — a reference-transaction hook on a ref delete included —, no
+// fsmonitor, no signature check), and for a write that inspects a work
+// tree's content (`worktree remove <path>` checks it for changes) every
+// filter driver blanked that either dir or the target worktree sees — the
+// target's own config.worktree and includes included. gitDir, when set, is
+// the repository the caller checked, named with --git-dir so git never
+// discovers another one from dir. An error refuses the write rather than
+// run it unprotected.
+func BackgroundWriteArgsIn(ctx context.Context, bin, dir, gitDir string, args ...string) ([]string, error) {
+	argv := slices.Clone(readConfig)
+	if len(args) > 2 && args[0] == "worktree" && args[1] == "remove" {
+		seen := map[string]bool{}
+		target := args[len(args)-1]
+		for _, from := range []string{dir, target} {
+			if from == target && gitDir == "" {
+				// A target whose directory is gone (a prunable worktree) has
+				// no checkout a filter could run in: only its own lookup is
+				// skipped, the folder's stays (final review residual R1). Any
+				// other failure to see it still refuses the write below. Only
+				// for a write that names no repository (an unattended session
+				// apply): one that names the repository it checked (the
+				// repository pass) refuses a target that vanished since (Q1).
+				path := target
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(dir, path) // git reads it against dir
+				}
+				if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+			}
+			overrides, err := filterOverrides(ctx, bin, from)
+			if err != nil {
+				return nil, err
+			}
+			for i := 0; i+1 < len(overrides); i += 2 {
+				if !seen[overrides[i+1]] {
+					seen[overrides[i+1]] = true
+					argv = append(argv, overrides[i], overrides[i+1])
+				}
+			}
+		}
+	}
+	if gitDir != "" {
+		argv = append(argv, "--git-dir="+gitDir)
+	}
+	return append(argv, args...), nil
 }
 
 // OwnerArgs is the argv of a command the owner asked for (a branch switch):
