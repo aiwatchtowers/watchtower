@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -43,6 +44,8 @@ func TestAskExplainWorkbenchID(t *testing.T) {
 		{"04:9:q1", 0, false},
 		{"4:09:q1", 0, false},
 		{"4:9:q1 ", 0, false},
+		{"4:9:q1:s1:s2:s3:s4:s5", 0, false},
+		{strings.Repeat("4:", 1000) + "9", 0, false},
 	} {
 		got, ok := AskExplainWorkbenchID(tc.in)
 		assert.Equal(t, tc.ok, ok, tc.in)

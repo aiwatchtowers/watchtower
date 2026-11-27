@@ -23,7 +23,7 @@ import (
 // the Kit and the phone — and fails on a write naming payload other than the
 // filing INSERT and the merge's two folder-ask other_bench statements. SQL
 // assembled from parts at run time is outside what a text scan sees: an
-// owner_asks write is written as one literal statement (review rule).
+// owner_asks write is written as one literal statement (docs/review/review-rules.md §8).
 // Its Swift companion is AskExplainTests.testOwnerAskHasNoRecordWrite.
 func TestAskPayloadItemsAreNeverRewritten(t *testing.T) {
 	var stmts []sqlLiteral
@@ -85,7 +85,7 @@ func TestAskPayloadGuardScanner(t *testing.T) {
 	for _, s := range []sqlLiteral{
 		{file: "../../internal/db/owner_asks.go", text: "INSERT INTO owner_asks (project_id, payload) VALUES (?, ?)"},
 		{file: "../../internal/workbenchfolders/merge.go", text: "UPDATE owner_asks SET payload = json_remove(payload, '$.other_bench') WHERE kind = 'folder'"},
-		{file: "../../internal/workbenchfolders/merge.go", text: "UPDATE owner_asks SET payload = json_set(payload, '$.other_bench', ?) WHERE kind = 'folder'"},
+		{file: "../../internal/workbenchfolders/merge.go", text: "UPDATE owner_asks SET payload = json_set(payload, '$.other_bench', json_object('id', ?, 'name', ?))\n\t\tWHERE kind = 'folder' AND project_id <> ?"},
 	} {
 		assert.NotEqual(t, payloadWriteForbidden, payloadWriteVerdict(s), s.text)
 	}
@@ -95,9 +95,40 @@ func TestAskPayloadGuardScanner(t *testing.T) {
 		{file: "../../internal/db/owner_asks.go", text: "REPLACE INTO owner_asks (id, payload) VALUES (?, ?)"},
 		{file: "../../internal/workbenchfolders/merge.go", text: "UPDATE owner_asks SET payload = ? WHERE kind = 'question'"},
 		{file: "../../internal/x/merge.go", text: "UPDATE owner_asks SET payload = json_set(payload, '$.other_bench', ?) WHERE kind = 'folder'"},
+		// A REPLACE resets the whole row, payload named or not.
+		{file: "../../internal/db/owner_asks.go", text: "REPLACE INTO owner_asks (id, title) VALUES (?, ?)"},
+		{file: "../../internal/db/owner_asks.go", text: "INSERT OR REPLACE INTO owner_asks (id, title) VALUES (?, ?)"},
+		// The merge exception is the two exact statements, not a look-alike.
+		{file: "../../internal/workbenchfolders/merge.go", text: "UPDATE owner_asks SET payload = json_remove(payload, '$.other_bench', '$.questions') WHERE kind = 'folder'"},
+		{file: "../../internal/workbenchfolders/merge.go", text: "UPDATE owner_asks SET payload = json_remove(payload, '$.other_bench') WHERE kind = 'folder' OR 1"},
+		{file: "../../internal/workbenchfolders/merge.go", text: "UPDATE owner_asks SET payload = json_remove(payload, '$.other_bench') WHERE kind = 'folder'; UPDATE owner_asks SET payload = '{}'"},
+		// Conflict clauses, quoting and the schema name.
+		{file: "../../internal/db/owner_asks.go", text: "UPDATE OR REPLACE owner_asks SET payload = ?"},
+		{file: "../../internal/db/owner_asks.go", text: "UPDATE OR IGNORE owner_asks SET payload = ?"},
+		{file: "../../internal/db/owner_asks.go", text: `UPDATE "owner_asks" SET payload = ?`},
+		{file: "../../internal/db/owner_asks.go", text: "UPDATE `owner_asks` SET payload = ?"},
+		{file: "../../internal/db/owner_asks.go", text: "UPDATE main.owner_asks SET payload = ?"},
+		{file: "../../internal/db/owner_asks.go", text: `UPDATE "main"."owner_asks" SET payload = ?`},
+		{file: "../../internal/db/owner_asks.go", text: `REPLACE INTO "owner_asks" (id) VALUES (?)`},
+		{file: "../../internal/db/owner_asks.go", text: "INSERT OR REPLACE INTO main.owner_asks (id) VALUES (?)"},
+		{file: "../../internal/db/owner_asks.go", text: `INSERT INTO "owner_asks" (id, payload) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET payload = excluded.payload`},
+		{file: "../../internal/db/owner_asks.go", text: "INSERT INTO main.owner_asks (id, payload) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET payload = excluded.payload"},
 	} {
 		assert.Equal(t, payloadWriteForbidden, payloadWriteVerdict(s), s.text)
 	}
+
+	// A quoted "(" inside an interpolation does not unbalance the scan: a
+	// write on a later line is still seen.
+	swiftSrc = "let label = \"\\(x ?? \"(\")\"\n" +
+		"try db.execute(sql: \"UPDATE owner_asks SET payload = ?\")\n"
+	got = swiftSQLLiterals("WatchtowerDesktop/Sources/y.swift", []byte(swiftSrc))
+	forbidden = 0
+	for _, s := range got {
+		if payloadWriteVerdict(s) == payloadWriteForbidden {
+			forbidden++
+		}
+	}
+	assert.Equal(t, 1, forbidden, "a write after an interpolation holding a quoted paren: %v", got)
 }
 
 // sqlLiteral is one string literal (or a + chain of them, a non-literal part
@@ -116,27 +147,69 @@ const (
 	payloadWriteForbidden
 )
 
+// ownerAsksName is owner_asks as SQLite takes it: bare, quoted ("…" or
+// `…`), with or without the main schema.
+const ownerAsksName = "(?:[\"`]?main[\"`]?\\.)?[\"`]?owner_asks\\b"
+
 var (
-	ownerAsksWriteRE  = regexp.MustCompile(`(?is)\b(UPDATE|REPLACE\s+INTO|INSERT\s+OR\s+REPLACE\s+INTO)\s+owner_asks\b`)
-	ownerAsksUpsertRE = regexp.MustCompile(`(?is)\bINSERT\s+INTO\s+owner_asks\b.*\bON\s+CONFLICT\b.*\bDO\s+UPDATE\b`)
-	payloadRE         = regexp.MustCompile(`(?i)\bpayload\b`)
+	ownerAsksUpdateRE  = regexp.MustCompile(`(?is)\bUPDATE(?:\s+OR\s+\w+)?\s+` + ownerAsksName)
+	ownerAsksReplaceRE = regexp.MustCompile(`(?is)\b(?:REPLACE|INSERT\s+OR\s+REPLACE)\s+INTO\s+` + ownerAsksName)
+	ownerAsksUpsertRE  = regexp.MustCompile(`(?is)\bINSERT(?:\s+OR\s+\w+)?\s+INTO\s+` + ownerAsksName + `.*\bON\s+CONFLICT\b.*\bDO\s+UPDATE\b`)
+	payloadRE          = regexp.MustCompile(`(?i)\bpayload\b`)
+	spaceRE            = regexp.MustCompile(`\s+`)
+	sqlOrRE            = regexp.MustCompile(`(?i)\bOR\b`)
 )
 
-// payloadWriteVerdict classifies a literal. The filing INSERT in
-// internal/db/owner_asks.go has no ON CONFLICT, so it is no write here; the
-// merge's folder-ask statements must name kind = 'folder' and $.other_bench.
+// mergePayloadWrites are the two moveAsks statements up to their folder
+// restriction, whitespace normalised: the merge may set or drop a folder
+// ask's $.other_bench and nothing else.
+var mergePayloadWrites = []string{
+	"UPDATE owner_asks SET payload = json_remove(payload, '$.other_bench') WHERE kind = 'folder'",
+	"UPDATE owner_asks SET payload = json_set(payload, '$.other_bench', json_object('id', ?, 'name', ?)) WHERE kind = 'folder'",
+}
+
+// payloadWriteVerdict classifies a literal. A REPLACE of an owner_asks row
+// resets every column it omits, payload included, so any is forbidden. The
+// filing INSERT in internal/db/owner_asks.go has no ON CONFLICT, so it is no
+// write here. The merge's statements are allowed only in
+// internal/workbenchfolders/merge.go, exactly as mergePayloadWrites spells
+// them, their WHERE going on only with AND (an OR would widen the folder
+// restriction) and no second statement after them.
 func payloadWriteVerdict(s sqlLiteral) payloadWrite {
-	if !ownerAsksWriteRE.MatchString(s.text) && !ownerAsksUpsertRE.MatchString(s.text) {
+	if ownerAsksReplaceRE.MatchString(s.text) {
+		return payloadWriteForbidden
+	}
+	if !ownerAsksUpdateRE.MatchString(s.text) && !ownerAsksUpsertRE.MatchString(s.text) {
 		return payloadWriteNone
 	}
 	if !payloadRE.MatchString(s.text) {
 		return payloadWriteNone
 	}
-	if filepath.ToSlash(filepath.Clean(s.file)) == "../../internal/workbenchfolders/merge.go" &&
-		strings.Contains(s.text, "kind = 'folder'") && strings.Contains(s.text, "$.other_bench") {
+	if filepath.ToSlash(filepath.Clean(s.file)) == "../../internal/workbenchfolders/merge.go" && isMergePayloadWrite(s.text) {
 		return payloadWriteAllowedMerge
 	}
 	return payloadWriteForbidden
+}
+
+func isMergePayloadWrite(text string) bool {
+	norm := strings.TrimSpace(spaceRE.ReplaceAllString(text, " "))
+	if strings.Contains(norm, ";") {
+		return false
+	}
+	for _, stmt := range mergePayloadWrites {
+		rest, ok := strings.CutPrefix(norm, stmt)
+		if !ok {
+			continue
+		}
+		if rest != "" && !strings.HasPrefix(rest, " AND ") {
+			return false
+		}
+		if sqlOrRE.MatchString(rest) {
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 // walkSources reads every file under root that keep accepts (skipping .build)
@@ -254,6 +327,16 @@ func swiftSQLLiterals(path string, src []byte) []sqlLiteral {
 					depth := 0
 					k := j + 1
 					for ; k < len(s); k++ {
+						if s[k] == '"' {
+							// A string inside the interpolation: its
+							// parens do not count.
+							for k++; k < len(s) && s[k] != '"' && s[k] != '\n'; k++ {
+								if s[k] == '\\' {
+									k++
+								}
+							}
+							continue
+						}
 						if s[k] == '(' {
 							depth++
 						} else if s[k] == ')' {

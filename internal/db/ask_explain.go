@@ -30,7 +30,7 @@ const AskExplainContextType = "owner_ask_explain"
 // checked against bench 4 yet never deleted with it, and one item must have
 // one id (`q2`, never `q02`), so it gets one chat.
 func AskExplainWorkbenchID(contextID string) (int64, bool) {
-	parts := strings.Split(contextID, ":")
+	parts := strings.SplitN(contextID, ":", 4) // a 4th part only marks the id as too long
 	if len(parts) != 2 && len(parts) != 3 {
 		return 0, false
 	}
