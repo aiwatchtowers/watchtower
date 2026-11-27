@@ -11,7 +11,7 @@ struct ChatAnswerText: View {
     let isFinal: Bool
     let isOwner: Bool
     /// The phone keeps the agent's text plain (spec 2026-11-24-workchat-polish C2).
-    var highlighting: AgentTextHighlighting?
+    var highlighting: MessageHighlighting?
 
     var body: some View {
         if isOwner {

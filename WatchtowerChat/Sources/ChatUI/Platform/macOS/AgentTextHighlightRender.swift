@@ -5,9 +5,11 @@ import WatchtowerChatText
 import WatchtowerDesign
 
 extension NSAttributedString.Key {
-    /// Inline code in a run (`MarkdownRunText.appendInlines`): highlighting reads only a command there.
+    /// Inline code in a run (`MarkdownRunText.appendInlines`): highlighting reads it as one whole token
+    /// (`AgentTextHighlights.codeSpan(inCode:)`).
     static let markdownInlineCode = NSAttributedString.Key("watchtower.markdownInlineCode")
-    /// A highlighted span of the agent's text (`AgentTextHighlightBox`): a click opens it.
+    /// A highlighted span of the agent's text that a click opens (`AgentTextHighlightBox`); colour-only kinds
+    /// (`Kind.opens` false) never carry it.
     static let agentHighlight = NSAttributedString.Key("watchtower.agentHighlight")
 }
 
@@ -26,12 +28,14 @@ final class AgentTextHighlightBox: NSObject {
     override var hash: Int { span.text.hashValue }
 }
 
-/// A finished run of the agent's text with its refs, hashes, paths and commands in their `SyntaxTint` (spec
-/// 2026-11-24-workchat-polish §2, D3): the foreground colour — no background, no weight; hashes and paths also in the
-/// monospaced design of their own font, as mock 04 draws them (#2201 T8). Plain text is scanned
-/// with `AgentTextHighlights.spans(inPlain:)`, inline code only for a command, links never (code blocks are not in a
-/// run). A path keeps its colour only when `resolvesPath` says it is a file of the session's folders. Memoised: the
-/// scan per run, the coloured text per run and set of resolved paths.
+/// A finished run of the agent's text with its refs, hashes, paths, commands, dates and times and `PR #N` / `ask #N`
+/// phrases in their `SyntaxTint` (spec 2026-11-24-workchat-polish §2, D3; spec 2026-11-26-chat-text-highlights): the
+/// foreground colour — no background, no weight; hashes and paths in plain text also in the monospaced design of their
+/// own font, as mock 04 draws them (#2201 T8). Only the kinds that open (`Kind.opens`) carry the click attribute; the
+/// others are colour only. Plain text is scanned with `AgentTextHighlights.spans(inPlain:)`, inline code as one whole
+/// token with `codeSpan(inCode:)`, links never (code blocks are not in a run). A path keeps its colour only when
+/// `resolvesPath` says it is a file of the session's folders. Memoised: the scan per run, the coloured text per run and
+/// set of resolved paths.
 @MainActor
 enum AgentTextHighlightRender {
     struct Found {
@@ -42,24 +46,30 @@ enum AgentTextHighlightRender {
     private struct Key: Hashable {
         let text: NSAttributedString
         let resolvedPaths: Set<String>
+        let clickable: Bool
     }
 
     private static let scans = MarkdownMemo<NSAttributedString, [Found]>(totalCostLimit: 1 << 16)
     private static let memo = MarkdownMemo<Key, NSAttributedString>(totalCostLimit: 4 << 20)
 
-    static func highlighted(_ text: NSAttributedString, resolvesPath: (String) -> Bool) -> NSAttributedString {
+    /// `clickable` false (a feed with no span action) leaves the click attribute off every span: colour only. Not the
+    /// only guard: `MarkdownRunTextView` also ignores clicks while its `onHighlight` is nil.
+    static func highlighted(
+        _ text: NSAttributedString, clickable: Bool, resolvesPath: (String) -> Bool
+    ) -> NSAttributedString {
         let found = scans.value(for: text, cost: { max($0.count, 1) }, build: { scan(text) })
         var resolved = Set<String>()
         for item in found where item.span.kind == .path && !resolved.contains(item.span.text) {
             if resolvesPath(item.span.text) { resolved.insert(item.span.text) }
         }
-        return memo.value(for: Key(text: text, resolvedPaths: resolved), cost: { $0.length }, build: {
+        let key = Key(text: text, resolvedPaths: resolved, clickable: clickable)
+        return memo.value(for: key, cost: { $0.length }, build: {
             let kept = kept(found, resolved: resolved)
-            return kept.isEmpty ? text : apply(kept, to: text)
+            return kept.isEmpty ? text : apply(kept, to: text, clickable: clickable)
         })
     }
 
-    /// The paths that resolve, and the refs and hashes outside them: a candidate that does not resolve leaves a ref
+    /// The paths that resolve, and the other spans outside them: a candidate that does not resolve leaves a ref
     /// inside it coloured (`#2201/T2`). One ordered pass over both lists (`found` is in text order).
     static func kept(_ found: [Found], resolved: Set<String>) -> [Found] {
         let paths = found.filter { $0.span.kind == .path && resolved.contains($0.span.text) }
@@ -74,12 +84,14 @@ enum AgentTextHighlightRender {
         return out.sorted { $0.range.location < $1.range.location }
     }
 
-    /// What VoiceOver offers for a span, as the Workchat acts on it.
-    static func accessibilityName(_ span: AgentTextHighlights.Span) -> String {
+    /// What VoiceOver offers for a span, as the Workchat acts on it; nil for a colour-only kind (nothing to act on,
+    /// VoiceOver reads it as the plain text it is).
+    static func accessibilityName(_ span: AgentTextHighlights.Span) -> String? {
         switch span.kind {
         case .ref: "Show \(span.text) on the board"
         case .hash, .command: "Copy \(span.text)"
         case .path: "Open \(span.text)"
+        case .time, .pullRequest, .ask: nil
         }
     }
 
@@ -89,17 +101,28 @@ enum AgentTextHighlightRender {
         case .hash: NSColor(SyntaxTint.hash)
         case .path: NSColor(SyntaxTint.path)
         case .command: NSColor(SyntaxTint.command)
+        case .time: NSColor(SyntaxTint.time)
+        case .pullRequest, .ask: NSColor(SyntaxTint.ref)
         }
     }
 
-    /// Every candidate span of the run, links left out.
+    /// Every candidate span of the run, links left out. Inline code reads the plain stretch right before it, so
+    /// ``PR `#1124` `` is the phrase, not a ref (`codeSpan(inCode:after:)`).
     static func scan(_ text: NSAttributedString) -> [Found] {
         let string = text.string as NSString
-        return stretches(text).flatMap { range, isCode -> [Found] in
+        let all = stretches(text)
+        return all.indices.flatMap { index -> [Found] in
+            let (range, isCode) = all[index]
             let piece = string.substring(with: range)
-            let spans = isCode
-                ? AgentTextHighlights.commandSpan(inCode: piece).map { [$0] } ?? []
-                : AgentTextHighlights.spans(inPlain: piece)
+            let spans: [AgentTextHighlights.Span]
+            if isCode {
+                let before = index > 0 ? all[index - 1] : nil
+                let plainBefore = before.flatMap { !$0.isCode && NSMaxRange($0.range) == range.location ? $0 : nil }
+                    .map { string.substring(with: $0.range) } ?? ""
+                spans = AgentTextHighlights.codeSpan(inCode: piece, after: plainBefore).map { [$0] } ?? []
+            } else {
+                spans = AgentTextHighlights.spans(inPlain: piece)
+            }
             return spans.map { span in
                 let local = NSRange(span.range, in: piece)
                 return Found(range: NSRange(location: range.location + local.location, length: local.length), span: span)
@@ -123,12 +146,16 @@ enum AgentTextHighlightRender {
         return out
     }
 
-    private static func apply(_ found: [Found], to text: NSAttributedString) -> NSAttributedString {
+    private static func apply(_ found: [Found], to text: NSAttributedString, clickable: Bool) -> NSAttributedString {
         let out = NSMutableAttributedString(attributedString: text)
         for item in found {
-            out.addAttributes([.foregroundColor: color(item.span.kind), .agentHighlight: AgentTextHighlightBox(item.span)],
-                              range: item.range)
-            if item.span.kind == .hash || item.span.kind == .path { monospace(item.range, in: out) }
+            out.addAttribute(.foregroundColor, value: color(item.span.kind), range: item.range)
+            if clickable, item.span.kind.opens {
+                out.addAttribute(.agentHighlight, value: AgentTextHighlightBox(item.span), range: item.range)
+            }
+            // Inline code already has its monospaced font.
+            let isCode = text.attribute(.markdownInlineCode, at: item.range.location, effectiveRange: nil) != nil
+            if !isCode, item.span.kind == .hash || item.span.kind == .path { monospace(item.range, in: out) }
         }
         return out
     }
@@ -145,6 +172,16 @@ enum AgentTextHighlightRender {
         font.fontDescriptor.withDesign(.monospaced).flatMap { NSFont(descriptor: $0, size: font.pointSize) } ?? font
     }
 }
+
+extension MessageHighlighting {
+    /// A run of this message's text coloured (`AgentTextHighlightRender`): its paths through the feed's resolver, its
+    /// spans clickable only when the feed acts on them.
+    @MainActor
+    func highlighted(_ text: NSAttributedString) -> NSAttributedString {
+        AgentTextHighlightRender.highlighted(text, clickable: open != nil, resolvesPath: resolvesPath)
+    }
+}
+
 /// When a click on a highlighted span runs its action (review round 1): a plain single click — no modifier, no
 /// double or triple click, nothing selected — that went up on the span it went down on. Anything else is AppKit's:
 /// a drag selects, a double click selects the word, a control-click opens the menu.

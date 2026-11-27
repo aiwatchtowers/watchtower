@@ -1,4 +1,5 @@
 import AppKit
+import ChatUI
 import Foundation
 import Observation
 import SwiftUI
@@ -132,6 +133,7 @@ final class WorkchatHighlights {
         switch span.kind {
         case let .ref(number): return .showTarget(Int64(number))
         case .hash, .command: return .copy(span.text)
+        case .time, .pullRequest, .ask: return .nothing
         case .path:
             guard let root else { return .nothing }
             let key = Key(messageID: messageID, path: span.text, root: root)
@@ -212,16 +214,11 @@ final class WorkchatHighlights {
     }
 }
 
-/// A session's span click and path lookup, built once per feed (`SessionChatView`) and shared with a subagent's run.
-struct WorkchatHighlightHandlers {
-    let open: (AgentTextHighlights.Span, Int64) -> Void
-    let resolvesPath: (String, Int64) -> Bool
-}
-
 extension EnvironmentValues {
-    /// Tests only: a rendered Workchat feed reports the span handlers it hands its rows, with the highlights they act
-    /// through, so a hosted test can click a span of the real view (final review: Branch review's Author chat).
-    @Entry var workchatHighlightProbe: (@MainActor (WorkchatHighlightHandlers, WorkchatHighlights) -> Void)?
+    /// Tests only: a rendered Workchat feed reports the highlighting its feed context hands its rows
+    /// (`ChatFeedContext.agentTextHighlighting`), with the highlights its handlers act through, so a hosted test can
+    /// click a span of the real view (final review: Branch review's Author chat).
+    @Entry var workchatHighlightProbe: (@MainActor (AgentTextHighlighting?, WorkchatHighlights) -> Void)?
 }
 
 /// The Workchat holds its session root while it is on screen (`CodeFilesCenter.startHolding`, reviews rounds 2–4): the

@@ -31,13 +31,6 @@ public struct ChatPartActions {
     public var offersContinue = true
     /// Whether a reply shows its sources pill; off for a chat with no sources list to open (embedded chats).
     public var showsSources = true
-    /// A highlighted span of the agent's message (by id) was clicked (`ChatFeedContext.highlightsAgentText`): a ref,
-    /// a hash, a path or a command.
-    public var openHighlight: ((_ span: AgentTextHighlights.Span, _ messageID: Int64) -> Void)?
-    /// Whether a path candidate in the agent's message (by id) is a file of the session's folders; only one that is
-    /// gets its colour. It may answer later (an async lookup): the screen re-renders when it lands. Nil colours no
-    /// path.
-    public var resolvesPath: ((_ path: String, _ messageID: Int64) -> Bool)?
 
     public init(
         sendFixedText: @escaping (String) -> Void = { _ in },
@@ -77,8 +70,8 @@ public struct ChatPartContext {
     /// The turn running now: an approval card it waits on is outlined.
     public var runningTurnID: String?
     public var actions: ChatPartActions
-    /// The feed colours the agent's text (`ChatFeedContext.highlightsAgentText`).
-    public var highlightsAgentText: Bool
+    /// The feed colours the agent's text (`ChatFeedContext.agentTextHighlighting`); nil keeps it plain.
+    public var agentTextHighlighting: AgentTextHighlighting?
 
     public init(
         message: ChatFeed.Message,
@@ -88,7 +81,7 @@ public struct ChatPartContext {
         answerText: String? = nil,
         runningTurnID: String? = nil,
         actions: ChatPartActions = ChatPartActions(),
-        highlightsAgentText: Bool = false
+        agentTextHighlighting: AgentTextHighlighting? = nil
     ) {
         self.message = message
         self.provider = provider
@@ -97,7 +90,7 @@ public struct ChatPartContext {
         self.answerText = answerText
         self.runningTurnID = runningTurnID
         self.actions = actions
-        self.highlightsAgentText = highlightsAgentText
+        self.agentTextHighlighting = agentTextHighlighting
     }
 
     /// The reply is written to the end (not `pending`): a half-written artifact or question is held back until then.

@@ -11,7 +11,8 @@ import WatchtowerCore
 /// same four paragraphs drawn by ChatUI's feed with `WorkchatFeed.context()`. The paths resolve for real
 /// (`WorkchatHighlights`' live lookup) in a scratch folder: the bare `CloudKitTransport+LinkDirect.swift` through the
 /// root's code index (a `WorkbenchCodeIndex` fed the folder's files, as `CodeIndexCenter` feeds it) on a unique
-/// base-name hit, `internal/sessionhost/prompt_state.go` on disk.
+/// base-name hit, `internal/sessionhost/prompt_state.go` on disk. The last paragraph is spec 2026-11-26-chat-text-highlights'
+/// mockup: hashes in inline code purple, the branch in code plain, the date teal, `ask #N` and `PR #N` in the ref accent.
 @MainActor
 enum WorkchatHighlightShotFixtures {
     static let shots: [DesignShot] = [
@@ -32,6 +33,9 @@ enum WorkchatHighlightShotFixtures {
 
     Codex found no blockers. One gap: no test covers the hidden-window → `.gone` transition; see \
     internal/sessionhost/prompt_state.go.
+
+    The design and the plan are on the branch `docs-polish` (`4d434597`); `f5df21ff` moves the shared test helpers. \
+    Marking starts on 2026-11-16, the open question is in ask #990, and the review goes to PR #1124.
     """
 
     static let folderFiles = [
@@ -64,11 +68,12 @@ enum WorkchatHighlightShotFixtures {
     private static func feed(_ highlights: WorkchatHighlights, root: CodeRoot, index: WorkbenchCodeIndex) -> some View {
         let entries = [SessionFeedEntry(id: "a", kind: "agent", text: agentText)]
         var workchatFeed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: []) { _ in }
-        workchatFeed.resolvesPath = { path, messageID in
-            highlights.resolves(path, messageID: messageID, root: root, epoch: 1, revision: index.filesRevision,
-                                indexFiles: index.files)
-        }
-        workchatFeed.onHighlight = { _, _ in }
+        workchatFeed.highlighting = AgentTextHighlighting(
+            resolvesPath: { path, messageID in
+                highlights.resolves(path, messageID: messageID, root: root, epoch: 1, revision: index.filesRevision,
+                                    indexFiles: index.files)
+            },
+            openHighlight: { _, _ in })
         var context = workchatFeed.context()
         var follow = ChatFeedFollow(conversationID: 1)
         follow.anchorsBottom = true
