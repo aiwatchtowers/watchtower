@@ -27,11 +27,13 @@ final class AskExplainFixture {
         let pool = pool
         let writes = writes
         let ai = ai
+        let hooks = hooks
         center = EmbeddedChatCenter(gate: EmbeddedStreamGate(limit: 3)) { spec, gate in
-            EmbeddedChatEngine(spec: spec,
-                               store: DatabaseEmbeddedChatStore(dbPool: pool, writes: writes,
-                                                                conversationID: spec.key.conversationID ?? 0),
-                               aiService: ai, gate: gate)
+            hooks.beforeEngine?(spec)
+            return EmbeddedChatEngine(spec: spec,
+                                      store: DatabaseEmbeddedChatStore(dbPool: pool, writes: writes,
+                                                                       conversationID: spec.key.conversationID ?? 0),
+                                      aiService: ai, gate: gate)
         }
         defaults = try shared ?? XCTUnwrap(UserDefaults(suiteName: "AskExplain-\(UUID().uuidString)"))
         vm = OwnerAsksViewModel(dbPool: pool, terminalCenter: nil, lineDelivery: SessionLineDelivery(terminalCenter: nil),
@@ -42,6 +44,20 @@ final class AskExplainFixture {
         vm.explainCatalog = catalog
         vm.explainConfigProvider = { [weak self] in self?.configProvider }
     }
+
+    /// Runs as the center makes an engine, before it reads its history: an
+    /// open's last step after its lookup (no await lies between them), so a
+    /// test changes the database there as if the open were held.
+    var beforeEngine: ((ChatSurfaceSpec) -> Void)? {
+        get { hooks.beforeEngine }
+        set { hooks.beforeEngine = newValue }
+    }
+
+    @MainActor private final class Hooks {
+        var beforeEngine: ((ChatSurfaceSpec) -> Void)?
+    }
+
+    private let hooks = Hooks()
 
     /// The fixture catalog's rows (claude reads folders, ollama none).
     let catalog: AIModelCatalog

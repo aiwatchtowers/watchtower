@@ -331,7 +331,6 @@ final class AskExplainViewTests: XCTestCase {
         await fx.vm.openExplain(ask, item: .question(2))
         let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(2)))
         for shown in [AskExplainPane.Shown.finding, .failure("The database is busy."), .chat] {
-            XCTAssertTrue(AskExplainPane.showsCard(shown), "\(shown)")
             XCTAssertGreaterThan(height(paneState(shown, ask, engine, card: card)),
                                  height(paneState(shown, ask, engine, card: nil)), "\(shown)")
         }

@@ -117,7 +117,9 @@ struct AskExplainPane: View {
     var body: some View {
         let engine = asks.explainEngine(for: ask, item: item)
         let shown = Self.shown(hasEngine: engine != nil, error: asks.explainErrors[subject])
-        let card = Self.showsCard(shown) ? AskExplainCard.make(ask: ask, item: item) : nil
+        // The item's card shows under the strip in every state (spec D13):
+        // it needs no read, so the owner sees what the chat is about at once.
+        let card = AskExplainCard.make(ask: ask, item: item)
         Self.layout(shown, subject: subject, card: card, onRetry: retryIfItCanHelp, onBack: onBack) {
             if let engine { chat(engine) }
         }
@@ -132,14 +134,6 @@ struct AskExplainPane: View {
     static func shown(hasEngine: Bool, error: String?) -> Shown {
         if hasEngine { return .chat }
         return error.map(Shown.failure) ?? .finding
-    }
-
-    /// The item's card shows under the strip in every state (spec D13): it
-    /// needs no read, so the owner sees what the chat is about at once.
-    static func showsCard(_ shown: Shown) -> Bool {
-        switch shown {
-        case .chat, .failure, .finding: true
-        }
     }
 
     /// One state of the pane: the strip and the item's card, drawn once

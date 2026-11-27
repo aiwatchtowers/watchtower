@@ -972,6 +972,45 @@ final class AskExplainModelTests: XCTestCase {
         XCTAssertNil(fx.vm.explainEngine(for: ask, item: .question(1)))
     }
 
+    /// The workbench is deleted right after the open's lookup found the
+    /// legacy chat, before the engine reads it (spec 2026-11-27 D4,
+    /// "Failure paths"): the chat shows its load failure, nothing is written
+    /// (no conversation, no draft, no hidden turn), and the next open says
+    /// the workbench is gone, without Retry.
+    func testWorkbenchDeletedBetweenTheLegacyLookupAndTheEngineWritesNothing() async throws {
+        let ask = try fx.insertAsk(payload: AskExplainFixture.oneQuestion)
+        let legacy = try fx.insertLegacyChat(ask, explanation: "It decides the store.")
+        var deleted = false
+        fx.beforeEngine = { [weak fx] spec in
+            guard let fx, !deleted, spec.key.conversationID == legacy else { return }
+            do {
+                try fx.deleteWorkbench()
+                deleted = true
+            } catch {
+                XCTFail("deleting the workbench: \(error)")
+            }
+        }
+        await fx.vm.openExplain(ask, item: .question(1))
+        XCTAssertTrue(deleted, "the delete landed between the lookup and the engine")
+
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(1)))
+        XCTAssertNotNil(engine.bannerError, "the chat shows its load failure")
+        XCTAssertTrue(engine.messages.isEmpty)
+        XCTAssertFalse(engine.send("And option B?"), "a follow-up is refused, not written")
+        await engine.finished()
+        XCTAssertTrue(fx.ai.calls.isEmpty, "no hidden turn")
+        XCTAssertTrue(fx.tower.calls.isEmpty, "no chat command: no conversation, no draft")
+        XCTAssertEqual(try fx.conversationCount(), 0)
+
+        fx.vm.closeExplain(ask.id)
+        await fx.vm.openExplain(ask, item: .question(1))
+        XCTAssertEqual(fx.vm.explainErrors[subject(ask)], "This workbench no longer exists.")
+        XCTAssertFalse(fx.vm.explainOffersRetry(subject(ask)))
+        XCTAssertNil(fx.vm.explainEngine(for: ask, item: .question(1)))
+        XCTAssertTrue(fx.ai.calls.isEmpty)
+        XCTAssertTrue(fx.tower.calls.isEmpty)
+    }
+
     /// A merge while a reused legacy chat streams: the next open's lookup
     /// finds it under the new bench and adopts the running engine there.
     func testMergeMidStreamMovesARunningLegacyEngine() async throws {
