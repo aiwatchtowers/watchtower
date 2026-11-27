@@ -2,13 +2,17 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// The "Not clear?" chat on the whole ask drawer under its header (spec
-/// 2026-11-24 "The chat view"): a strip with **‹ Back to question** and the
-/// ask's title on one line, the feed (compact, kept at its latest row), and
-/// the composer. Esc in the composer goes back while it is empty and never
-/// stops the turn: Stop stays on the composer's button.
+/// The "Not clear?" chat about one item of an ask, under the drawer header
+/// (spec 2026-11-27 "The chat view"): the strip (**‹ Back to question** or
+/// **‹ Back to check**, and "Question N" / "Step N"), the item's card pinned
+/// under it, the feed (compact, kept at its latest row), and the composer
+/// with the item's placeholder. Esc in the composer goes back while it is
+/// empty and never stops the turn: Stop stays on the composer's button.
 struct AskExplainChatView: View {
     let ask: OwnerAsk
+    let item: AskExplainItem
+    /// The item's card; nil shows none (`AskExplainPane.showsCard`).
+    let card: AskExplainCard?
     let engine: EmbeddedChatEngine
     /// Why the last open could not read the chat again; its Retry opens it again.
     var error: String?
@@ -17,21 +21,31 @@ struct AskExplainChatView: View {
 
     init(
         ask: OwnerAsk,
+        item: AskExplainItem,
+        card: AskExplainCard?,
         engine: EmbeddedChatEngine,
         error: String? = nil,
         onRetry: (() -> Void)? = nil,
         onBack: @escaping () -> Void
     ) {
         self.ask = ask
+        self.item = item
+        self.card = card
         self.engine = engine
         self.error = error
         self.onRetry = onRetry
         self.onBack = onBack
     }
 
+    /// The strip's Back label and its item label: "Back to question" and
+    /// "Question 2", or "Back to check" and "Step 2".
+    static func stripLabels(_ item: AskExplainItem) -> (back: String, item: String) {
+        (AskExplainCopy.back(for: item), AskExplainCopy.itemLabel(item))
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            AskExplainStrip(title: ask.title, onBack: onBack)
+            AskExplainItemHeader(item: item, card: card, onBack: onBack)
             ScrollView {
                 VStack(alignment: .leading, spacing: Spacing.regular) {
                     EmbeddedChatRows(engine: engine)
@@ -53,7 +67,7 @@ struct AskExplainChatView: View {
     /// The composer: compact, Esc back while empty, and no second copy of a
     /// failure the row above already shows (`composerHidesError`).
     var composer: EmbeddedChatComposer {
-        EmbeddedChatComposer(engine: engine, placeholder: AskExplainCopy.placeholder, density: .compact,
+        EmbeddedChatComposer(engine: engine, placeholder: AskExplainCopy.placeholder(for: item), density: .compact,
                              onEscape: Self.composerEscape(engine: engine, onBack: onBack), autoFocus: true,
                              hidesError: Self.composerHidesError(engine))
     }
@@ -95,8 +109,9 @@ struct AskExplainChatView: View {
 }
 
 /// The drawer's chat layer: the chat once its engine is in the center,
-/// before that the strip over a spinner or the open's failure. It makes the
-/// engine again when the center let an idle one go (`.task`, never the body).
+/// before that the strip and the item's card over a spinner or the open's
+/// failure (spec 2026-11-27 D13). It makes the engine again when the center
+/// let an idle one go (`.task`, never the body).
 struct AskExplainPane: View {
     let asks: OwnerAsksViewModel
     let ask: OwnerAsk
@@ -107,25 +122,10 @@ struct AskExplainPane: View {
 
     var body: some View {
         let engine = asks.explainEngine(for: ask, item: item)
-        Group {
-            switch Self.shown(hasEngine: engine != nil, error: asks.explainErrors[subject]) {
-            case .chat:
-                if let engine { chat(engine) }
-            case let .failure(error):
-                VStack(alignment: .leading, spacing: 0) {
-                    AskExplainStrip(title: ask.title, onBack: onBack)
-                    AskExplainErrorRow(text: AskExplainErrorRow.openFailure(error), onRetry: retryIfItCanHelp)
-                        .padding(.vertical, Spacing.regular)
-                    Spacer(minLength: 0)
-                }
-            case .finding:
-                VStack(spacing: 0) {
-                    AskExplainStrip(title: ask.title, onBack: onBack)
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
+        let shown = Self.shown(hasEngine: engine != nil, error: asks.explainErrors[subject])
+        let card = Self.showsCard(shown) ? AskExplainCard.make(ask: ask, item: item) : nil
+        Self.layout(shown, item: item, card: card, onRetry: retryIfItCanHelp, onBack: onBack) {
+            if let engine { chat(engine) }
         }
         .task(id: subject) { asks.ensureExplainEngine(ask, item: item) }
     }
@@ -140,11 +140,51 @@ struct AskExplainPane: View {
         return error.map(Shown.failure) ?? .finding
     }
 
-    /// The chat over `engine`, with the open's error and its Retry when one
-    /// can help.
+    /// The item's card shows under the strip in every state (spec D13): it
+    /// needs no read, so the owner sees what the chat is about at once.
+    static func showsCard(_ shown: Shown) -> Bool {
+        switch shown {
+        case .chat, .failure, .finding: true
+        }
+    }
+
+    /// One state of the pane: the chat (it draws its own strip and card),
+    /// or the strip and the card over the open's failure or a spinner.
+    @ViewBuilder
+    static func layout(
+        _ shown: Shown,
+        item: AskExplainItem,
+        card: AskExplainCard?,
+        onRetry: (() -> Void)?,
+        onBack: @escaping () -> Void,
+        @ViewBuilder chat: () -> some View
+    ) -> some View {
+        switch shown {
+        case .chat:
+            chat()
+        case let .failure(error):
+            VStack(alignment: .leading, spacing: 0) {
+                AskExplainItemHeader(item: item, card: card, onBack: onBack)
+                AskExplainErrorRow(text: AskExplainErrorRow.openFailure(error), onRetry: onRetry)
+                    .padding(.vertical, Spacing.regular)
+                Spacer(minLength: 0)
+            }
+        case .finding:
+            VStack(spacing: 0) {
+                AskExplainItemHeader(item: item, card: card, onBack: onBack)
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    /// The chat over `engine`, under the item's card, with the open's error
+    /// and its Retry when one can help.
     func chatView(_ engine: EmbeddedChatEngine) -> AskExplainChatView {
-        AskExplainChatView(ask: ask, engine: engine, error: asks.explainErrors[subject],
-                           onRetry: retryIfItCanHelp, onBack: onBack)
+        AskExplainChatView(ask: ask, item: item,
+                           card: Self.showsCard(.chat) ? AskExplainCard.make(ask: ask, item: item) : nil,
+                           engine: engine, error: asks.explainErrors[subject], onRetry: retryIfItCanHelp, onBack: onBack)
     }
 
     @ViewBuilder
@@ -169,23 +209,47 @@ struct AskExplainPane: View {
     }
 }
 
-/// **‹ Back to question**, then the ask's title on one line.
-private struct AskExplainStrip: View {
-    let title: String
+/// The top of every pane state: the strip, then the item's card, pinned
+/// (it never scrolls with the feed). The card takes the item as its id, so
+/// its expansion resets when another item's chat shows.
+struct AskExplainItemHeader: View {
+    let item: AskExplainItem
+    let card: AskExplainCard?
     let onBack: () -> Void
 
     var body: some View {
+        VStack(spacing: 0) {
+            AskExplainStrip(item: item, onBack: onBack)
+            if let card {
+                AskExplainItemCard(card: card)
+                    .id(item)
+                    .padding(.horizontal, Spacing.medium)
+            }
+        }
+    }
+}
+
+/// **‹ Back to question** (or **‹ Back to check**), and on the right which
+/// item the chat is about: "Question 2", "Step 3" (spec D7). The drawer
+/// header carries the ask's title, the card the item.
+private struct AskExplainStrip: View {
+    let item: AskExplainItem
+    let onBack: () -> Void
+
+    var body: some View {
+        let labels = AskExplainChatView.stripLabels(item)
         HStack(spacing: Spacing.compact) {
             Button(action: onBack) {
-                Label(AskExplainCopy.back, systemImage: "chevron.left").font(.caption)
+                Label(labels.back, systemImage: "chevron.left").font(.caption)
             }
             .buttonStyle(.kitQuiet)
             .fixedSize()
-            Text(title)
+            Spacer(minLength: Spacing.compact)
+            Text(labels.item)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .monospacedDigit()
                 .lineLimit(1)
-                .truncationMode(.tail)
         }
         .padding(.horizontal, Spacing.medium)
         .padding(.vertical, Spacing.small)

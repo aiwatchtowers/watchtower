@@ -26,7 +26,7 @@ final class OwnerAskTextTests: XCTestCase {
     /// The drawer's draft card for these picks (no keys, no focus).
     private static func draft(_ picks: Binding<[String: ChatQuestionAnswer.Entry]>, editable: Bool = true) -> ChatQuestionDraft {
         OwnerAskDrawer.questionDraft(picks: picks, editable: editable, onKey: nil, fieldFocus: nil, stop: nil,
-                                     onLeaveField: nil)
+                                     onLeaveField: nil, explain: nil)
     }
 
     private func attributedTexts(_ view: some View) throws -> [AttributedString] {

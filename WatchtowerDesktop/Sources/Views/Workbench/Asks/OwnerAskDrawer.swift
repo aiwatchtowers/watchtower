@@ -293,7 +293,6 @@ struct OwnerAskDrawer: View {
                     VStack(alignment: .leading, spacing: 14) {
                         topSections
                         kindBody
-                        AskExplainEntry(ask: ask, hasCLI: asks.chats != nil, action: openExplain)
                         if takesNote { noteView }
                     }
                     .padding(14)
@@ -311,12 +310,15 @@ struct OwnerAskDrawer: View {
         }
     }
 
-    /// **Not clear?**: the keyboard leaves the question's fields before the
-    /// chat covers them; its composer takes it when it shows. Until each
-    /// item draws its own entry (plan Task 5) the whole-ask entry opens the
-    /// ask's first item.
-    private func openExplain() {
-        guard let item = AskExplainItem.items(of: ask).first else { return }
+    /// An item's **Not clear?** (spec 2026-11-27 D1): set only for a kind
+    /// that shows the entry, with a CLI.
+    private var explainItem: ((AskExplainItem) -> Void)? {
+        AskExplainPresentation.showsEntry(kind: ask.kind, hasCLI: asks.chats != nil) ? openExplain : nil
+    }
+
+    /// **Not clear?** on an item: the keyboard leaves the question's fields
+    /// before the chat covers them; its composer takes it when it shows.
+    private func openExplain(_ item: AskExplainItem) {
         fieldFocus = nil
         NSApp.keyWindow?.makeFirstResponder(nil)
         let (asks, ask) = (asks, ask)
@@ -352,21 +354,24 @@ struct OwnerAskDrawer: View {
         Self.questionDraft(
             picks: picksBinding, editable: editable,
             onKey: SpecReviewPresentation.fieldAnswersAsk(screenUp: showsSpecReview) ? pressAnswerKey : nil,
-            fieldFocus: fieldFocus, stop: keys.shownStop, onLeaveField: leaveField
+            fieldFocus: fieldFocus, stop: keys.shownStop, onLeaveField: leaveField,
+            explain: explainItem.map { open in (ask, open) }
         )
     }
 
     /// The ask's questions on ChatUI's card: the picks are the ask's draft (or its answer) and the answer bar sends
     /// them. An Other… field is the multi-line editor about three lines tall, whose ⌘↩ (⌘⇧↩) presses the ask's answer
     /// buttons and Esc leaves it; the question under the keyboard cursor is outlined, and an option names its digit
-    /// (board #412).
+    /// (board #412). With `explain` each question of `ask` ends with its **Not clear?**, inside the block the cursor
+    /// outlines (spec 2026-11-27 D2).
     static func questionDraft(
         picks: Binding<[String: ChatQuestionAnswer.Entry]>,
         editable: Bool,
         onKey: ((Bool) -> Void)?,
         fieldFocus: OwnerAskFieldFocus?,
         stop: OwnerAskKeyStop?,
-        onLeaveField: (() -> Void)?
+        onLeaveField: (() -> Void)?,
+        explain: (ask: OwnerAsk, open: (AskExplainItem) -> Void)?
     ) -> ChatQuestionDraft {
         ChatQuestionDraft(
             picks: picks,
@@ -382,12 +387,32 @@ struct OwnerAskDrawer: View {
                 ))
             },
             decorate: { question, body in
-                AnyView(body.ownerAskKeyCursor(stop == .question(question.id)).id(OwnerAskKeyStop.question(question.id)))
+                let block = Group {
+                    if let explain, let item = AskExplainItem.forQuestion(id: question.id, in: explain.ask),
+                       let action = explainAction(for: question, in: explain.ask, open: explain.open) {
+                        VStack(alignment: .leading, spacing: Spacing.compact) {
+                            body
+                            AskExplainEntry(item: item, kind: explain.ask.kind, hasCLI: true, action: action)
+                        }
+                    } else {
+                        body
+                    }
+                }
+                return AnyView(block.ownerAskKeyCursor(stop == .question(question.id)).id(OwnerAskKeyStop.question(question.id)))
             },
             optionHelp: { index in
                 editable && index < 9 ? "Press \(index + 1) to pick (Tab moves between questions)" : ""
             }
         )
+    }
+
+    /// Opens the chat about `question`, by its position in `ask` (never its
+    /// free-text id); nil when the question is not in the ask.
+    static func explainAction(
+        for question: ChatQuestion, in ask: OwnerAsk, open: @escaping (AskExplainItem) -> Void
+    ) -> (() -> Void)? {
+        guard let item = AskExplainItem.forQuestion(id: question.id, in: ask) else { return nil }
+        return { open(item) }
     }
 
     private var hasTopSections: Bool {
@@ -527,7 +552,8 @@ struct OwnerAskDrawer: View {
                 onKey: pressAnswerKey,
                 keyboardStop: keys.shownStop,
                 fieldFocus: fieldFocus,
-                onLeaveField: leaveField
+                onLeaveField: leaveField,
+                explain: explainItem
             )
         case .question: EmptyView()
         // An open folder suggestion answers on its card (#2003, §6.7); a
