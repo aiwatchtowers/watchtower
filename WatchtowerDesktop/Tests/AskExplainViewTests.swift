@@ -221,7 +221,7 @@ final class AskExplainViewTests: XCTestCase {
                 explain: explain))
                 .environment(\.chatUIStyle, DesignKitChatStyle(look: .ask))
         }
-        let entry = height(AskExplainEntry(item: .question(1), kind: .question, hasCLI: true) {})
+        let entry = height(AskExplainEntry(item: .question(1)) {})
         XCTAssertGreaterThan(entry, 0)
         XCTAssertGreaterThanOrEqual(height(questionCard((ask, { _ in }))) - height(questionCard(nil)), 3 * entry,
                                     "an entry under each of the three questions")
@@ -244,37 +244,49 @@ final class AskExplainViewTests: XCTestCase {
         }
         let entries = try stepEntries(body)
         XCTAssertEqual(entries.map(\.label), ["Not clear? Step 1", "Not clear? Step 2", "Not clear? Step 3"])
-        try entries[1].button.tap()
+        try XCTUnwrap(entries.dropFirst().first).button.tap()
         XCTAssertEqual(opened, [.step(2)])
         let without = OwnerAskChecklistBody(items: check.payload.checklist, marks: [:], notes: [:], editable: true)
         XCTAssertTrue(try stepEntries(without).isEmpty)
-        XCTAssertGreaterThan(height(AskExplainEntry(item: .step(2), kind: .check, hasCLI: true) {}), 0)
         XCTAssertEqual(OwnerAskChecklistBody.stepItem(index: 1), .step(2))
         XCTAssertEqual(OwnerAskChecklistBody.stepItem(index: 0), .step(1))
     }
 
-    func testNoEntriesOnReviewAsk() {
-        XCTAssertEqual(height(AskExplainEntry(item: .question(1), kind: .review, hasCLI: true) {}), 0)
-        XCTAssertEqual(height(AskExplainEntry(item: .step(1), kind: .review, hasCLI: true) {}), 0)
+    /// The drawer's gate (`AskExplainPresentation.showsEntry`): a review
+    /// ask, though its payload carries questions, draws no entry.
+    func testNoEntriesOnReviewAsk() async throws {
+        let review = try fx.insertAsk(kind: "review")
+        XCTAssertFalse(review.payload.questions.isEmpty)
+        let entries = try await drawerEntries(review, hasCLI: true)
+        XCTAssertEqual(entries, [])
     }
 
-    func testNoEntriesWithoutACLI() {
-        XCTAssertEqual(height(AskExplainEntry(item: .question(1), kind: .question, hasCLI: false) {}), 0)
-        XCTAssertEqual(height(AskExplainEntry(item: .step(1), kind: .check, hasCLI: false) {}), 0)
+    /// Without a CLI the drawer draws no entry on a question or a check.
+    func testNoEntriesWithoutACLI() async throws {
+        let (question, check) = (try fx.insertAsk(), try fx.insertAsk(kind: "check"))
+        let questionEntries = try await drawerEntries(question, hasCLI: false)
+        let checkEntries = try await drawerEntries(check, hasCLI: false)
+        let withCLI = try await drawerEntries(question, hasCLI: true)
+        XCTAssertEqual(questionEntries, [])
+        XCTAssertEqual(checkEntries, [])
+        XCTAssertEqual(withCLI, ["Not clear? Question 1", "Not clear? Question 2", "Not clear? Question 3"], "with a CLI")
     }
 
-    func testEntriesOnAClosedAsk() throws {
+    /// A closed question ask and a check ask keep their entries.
+    func testEntriesOnAClosedAsk() async throws {
         let projectID = fx.projectID
         let payload = AskExplainFixture.threeQuestions
-        let id = try fx.pool.write {
+        let id = try await fx.pool.write {
             try TestDatabase.insertOwnerAsk($0, projectID: projectID, payload: payload, status: "answered",
                                             answer: #"{"note":"Fine"}"#)
         }
-        let closed = try XCTUnwrap(try fx.pool.read { try OwnerAskQueries.ask($0, id: id, projectID: projectID) })
+        let read = try await fx.pool.read { try OwnerAskQueries.ask($0, id: id, projectID: projectID) }
+        let closed = try XCTUnwrap(read)
         XCTAssertFalse(closed.isOpen)
-        XCTAssertEqual(AskExplainItem.items(of: closed).count, 3)
-        XCTAssertGreaterThan(height(AskExplainEntry(item: .question(1), kind: closed.kind, hasCLI: true) {}), 0)
-        XCTAssertGreaterThan(height(AskExplainEntry(item: .step(1), kind: .check, hasCLI: true) {}), 0)
+        let closedEntries = try await drawerEntries(closed, hasCLI: true)
+        let checkEntries = try await drawerEntries(try fx.insertAsk(kind: "check"), hasCLI: true)
+        XCTAssertEqual(closedEntries, ["Not clear? Question 1", "Not clear? Question 2", "Not clear? Question 3"])
+        XCTAssertEqual(checkEntries, ["Not clear? Step 1", "Not clear? Step 2", "Not clear? Step 3"])
     }
 
     /// Every entry's accessibility label names its item; the question's
@@ -335,6 +347,25 @@ final class AskExplainViewTests: XCTestCase {
         await finishTurn(engine)
     }
 
+    /// The card keeps its expansion as the pane's state moves on (finding →
+    /// chat): SwiftUI keeps a view's state while it holds the same place in
+    /// the view's type, so the header must sit beside the state switch, not
+    /// inside each branch. (A live click cannot be driven here: a window
+    /// that is never ordered in delivers no synthesized click to a SwiftUI
+    /// button and exposes no accessibility tree, and ViewHosting orders a
+    /// window in, which tests must not do.)
+    func testCardHeaderSitsOutsideTheStateSwitch() async throws {
+        let ask = try fx.insertAsk()
+        let card = try XCTUnwrap(AskExplainCard.make(ask: ask, item: .question(2)))
+        await fx.vm.openExplain(ask, item: .question(2))
+        let engine = try XCTUnwrap(fx.vm.explainEngine(for: ask, item: .question(2)))
+        for shown in [AskExplainPane.Shown.finding, .failure("The database is busy."), .chat] {
+            let layout = String(describing: type(of: paneState(shown, ask, engine, card: card)))
+            XCTAssertTrue(layout.hasPrefix("VStack<TupleView<(AskExplainItemHeader, _ConditionalContent<"), layout)
+        }
+        await finishTurn(engine)
+    }
+
     /// The card's identity is its subject: another item's chat, of this ask
     /// or of another, starts it collapsed.
     func testCardExpansionResetsPerSubject() throws {
@@ -387,6 +418,26 @@ final class AskExplainViewTests: XCTestCase {
         ViewRenderProbe.fittingHeight(view, width: 400)
     }
 
+    /// Lays the hosted view out and lets its state settle: run-loop passes
+    /// that never wait.
+    private func settle(_ host: NSView) {
+        for _ in 0..<5 {
+            host.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date())
+        }
+    }
+
+    /// The entries `OwnerAskDrawer` draws for `ask`, by accessibility label,
+    /// with or without a CLI (`asks.chats`).
+    private func drawerEntries(_ ask: OwnerAsk, hasCLI: Bool) async throws -> [String] {
+        let vm = WorkbenchesViewModel(dbPool: fx.pool, cli: nil, defaults: fx.defaults)
+        vm.asks.chats = hasCLI ? fx.center : nil
+        await vm.asks.load(projectID: fx.projectID)
+        return try OwnerAskDrawer(vm: vm, ask: ask).inspect().findAll(AskExplainEntry.self).map {
+            AskExplainEntry.accessibilityLabel(try $0.actualView().item)
+        }
+    }
+
     /// The fitting height once the view's measured state has settled (the
     /// card reads its content height after a first layout).
     private func settledHeight(_ view: some View) -> CGFloat {
@@ -396,10 +447,7 @@ final class AskExplainViewTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = host
         defer { window.close() }
-        for _ in 0..<5 {
-            host.layoutSubtreeIfNeeded()
-            RunLoop.main.run(until: Date())
-        }
+        settle(host)
         return ceil(host.fittingSize.height)
     }
 
