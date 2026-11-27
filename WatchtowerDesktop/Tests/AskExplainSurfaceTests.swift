@@ -84,11 +84,13 @@ final class AskExplainFixture {
 
     /// The hidden first turns asked of the AI so far, of any item.
     /// A call counts when it has no owner row and its prompt ends with the
-    /// first turn of the item it names, whatever the item's number.
+    /// first turn of the item it names, whatever the item's number. The item
+    /// is read from the prompt's last naming, the one in its trailing first
+    /// turn — an earlier part of the prompt may name another item.
     var hiddenTurns: [ScriptedAIService.Call] {
         ai.calls.filter { call in
             guard call.persist?.ownerText == nil,
-                  let named = call.prompt.firstMatch(of: #/Explain (question|step) (\d+) of this/#),
+                  let named = call.prompt.matches(of: #/Explain (question|step) (\d+) of this/#).last,
                   let number = Int(named.output.2) else { return false }
             let item: AskExplainItem = named.output.1 == "step" ? .step(number) : .question(number)
             return call.prompt.hasSuffix(AskExplainPrompt.firstTurn(item))

@@ -724,12 +724,16 @@ final class AskExplainModelTests: XCTestCase {
         }
         let ask = try fx.insertAsk(targetID: targetID)
         let held = ChatNewHold(fx.tower)
-        let (vm, tower) = (fx.vm, fx.tower)
+        // Never leave an open hanging on a held `chat.new`, whatever fails.
+        defer { held.releaseAll() }
+        let vm = fx.vm
         let first = Task { await vm.openExplain(ask, item: .question(1)) }
-        await waitForCondition { tower.calls(.chatNew).count == 1 }
+        // Wait on the hold itself, not on the recorded call: q1 must have
+        // taken index 0 before q2 can reach the hold.
+        await held.waitUntilHeld(1)
         vm.closeExplain(ask.id)
         let second = Task { await vm.openExplain(ask, item: .question(2)) }
-        await waitForCondition { tower.calls(.chatNew).count == 2 }
+        await held.waitUntilHeld(2)
         vm.closeExplain(ask.id)
         try await fx.pool.write { db in
             try db.execute(sql: "UPDATE targets SET intent = 'New intent' WHERE id = ?", arguments: [targetID])
@@ -1002,8 +1006,10 @@ final class AskExplainModelTests: XCTestCase {
         XCTAssertEqual(fx.hiddenTurns.count, 1)
     }
 
-    /// Holds each `chat.new` until it is let through by its order (0-based);
-    /// every other command passes.
+    /// Holds each `chat.new` until it is let through by its arrival order at
+    /// the hold (0-based); every other command passes. Wait on
+    /// `waitUntilHeld(_:)`, not on the tower's recorded calls — a call is
+    /// recorded before it reaches the hold.
     private final class ChatNewHold: @unchecked Sendable {
         private let lock = NSLock()
         private var next = 0
@@ -1029,6 +1035,12 @@ final class AskExplainModelTests: XCTestCase {
                 }
                 if now { continuation.resume() }
             }
+        }
+
+        /// Returns once `count` `chat.new` commands have reached the hold.
+        @MainActor
+        func waitUntilHeld(_ count: Int) async {
+            await waitForCondition { [self] in lock.withLock { next >= count } }
         }
 
         func release(_ index: Int) {
