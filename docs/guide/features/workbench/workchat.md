@@ -98,13 +98,15 @@ Each open ask shows at the end of the chat as a card with its number and title; 
 
 ### Open what the agent names
 <!-- learn
-id: workchat-agent-text-links
+id: workchat-agent-text-links-v2
 title: Click a target, path or hash in Workchat
 text: In Workchat, click a coloured **#42** to see it on the Board, a path to open the file, a hash to copy it.
 area: development
 level: next
 kind: tip
-since: 0.29.4
+since: 0.29.6
+replaces: [workchat-agent-text-links]
+changed: Code spans are coloured too, and dates, PR and ask numbers are marked.
 action: nav:projects
 -->
 

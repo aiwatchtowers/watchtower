@@ -99,7 +99,7 @@ text: Merged or pushed worktrees under .claude/worktrees/ go when a session ends
 area: development
 level: next
 kind: feature
-since: next
+since: 0.29.6
 replaces: [worktrees-auto-cleanup]
 changed: Idle worktrees outside any session now clean up too, locked merged ones included.
 action: nav:projects
