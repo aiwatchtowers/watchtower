@@ -21,7 +21,9 @@ import (
 // rewritten after filing (D18). The guard scans the SQL literals of every
 // writer of owner_asks — Go under internal/ and cmd/, Swift under the Desktop,
 // the Kit and the phone — and fails on a write naming payload other than the
-// filing INSERT and the merge's two folder-ask other_bench statements. SQL
+// filing INSERT and the merge's two folder-ask other_bench statements. The
+// SQL migrations are scanned too: a table rebuild may copy payload verbatim
+// and nothing else (migrationPayloadVerdict). SQL
 // assembled from parts at run time is outside what a text scan sees: an
 // owner_asks write is written as one literal statement (docs/review/review-rules.md §8);
 // the one built exception, workbenchfolders' pinHomeThenMove/pinHomeSQL, is
@@ -43,7 +45,7 @@ func TestAskPayloadItemsAreNeverRewritten(t *testing.T) {
 	allowedMerge := 0
 	for _, s := range stmts {
 		switch payloadWriteVerdict(s) {
-		case payloadWriteNone:
+		case payloadWriteNone, payloadWriteAllowedCopy:
 		case payloadWriteAllowedMerge:
 			allowedMerge++
 		case payloadWriteForbidden:
@@ -54,6 +56,23 @@ func TestAskPayloadItemsAreNeverRewritten(t *testing.T) {
 	}
 	assert.Equal(t, 2, allowedMerge,
 		"the scan sees exactly the two moveAsks folder-ask statements in internal/workbenchfolders/merge.go")
+
+	// The SQL migrations (the Go one, migration_00125.go, is scanned above):
+	// a table rebuild may copy payload verbatim, nothing more.
+	copies := 0
+	for _, s := range walkSources(t, "migrations", func(path string) bool {
+		return strings.HasSuffix(path, ".sql")
+	}, sqlMigrationStatements) {
+		switch migrationPayloadVerdict(s) {
+		case payloadWriteNone, payloadWriteAllowedMerge:
+		case payloadWriteAllowedCopy:
+			copies++
+		case payloadWriteForbidden:
+			t.Errorf("%s:%d writes an owner_asks payload: a migration may only copy the column verbatim in a table "+
+				"rebuild (spec 2026-11-27 D18)\n%s", s.file, s.line, s.text)
+		}
+	}
+	assert.GreaterOrEqual(t, copies, 2, "the scan sees 00209's two owner_asks rebuild copies")
 }
 
 // The scanner catches a payload write in each literal form, and lets the
@@ -162,6 +181,68 @@ func TestAskPayloadGuardScanner(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, forbidden, "a write after an interpolation holding a raw string with an escape: %v", got)
+
+	// A top-level raw string, one-line and block: its inner quotes do not
+	// split it.
+	swiftSrc = "try db.execute(sql: #\"UPDATE \"owner_asks\" SET payload = ?\"#)\n" +
+		"let b = ##\"\"\"\n    UPDATE \"owner_asks\"\n    SET payload = ?\n    \"\"\"##\n" +
+		"#if DEBUG\nlet c = #\"\"#\n#endif\n"
+	got = swiftSQLLiterals("WatchtowerDesktop/Sources/v.swift", []byte(swiftSrc))
+	forbidden = 0
+	for _, s := range got {
+		if payloadWriteVerdict(s) == payloadWriteForbidden {
+			forbidden++
+		}
+	}
+	assert.Equal(t, 2, forbidden, "a top-level Swift raw string and raw block: %v", got)
+}
+
+// The migration scan: a statement writing an owner_asks table's payload is
+// forbidden, a rebuild copying the column verbatim is not.
+func TestAskPayloadGuardMigrationScanner(t *testing.T) {
+	verdicts := func(src string) []payloadWrite {
+		var out []payloadWrite
+		for _, s := range sqlMigrationStatements("migrations/99999_fake.sql", []byte(src)) {
+			out = append(out, migrationPayloadVerdict(s))
+		}
+		return out
+	}
+	rebuild := "-- +goose Up\n-- +goose StatementBegin\nBEGIN IMMEDIATE;\n" +
+		"CREATE TABLE owner_asks_new (id INTEGER PRIMARY KEY, kind TEXT, payload TEXT NOT NULL DEFAULT '{}'); -- payload; kept\n" +
+		"INSERT INTO owner_asks_new (id, kind, payload)\n    SELECT id, kind, payload FROM owner_asks;\n" +
+		"DROP TABLE owner_asks;\nALTER TABLE owner_asks_new RENAME TO owner_asks;\nCOMMIT;\n-- +goose StatementEnd\n"
+	got := verdicts(rebuild)
+	assert.NotContains(t, got, payloadWriteForbidden, "a verbatim rebuild copy")
+	assert.Contains(t, got, payloadWriteAllowedCopy, "the copy is seen")
+
+	for _, src := range []string{
+		"UPDATE owner_asks SET payload = json_remove(payload, '$.questions');",
+		"UPDATE \"owner_asks\" SET payload = '{}' WHERE kind = 'check'",
+		"-- a comment; then\nUPDATE [main].[owner_asks]\n  SET payload = ?;",
+		"REPLACE INTO owner_asks (id, kind) SELECT id, kind FROM owner_asks_old;",
+		"INSERT INTO owner_asks (id, payload) VALUES (1, '{}') ON CONFLICT (id) DO UPDATE SET payload = excluded.payload;",
+		// A rebuild's copy transforming payload, in any position or shape.
+		"INSERT INTO owner_asks_new (id, kind, payload) SELECT id, kind, json_remove(payload, '$.questions[0]') FROM owner_asks;",
+		"INSERT INTO owner_asks_new (id, payload, kind) SELECT id, kind, payload FROM owner_asks;",
+		"INSERT INTO owner_asks_new (id, kind, payload) SELECT id, kind, '{}' FROM owner_asks WHERE payload <> '{}';",
+		"INSERT INTO owner_asks_new (id, payload) SELECT id, payload FROM owner_asks UNION ALL SELECT 0, '{}';",
+		"INSERT INTO asks_tmp (id, payload) SELECT id, (SELECT payload FROM owner_asks LIMIT 1) FROM owner_asks;",
+		"CREATE TABLE asks_tmp AS SELECT id, json_set(payload, '$.x', 1) AS payload FROM owner_asks;",
+		// The temporary table rewritten before its rename.
+		"UPDATE owner_asks_new SET payload = '{}';",
+		"INSERT INTO owner_asks_new (id, payload) VALUES (1, '{}');",
+		"CREATE TRIGGER t AFTER INSERT ON owner_asks BEGIN UPDATE owner_asks SET payload = '{}' WHERE id = NEW.id; END;",
+	} {
+		assert.Contains(t, verdicts(src), payloadWriteForbidden, src)
+	}
+	for _, src := range []string{
+		"UPDATE owner_asks SET automation_run_id = NULL WHERE automation_run_id IN (SELECT id FROM runs);",
+		"CREATE INDEX idx ON owner_asks (json_extract(payload, '$.x'));",
+		"INSERT INTO other (id, body) SELECT id, payload FROM inbox_items;",
+		"UPDATE inbox_items SET payload = '{}';",
+	} {
+		assert.NotContains(t, verdicts(src), payloadWriteForbidden, src)
+	}
 }
 
 // sqlLiteral is one string literal (or a + chain of them, a non-literal part
@@ -178,6 +259,8 @@ const (
 	payloadWriteNone payloadWrite = iota
 	payloadWriteAllowedMerge
 	payloadWriteForbidden
+	// A migration's table rebuild copying payload verbatim.
+	payloadWriteAllowedCopy
 )
 
 // ownerAsksName is owner_asks as SQLite takes it: bare, quoted ("…", `…`
@@ -248,8 +331,212 @@ func isMergePayloadWrite(text string) bool {
 	return false
 }
 
-// walkSources reads every file under root that keep accepts (skipping .build)
-// and collects its literals.
+// ownerAsksTable is owner_asks or a table named after it (a rebuild's
+// owner_asks_new / owner_asks_old), quoted or not, with or without main.
+const ownerAsksTable = `(?:(?:` + sqlQuote + `main` + sqlQuote + `|\[main\])\.)?(?:` + sqlQuote + `owner_asks\w*|\[owner_asks\w*\])`
+
+var (
+	migUpdateRE     = regexp.MustCompile(`(?is)\bUPDATE(?:\s+OR\s+\w+)?\s+` + ownerAsksTable)
+	migReplaceRE    = regexp.MustCompile(`(?is)\b(?:REPLACE|INSERT\s+OR\s+REPLACE)\s+INTO\s+` + ownerAsksTable)
+	migInsertIntoRE = regexp.MustCompile(`(?is)\bINSERT(?:\s+OR\s+\w+)?\s+INTO\s+` + ownerAsksTable)
+	migReadsRE      = regexp.MustCompile(`(?is)\b(?:FROM|JOIN)\s+` + ownerAsksTable)
+	migCopyRE       = regexp.MustCompile(`(?is)^INSERT\s+INTO\s+\S+\s*\(`)
+	migSelectRE     = regexp.MustCompile(`(?is)^\s*SELECT\s+`)
+	migFromRE       = regexp.MustCompile(`(?i)^FROM\b`)
+	migCompoundRE   = regexp.MustCompile(`(?i)\b(?:UNION|INTERSECT|EXCEPT)\b`)
+	migLeadRE       = regexp.MustCompile(`(?i)^(?:INSERT|REPLACE|CREATE)\b`)
+)
+
+// migrationPayloadVerdict classifies one statement of a SQL migration, where
+// an owner_asks write is any table named after it (a rebuild writes
+// owner_asks_new and renames it). An UPDATE, REPLACE or upsert of one naming
+// payload is forbidden (a REPLACE whether or not it names it). An INSERT
+// into one, or an INSERT / CREATE … AS reading one, that names payload is
+// allowed only as a rebuild's verbatim copy: INSERT INTO t (… payload …)
+// SELECT … payload … FROM …, the bare column at the same position in both
+// lists, payload named nowhere else and no compound SELECT. Other statements
+// naming payload (an index, a delete, a read of another table) write none.
+func migrationPayloadVerdict(s sqlLiteral) payloadWrite {
+	if migReplaceRE.MatchString(s.text) {
+		return payloadWriteForbidden
+	}
+	if !payloadRE.MatchString(s.text) {
+		return payloadWriteNone
+	}
+	if migUpdateRE.MatchString(s.text) {
+		return payloadWriteForbidden
+	}
+	if !migInsertIntoRE.MatchString(s.text) && !(migReadsRE.MatchString(s.text) && migLeadRE.MatchString(s.text)) {
+		return payloadWriteNone
+	}
+	if isVerbatimPayloadCopy(s.text) {
+		return payloadWriteAllowedCopy
+	}
+	return payloadWriteForbidden
+}
+
+func isVerbatimPayloadCopy(text string) bool {
+	if len(payloadRE.FindAllStringIndex(text, -1)) != 2 || migCompoundRE.MatchString(text) {
+		return false
+	}
+	loc := migCopyRE.FindStringIndex(text)
+	if loc == nil {
+		return false
+	}
+	cols, rest, ok := sqlParenList(text[loc[1]:])
+	if !ok {
+		return false
+	}
+	sel := migSelectRE.FindStringIndex(rest)
+	if sel == nil {
+		return false
+	}
+	items, ok := sqlSelectList(rest[sel[1]:])
+	if !ok || len(items) != len(cols) {
+		return false
+	}
+	for i, c := range cols {
+		if strings.EqualFold(sqlUnquote(c), "payload") {
+			return strings.EqualFold(sqlUnquote(items[i]), "payload")
+		}
+	}
+	return false
+}
+
+// sqlParenList splits the list up to the ")" closing an already opened "("
+// at its top-level commas, and returns what follows it.
+func sqlParenList(s string) (items []string, rest string, ok bool) {
+	depth, start := 0, 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth == 0 {
+				return append(items, s[start:i]), s[i+1:], true
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				items = append(items, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return nil, "", false
+}
+
+// sqlSelectList splits a SELECT's result list, up to its top-level FROM, at
+// its top-level commas.
+func sqlSelectList(s string) ([]string, bool) {
+	var items []string
+	depth, start := 0, 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				items = append(items, s[start:i])
+				start = i + 1
+			}
+		default:
+			if depth == 0 && (i == 0 || !isSQLWordByte(s[i-1])) && migFromRE.MatchString(s[i:]) {
+				return append(items, s[start:i]), true
+			}
+		}
+	}
+	return nil, false
+}
+
+func isSQLWordByte(c byte) bool {
+	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
+// sqlUnquote trims a list item and drops one pair of SQLite name quotes.
+func sqlUnquote(item string) string {
+	item = strings.TrimSpace(item)
+	if len(item) >= 2 {
+		if first, last := item[0], item[len(item)-1]; first == '"' && last == '"' || first == '`' && last == '`' || first == '[' && last == ']' {
+			return item[1 : len(item)-1]
+		}
+	}
+	return item
+}
+
+// sqlMigrationStatements splits a SQL migration into its statements at the
+// semicolons outside quotes, `--` comments (goose's markers among them) and
+// /* */ comments dropped, each with the line it starts on. A trigger's body
+// splits into its statements, each classified on its own.
+func sqlMigrationStatements(path string, src []byte) []sqlLiteral {
+	s := string(src)
+	var out []sqlLiteral
+	var b strings.Builder
+	line, start := 1, 0
+	flush := func() {
+		if text := strings.TrimSpace(b.String()); text != "" {
+			out = append(out, sqlLiteral{file: path, line: start, text: text})
+		}
+		b.Reset()
+		start = 0
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case strings.HasPrefix(s[i:], "--"):
+			end := strings.IndexByte(s[i:], '\n')
+			if end < 0 {
+				i = len(s)
+				continue
+			}
+			i += end - 1 // the newline is counted next
+			continue
+		case strings.HasPrefix(s[i:], "/*"):
+			end := strings.Index(s[i+2:], "*/")
+			if end < 0 {
+				i = len(s)
+				continue
+			}
+			line += strings.Count(s[i:i+2+end+2], "\n")
+			b.WriteByte(' ')
+			i += 2 + end + 1
+			continue
+		case c == '\'' || c == '"' || c == '`' || c == '[':
+			closing := c
+			if c == '[' {
+				closing = ']'
+			}
+			end := strings.IndexByte(s[i+1:], closing)
+			if end < 0 {
+				end = len(s) - i - 1
+			}
+			if start == 0 {
+				start = line
+			}
+			lit := s[i : i+1+end+1]
+			line += strings.Count(lit, "\n")
+			b.WriteString(lit)
+			i += end + 1
+			continue
+		case c == ';':
+			flush()
+			continue
+		case c == '\n':
+			line++
+		}
+		if start == 0 && c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			start = line
+		}
+		b.WriteByte(c)
+	}
+	flush()
+	return out
+}
+
+// walkSources reads every file under root that keep accepts (skipping build
+// output: .build, DerivedData, SourcePackages) and collects its literals.
 func walkSources(t *testing.T, root string, keep func(string) bool, scan func(string, []byte) []sqlLiteral) []sqlLiteral {
 	t.Helper()
 	var out []sqlLiteral
@@ -258,7 +545,7 @@ func walkSources(t *testing.T, root string, keep func(string) bool, scan func(st
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == ".build" {
+			if name := d.Name(); name == ".build" || name == "DerivedData" || name == "SourcePackages" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -349,12 +636,23 @@ func swiftSQLLiterals(path string, src []byte) []sqlLiteral {
 	// text and the index past it.
 	readString := func(i int) (string, int) {
 		var b strings.Builder
-		if strings.HasPrefix(s[i:], `"""`) {
-			end := strings.Index(s[i+3:], `"""`)
+		hashes := swiftStringHashes(s, i)
+		q := i + hashes
+		if strings.HasPrefix(s[q:], `"""`) {
+			closing := `"""` + strings.Repeat("#", hashes)
+			end := strings.Index(s[q+3:], closing)
 			if end < 0 {
-				return s[i+3:], len(s)
+				return s[q+3:], len(s)
 			}
-			return s[i+3 : i+3+end], i + 3 + end + 3
+			return s[q+3 : q+3+end], q + 3 + end + len(closing)
+		}
+		if hashes > 0 {
+			// A raw string: a backslash escapes nothing.
+			end := skipSwiftString(s, i) + 1
+			if closing := `"` + strings.Repeat("#", hashes); end-len(closing) > q && strings.HasSuffix(s[:end], closing) {
+				return s[q+1 : end-len(closing)], end
+			}
+			return s[q+1 : end], end
 		}
 		j := i + 1
 		for j < len(s) && s[j] != '"' && s[j] != '\n' {
@@ -415,7 +713,7 @@ func swiftSQLLiterals(path string, src []byte) []sqlLiteral {
 		case s[i] == '\n':
 			line++
 			i++
-		case s[i] == '"':
+		case swiftStringHashes(s, i) >= 0:
 			start := line
 			var b strings.Builder
 			text, j := readString(i)
@@ -427,7 +725,7 @@ func swiftSQLLiterals(path string, src []byte) []sqlLiteral {
 					break
 				}
 				k = skipSpace(k + 1)
-				if k < len(s) && s[k] == '"' {
+				if swiftStringHashes(s, k) >= 0 {
 					text, k = readString(k)
 					b.WriteString(text)
 				} else {
@@ -451,6 +749,19 @@ func swiftSQLLiterals(path string, src []byte) []sqlLiteral {
 		}
 	}
 	return out
+}
+
+// swiftStringHashes returns the number of # opening the string literal at
+// s[i] (0 for a plain `"`), or -1 when none starts there (`#if`, `#available`).
+func swiftStringHashes(s string, i int) int {
+	hashes := 0
+	for i+hashes < len(s) && s[i+hashes] == '#' {
+		hashes++
+	}
+	if i+hashes < len(s) && s[i+hashes] == '"' {
+		return hashes
+	}
+	return -1
 }
 
 // skipSwiftString returns the index of the last byte of the one-line string
