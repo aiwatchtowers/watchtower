@@ -17,13 +17,28 @@ struct AskExplainItemsMock {
         case checks
         /// The chat opened from one item.
         case chat(Subject, Feed)
+        /// Back from question 3's chat: the question view where it was,
+        /// scrolled to question 3.
+        case backScrolled
     }
 
     enum Subject: Equatable { case question, step, longQuestion }
-    enum Feed: Equatable { case explained, loading, error }
+    enum Feed: Equatable {
+        case explained, loading, error
+        /// A follow-up sent, its reply streaming; the composer shows Stop.
+        case busy
+        /// The assistant slots are full: the composer's own queued status.
+        case queued
+        /// The conversation is being found or created: a spinner, no composer.
+        case finding
+        /// The open failed (the workbench is gone): its line, no Retry.
+        case openFailed
+    }
 
     var screen: Screen
     var narrow = false
+    /// The long card after Show more: capped, scrolling inside.
+    var cardExpanded = false
 
     // MARK: - Copy
 
@@ -32,6 +47,16 @@ struct AskExplainItemsMock {
     static let back = "Back to question"
     static let backToCheck = "Back to check"
     static let showMore = "Show more"
+    static let showLess = "Show less"
+    static let queued = "Queued — waiting for a free assistant slot"
+    static let cancel = "Cancel"
+    static let openFailed = "Couldn't explain: This workbench no longer exists."
+    static let followUp = "And if I never answer?"
+    static let followUpReply = "Then the write keeps waiting. Nothing is dropped, and the agent"
+
+    /// Each entry's accessibility label names its item.
+    static func entryLabel(question number: Int) -> String { "Not clear? Question \(number)" }
+    static func entryLabel(step number: Int) -> String { "Not clear? Step \(number)" }
     static let recommended = "Recommended"
     static let retry = "Retry"
     static let turnError = "Couldn't answer: the provider did not answer in time."
@@ -72,11 +97,13 @@ struct AskExplainItemsMock {
     static let longQuestion = Question(
         text: "When a queued write waits and the agent keeps working, should the agent see its own pending change "
             + "in the files it reads (as if the write had landed), or the file as it is on disk until you approve, "
-            + "knowing that a later edit of the same file may then conflict with the queued one?",
+            + "knowing that a later edit of the same file may then conflict with the queued one? If you pick the file "
+            + "on disk, the agent is also told which of its writes are still waiting for you.",
         options: [
             Option(label: "Show it the pending change", detail: "", recommended: true),
             Option(label: "Show the file on disk", detail: ""),
-            Option(label: "Stop the agent until you answer", detail: "")
+            Option(label: "Stop the agent until you answer", detail: ""),
+            Option(label: "Ask me each time", detail: "")
         ]
     )
 
@@ -135,7 +162,14 @@ enum AskExplainItemsMockShotFixtures {
         shot("card-long", .init(screen: .chat(.longQuestion, .explained))),
         shot("item-narrow", .init(screen: .chat(.question, .explained), narrow: true), width: 320),
         shot("item-loading", .init(screen: .chat(.question, .loading))),
-        shot("item-error", .init(screen: .chat(.question, .error)))
+        shot("item-error", .init(screen: .chat(.question, .error))),
+        // Added in spec review round 1 (ask #1868): the states the first set lacked.
+        shot("item-busy", .init(screen: .chat(.question, .busy))),
+        shot("item-queued", .init(screen: .chat(.question, .queued))),
+        shot("item-finding", .init(screen: .chat(.question, .finding))),
+        shot("item-open-failed", .init(screen: .chat(.question, .openFailed))),
+        shot("card-expanded", .init(screen: .chat(.longQuestion, .explained), cardExpanded: true)),
+        shot("back-scrolled", .init(screen: .backScrolled))
     ]
 
     private static func shot(
@@ -167,6 +201,9 @@ struct AskExplainItemsMockShot: View {
             case .checks:
                 askScroll { checksBody }
                 answerBar
+            case .backScrolled:
+                askScroll(bottom: true) { questionsBody }
+                answerBar
             case let .chat(subject, feed):
                 chat(subject, feed)
             }
@@ -196,7 +233,7 @@ struct AskExplainItemsMockShot: View {
         .padding(.vertical, Spacing.regular)
     }
 
-    private func askScroll(@ViewBuilder _ content: () -> some View) -> some View {
+    private func askScroll(bottom: Bool = false, @ViewBuilder _ content: () -> some View) -> some View {
         ScrollView {
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -204,6 +241,7 @@ struct AskExplainItemsMockShot: View {
                 .card()
                 .padding(.horizontal, Spacing.medium)
         }
+        .defaultScrollAnchor(bottom ? .bottom : .top)
         .frame(maxHeight: .infinity)
     }
 
@@ -212,7 +250,7 @@ struct AskExplainItemsMockShot: View {
     private var questionsBody: some View {
         VStack(alignment: .leading, spacing: Spacing.wide) {
             Text(Mock.questionTitle).font(.headline)
-            ForEach(Mock.questions, id: \.text) { question in
+            ForEach(Array(Mock.questions.enumerated()), id: \.element.text) { index, question in
                 VStack(alignment: .leading, spacing: Spacing.compact) {
                     Text(question.text).fontWeight(.semibold)
                     ForEach(question.options, id: \.label) { option in
@@ -223,7 +261,7 @@ struct AskExplainItemsMockShot: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(Spacing.regular)
                         .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.control))
-                    entry
+                    entry(number: index + 1)
                 }
             }
         }
@@ -243,13 +281,14 @@ struct AskExplainItemsMockShot: View {
     }
 
     /// Today's entry, unchanged, at the foot of its question's block.
-    private var entry: some View {
+    private func entry(number: Int) -> some View {
         HStack {
             Spacer()
             Button {} label: {
                 Label(Mock.entry, systemImage: "questionmark.circle").font(.caption)
             }
             .buttonStyle(KitQuietButtonStyle(label: .secondary))
+            .accessibilityLabel(Mock.entryLabel(question: number))
         }
     }
 
@@ -279,6 +318,7 @@ struct AskExplainItemsMockShot: View {
                 }
                 .buttonStyle(KitQuietButtonStyle(label: .secondary))
                 .help(Mock.stepHelp)
+                .accessibilityLabel(Mock.entryLabel(step: number))
             }
             HStack(spacing: Spacing.small) {
                 markChip("Works", icon: "checkmark.circle")
@@ -313,10 +353,27 @@ struct AskExplainItemsMockShot: View {
     private func chat(_ subject: Mock.Subject, _ feed: Mock.Feed) -> some View {
         VStack(spacing: 0) {
             strip(subject)
-            AskExplainItemCard(subject: subject)
+            AskExplainItemCard(subject: subject, expanded: mock.cardExpanded)
                 .padding(.horizontal, Spacing.medium)
-            rows(subject, feed)
-            composer(subject, streaming: feed == .loading)
+            switch feed {
+            case .finding:
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .openFailed:
+                VStack(alignment: .leading, spacing: Spacing.regular) {
+                    Label(Mock.openFailed, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(Tone.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(Spacing.large)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            default:
+                rows(subject, feed)
+                if feed == .queued { queuedStatus }
+                composer(subject, streaming: feed == .loading || feed == .busy)
+            }
         }
     }
 
@@ -343,8 +400,20 @@ struct AskExplainItemsMockShot: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.regular) {
                 switch feed {
-                case .loading:
-                    TypingDots()
+                case .loading, .queued:
+                    if feed == .loading { TypingDots() }
+                case .busy:
+                    ForEach(explanation(subject), id: \.self) {
+                        Text($0)
+                    }
+                    Text(Mock.followUp)
+                        .padding(.horizontal, Spacing.medium)
+                        .padding(.vertical, Spacing.regular)
+                        .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.container))
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    Text(Mock.followUpReply)
+                case .finding, .openFailed:
+                    EmptyView()
                 case .error:
                     errorCard
                 case .explained:
@@ -381,6 +450,17 @@ struct AskExplainItemsMockShot: View {
         .background(Tone.error.opacity(ChipTint.fillOpacity / 2), in: RoundedRectangle(cornerRadius: Radius.container))
     }
 
+    /// The composer's own queued status (spec D10 of 2026-11-24).
+    private var queuedStatus: some View {
+        HStack(spacing: Spacing.compact) {
+            Image(systemName: "hourglass").font(.caption).foregroundStyle(.secondary)
+            Text(Mock.queued).font(.caption).foregroundStyle(.secondary)
+            Spacer(minLength: Spacing.compact)
+            Button(Mock.cancel) {}.buttonStyle(.kitQuiet).font(.caption)
+        }
+        .padding(.horizontal, Spacing.large)
+    }
+
     private func composer(_ subject: Mock.Subject, streaming: Bool) -> some View {
         HStack(spacing: Spacing.compact) {
             Text(subject == .step ? "Ask about this step…" : "Ask about this question…")
@@ -406,13 +486,29 @@ struct AskExplainItemsMockShot: View {
 private struct AskExplainItemCard: View {
     typealias Mock = AskExplainItemsMock
     let subject: Mock.Subject
+    var expanded = false
 
     /// About four lines of callout text.
     private static let clampHeight: CGFloat = 76
+    /// The expanded card's cap; past it the card scrolls inside itself.
+    private static let expandedMaxHeight: CGFloat = 180
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
-            if subject == .longQuestion {
+            if subject == .longQuestion, expanded {
+                // Whole up to the cap (this sample fits); past it the built card
+                // scrolls inside a frame of `expandedMaxHeight`.
+                content
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack {
+                    Spacer()
+                    Button {} label: {
+                        Label(Mock.showLess, systemImage: "chevron.up").font(.caption)
+                    }
+                    .buttonStyle(KitQuietButtonStyle(label: .secondary))
+                }
+            } else if subject == .longQuestion {
                 content
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxHeight: Self.clampHeight, alignment: .top)

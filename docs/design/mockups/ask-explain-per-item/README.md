@@ -26,6 +26,26 @@ Board #2412, follow-up to the ask-explain chat (#2355). Design-only shots from `
 
 Dark versions of every shot sit next to these files (`-dark.png`).
 
+## Added in spec review (ask #1868)
+
+The states the first set lacked, so every screen has a mockup before the build. The long-question sample gained a sentence and a fourth option so the expanded card shows a tall item (`card-long` was re-rendered with it).
+
+| Busy | Queued | Finding |
+|---|---|---|
+| ![](ask-explain-item-busy-light.png) | ![](ask-explain-item-queued-dark.png) | ![](ask-explain-item-finding-light.png) |
+
+| Failed open (card stays) | Expanded card (Show less) | Back, scrolled to question 3 |
+|---|---|---|
+| ![](ask-explain-item-open-failed-dark.png) | ![](ask-explain-card-expanded-light.png) | ![](ask-explain-back-scrolled-light.png) |
+
+- **Busy:** a follow-up sent, its reply streaming, Stop on the composer.
+- **Queued:** the composer's own queued line with Cancel; no extra line of this feature.
+- **Finding:** strip and card over a spinner while the conversation is found or created.
+- **Failed open:** strip and card, then "Couldn't explain: …"; a gone workbench has no Retry.
+- **Expanded card:** whole up to 180 pt with **Show less**; a taller item scrolls inside that height (this sample fits).
+- **Back, scrolled:** the question view after **Back to question** from question 3's chat, still scrolled where it was.
+- Every entry's accessibility label names its item ("Not clear? Question 2", "Not clear? Step 3"); the visible text is unchanged.
+
 ## Open points
 
 - The card leaves out option descriptions to stay short; the assistant's reply explains them.
