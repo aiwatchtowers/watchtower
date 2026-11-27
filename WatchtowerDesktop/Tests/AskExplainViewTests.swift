@@ -272,19 +272,27 @@ final class AskExplainViewTests: XCTestCase {
         XCTAssertEqual(withCLI, ["Not clear? Question 1", "Not clear? Question 2", "Not clear? Question 3"], "with a CLI")
     }
 
-    /// A closed question ask and a check ask keep their entries.
+    /// A closed question ask and a closed check ask keep their entries.
     func testEntriesOnAClosedAsk() async throws {
         let projectID = fx.projectID
         let payload = AskExplainFixture.threeQuestions
-        let id = try await fx.pool.write {
-            try TestDatabase.insertOwnerAsk($0, projectID: projectID, payload: payload, status: "answered",
-                                            answer: #"{"note":"Fine"}"#)
+        let steps = AskExplainFixture.threeSteps
+        let (questionID, checkID) = try await fx.pool.write { db in
+            (try TestDatabase.insertOwnerAsk(db, projectID: projectID, payload: payload, status: "answered",
+                                             answer: #"{"note":"Fine"}"#),
+             try TestDatabase.insertOwnerAsk(db, projectID: projectID, kind: "check", payload: steps, status: "answered",
+                                             answer: #"{"note":"Fine"}"#))
         }
-        let read = try await fx.pool.read { try OwnerAskQueries.ask($0, id: id, projectID: projectID) }
-        let closed = try XCTUnwrap(read)
+        let (readQuestion, readCheck) = try await fx.pool.read {
+            (try OwnerAskQueries.ask($0, id: questionID, projectID: projectID),
+             try OwnerAskQueries.ask($0, id: checkID, projectID: projectID))
+        }
+        let closed = try XCTUnwrap(readQuestion)
+        let closedCheck = try XCTUnwrap(readCheck)
         XCTAssertFalse(closed.isOpen)
+        XCTAssertFalse(closedCheck.isOpen)
         let closedEntries = try await drawerEntries(closed, hasCLI: true)
-        let checkEntries = try await drawerEntries(try fx.insertAsk(kind: "check"), hasCLI: true)
+        let checkEntries = try await drawerEntries(closedCheck, hasCLI: true)
         XCTAssertEqual(closedEntries, ["Not clear? Question 1", "Not clear? Question 2", "Not clear? Question 3"])
         XCTAssertEqual(checkEntries, ["Not clear? Step 1", "Not clear? Step 2", "Not clear? Step 3"])
     }
@@ -434,7 +442,7 @@ final class AskExplainViewTests: XCTestCase {
         vm.asks.chats = hasCLI ? fx.center : nil
         await vm.asks.load(projectID: fx.projectID)
         return try OwnerAskDrawer(vm: vm, ask: ask).inspect().findAll(AskExplainEntry.self).map {
-            AskExplainEntry.accessibilityLabel(try $0.actualView().item)
+            try $0.find(ViewType.Button.self).accessibilityLabel().string()
         }
     }
 
