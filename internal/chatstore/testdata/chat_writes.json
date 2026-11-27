@@ -1062,6 +1062,218 @@
           ]
         }
       ]
+    },
+    {
+      "name": "new_ask_explain_item_chat_of_a_live_workbench",
+      "command": "chat.new",
+      "swift": "DatabaseEmbeddedChatStore.conversationID",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (4, 'acme', '/tmp/acme')"
+      ],
+      "params": {
+        "context": {
+          "type": "owner_ask_explain",
+          "id": "4:9:q2",
+          "title": "Ask #9 · Question 2",
+          "reuse": true
+        }
+      },
+      "result": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT title, context_type, context_id FROM chat_conversations",
+          "rows": [
+            [
+              "Ask #9 · Question 2",
+              "owner_ask_explain",
+              "4:9:q2"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "items_of_one_ask_get_their_own_chats",
+      "command": "chat.new",
+      "swift": "DatabaseEmbeddedChatStore.conversationID",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (4, 'acme', '/tmp/acme')",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Ask #9 · Question 1', 'owner_ask_explain', '4:9:q1', 1, 1)"
+      ],
+      "params": {
+        "context": {
+          "type": "owner_ask_explain",
+          "id": "4:9:q2",
+          "title": "Ask #9 · Question 2",
+          "reuse": true
+        }
+      },
+      "result": {
+        "conversation_id": 2
+      },
+      "check": [
+        {
+          "sql": "SELECT id, context_id FROM chat_conversations ORDER BY id",
+          "rows": [
+            [
+              1,
+              "4:9:q1"
+            ],
+            [
+              2,
+              "4:9:q2"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_ask_explain_item_chat_of_a_deleted_workbench_is_refused",
+      "command": "chat.new",
+      "swift": "DatabaseEmbeddedChatStore.conversationID",
+      "seed": [],
+      "params": {
+        "context": {
+          "type": "owner_ask_explain",
+          "id": "4:9:s1",
+          "title": "Ask #9 · Step 1",
+          "reuse": true
+        }
+      },
+      "refusal": "not_found",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_ask_explain_chat_with_a_non_canonical_item_is_refused",
+      "command": "chat.new",
+      "swift": "DatabaseEmbeddedChatStore.conversationID",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (4, 'acme', '/tmp/acme')"
+      ],
+      "params": {
+        "context": {
+          "type": "owner_ask_explain",
+          "id": "4:9:q02",
+          "title": "Ask #9 · Question 2",
+          "reuse": true
+        }
+      },
+      "refusal": "unsupported",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_ask_explain_chat_with_an_unknown_item_kind_is_refused",
+      "command": "chat.new",
+      "swift": "DatabaseEmbeddedChatStore.conversationID",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (4, 'acme', '/tmp/acme')"
+      ],
+      "params": {
+        "context": {
+          "type": "owner_ask_explain",
+          "id": "4:9:x2",
+          "title": "Ask #9 · Question 2",
+          "reuse": true
+        }
+      },
+      "refusal": "unsupported",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "draft_save_of_a_deleted_ask_explain_item_chat_writes_nothing",
+      "command": "chat.draft.save",
+      "swift": "QueuedDraftQueries.save",
+      "seed": [],
+      "params": {
+        "surface_key": "owner_ask_explain.4:9:q2.5",
+        "text": "And option B?"
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_queued_drafts",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "draft_save_under_a_merged_ask_explain_item_key_lands_on_the_current_key",
+      "command": "chat.draft.save",
+      "swift": "QueuedDraftQueries.save",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (5, 'Ask #9 · Question 2', 'owner_ask_explain', '8:9:q2', 1, 1)",
+        "INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES ('owner_ask_explain.8:9:q2.5', 'old', 1)"
+      ],
+      "params": {
+        "surface_key": "owner_ask_explain.4:9:q2.5",
+        "text": "new"
+      },
+      "check": [
+        {
+          "sql": "SELECT surface_key, text FROM chat_queued_drafts",
+          "rows": [
+            [
+              "owner_ask_explain.8:9:q2.5",
+              "new"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "draft_clear_under_a_merged_ask_explain_item_key_clears_the_current_key",
+      "command": "chat.draft.clear",
+      "swift": "QueuedDraftQueries.clear",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (5, 'Ask #9 · Question 2', 'owner_ask_explain', '8:9:q2', 1, 1)",
+        "INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES ('owner_ask_explain.8:9:q2.5', 'old', 1)",
+        "INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES ('track:3', 'kept', 1)"
+      ],
+      "params": {
+        "surface_key": "owner_ask_explain.4:9:q2.5"
+      },
+      "check": [
+        {
+          "sql": "SELECT surface_key FROM chat_queued_drafts",
+          "rows": [
+            [
+              "track:3"
+            ]
+          ]
+        }
+      ]
     }
   ]
 }

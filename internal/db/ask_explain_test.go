@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,6 +27,25 @@ func TestAskExplainWorkbenchID(t *testing.T) {
 		{"4:09", 0, false},
 		{"+4:9", 0, false},
 		{"4:-9", 0, false},
+		// The item form `<workbench>:<ask>:<q|s><N>` (spec 2026-11-27 D3).
+		{"4:9:q1", 4, true},
+		{"4:9:s12", 4, true},
+		{"12:345:q4", 12, true},
+		{"4:9:", 0, false},
+		{"4:9:q", 0, false},
+		{"4:9:q0", 0, false},
+		{"4:9:q01", 0, false},
+		{"4:9:q+1", 0, false},
+		{"4:9:q-1", 0, false},
+		{"4:9:Q1", 0, false},
+		{"4:9:x1", 0, false},
+		{"4:9:1", 0, false},
+		{"4:9:q1:s1", 0, false},
+		{"04:9:q1", 0, false},
+		{"4:09:q1", 0, false},
+		{"4:9:q1 ", 0, false},
+		{"4:9:q1:s1:s2:s3:s4:s5", 0, false},
+		{strings.Repeat("4:", 1000) + "9", 0, false},
 	} {
 		got, ok := AskExplainWorkbenchID(tc.in)
 		assert.Equal(t, tc.ok, ok, tc.in)
@@ -38,15 +58,24 @@ func TestAskExplainWorkbenchID(t *testing.T) {
 // by the write lock, and whichever commits first, no draft of a deleted
 // "Not clear?" chat is left (ask #1849, board #2383). Other surfaces' keys are
 // untouched.
+// An item chat (`<workbench>:<ask>:q<N>`, spec 2026-11-27 D3) routes the same
+// way: its key carries the conversation id at the end.
 func TestQueuedDraftOfADeletedAskExplainChatIsNotSaved(t *testing.T) {
+	for name, item := range map[string]string{"whole ask": "", "item": ":q2"} {
+		t.Run(name, func(t *testing.T) { queuedDraftOfADeletedAskExplainChat(t, item) })
+	}
+}
+
+func queuedDraftOfADeletedAskExplainChat(t *testing.T, item string) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
+	contextID := fmt.Sprintf("%d:5%s", pid, item)
 	res, err := d.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
-		VALUES ('Ask #5', ?, ?, 0, 0)`, AskExplainContextType, fmt.Sprintf("%d:5", pid))
+		VALUES ('Ask #5', ?, ?, 0, 0)`, AskExplainContextType, contextID)
 	require.NoError(t, err)
 	conv, err := res.LastInsertId()
 	require.NoError(t, err)
-	key := fmt.Sprintf("owner_ask_explain.%d:5.%d", pid, conv)
+	key := fmt.Sprintf("owner_ask_explain.%s.%d", contextID, conv)
 
 	save := func(key string) {
 		require.NoError(t, d.WithTx(func(tx *sql.Tx) error { return SaveQueuedDraftTx(tx, key, "and B?", 1) }))
