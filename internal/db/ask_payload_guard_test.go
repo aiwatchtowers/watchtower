@@ -23,8 +23,10 @@ import (
 // the Kit and the phone — and fails on a write naming payload other than the
 // filing INSERT and the merge's two folder-ask other_bench statements. SQL
 // assembled from parts at run time is outside what a text scan sees: an
-// owner_asks write is written as one literal statement (docs/review/review-rules.md §8).
-// Its Swift companion is AskExplainTests.testOwnerAskHasNoRecordWrite.
+// owner_asks write is written as one literal statement (docs/review/review-rules.md §8);
+// the one built exception, workbenchfolders' pinHomeThenMove/pinHomeSQL, is
+// pinned by TestOwnerAsksBuiltSQLNeverNamesPayload there. Its Swift
+// companion is AskExplainTests.testOwnerAskHasNoRecordWrite.
 func TestAskPayloadItemsAreNeverRewritten(t *testing.T) {
 	var stmts []sqlLiteral
 	for _, root := range []string{"../../internal", "../../cmd"} {
@@ -113,6 +115,12 @@ func TestAskPayloadGuardScanner(t *testing.T) {
 		{file: "../../internal/db/owner_asks.go", text: "INSERT OR REPLACE INTO main.owner_asks (id) VALUES (?)"},
 		{file: "../../internal/db/owner_asks.go", text: `INSERT INTO "owner_asks" (id, payload) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET payload = excluded.payload`},
 		{file: "../../internal/db/owner_asks.go", text: "INSERT INTO main.owner_asks (id, payload) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET payload = excluded.payload"},
+		// SQLite's bracket quoting.
+		{file: "../../internal/db/owner_asks.go", text: "UPDATE [owner_asks] SET payload = ?"},
+		{file: "../../internal/db/owner_asks.go", text: "UPDATE [main].[owner_asks] SET payload = ?"},
+		{file: "../../internal/db/owner_asks.go", text: "UPDATE main.[owner_asks] SET payload = ?"},
+		{file: "../../internal/db/owner_asks.go", text: "REPLACE INTO [owner_asks] (id) VALUES (?)"},
+		{file: "../../internal/db/owner_asks.go", text: "REPLACE INTO [main].[owner_asks] (id) VALUES (?)"},
 	} {
 		assert.Equal(t, payloadWriteForbidden, payloadWriteVerdict(s), s.text)
 	}
@@ -129,6 +137,19 @@ func TestAskPayloadGuardScanner(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, forbidden, "a write after an interpolation holding a quoted paren: %v", got)
+
+	// A raw string inside an interpolation: its backslash escapes nothing,
+	// so the string ends at `"#` and a write on a later line is still seen.
+	swiftSrc = "let label = \"\\(v ?? #\"\\\"#)\"\n" +
+		"try db.execute(sql: \"UPDATE owner_asks SET payload = ?\")\n"
+	got = swiftSQLLiterals("WatchtowerDesktop/Sources/z.swift", []byte(swiftSrc))
+	forbidden = 0
+	for _, s := range got {
+		if payloadWriteVerdict(s) == payloadWriteForbidden {
+			forbidden++
+		}
+	}
+	assert.Equal(t, 1, forbidden, "a write after an interpolation holding a raw string: %v", got)
 }
 
 // sqlLiteral is one string literal (or a + chain of them, a non-literal part
@@ -147,9 +168,12 @@ const (
 	payloadWriteForbidden
 )
 
-// ownerAsksName is owner_asks as SQLite takes it: bare, quoted ("…" or
-// `…`), with or without the main schema.
-const ownerAsksName = "(?:[\"`]?main[\"`]?\\.)?[\"`]?owner_asks\\b"
+// ownerAsksName is owner_asks as SQLite takes it: bare, quoted ("…", `…`
+// or […]), with or without the main schema.
+const (
+	sqlQuote      = "[\"`]?"
+	ownerAsksName = `(?:(?:` + sqlQuote + `main` + sqlQuote + `|\[main\])\.)?(?:` + sqlQuote + `owner_asks\b|\[owner_asks\])`
+)
 
 var (
 	ownerAsksUpdateRE  = regexp.MustCompile(`(?is)\bUPDATE(?:\s+OR\s+\w+)?\s+` + ownerAsksName)
@@ -327,14 +351,10 @@ func swiftSQLLiterals(path string, src []byte) []sqlLiteral {
 					depth := 0
 					k := j + 1
 					for ; k < len(s); k++ {
-						if s[k] == '"' {
+						if s[k] == '"' || s[k] == '#' {
 							// A string inside the interpolation: its
 							// parens do not count.
-							for k++; k < len(s) && s[k] != '"' && s[k] != '\n'; k++ {
-								if s[k] == '\\' {
-									k++
-								}
-							}
+							k = skipSwiftString(s, k)
 							continue
 						}
 						if s[k] == '(' {
@@ -419,4 +439,32 @@ func swiftSQLLiterals(path string, src []byte) []sqlLiteral {
 		}
 	}
 	return out
+}
+
+// skipSwiftString returns the index of the last byte of the one-line string
+// literal starting at s[i] — `"…"` (a backslash escapes) or a raw `#"…"#`
+// (any number of #, a backslash escapes nothing, it ends at `"` and as many
+// #). A # not opening a raw string is returned as is.
+func skipSwiftString(s string, i int) int {
+	hashes := 0
+	for i+hashes < len(s) && s[i+hashes] == '#' {
+		hashes++
+	}
+	if i+hashes >= len(s) || s[i+hashes] != '"' {
+		return i + hashes - 1
+	}
+	closing := "\"" + strings.Repeat("#", hashes)
+	for k := i + hashes + 1; k < len(s); k++ {
+		if s[k] == '\n' {
+			return k - 1 // unterminated on its line: stop before the newline
+		}
+		if hashes == 0 && s[k] == '\\' {
+			k++
+			continue
+		}
+		if strings.HasPrefix(s[k:], closing) {
+			return k + len(closing) - 1
+		}
+	}
+	return len(s) - 1
 }
