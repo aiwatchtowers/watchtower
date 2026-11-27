@@ -416,7 +416,9 @@ func reKeyChats(ctx context.Context, tx *sql.Tx, m *merger) error {
 		return err //nolint:wrapcheck // Merge names the step
 	}
 	// The "Not clear?" chats' queued follow-ups follow their conversations:
-	// the Desktop keys them `owner_ask_explain.<wb>:<ask>.<conversation>`.
+	// the Desktop keys them `owner_ask_explain.<wb>:<ask>.<conversation>`, or
+	// `owner_ask_explain.<wb>:<ask>:<item>.<conversation>` for an item chat
+	// (spec 2026-11-27 D3); the `<wb>:` prefix re-keys both shapes.
 	draftFrom, draftInto := db.AskExplainDraftKeyPrefix(m.from), db.AskExplainDraftKeyPrefix(m.into)
 	if _, err := tx.ExecContext(ctx, `UPDATE chat_queued_drafts SET surface_key = ? || substr(surface_key, length(?) + 1)
 		WHERE substr(surface_key, 1, length(?)) = ?`, draftInto, draftFrom, draftFrom, draftFrom); err != nil {

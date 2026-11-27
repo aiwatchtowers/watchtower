@@ -435,7 +435,9 @@ func TestDeleteWorkbench_CodeQuestionPrefixIsExact(t *testing.T) {
 }
 
 // TestDeleteWorkbenchDropsAskExplainChats: a workbench's "Not clear?" chats go
-// with it, the prefix matched exactly (workbench 1 never takes 10's).
+// with it, the prefix matched exactly (workbench 1 never takes 10's) — the
+// whole-ask chats (`<wb>:<ask>`) and the item chats (`<wb>:<ask>:q<N>`/`s<N>`,
+// spec 2026-11-27 D3) alike, with their queued drafts.
 func TestDeleteWorkbenchDropsAskExplainChats(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
@@ -449,11 +451,16 @@ func TestDeleteWorkbenchDropsAskExplainChats(t *testing.T) {
 	}
 	mine := insert(fmt.Sprintf("%d:5", pid))
 	longer := insert(fmt.Sprintf("%d1:5", pid))
+	mineQ := insert(fmt.Sprintf("%d:5:q1", pid))
+	mineS := insert(fmt.Sprintf("%d:5:s3", pid))
+	longerQ := insert(fmt.Sprintf("%d1:5:q1", pid))
 	// Queued follow-ups, keyed by the Desktop's surface key.
 	mineDraft := fmt.Sprintf("owner_ask_explain.%d:5.%d", pid, mine)
 	longerDraft := fmt.Sprintf("owner_ask_explain.%d1:5.%d", pid, longer)
+	mineQDraft := fmt.Sprintf("owner_ask_explain.%d:5:q1.%d", pid, mineQ)
+	longerQDraft := fmt.Sprintf("owner_ask_explain.%d1:5:q1.%d", pid, longerQ)
 	otherKind := fmt.Sprintf("code_question.%d:a.go:3.9", pid)
-	for _, key := range []string{mineDraft, longerDraft, otherKind} {
+	for _, key := range []string{mineDraft, longerDraft, mineQDraft, longerQDraft, otherKind} {
 		_, err := d.Exec(`INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES (?, 'and B?', 1)`, key)
 		require.NoError(t, err)
 	}
@@ -465,6 +472,12 @@ func TestDeleteWorkbenchDropsAskExplainChats(t *testing.T) {
 	assert.Equal(t, 0, n, "the workbench's explain chat is gone")
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE id = ?`, longer).Scan(&n))
 	assert.Equal(t, 1, n, "the id with the same leading digits survives")
+	for _, id := range []int64{mineQ, mineS} {
+		require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE id = ?`, id).Scan(&n))
+		assert.Equal(t, 0, n, "the workbench's item explain chat %d is gone", id)
+	}
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE id = ?`, longerQ).Scan(&n))
+	assert.Equal(t, 1, n, "the item chat of the id with the same leading digits survives")
 	var keys []string
 	rows, err := d.Query(`SELECT surface_key FROM chat_queued_drafts ORDER BY surface_key`)
 	require.NoError(t, err)
@@ -475,7 +488,7 @@ func TestDeleteWorkbenchDropsAskExplainChats(t *testing.T) {
 		keys = append(keys, k)
 	}
 	require.NoError(t, rows.Err())
-	assert.Equal(t, []string{otherKind, longerDraft}, keys,
+	assert.Equal(t, []string{otherKind, longerDraft, longerQDraft}, keys,
 		"the workbench's explain drafts are gone; another bench's and another kind's stay")
 }
 
