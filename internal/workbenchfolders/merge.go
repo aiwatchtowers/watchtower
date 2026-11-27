@@ -324,8 +324,7 @@ func moveTargets(ctx context.Context, tx *sql.Tx, m *merger) error {
 // is NULL — the merged bench's home folder — to that folder (where, when
 // set, narrows the rows the NULL means a folder for).
 func pinHomeThenMove(table, column, where string) func(ctx context.Context, tx *sql.Tx, m *merger) error {
-	//nolint:gosec // G202: table is a mergeTables constant; every value is a bound arg.
-	pin, move := pinHomeSQL(table, column, where), `UPDATE `+table+` SET project_id = ? WHERE project_id = ?`
+	pin, move := pinHomeSQL(table, column, where), moveSQL(table)
 	return func(ctx context.Context, tx *sql.Tx, m *merger) error {
 		if _, err := tx.ExecContext(ctx, pin, m.fromHome, m.from); err != nil {
 			return err //nolint:wrapcheck // Merge names the table
@@ -333,6 +332,13 @@ func pinHomeThenMove(table, column, where string) func(ctx context.Context, tx *
 		_, err := tx.ExecContext(ctx, move, m.into, m.from)
 		return err //nolint:wrapcheck // Merge names the table
 	}
+}
+
+// moveSQL moves table's rows from the bench in the second argument to the
+// bench in the first.
+func moveSQL(table string) string {
+	// table is a mergeTables constant; every value is a bound arg.
+	return `UPDATE ` + table + ` SET project_id = ? WHERE project_id = ?`
 }
 
 // pinHomeSQL sets table's column to the first argument on the rows of the

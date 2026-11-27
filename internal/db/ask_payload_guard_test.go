@@ -150,6 +150,18 @@ func TestAskPayloadGuardScanner(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, forbidden, "a write after an interpolation holding a raw string: %v", got)
+
+	// A raw string's own escape `\#"` does not close it.
+	swiftSrc = "let label = \"\\(v ?? #\"a\"b\\#\"#\"#)\"\n" +
+		"try db.execute(sql: \"UPDATE owner_asks SET payload = ?\")\n"
+	got = swiftSQLLiterals("WatchtowerDesktop/Sources/w.swift", []byte(swiftSrc))
+	forbidden = 0
+	for _, s := range got {
+		if payloadWriteVerdict(s) == payloadWriteForbidden {
+			forbidden++
+		}
+	}
+	assert.Equal(t, 1, forbidden, "a write after an interpolation holding a raw string with an escape: %v", got)
 }
 
 // sqlLiteral is one string literal (or a + chain of them, a non-literal part
@@ -460,6 +472,12 @@ func skipSwiftString(s string, i int) int {
 		}
 		if hashes == 0 && s[k] == '\\' {
 			k++
+			continue
+		}
+		// A raw string's escape is `\` and its own number of #: it and the
+		// escaped character never close the string.
+		if hashes > 0 && s[k] == '\\' && strings.HasPrefix(s[k+1:], strings.Repeat("#", hashes)) {
+			k += hashes + 1
 			continue
 		}
 		if strings.HasPrefix(s[k:], closing) {
