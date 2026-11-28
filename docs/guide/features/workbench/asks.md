@@ -84,7 +84,7 @@ text: Click **Not clear?** under each question, or **?** by each check step, and
 area: development
 level: next
 kind: feature
-since: next
+since: 0.29.7
 action: nav:projects
 replaces: [asks-not-clear]
 changed: The entry moved from under the whole ask to each question and step, each with its own chat.
