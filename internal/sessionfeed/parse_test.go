@@ -592,3 +592,29 @@ func TestNoticeTask_RecoveredSummaryQuotingItsCloseTag(t *testing.T) {
 	assert.Nil(t, res.Entries[0].Task)
 	assert.Equal(t, `Agent "handle </summary> tags" finished`, res.Entries[0].Title)
 }
+
+// Claude Code 2.1.312+ records a long paste that is the whole prompt (or part
+// of it) as <pasted_content id="…">…</pasted_content id="…">; the owner entry
+// is the pasted text itself, so a Workchat line finds its echo.
+func TestParse_PastedContentUnwrapped(t *testing.T) {
+	res := parseStr(t, join(
+		userStr("u1", "\n\n<pasted_content id=\"a80d\">\nfirst line\n\nsecond line\n</pasted_content id=\"a80d\">\n"),
+		userStr("u2", "see this:\n<pasted_content id=\"914c\">\npasted\n</pasted_content id=\"914c\">\n\n crash"),
+		userStr("u3", "<pasted_content id=\"ab12\">\nquotes </pasted_content id=\"zz99\"> inside\n</pasted_content id=\"ab12\">"),
+		userStr("u4", "<pasted_content id=\"cd34\">\nno closing tag"),
+		userStr("u5", "<pasted_content id=\"ef56\">\n<task-notification>\n<status>completed</status>\n</task-notification>\n</pasted_content id=\"ef56\">"),
+		userStr("u6", "<pasted_content id=\"0a0a\">\n<local-command-stdout>x</local-command-stdout>\n</pasted_content id=\"0a0a\">"),
+		userStr("u7", "<pasted_content id=\"1b1b\">\n</pasted_content id=\"1b1b\">"),
+	), 0)
+	require.Len(t, res.Entries, 6) // u7: an empty paste is no entry
+	assert.Equal(t, "first line\n\nsecond line", res.Entries[0].Text)
+	assert.Equal(t, "see this:\npasted\n\n crash", res.Entries[1].Text)
+	assert.Equal(t, "quotes </pasted_content id=\"zz99\"> inside", res.Entries[2].Text)
+	assert.Equal(t, "<pasted_content id=\"cd34\">\nno closing tag", res.Entries[3].Text)
+	// A pasted notice or command record is the owner's text, not the record it quotes.
+	assert.Equal(t, "<task-notification>\n<status>completed</status>\n</task-notification>", res.Entries[4].Text)
+	assert.Equal(t, "<local-command-stdout>x</local-command-stdout>", res.Entries[5].Text)
+	for _, e := range res.Entries {
+		assert.Equal(t, KindOwner, e.Kind)
+	}
+}

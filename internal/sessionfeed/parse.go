@@ -40,7 +40,40 @@ var (
 	taskDurRe     = regexp.MustCompile(`<duration_ms>\s*(\d+)\s*</duration_ms>`)
 	taskExitRe    = regexp.MustCompile(`\(exit code (-?\d+)\)$`)
 	cmdArgsRe     = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
+	pastedOpenRe  = regexp.MustCompile(`<pasted_content id="([^"<>]*)">`)
 )
+
+// unwrapPasted replaces each <pasted_content id="X">…</pasted_content id="X">
+// (Claude Code 2.1.312+ records a long paste so) with the pasted text, dropping
+// the newline that follows the opening tag and the one before the closing tag,
+// so the owner entry is the text the owner sent (a Workchat line finds its
+// echo). The closing tag must carry the same id: pasted text that itself holds
+// a closing tag stays whole. From an opening tag with no matching close on, the
+// text is kept as is (a malformed record costs one scan, not one per tag).
+func unwrapPasted(text string) string {
+	if !strings.Contains(text, "<pasted_content id=") {
+		return text
+	}
+	var b strings.Builder
+	for {
+		loc := pastedOpenRe.FindStringSubmatchIndex(text)
+		if loc == nil {
+			break
+		}
+		closeTag := `</pasted_content id="` + text[loc[2]:loc[3]] + `">`
+		end := strings.Index(text[loc[1]:], closeTag)
+		if end < 0 {
+			break
+		}
+		body := text[loc[1] : loc[1]+end]
+		body = strings.TrimSuffix(strings.TrimPrefix(body, "\n"), "\n")
+		b.WriteString(text[:loc[0]])
+		b.WriteString(body)
+		text = text[loc[1]+end+len(closeTag):]
+	}
+	b.WriteString(text)
+	return b.String()
+}
 
 // ignoredTypes are record types that are expected and carry no chat.
 var ignoredTypes = map[string]bool{
@@ -469,6 +502,11 @@ func classifyUserText(uuid, text string) (Entry, bool) {
 		e.Kind, e.Via = KindWatchtower, ViaReview
 	case strings.HasPrefix(text, handoffPrefix):
 		e.Kind, e.Via = KindWatchtower, ViaHandoff
+	default:
+		// Unwrapped only now: a paste is the owner's text, never a notice or a command record.
+		if e.Text = strings.TrimSpace(unwrapPasted(text)); e.Text == "" {
+			return Entry{}, false
+		}
 	}
 	return e, true
 }
