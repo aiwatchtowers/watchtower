@@ -48,7 +48,8 @@ var (
 // the newline that follows the opening tag and the one before the closing tag,
 // so the owner entry is the text the owner sent (a Workchat line finds its
 // echo). The closing tag must carry the same id: pasted text that itself holds
-// a closing tag stays whole. An opening tag with no matching close is kept.
+// a closing tag stays whole. From an opening tag with no matching close on, the
+// text is kept as is (a malformed record costs one scan, not one per tag).
 func unwrapPasted(text string) string {
 	var b strings.Builder
 	for {
@@ -59,9 +60,7 @@ func unwrapPasted(text string) string {
 		closeTag := `</pasted_content id="` + text[loc[2]:loc[3]] + `">`
 		end := strings.Index(text[loc[1]:], closeTag)
 		if end < 0 {
-			b.WriteString(text[:loc[1]])
-			text = text[loc[1]:]
-			continue
+			break
 		}
 		body := text[loc[1] : loc[1]+end]
 		body = strings.TrimSuffix(strings.TrimPrefix(body, "\n"), "\n")
@@ -472,7 +471,7 @@ func userText(content json.RawMessage) (string, bool) {
 }
 
 func classifyUserText(uuid, text string) (Entry, bool) {
-	text = strings.TrimSpace(unwrapPasted(reminderRe.ReplaceAllString(text, "")))
+	text = strings.TrimSpace(reminderRe.ReplaceAllString(text, ""))
 	if text == "" {
 		return Entry{}, false
 	}
@@ -500,6 +499,11 @@ func classifyUserText(uuid, text string) (Entry, bool) {
 		e.Kind, e.Via = KindWatchtower, ViaReview
 	case strings.HasPrefix(text, handoffPrefix):
 		e.Kind, e.Via = KindWatchtower, ViaHandoff
+	default:
+		// Unwrapped only now: a paste is the owner's text, never a notice or a command record.
+		if e.Text = strings.TrimSpace(unwrapPasted(text)); e.Text == "" {
+			return Entry{}, false
+		}
 	}
 	return e, true
 }
