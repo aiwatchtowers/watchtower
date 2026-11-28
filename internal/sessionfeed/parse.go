@@ -51,6 +51,9 @@ var (
 // a closing tag stays whole. From an opening tag with no matching close on, the
 // text is kept as is (a malformed record costs one scan, not one per tag).
 func unwrapPasted(text string) string {
+	if !strings.Contains(text, "<pasted_content id=") {
+		return text
+	}
 	var b strings.Builder
 	for {
 		loc := pastedOpenRe.FindStringSubmatchIndex(text)
