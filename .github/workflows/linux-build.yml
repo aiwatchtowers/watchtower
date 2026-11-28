@@ -27,6 +27,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GOFLAGS: -trimpath
+
 jobs:
   build:
     name: Linux ${{ matrix.arch }}

@@ -6,7 +6,6 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -391,20 +390,27 @@ func parseGoFilesUnder(t *testing.T, root, dir string) []parsedGoFile {
 	return out
 }
 
-// repoRootForPromptScan resolves the repository root relative to this test
-// file, so the scan works regardless of the working directory.
+// repoRootForPromptScan resolves the repository root by walking up from
+// the package directory (the working directory under go test).
 func repoRootForPromptScan(t *testing.T) string {
 	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed resolving this test file's path")
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
 	}
-	// cmd/prompt_store_scan_test.go -> repo root is one directory up.
-	root := filepath.Join(filepath.Dir(thisFile), "..")
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
-		t.Fatalf("resolved repo root %q does not contain go.mod: %v", root, err)
+	// go test runs in the package directory; walk up to the go.mod. (Not
+	// runtime.Caller: under -trimpath it returns module-relative paths.)
+	root := dir
+	for {
+		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+			return root
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			t.Fatalf("resolved repo root %q does not contain go.mod", dir)
+		}
+		root = parent
 	}
-	return root
 }
 
 func sortedKeys(m map[string]bool) []string {

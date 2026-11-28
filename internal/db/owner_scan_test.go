@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -111,18 +110,25 @@ func scanFileForOwnerReads(t *testing.T, path, rel string) []string {
 	return out
 }
 
-// repoRootForOwnerScan resolves the repository root from this file's path,
-// so the scan does not depend on the working directory.
+// repoRootForOwnerScan resolves the repository root by walking up from
+// the package directory (the working directory under go test).
 func repoRootForOwnerScan(t *testing.T) string {
 	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed resolving this test file's path")
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
 	}
-	// internal/db/owner_scan_test.go -> repo root is two directories up.
-	root := filepath.Join(filepath.Dir(thisFile), "..", "..")
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
-		t.Fatalf("resolved repo root %q does not contain go.mod: %v", root, err)
+	// go test runs in the package directory; walk up to the go.mod. (Not
+	// runtime.Caller: under -trimpath it returns module-relative paths.)
+	root := dir
+	for {
+		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+			return root
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			t.Fatalf("resolved repo root %q does not contain go.mod", dir)
+		}
+		root = parent
 	}
-	return root
 }

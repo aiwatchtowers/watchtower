@@ -1,6 +1,7 @@
 # Build output
 watchtower
 build/
+WatchtowerMobile/DerivedData/
 build.next/
 build.old/
 WatchtowerDesktop/.build/
