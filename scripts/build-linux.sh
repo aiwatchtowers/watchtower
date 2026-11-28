@@ -63,7 +63,7 @@ BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 echo "==> Building watchtower $VERSION (linux/$ARCH)"
 # -tags codegrammars: the code index's full grammar set, as in build-app.sh.
-CGO_ENABLED=1 go build -tags codegrammars \
+CGO_ENABLED=1 go build -trimpath -tags codegrammars \
     -ldflags "-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/internal/hub.DefaultRelayOrigin=${RELAY_ORIGIN}" \
     -o "$STAGE/watchtower" .
 chmod 0755 "$STAGE/watchtower"

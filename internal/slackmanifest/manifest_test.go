@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -86,10 +85,27 @@ func TestSlackManifest_ManifestFillsDescriptions(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// repoRoot walks up from the package directory (the working directory under
+// go test) to the go.mod; runtime.Caller would break under -trimpath.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+	root := dir
+	for {
+		if _, statErr := os.Stat(filepath.Join(root, "go.mod")); statErr == nil {
+			return root
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			t.Fatalf("resolved repo root %q does not contain go.mod", dir)
+		}
+		root = parent
+	}
+}
+
 func TestSlackManifest_NoRootCopy(t *testing.T) {
-	_, file, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-	root := filepath.Join(filepath.Dir(file), "..", "..")
+	root := repoRoot(t)
 	_, err := os.Stat(filepath.Join(root, "go.mod"))
 	require.NoError(t, err, "repo root resolved")
 	_, err = os.Stat(filepath.Join(root, "slack-app-manifest.json"))
@@ -100,9 +116,9 @@ func TestSlackManifest_NoRootCopy(t *testing.T) {
 // updates the app from it): its descriptions are the builder's with no
 // connect block.
 func TestSlackManifest_FileCarriesTheDescriptions(t *testing.T) {
-	_, file, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-	raw, err := os.ReadFile(filepath.Join(filepath.Dir(file), "slack-app-manifest.json"))
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+	raw, err := os.ReadFile(filepath.Join(dir, "slack-app-manifest.json"))
 	require.NoError(t, err)
 	var m struct {
 		DisplayInformation struct {

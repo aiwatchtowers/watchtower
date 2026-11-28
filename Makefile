@@ -27,6 +27,12 @@ $(error BUILD_COMPANY_NAME is required for the corp flavor)
 endif
 endif
 export ENV_FILE
+# -trimpath for every go invocation: without it the absolute worktree path is part of the
+# build-cache key, so each worktree re-caches the whole module graph (docs/superpowers/specs/2026-11-25-build-cache-disk-design.md).
+# A pre-set GOFLAGS (environment or `make GOFLAGS=...`) survives; -trimpath is appended once.
+# `override` so a command-line value cannot replace this line and drop the flag.
+override GOFLAGS := $(strip $(filter-out -trimpath,$(GOFLAGS)) -trimpath)
+export GOFLAGS
 export WATCHTOWER_OAUTH_CLIENT_ID WATCHTOWER_OAUTH_CLIENT_SECRET RETIRED_SLACK_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_SECRET WATCHTOWER_JIRA_CLIENT_ID WATCHTOWER_JIRA_CLIENT_SECRET WATCHTOWER_PURGE_DEFAULT WATCHTOWER_LINK_FETCH_DENY_HOSTS BUILD_FLAVOR BUILD_COMPANY_NAME
 
 BINARY_NAME := watchtower
@@ -48,7 +54,7 @@ LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
 COMPANY_NAME := $(subst ',,$(subst ",,$(BUILD_COMPANY_NAME)))
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X 'watchtower/cmd.BuildCompanyName=$(COMPANY_NAME)' -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/auth.RetiredSharedClientID=$(RETIRED_SLACK_CLIENT_ID) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS) -X watchtower/internal/hub/identity.KeychainBuildFlag=false"
 
-.PHONY: golangci-version-check build bridge-build test test-verbose test-cover cover-packages test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test chattext-test chat-test interface-test gen-interface gen-interface-check e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
+.PHONY: golangci-version-check build bridge-build test test-verbose test-cover cover-packages test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test chattext-test chat-test interface-test gen-interface gen-interface-check e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-dd-check mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -217,8 +223,22 @@ MOBILE_DEST := platform=iOS Simulator,name=$(SIM)
 # Explicit precompiled modules go stale between the build and test xcodebuild runs
 # sharing DerivedData (SQLCipher-<hash>.pcm, then "missing required module
 # 'GRDBSQLCipher'"), so every phone xcodebuild turns them off (#1822).
-# MOBILE_XCB_EXTRA adds more xcodebuild arguments (e.g. -derivedDataPath).
-MOBILE_XCB := SWIFT_ENABLE_EXPLICIT_MODULES=NO $(MOBILE_XCB_EXTRA)
+# Every phone xcodebuild builds into a per-checkout DerivedData (MOBILE_DD, default
+# WatchtowerMobile/DerivedData, gitignored; not under build/, which make app
+# replaces wholesale) so parallel worktrees do not share Xcode's global
+# one; point it elsewhere with MOBILE_DD=<dir>. MOBILE_XCB_EXTRA adds more
+# xcodebuild arguments, but not -derivedDataPath. mobile-archive and
+# mobile-testflight keep Xcode's default folder.
+MOBILE_DD ?= WatchtowerMobile/DerivedData
+MOBILE_XCB := SWIFT_ENABLE_EXPLICIT_MODULES=NO -derivedDataPath "$(MOBILE_DD)" $(MOBILE_XCB_EXTRA)
+
+# Checked by the recipes that use $(MOBILE_XCB), not at parse time, so a stray
+# MOBILE_XCB_EXTRA in the environment cannot break unrelated targets.
+mobile-dd-check:
+ifneq (,$(findstring -derivedDataPath,$(MOBILE_XCB_EXTRA)))
+	$(error MOBILE_XCB_EXTRA must not carry -derivedDataPath; pass MOBILE_DD=<dir> instead)
+endif
+	@:
 MOBILE_BUNDLE_ID := com.aiwatchtowers.watchtower.mobile
 # make mobile-test MOBILE_FILTER=SomeTestClass runs only that class; an
 # alternation (MOBILE_FILTER='ClassA|ClassB') becomes one -only-testing per class.
@@ -228,7 +248,7 @@ MOBILE_ONLY := $(foreach t,$(subst |, ,$(MOBILE_FILTER)),-only-testing:Watchtowe
 mobile-gen:
 	cd WatchtowerMobile && xcodegen generate
 
-mobile-build:
+mobile-build: mobile-dd-check
 	xcodebuild build -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
 		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_XCB)
 
@@ -237,7 +257,7 @@ mobile-build:
 # a stale replica would fail ReplicaWiringTests' exact counts.
 # Signed to run locally with test-only simulated entitlements, not unsigned: storekitd refuses SKTestSession
 # otherwise (StoreKitRelayStoreTests; see WatchtowerMobile/StoreKitTesting.entitlements).
-mobile-test:
+mobile-test: mobile-dd-check
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
 	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
 	xcodebuild test -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
@@ -245,10 +265,10 @@ mobile-test:
 		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/WatchtowerMobile/StoreKitTesting.entitlements" $(MOBILE_XCB) $(MOBILE_ONLY)
 
 # Build, boot the simulator, install and launch: the mobile app-dev.
-mobile-run: mobile-build
+mobile-run: mobile-dd-check mobile-build
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
 	open -a Simulator
-	xcrun simctl install "$(SIM)" "$$(xcodebuild -project $(MOBILE_PROJ) -scheme WatchtowerMobile -destination '$(MOBILE_DEST)' -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR/{d=$$3} / FULL_PRODUCT_NAME/{n=$$3} END{print d "/" n}')"
+	xcrun simctl install "$(SIM)" "$$(xcodebuild -project $(MOBILE_PROJ) -scheme WatchtowerMobile -destination '$(MOBILE_DEST)' $(MOBILE_XCB) -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR =/{sub(/^[^=]*= /,"");d=$$0} / FULL_PRODUCT_NAME =/{sub(/^[^=]*= /,"");n=$$0} END{print d "/" n}')"
 	xcrun simctl launch "$(SIM)" $(MOBILE_BUNDLE_ID)
 
 # The design pass's screenshot tour (WatchtowerMobile/Tests/ScreenshotTourTests.swift):
@@ -265,7 +285,7 @@ SHOTS_DIR ?= build/mobile-shots
 # SHOTS_ONLY=inbox-approval only the Inbox approval card's mockups (inbox-approval-*, mobile Inbox spec §12).
 # SHOTS_ONLY=workchat-agents only the session chat's agents sheet mockups (#2065, P1–P4).
 SHOTS_ONLY ?=
-mobile-shots:
+mobile-shots: mobile-dd-check
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
 	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
 	mkdir -p "$(SHOTS_DIR)"
@@ -501,13 +521,15 @@ golangci-version-check:
 	@golangci-lint version 2>/dev/null | grep -q 'version $(GOLANGCI_VERSION) ' || \
 		echo "warning: golangci-lint is not v$(GOLANGCI_VERSION) (the CI version); results may differ from CI" >&2
 
+# golangci-lint runs without -trimpath: under it the cgo files cached by another worktree keep
+# `//line` paths into that worktree, and go/packages would open (or fail to open) them (#2403).
 lint: golangci-version-check
-	golangci-lint run ./...
+	GOFLAGS='$(filter-out -trimpath,$(GOFLAGS))' golangci-lint run ./...
 
 # Inner-loop lint: only issues introduced relative to origin/main.
 # The full `lint` target remains the pre-PR gate.
 lint-diff: golangci-version-check
-	golangci-lint run --new-from-rev origin/main ./...
+	GOFLAGS='$(filter-out -trimpath,$(GOFLAGS))' golangci-lint run --new-from-rev origin/main ./...
 
 # kit-lint-guard covers the Desktop's Views/App, the phone's Features and the
 # shared chat views (WatchtowerChat/Sources/ChatUI); each package's own

@@ -21,6 +21,9 @@ concurrency:
   group: ci-${{ github.event_name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
+env:
+  GOFLAGS: -trimpath
+
 jobs:
   # Skips the push-triggered run only when the pull_request-triggered run of
   # the same commit on the same branch exists (not cancelled) — it does the
@@ -159,6 +162,7 @@ jobs:
               - 'internal/providers/{registry,capabilities,capabilities_test}.go'
               - 'internal/sessionagent/agent_capabilities.json'
               - '.github/ISSUE_TEMPLATE/**'
+              - '.claude/settings.json'
               # Dual-path tests that list a package's Go files (daemon
               # digest gates, session cleanup reasons).
               - 'internal/{daemon,sessioncleanup}/**'
@@ -241,6 +245,9 @@ jobs:
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.go == 'true'
     runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
+    env:
+      # No -trimpath for golangci-lint: cgo files cached by another checkout keep //line paths into it (#2403).
+      GOFLAGS: ""
     steps:
       - uses: actions/checkout@v4
 
